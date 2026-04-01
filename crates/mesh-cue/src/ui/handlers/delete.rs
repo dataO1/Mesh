@@ -30,10 +30,22 @@ impl MeshCueApp {
             return Task::none();
         }
 
-        // Get track names directly from NodeId (last path segment = track title)
+        // Look up display names (artist + title) from the cached track list
+        let cached_tracks = match browser_side {
+            BrowserSide::Left => &self.collection.left_tracks,
+            BrowserSide::Right => &self.collection.right_tracks,
+        };
         let track_names: Vec<String> = selected_ids
             .iter()
-            .map(|id| id.name().to_string())
+            .map(|id| {
+                cached_tracks.iter()
+                    .find(|t| &t.id == id)
+                    .map(|t| match &t.artist {
+                        Some(artist) => format!("{} - {}", artist, t.title),
+                        None => t.title.clone(),
+                    })
+                    .unwrap_or_else(|| id.name().to_string())
+            })
             .collect();
 
         // Determine delete target based on current folder

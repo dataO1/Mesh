@@ -29,7 +29,7 @@ impl DatabaseStorage {
     /// Convert database Track to TrackInfo
     fn track_to_info(track: &crate::db::Track, folder_id: &NodeId, order: i32) -> TrackInfo {
         TrackInfo {
-            id: NodeId(format!("{}/{}", folder_id.0, track.title)),
+            id: NodeId(format!("{}/{}", folder_id.0, track.id.map_or_else(|| track.title.clone(), |id| id.to_string()))),
             title: track.title.clone(),
             path: PathBuf::from(&track.path),
             order,
@@ -153,14 +153,11 @@ impl PlaylistStorage for DatabaseStorage {
             });
         }
 
-        // Handle tracks in collection (e.g., "tracks/trackname" or "tracks/Subfolder/trackname")
+        // Handle tracks in collection (e.g., "tracks/42" or "tracks/Subfolder/42")
         if id.0.starts_with("tracks/") {
-            // Try to find this track in the database by name
-            let track_name = id.name();
-            let folder_path = id.parent().map(|p| p.0.clone()).unwrap_or_else(|| "tracks".to_string());
-
-            let tracks = TrackQuery::get_by_folder(self.service.db(), &folder_path).ok()?;
-            let track = tracks.iter().find(|t| t.title == track_name)?;
+            let leaf = id.name();
+            let track_id = leaf.parse::<i64>().ok()?;
+            let track = TrackQuery::get_by_id(self.service.db(), track_id).ok()??;
 
             return Some(PlaylistNode {
                 id: id.clone(),
@@ -195,11 +192,9 @@ impl PlaylistStorage for DatabaseStorage {
             }
 
             // Otherwise it might be a track in a playlist
-            let parent = id.parent()?;
-            let playlist_db_id = self.get_playlist_db_id(&parent).ok()?;
-            let tracks = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id).ok()?;
-            let track_name = id.name();
-            let track = tracks.iter().find(|t| t.title == track_name)?;
+            let leaf = id.name();
+            let track_id = leaf.parse::<i64>().ok()?;
+            let track = TrackQuery::get_by_id(self.service.db(), track_id).ok()??;
 
             return Some(PlaylistNode {
                 id: id.clone(),
@@ -245,7 +240,7 @@ impl PlaylistStorage for DatabaseStorage {
                             return tracks.iter()
                                 .enumerate()
                                 .map(|(i, track)| TrackInfo {
-                                    id: NodeId(format!("{}/{}", folder_id.0, track.title)),
+                                    id: NodeId(format!("{}/{}", folder_id.0, track.id)),
                                     title: track.title.clone(),
                                     path: PathBuf::from(&track.path),
                                     order: (i + 1) as i32, // 1-based for display
@@ -368,11 +363,7 @@ impl PlaylistStorage for DatabaseStorage {
         PlaylistQuery::add_track(self.service.db(), playlist_db_id, track_db_id, sort_order)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
-        let track_name = track_path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown");
-
-        Ok(NodeId(format!("{}/{}", playlist.0, track_name)))
+        Ok(NodeId(format!("{}/{}", playlist.0, track_db_id)))
     }
 
     fn remove_track_from_playlist(&mut self, track_id: &NodeId) -> Result<(), PlaylistError> {
@@ -387,17 +378,12 @@ impl PlaylistStorage for DatabaseStorage {
 
         let playlist_db_id = self.get_playlist_db_id(&playlist_id)?;
 
-        // Find the track by name in the playlist to get its db ID
-        let tracks = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id)
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-
-        let track_name = track_id.name();
-        let track = tracks.iter()
-            .find(|t| t.title == track_name)
-            .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
+        let leaf = track_id.name();
+        let track_db_id = leaf.parse::<i64>()
+            .map_err(|_| PlaylistError::NotFound(track_id.0.clone()))?;
 
         // Remove track-playlist association
-        PlaylistQuery::remove_track(self.service.db(), playlist_db_id, track.id)
+        PlaylistQuery::remove_track(self.service.db(), playlist_db_id, track_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         Ok(())
@@ -419,16 +405,9 @@ impl PlaylistStorage for DatabaseStorage {
         let source_playlist_db_id = self.get_playlist_db_id(&source_playlist_id)?;
         let target_playlist_db_id = self.get_playlist_db_id(target_playlist)?;
 
-        // Find the track by name
-        let tracks = PlaylistQuery::get_tracks(self.service.db(), source_playlist_db_id)
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-
-        let track_name = track_id.name();
-        let track = tracks.iter()
-            .find(|t| t.title == track_name)
-            .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
-
-        let track_db_id = track.id;
+        let leaf = track_id.name();
+        let track_db_id = leaf.parse::<i64>()
+            .map_err(|_| PlaylistError::NotFound(track_id.0.clone()))?;
 
         // Remove from source playlist
         PlaylistQuery::remove_track(self.service.db(), source_playlist_db_id, track_db_id)
@@ -441,7 +420,7 @@ impl PlaylistStorage for DatabaseStorage {
         PlaylistQuery::add_track(self.service.db(), target_playlist_db_id, track_db_id, sort_order)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
-        Ok(NodeId(format!("{}/{}", target_playlist.0, track_name)))
+        Ok(NodeId(format!("{}/{}", target_playlist.0, track_db_id)))
     }
 
     fn delete_track_permanently(&mut self, track_id: &NodeId) -> Result<PathBuf, PlaylistError> {
@@ -451,17 +430,12 @@ impl PlaylistStorage for DatabaseStorage {
             ));
         }
 
-        // Get track path from database
-        let folder_path = track_id.parent()
-            .map(|p| p.0.clone())
-            .unwrap_or_default();
+        let leaf = track_id.name();
+        let db_id = leaf.parse::<i64>()
+            .map_err(|_| PlaylistError::NotFound(track_id.0.clone()))?;
 
-        let tracks = TrackQuery::get_by_folder(self.service.db(), &folder_path)
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-
-        let track_name = track_id.name();
-        let track = tracks.iter()
-            .find(|t| t.title == track_name)
+        let track = TrackQuery::get_by_id(self.service.db(), db_id)
+            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
             .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
 
         let path = PathBuf::from(&track.path);
