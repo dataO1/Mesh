@@ -60,9 +60,10 @@ const BTN_TYPE: u32       = 1 << 21;
 const BTN_REVERSE: u32    = 1 << 22;
 const BTN_SHIFT: u32      = 1 << 23;
 
-// Lower function buttons (data[4], bits 25-26)
+// Lower function buttons (data[4], bits 25-27)
 const BTN_CAPTURE: u32    = 1 << 25;
 const BTN_QUANT: u32      = 1 << 26;
+const BTN_SYNC: u32       = 1 << 27;
 
 // Play/Kill (stop) buttons below the grid (data[4], bits 28-31, reversed order)
 const BTN_PLAY_4: u32     = 1 << 28;
@@ -164,6 +165,7 @@ impl KontrolF1Driver {
             ("shift", "Shift", true),
             ("capture", "Capture", true),
             ("quant", "Quant", true),
+            ("sync", "Sync", true),
             ("encoder_push", "Encoder Push", false),
         ] {
             descs.push(ControlDescriptor {
@@ -226,6 +228,7 @@ impl KontrolF1Driver {
             ("shift", BTN_SHIFT),
             ("capture", BTN_CAPTURE),
             ("quant", BTN_QUANT),
+            ("sync", BTN_SYNC),
             ("encoder_push", BTN_ENCODER),
         ];
 
@@ -465,6 +468,7 @@ fn function_button_led_offset(name: &str) -> Option<usize> {
         "shift"   => Some(21),
         "capture" => Some(22),
         "quant"   => Some(23),
+        "sync"    => Some(24),
         _ => None,
     }
 }
@@ -751,8 +755,8 @@ mod tests {
     fn test_descriptor_count() {
         let driver = KontrolF1Driver::new("test".to_string());
         let descs = driver.controls();
-        // 16 pads + 4 play + 8 function + 4 knobs + 4 faders + 1 encoder = 37
-        assert_eq!(descs.len(), 37);
+        // 16 pads + 4 play + 9 function + 4 knobs + 4 faders + 1 encoder = 38
+        assert_eq!(descs.len(), 38);
     }
 
     #[test]
@@ -785,6 +789,12 @@ mod tests {
             brightness: 100,
         });
         assert_eq!(output[17], 100, "Browse LED at byte 17");
+
+        driver.apply_feedback(&mut output, FeedbackCommand::SetLed {
+            control: "sync".to_string(),
+            brightness: 127,
+        });
+        assert_eq!(output[24], 127, "Sync LED at byte 24");
     }
 
     #[test]
