@@ -4,6 +4,30 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.12]
+
+### Added
+
+- **Playlist-aware smart suggestions** — The suggestion panel now splits into
+  two independent halves. The top 15 slots show the best-matching tracks from
+  the playlist you are currently browsing; the bottom 15 show the best global
+  matches from all other sources (other playlists, USB sticks, and the full
+  local collection). Global rows are visually tinted so the split is immediately
+  obvious at a glance.
+
+- **Per-track playlist pills** — Every suggestion row now shows which playlists
+  that track belongs to as blue pill tags, regardless of what you are currently
+  browsing. If a suggestion appears in your "Breakbeat" and "Live Set" playlists,
+  both names show on the row.
+
+- **Deeper playlist matching** — Tracks in the browsed playlist use a more lenient
+  harmonic filter (50% of the normal threshold) so that slightly less obvious key
+  relationships within your own curated set are still surfaced. The full scored
+  candidate pool is passed to the split rather than a pre-truncated shortlist,
+  giving each half the best possible selection to draw from.
+
+---
+
 ## [0.9.11]
 
 ### Fixed
