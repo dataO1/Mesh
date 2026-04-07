@@ -18,6 +18,8 @@ pub struct SuggestedTrack {
     pub score: f32,
     /// Auto-generated reason tags as (label, hex_color)
     pub reason_tags: Vec<(String, Option<String>)>,
+    /// Playlist names this track belongs to (populated after query)
+    pub playlists: Vec<String>,
 }
 
 /// A database source for suggestion queries.
@@ -30,6 +32,20 @@ pub struct DbSource {
     pub collection_root: PathBuf,
     /// Human-readable name (e.g., "Local" or USB device label)
     pub name: String,
+}
+
+/// Result of a split suggestion query separating playlist-local from global results.
+#[derive(Debug)]
+///
+/// When a playlist is selected in the browser, the top section shows tracks that
+/// exist in that playlist (scored identically to global results), and the bottom
+/// section shows global cross-collection candidates. When no playlist is selected,
+/// all results land in `global_suggestions` and `playlist_suggestions` is empty.
+pub struct SplitSuggestions {
+    /// Tracks found within the currently selected playlist/folder (shown first, no tint)
+    pub playlist_suggestions: Vec<SuggestedTrack>,
+    /// Tracks from all collections — global fallback (shown second, visually tinted)
+    pub global_suggestions: Vec<SuggestedTrack>,
 }
 
 /// Classification of the musical relationship between two keys.
@@ -570,6 +586,10 @@ pub fn query_suggestions(
     per_seed_limit: usize,
     total_limit: usize,
     played_paths: &HashSet<String>,
+    // Tracks whose absolute path is in this set are treated as "preferred" —
+    // they receive a 50% more lenient key filter threshold so that user-curated
+    // playlist tracks appear even when their key relationship is less ideal.
+    preferred_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<SuggestedTrack>, String> {
     if sources.is_empty() {
         return Ok(Vec::new());
@@ -870,8 +890,19 @@ pub fn query_suggestions(
                 })
                 .unwrap_or((0.3, TransitionType::FarStep(6))); // No key = moderate penalty
 
-            // Apply adaptive filter threshold
-            if best_key_score < filter_threshold {
+            // Apply adaptive filter threshold.
+            // Tracks in the user's preferred set (e.g. currently browsed playlist)
+            // use a 50% more lenient threshold — personal curation implies trust.
+            let is_preferred = preferred_paths.map_or(false, |pp| {
+                let p = track.path.to_string_lossy();
+                pp.contains(p.as_ref())
+            });
+            let effective_threshold = if is_preferred {
+                filter_threshold * 0.5
+            } else {
+                filter_threshold
+            };
+            if best_key_score < effective_threshold {
                 return None;
             }
 
@@ -939,7 +970,7 @@ pub fn query_suggestions(
                 reason_tags.insert(0, (source_name.to_string(), Some("#808080".to_string())));
             }
 
-            Some(SuggestedTrack { track, score, reason_tags })
+            Some(SuggestedTrack { track, score, reason_tags, playlists: Vec::new() })
         })
         .collect();
 

@@ -2,7 +2,7 @@
 //!
 //! Handles collection browser navigation, track selection, and USB device events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use iced::Task;
@@ -12,7 +12,7 @@ use mesh_core::usb::UsbMessage as UsbMsg;
 use mesh_widgets::{parse_hex_color, scroll_to_centered_selection, TrackRow, TrackTag};
 use mesh_core::types::PlayState;
 use crate::history::SuggestionContext;
-use crate::suggestions::{query_suggestions, DbSource, SuggestedTrack};
+use crate::suggestions::{query_suggestions, DbSource, SplitSuggestions, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
 use crate::ui::message::Message;
@@ -192,73 +192,39 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
 
 /// Handle the result of a background suggestion query.
 ///
-/// Converts `Vec<SuggestedTrack>` into `Vec<TrackRow<NodeId>>` with
-/// "suggestion:" prefixed IDs, and builds a path lookup map.
+/// Converts `SplitSuggestions` into `Vec<TrackRow<NodeId>>` with:
+/// - Playlist suggestions first (blue playlist-name tag, no row tint)
+/// - Global suggestions second (tinted background row, no playlist tag)
 pub fn handle_suggestions_ready(
     app: &mut MeshApp,
-    result: Arc<Result<Vec<SuggestedTrack>, String>>,
+    result: Arc<Result<SplitSuggestions, String>>,
 ) -> Task<Message> {
     match result.as_ref() {
-        Ok(suggested) => {
-            let mut tracks = Vec::with_capacity(suggested.len());
+        Ok(split) => {
+            let capacity = split.playlist_suggestions.len() + split.global_suggestions.len();
+            let mut tracks = Vec::with_capacity(capacity);
             let mut paths = HashMap::new();
             let mut contexts = HashMap::new();
-
             let energy_direction = app.collection_browser.energy_direction();
 
-            for (i, s) in suggested.iter().enumerate() {
-                let track = &s.track;
-                let node_id = NodeId(format!("suggestion:{}", track.id.unwrap_or(i as i64)));
-
-                let mut row = TrackRow::new(
-                    node_id.clone(),
-                    track.title.clone(),
-                    i as i32,
-                );
-                if let Some(ref artist) = track.artist {
-                    row = row.with_artist(artist.clone());
-                }
-                if let Some(bpm) = track.bpm {
-                    row = row.with_bpm(bpm);
-                }
-                if let Some(ref key) = track.key {
-                    row = row.with_key(key.clone());
-                }
-                row = row.with_duration(track.duration_seconds);
-                if let Some(lufs) = track.lufs {
-                    row = row.with_lufs(lufs);
-                }
-
-                // Convert suggestion reason tags to UI TrackTags
-                if !s.reason_tags.is_empty() {
-                    let tags: Vec<TrackTag> = s.reason_tags.iter().map(|(label, color)| {
-                        let mut tag = TrackTag::new(label);
-                        if let Some(hex) = color {
-                            if let Some(c) = parse_hex_color(hex) {
-                                tag = tag.with_color(c);
-                            }
-                        }
-                        tag
-                    }).collect();
-                    row = row.with_tags(tags);
-                }
-
-                // Cache path on row for fast dimming lookups
-                let track_path_str = track.path.to_string_lossy().to_string();
-                row.track_path = Some(track_path_str.clone());
-
-                // Cache suggestion context for history recording
-                contexts.insert(track_path_str, SuggestionContext {
-                    score: s.score,
-                    reason_tags: s.reason_tags.clone(),
-                    energy_direction,
-                });
-
-                paths.insert(node_id, track.path.clone());
+            // Playlist suggestions — prepend per-track playlist pills, no row tint
+            for (i, s) in split.playlist_suggestions.iter().enumerate() {
+                let reason_tags = prepend_playlist_pills(s);
+                let row = suggestion_to_row(s, i, reason_tags, false, energy_direction, &mut paths, &mut contexts);
                 tracks.push(row);
             }
 
-            log::info!("Suggestions ready: {} tracks", tracks.len());
+            // Global suggestions — same per-track playlist pills, visually tinted row
+            let has_playlist_section = !split.playlist_suggestions.is_empty();
+            let offset = split.playlist_suggestions.len();
+            for (i, s) in split.global_suggestions.iter().enumerate() {
+                let reason_tags = prepend_playlist_pills(s);
+                let row = suggestion_to_row(s, offset + i, reason_tags, has_playlist_section, energy_direction, &mut paths, &mut contexts);
+                tracks.push(row);
+            }
+
+            log::info!("Suggestions ready: {} playlist + {} global",
+                split.playlist_suggestions.len(), split.global_suggestions.len());
             app.collection_browser.apply_suggestion_results(tracks, paths, contexts);
         }
         Err(e) => {
@@ -268,6 +234,59 @@ pub fn handle_suggestions_ready(
         }
     }
     Task::none()
+}
+
+/// Build reason tags for a suggestion, prepending a blue pill for each playlist the track belongs to.
+fn prepend_playlist_pills(s: &SuggestedTrack) -> Vec<(String, Option<String>)> {
+    let mut tags = s.reason_tags.clone();
+    // Insert playlist pills at the front (in order)
+    for (i, name) in s.playlists.iter().enumerate() {
+        tags.insert(i, (name.clone(), Some("#1d4ed8".to_string())));
+    }
+    tags
+}
+
+/// Convert a `SuggestedTrack` into a `TrackRow<NodeId>`, populating the path and context maps.
+fn suggestion_to_row(
+    s: &SuggestedTrack,
+    idx: usize,
+    reason_tags: Vec<(String, Option<String>)>,
+    is_global: bool,
+    energy_direction: f32,
+    paths: &mut HashMap<NodeId, PathBuf>,
+    contexts: &mut HashMap<String, SuggestionContext>,
+) -> TrackRow<NodeId> {
+    let track = &s.track;
+    let node_id = NodeId(format!("suggestion:{}", track.id.unwrap_or(idx as i64)));
+    let mut row = TrackRow::new(node_id.clone(), track.title.clone(), idx as i32);
+    if let Some(ref artist) = track.artist { row = row.with_artist(artist.clone()); }
+    if let Some(bpm) = track.bpm { row = row.with_bpm(bpm); }
+    if let Some(ref key) = track.key { row = row.with_key(key.clone()); }
+    row = row.with_duration(track.duration_seconds);
+    if let Some(lufs) = track.lufs { row = row.with_lufs(lufs); }
+
+    if !reason_tags.is_empty() {
+        let tags: Vec<TrackTag> = reason_tags.iter().map(|(label, color)| {
+            let mut tag = TrackTag::new(label);
+            if let Some(hex) = color {
+                if let Some(c) = parse_hex_color(hex) { tag = tag.with_color(c); }
+            }
+            tag
+        }).collect();
+        row = row.with_tags(tags);
+    }
+
+    if is_global { row = row.with_global_suggestion(true); }
+
+    let track_path_str = track.path.to_string_lossy().to_string();
+    row.track_path = Some(track_path_str.clone());
+    contexts.insert(track_path_str, SuggestionContext {
+        score: s.score,
+        reason_tags: s.reason_tags.clone(),
+        energy_direction,
+    });
+    paths.insert(node_id, track.path.clone());
+    row
 }
 
 /// Collect the current set of active seed paths (playing + volume > 0).
@@ -292,6 +311,10 @@ pub fn active_seed_paths(app: &MeshApp) -> Vec<String> {
 ///
 /// Collects all available database sources (local + mounted USBs) so the
 /// suggestion engine can search across all libraries simultaneously.
+///
+/// When a playlist is selected in the browser, results are split: up to 15 tracks
+/// from that playlist appear first (tagged with the playlist name), and up to 15
+/// global suggestions fill the remaining slots (shown with a subtle row tint).
 pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
     let seed_paths = active_seed_paths(app);
 
@@ -320,10 +343,72 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
     let key_model = app.config.display.key_scoring_model;
     let played = app.history.played_paths().clone();
 
+    // Snapshot current playlist context for the split logic
+    let playlist_paths = app.collection_browser.playlist_track_paths().map(|(p, _)| p);
+
     Task::perform(
-        async move { query_suggestions(&sources, seed_paths, energy_direction, key_model, 10_000, 30, &played) },
+        async move {
+            // Fetch more candidates than we need so both halves have enough after the split
+            // No pre-split truncation — carry all scored candidates into split_suggestions
+            // so each bucket independently picks its best 15 from the full pool.
+            // Playlist tracks get a lenient key threshold via preferred_paths.
+            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, 10_000, usize::MAX, &played, playlist_paths.as_ref())?;
+
+            // Attach per-track playlist memberships via a single reverse-lookup query per source
+            for src in &sources {
+                match src.db.get_all_playlist_memberships() {
+                    Ok(memberships) => {
+                        for s in &mut all {
+                            if let Some(id) = s.track.id {
+                                if s.track.path.starts_with(&src.collection_root) {
+                                    if let Some(names) = memberships.get(&id) {
+                                        s.playlists = names.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => log::warn!("Failed to load playlist memberships: {}", e),
+                }
+            }
+
+            let (playlist_suggestions, global_suggestions) =
+                split_suggestions(all, playlist_paths.as_ref());
+            Ok(SplitSuggestions { playlist_suggestions, global_suggestions })
+        },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
+}
+
+/// Partition a flat suggestion list into (playlist-local, global) buckets.
+///
+/// Tracks whose absolute path is in `playlist_paths` go into the first bucket
+/// (capped at 15); the rest fill the second bucket up to a combined total of 30.
+/// If no playlist filter is provided, all results are returned as global (no split).
+fn split_suggestions(
+    all: Vec<SuggestedTrack>,
+    playlist_paths: Option<&HashSet<String>>,
+) -> (Vec<SuggestedTrack>, Vec<SuggestedTrack>) {
+    const PLAYLIST_CAP: usize = 15;
+    const TOTAL: usize = 30;
+
+    let Some(paths) = playlist_paths else {
+        let mut global = all;
+        global.truncate(TOTAL);
+        return (vec![], global);
+    };
+
+    let (mut playlist, mut global): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .partition(|s| {
+            let p = s.track.path.to_string_lossy();
+            paths.contains(p.as_ref())
+        });
+
+    playlist.truncate(PLAYLIST_CAP);
+    let global_cap = TOTAL.saturating_sub(playlist.len());
+    global.truncate(global_cap);
+    (playlist, global)
 }
 
 /// Handle `ScheduleSuggestionRefresh`: start debounce timer if not already pending.

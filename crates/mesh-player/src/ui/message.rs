@@ -7,7 +7,7 @@ use mesh_widgets::MultibandEditorMessage;
 
 use crate::config::{AppFont, FontSize, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use crate::history::SuggestionContext;
-use crate::suggestions::SuggestedTrack;
+use crate::suggestions::SplitSuggestions;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
 use mesh_widgets::keyboard::KeyboardMessage;
@@ -141,7 +141,7 @@ pub enum Message {
     ScrollGlobalFx(i32),
 
     /// Smart suggestions query completed
-    SuggestionsReady(Arc<Result<Vec<SuggestedTrack>, String>>),
+    SuggestionsReady(Arc<Result<SplitSuggestions, String>>),
 
     /// A relevant seed condition changed (play/pause, volume threshold, track load).
     /// Starts a debounced timer — only one pending at a time.

@@ -448,6 +448,33 @@ impl PlaylistQuery {
         Ok(rows_to_tracks(&result))
     }
 
+    /// Get all playlist memberships as a map from track_id to playlist names.
+    ///
+    /// Intended for batch reverse-lookup: given a set of suggestion track IDs,
+    /// find which playlists they belong to in a single query.
+    pub fn get_all_memberships(db: &MeshDb) -> Result<HashMap<i64, Vec<String>>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, name] :=
+                *playlist_tracks{playlist_id, track_id},
+                *playlists{id: playlist_id, name}
+            :order track_id
+        "#, BTreeMap::new())?;
+
+        let mut memberships: HashMap<i64, Vec<String>> = HashMap::new();
+        for row in &result.rows {
+            let track_id = match row.get(0).and_then(|v| v.get_int()) {
+                Some(id) => id,
+                None => continue,
+            };
+            let name = match row.get(1).and_then(|v| v.get_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            memberships.entry(track_id).or_default().push(name);
+        }
+        Ok(memberships)
+    }
+
     /// Create a new playlist
     pub fn create(db: &MeshDb, name: &str, parent_id: Option<i64>) -> Result<i64, DbError> {
         // Generate a new ID based on current time

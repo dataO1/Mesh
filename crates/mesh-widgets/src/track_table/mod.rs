@@ -291,6 +291,8 @@ pub struct TrackRow<Id: Clone> {
     pub dimmed: bool,
     /// Absolute file path (cached for fast dimming lookups without DB queries)
     pub track_path: Option<String>,
+    /// Whether this is a global suggestion (not from the selected playlist) — triggers subtle row tint
+    pub is_global_suggestion: bool,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -309,6 +311,7 @@ impl<Id: Clone> TrackRow<Id> {
             cue_count: 0,
             dimmed: false,
             track_path: None,
+            is_global_suggestion: false,
         }
     }
 
@@ -357,6 +360,12 @@ impl<Id: Clone> TrackRow<Id> {
     /// Mark this track as dimmed (e.g. already played this session)
     pub fn with_dimmed(mut self, dimmed: bool) -> Self {
         self.dimmed = dimmed;
+        self
+    }
+
+    /// Mark this as a global suggestion row (shown with a subtle warm background tint)
+    pub fn with_global_suggestion(mut self, v: bool) -> Self {
+        self.is_global_suggestion = v;
         self
     }
 
@@ -1047,6 +1056,7 @@ where
 {
     let is_selected = state.is_selected(&track.id);
     let is_dimmed = track.dimmed;
+    let is_global_suggestion = track.is_global_suggestion;
     let selection_override = state.selection_color_override;
     let id = track.id.clone();
     let id_activate = track.id.clone();
@@ -1075,6 +1085,16 @@ where
             let palette = theme.extended_palette();
             let bg = if is_selected {
                 selection_override.unwrap_or(palette.primary.weak.color)
+            } else if is_global_suggestion {
+                // Global suggestions (not from the selected playlist) get a subtle warm tint
+                // derived from the theme's base background — theme-adaptive across light/dark.
+                match status {
+                    button::Status::Hovered => palette.background.weak.color,
+                    _ => {
+                        let base = palette.background.base.color;
+                        Color { r: base.r + 0.04, g: base.g + 0.02, b: base.b, a: 1.0 }
+                    }
+                }
             } else {
                 match status {
                     button::Status::Hovered => palette.background.weak.color,

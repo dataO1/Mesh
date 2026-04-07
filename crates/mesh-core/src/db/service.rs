@@ -32,7 +32,7 @@ use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, 
 use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
 use cozo::{DataValue, Vector};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 // ============================================================================
 // ML Scores - Lightweight Struct for Suggestion Scoring
@@ -846,6 +846,14 @@ impl DatabaseService {
     pub fn get_playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>, DbError> {
         let rows = PlaylistQuery::get_tracks(&self.db, playlist_id)?;
         Ok(rows.into_iter().map(Track::from_row_only).collect())
+    }
+
+    /// Get all playlist memberships as a map from track_id → list of playlist names.
+    ///
+    /// Single query covering all playlists; intended for batch reverse-lookup
+    /// when attaching playlist pills to suggestion results.
+    pub fn get_all_playlist_memberships(&self) -> Result<HashMap<i64, Vec<String>>, DbError> {
+        PlaylistQuery::get_all_memberships(&self.db)
     }
 
     /// Add a track to a playlist

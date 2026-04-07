@@ -566,6 +566,37 @@ impl CollectionBrowserState {
         None
     }
 
+    /// Return the absolute track paths and display name for the currently selected folder.
+    ///
+    /// Used by the suggestion engine to filter results into playlist-local vs global buckets.
+    /// Returns `None` when at a root node, when no folder is selected, or when the folder
+    /// has no tracks (e.g. an empty playlist or the "tracks"/"playlists" root pseudo-nodes).
+    pub fn playlist_track_paths(&self) -> Option<(HashSet<String>, String)> {
+        let folder = self.browser.current_folder.as_ref()?;
+
+        // Skip root-level pseudo-nodes that don't represent real playlists
+        if folder.0.is_empty() || folder.0 == "tracks" || folder.0 == "playlists" {
+            return None;
+        }
+
+        let name = folder.name().to_string();
+
+        let tracks = if folder.0.starts_with("usb:") {
+            self.get_usb_tracks_for_folder(folder)
+        } else if let Some(ref storage) = self.storage {
+            get_tracks_for_folder(storage.as_ref(), folder)
+        } else {
+            return None;
+        };
+
+        let paths: HashSet<String> = tracks
+            .into_iter()
+            .filter_map(|r| r.track_path)
+            .collect();
+
+        if paths.is_empty() { None } else { Some((paths, name)) }
+    }
+
     /// Load tracks for a folder (handles both local and USB)
     fn load_tracks_for_folder(&mut self, folder_id: &NodeId) {
         log::debug!("load_tracks_for_folder: {:?}", folder_id);
