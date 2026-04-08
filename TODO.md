@@ -153,7 +153,7 @@ for v3 and beyond.
   decks use specific DJ's settings?
 
 # Auto Headphones Cue system
-- [ ] Instead of the user needing to automatically cue tracks to headphones out
+- [x] Instead of the user needing to automatically cue tracks to headphones out
   (theres a button per channel currently), we can automate this. usually the use
   case for this button is to pre listen to a newly loaded track, to beat match
   and check if this fits and we are at the correct beat grid offset etc, but
@@ -204,8 +204,3 @@ for v3 and beyond.
 - we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-- [ ] mesh cue
-  - [ ] actually clamp to 2500 bpm instead
-  - [ ] the tapping feature should round down or up to the next fitting
-    integer and set the beat grid zero to the first tap ( so the user can play
-    the track and start tapping on the 1 to automatically set bpm and beat grid ).
