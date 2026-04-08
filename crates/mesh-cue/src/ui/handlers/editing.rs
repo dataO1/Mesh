@@ -19,7 +19,7 @@ impl MeshCueApp {
     pub fn handle_set_bpm(&mut self, bpm: f64) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {
             let old_bpm = state.bpm;
-            state.bpm = bpm;
+            state.bpm = bpm.clamp(1.0, 250.0);
 
             // Regenerate beat grid anchored on the beat nearest to playhead
             if !state.beat_grid.is_empty() && state.duration_samples > 0 {
@@ -55,10 +55,53 @@ impl MeshCueApp {
     /// Handle BPM adjustment (+/- delta)
     pub fn handle_adjust_bpm(&mut self, delta: f64) -> Task<Message> {
         if let Some(ref state) = self.collection.loaded_track {
-            let new_bpm = (state.bpm + delta).max(1.0); // Don't go below 1 BPM
+            let new_bpm = (state.bpm + delta).clamp(1.0, 250.0);
             return self.handle_set_bpm(new_bpm);
         }
         Task::none()
+    }
+
+    /// Handle TapTempo — record a tap and compute BPM from average interval.
+    ///
+    /// Resets history if the gap since the last tap exceeds 3 seconds (< 20 BPM).
+    /// Requires ≥ 2 taps; uses up to 8 recent taps for averaging.
+    pub fn handle_tap_tempo(&mut self) -> Task<Message> {
+        if self.collection.loaded_track.is_none() {
+            return Task::none();
+        }
+
+        let now = std::time::Instant::now();
+
+        // Reset if idle too long (>3 seconds between taps)
+        if let Some(&last) = self.tap_tempo_times.last() {
+            if now.duration_since(last).as_secs_f64() > 3.0 {
+                self.tap_tempo_times.clear();
+            }
+        }
+
+        self.tap_tempo_times.push(now);
+
+        // Keep only the last 8 taps for a rolling average
+        if self.tap_tempo_times.len() > 8 {
+            self.tap_tempo_times.drain(..self.tap_tempo_times.len() - 8);
+        }
+
+        if self.tap_tempo_times.len() < 2 {
+            return Task::none();
+        }
+
+        let first = *self.tap_tempo_times.first().unwrap();
+        let last = *self.tap_tempo_times.last().unwrap();
+        let total_secs = last.duration_since(first).as_secs_f64();
+        let num_intervals = (self.tap_tempo_times.len() - 1) as f64;
+        let avg_interval = total_secs / num_intervals;
+
+        if avg_interval <= 0.0 {
+            return Task::none();
+        }
+
+        let bpm = (60.0 / avg_interval).clamp(20.0, 250.0);
+        self.handle_set_bpm(bpm)
     }
 
     /// Handle SetKey message

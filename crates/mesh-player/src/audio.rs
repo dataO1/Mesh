@@ -80,7 +80,6 @@ pub fn start_audio_system(
 /// Start the audio system with specific device configuration
 ///
 /// Allows selecting specific devices for master and cue outputs.
-#[allow(dead_code)]
 pub fn start_audio_system_with_devices(
     db_service: Arc<DatabaseService>,
     master_device: Option<DeviceId>,

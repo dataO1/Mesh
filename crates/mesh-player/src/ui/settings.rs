@@ -231,6 +231,12 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
             .section("Playback")
             .hint("Automatically align beats when starting playback or hot cues"),
 
+        SettingsItem::new("Auto Headphones Cue", SettingsBehavior::Toggle {
+            value: state.draft_auto_cue,
+            on_toggle: |v| SettingsMessage::UpdateAutoCue(v),
+        })
+            .hint("Route low-volume decks to headphones automatically (requires separate cue output)"),
+
         SettingsItem::new("", SettingsBehavior::ButtonGroup {
             options: LOOP_LENGTH_OPTIONS.iter().map(|&b| format_beats(b)).collect(),
             selected: state.draft_loop_length_index,
@@ -411,6 +417,8 @@ pub struct SettingsState {
     pub available_theme_names: Vec<String>,
     /// Draft phase sync enabled
     pub draft_phase_sync: bool,
+    /// Draft auto-cue enabled (routes low-volume decks to headphone output)
+    pub draft_auto_cue: bool,
     /// Draft slicer buffer bars (1, 4, 8, or 16)
     pub draft_slicer_buffer_bars: u32,
     /// Draft auto-gain enabled
@@ -472,6 +480,7 @@ impl SettingsState {
             draft_theme: config.display.theme.clone(),
             available_theme_names: Vec::new(),
             draft_phase_sync: config.audio.phase_sync,
+            draft_auto_cue: config.audio.auto_cue,
             draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
@@ -505,6 +514,7 @@ impl SettingsState {
             grid_bars: self.draft_grid_bars,
             theme: self.draft_theme.clone(),
             phase_sync: self.draft_phase_sync,
+            auto_cue: self.draft_auto_cue,
             slicer_buffer_bars: self.draft_slicer_buffer_bars,
             auto_gain_enabled: self.draft_auto_gain_enabled,
             target_lufs_index: self.draft_target_lufs_index,
@@ -529,6 +539,7 @@ impl SettingsState {
             || self.draft_grid_bars != snap.grid_bars
             || self.draft_theme != snap.theme
             || self.draft_phase_sync != snap.phase_sync
+            || self.draft_auto_cue != snap.auto_cue
             || self.draft_slicer_buffer_bars != snap.slicer_buffer_bars
             || self.draft_auto_gain_enabled != snap.auto_gain_enabled
             || self.draft_target_lufs_index != snap.target_lufs_index
@@ -561,6 +572,7 @@ struct SettingsSnapshot {
     grid_bars: u32,
     theme: String,
     phase_sync: bool,
+    auto_cue: bool,
     slicer_buffer_bars: u32,
     auto_gain_enabled: bool,
     target_lufs_index: usize,

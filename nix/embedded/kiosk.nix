@@ -116,6 +116,24 @@ in
     # Without these, RLIMIT_RTPRIO=0 and sched_setscheduler(SCHED_FIFO) fails,
     # making CPU pinning counterproductive (pinned threads can't preempt).
     systemd.services."cage-tty1" = {
+      # Do NOT let nixos-rebuild switch restart cage automatically.
+      #
+      # switch-to-configuration detects that cage-tty1's ExecStart changed
+      # (because ${meshPlayer} is a new store path) and issues a restart
+      # during the activation phase — while other services are also being
+      # reconfigured. That 2-second RestartSec window during activation is
+      # where autovt@tty1 races in and claims tty1 first.
+      #
+      # mesh-update.service handles the restart explicitly via ExecStartPost,
+      # after nixos-rebuild has fully settled. That restart is clean.
+      restartIfChanged = false;
+
+      # Belt-and-suspenders: conflict with both the explicit getty unit AND
+      # the autovt template (logind's on-demand VT activation). The NixOS
+      # cage module already adds Conflicts=getty@tty1, but autovt@tty1 is
+      # a separate unit that may not be covered by that declaration.
+      conflicts = [ "getty@tty1.service" "autovt@tty1.service" ];
+
       serviceConfig = {
         Restart = "always";
         RestartSec = 2;
@@ -188,6 +206,13 @@ in
             --refresh
           rm -f /var/lib/mesh/update-target
         '';
+        # Restart cage after the update. cage-tty1 has restartIfChanged=false so
+        # nixos-rebuild's activation script won't restart it — we do it here
+        # instead, after activation has fully settled and no other services are
+        # being reconfigured. This eliminates the autovt@tty1 race window.
+        # The - prefix means a non-zero exit code is ignored (cage may already
+        # be stopped if the update itself crashed mesh-player).
+        ExecStartPost = "-${pkgs.systemd}/bin/systemctl restart cage-tty1.service";
       };
     };
 

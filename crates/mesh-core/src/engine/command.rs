@@ -527,6 +527,12 @@ pub enum EngineCommand {
     SetCueMix { mix: f32 },
     /// Set cue/headphone output volume (0.0 - 1.0)
     SetCueVolume { volume: f32 },
+    /// Enable or disable auto-cue (routes low-volume decks to headphone output)
+    ///
+    /// When enabled, decks with volume ≤ 30% are fully sent to cue bus;
+    /// between 30–50% volume the cue send fades out linearly to zero.
+    /// Manual CUE buttons always force cue_weight = 1.0 (additive/independent).
+    SetAutoCue { enabled: bool },
 
     // ─────────────────────────────────────────────────────────────
     // Loudness Compensation

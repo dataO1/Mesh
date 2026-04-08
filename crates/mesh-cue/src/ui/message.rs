@@ -39,6 +39,8 @@ pub enum Message {
     IncreaseBpm,
     /// Decrease BPM by 1
     DecreaseBpm,
+    /// Tap tempo — records a tap and recomputes BPM from average tap interval
+    TapTempo,
     SetKey(String),
     AddCuePoint(u64),
     DeleteCuePoint(usize),

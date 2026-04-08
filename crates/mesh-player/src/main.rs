@@ -29,7 +29,7 @@ mod ui;
 
 use iced::{Size, Task};
 
-use audio::start_audio_system;
+use audio::{start_audio_system, start_audio_system_with_devices};
 use mesh_core::db::DatabaseService;
 use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage};
 
@@ -240,11 +240,34 @@ fn main() -> iced::Result {
         .expect("Failed to create database service - this is required for mesh-player");
     log::info!("Database service initialized at {:?}", config.collection_path);
 
+    // Resolve saved audio device indices from config to DeviceIds.
+    // The config stores a device list index (usize); we enumerate devices at startup
+    // and look up the saved index so the configured device is used from the first frame.
+    let startup_audio_devices = mesh_core::audio::get_available_output_devices();
+    let master_device_id = config.audio.outputs.master_device
+        .and_then(|idx| startup_audio_devices.get(idx))
+        .map(|d| d.id.clone());
+    let cue_device_id = config.audio.outputs.cue_device
+        .and_then(|idx| startup_audio_devices.get(idx))
+        .map(|d| d.id.clone());
+    if master_device_id.is_some() || cue_device_id.is_some() {
+        log::info!(
+            "Using configured audio devices: master={:?}, cue={:?}",
+            master_device_id.as_ref().map(|d| &d.name),
+            cue_device_id.as_ref().map(|d| &d.name),
+        );
+    }
+
     // Try to start audio system
     // Returns AudioHandle, CommandSender (lock-free queue), DeckAtomics, SlicerAtomics,
     // LinkedStemAtomics, LinkedStemResultReceiver, and sample rate
+    let audio_start_result = if master_device_id.is_some() || cue_device_id.is_some() {
+        start_audio_system_with_devices(db_service.clone(), master_device_id, cue_device_id)
+    } else {
+        start_audio_system(CLIENT_NAME, db_service.clone())
+    };
     let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name, output_latency_samples, internal_latency_samples, direct_command_producer) =
-        match start_audio_system(CLIENT_NAME, db_service.clone()) {
+        match audio_start_result {
             Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate, client_name, output_lat, internal_lat, direct_producer)) => {
                 println!("Audio system started successfully ({} Hz, client: {})", sample_rate, client_name);
                 (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate, client_name, Some(output_lat), Some(internal_lat), Some(direct_producer))

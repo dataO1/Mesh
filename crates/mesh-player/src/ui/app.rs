@@ -257,6 +257,11 @@ impl MeshApp {
             1920, // Default screen width, updated when GotMonitorSize fires
         );
 
+        // Apply auto-cue setting — only active when master and cue outputs differ
+        let effective_auto_cue = config.audio.auto_cue
+            && config.audio.outputs.master_device != config.audio.outputs.cue_device;
+        domain.set_auto_cue(effective_auto_cue);
+
         // mesh-player always needs USB hotplug detection (performance mode)
         domain.set_usb_monitor_paused(false);
 
@@ -1510,7 +1515,7 @@ impl MeshApp {
             .map(|_| Message::RefreshResourceStats);
 
         // Journal polling subscription for OTA update progress
-        let journal_poll_sub = if self.settings.is_open && self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
+        let journal_poll_sub = if self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
             time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::SystemUpdate(super::system_update::SystemUpdateMessage::PollJournal))
         } else {

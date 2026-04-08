@@ -181,6 +181,10 @@ pub struct AudioConfig {
     /// When enabled, pressing play or hot cues automatically aligns
     /// to the master deck's beat phase
     pub phase_sync: bool,
+    /// Auto-cue: automatically route low-volume decks to headphone/cue output.
+    /// Decks at ≤30% volume are fully sent to cue bus; 30–50% fades out linearly.
+    /// Only effective when master and cue outputs are different devices.
+    pub auto_cue: bool,
     /// Loudness normalization settings
     pub loudness: LoudnessConfig,
     /// Audio output device configuration
@@ -192,6 +196,7 @@ impl Default for AudioConfig {
         Self {
             global_bpm: 128.0, // Standard house/techno BPM
             phase_sync: true,  // Automatic beat sync enabled by default
+            auto_cue: true,    // Auto-cue enabled by default
             loudness: LoudnessConfig::default(),
             outputs: AudioOutputConfig::default(),
         }

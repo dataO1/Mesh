@@ -1333,6 +1333,9 @@ impl AudioEngine {
                 EngineCommand::SetCueVolume { volume } => {
                     self.mixer.set_cue_volume(volume);
                 }
+                EngineCommand::SetAutoCue { enabled } => {
+                    self.mixer.set_auto_cue(enabled);
+                }
 
                 // Loudness Compensation
                 EngineCommand::SetLufsGain { deck, gain, host_lufs } => {

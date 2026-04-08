@@ -26,6 +26,42 @@ All notable changes to Mesh are documented in this file.
   candidate pool is passed to the split rather than a pre-truncated shortlist,
   giving each half the best possible selection to draw from.
 
+- **Auto Headphones Cue** — Decks with their volume fader at or below 30% are
+  automatically routed to the headphone/cue output for pre-listening. Between
+  30% and 50% the send fades out linearly so there is a smooth handoff rather
+  than a hard cut. The manual CUE button per deck still forces a full cue send
+  and remains completely independent. The feature is configurable under
+  Settings → Playback ("Auto Headphones Cue") and is on by default. It is
+  automatically disabled when the master and cue outputs are the same device
+  (to prevent double-monitoring).
+
+### Fixed
+
+- **BPM tap tempo** (mesh-cue editor) — A new TAP button in the BPM row of
+  the track editor continuously updates BPM from the average interval of the
+  last eight taps. Tapping stops if there is more than a 3-second gap, so
+  restarting at a different tempo just picks up immediately on the next tap.
+  BPM is clamped to the valid range (20–250 BPM).
+
+- **BPM range clamping** (mesh-cue editor) — Manual BPM edits via the text
+  field and +/− buttons are now limited to a maximum of 250 BPM.
+
+- **OTA update status display** — The in-app update status log now continues
+  to populate even when the Settings panel is closed, so the progress feed is
+  never silently dropped mid-install.
+
+- **Audio device not applied at startup** — The selected master and cue output
+  devices are now applied when mesh-player launches. Previously, both outputs
+  used the system default until the user manually toggled the device selection
+  in Settings.
+
+- **NixOS cage restart racing to login TTY** — The cage-tty1 systemd unit
+  now sets `restartIfChanged = false`, preventing nixos-rebuild's activation
+  phase from issuing an untimely restart. After nixos-rebuild fully settles,
+  mesh-update.service restarts cage cleanly via `ExecStartPost`. An explicit
+  `Conflicts=autovt@tty1.service` is added as belt-and-suspenders against
+  logind's on-demand VT activation.
+
 ---
 
 ## [0.9.11]

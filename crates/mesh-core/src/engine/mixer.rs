@@ -409,6 +409,23 @@ impl ChannelStrip {
     }
 }
 
+/// Auto-cue weight: how strongly a deck is routed to the cue bus based on volume.
+///
+/// Two-stage linear:
+/// - volume ≤ 0.30 → weight 1.0 (fully in headphones)
+/// - 0.30 < volume < 0.50 → linear fade from 1.0 to 0.0
+/// - volume ≥ 0.50 → weight 0.0 (not in headphones)
+#[inline]
+fn auto_cue_weight(volume: f32) -> f32 {
+    if volume <= 0.30 {
+        1.0
+    } else if volume < 0.50 {
+        1.0 - (volume - 0.30) / 0.20
+    } else {
+        0.0
+    }
+}
+
 /// Main mixer combining all deck outputs
 pub struct Mixer {
     /// Per-deck channel strips
@@ -419,6 +436,8 @@ pub struct Mixer {
     cue_mix: f32,
     /// Cue/headphone output volume (0.0 to 1.0)
     cue_volume: f32,
+    /// Auto-cue: route low-volume decks to headphone output automatically
+    auto_cue: bool,
     /// Master bus lookahead limiter (transparent, before clipper)
     limiter: MasterLimiter,
     /// Master bus safety clipper (ClipOnly2-style, after limiter)
@@ -433,9 +452,15 @@ impl Mixer {
             master_volume: 1.0,
             cue_mix: 0.0,
             cue_volume: 0.8,
+            auto_cue: true,
             limiter: MasterLimiter::new(),
             clipper: MasterClipper::new(),
         }
+    }
+
+    /// Enable or disable auto-cue routing
+    pub fn set_auto_cue(&mut self, enabled: bool) {
+        self.auto_cue = enabled;
     }
 
     /// Get a reference to a channel strip
@@ -523,9 +548,17 @@ impl Mixer {
                 let master_sample = sample * channel.volume;
                 master_out.as_mut_slice()[i] += master_sample;
 
-                // Cue bus: full volume (bypass fader) if cue enabled
-                if channel.cue_enabled {
-                    cue_out.as_mut_slice()[i] += sample;
+                // Cue bus: weighted send based on auto-cue + manual CUE button.
+                // Auto-cue weight: 1.0 at volume ≤ 30%, linear fade 30%→50%, 0.0 above 50%.
+                // Manual CUE button forces weight to 1.0 (additive/independent).
+                let auto_weight = if self.auto_cue {
+                    auto_cue_weight(channel.volume)
+                } else {
+                    0.0
+                };
+                let cue_weight = f32::max(auto_weight, channel.cue_enabled as u8 as f32);
+                if cue_weight > 0.0 {
+                    cue_out.as_mut_slice()[i] += sample * cue_weight;
                 }
             }
         }

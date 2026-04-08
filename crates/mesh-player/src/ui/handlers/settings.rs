@@ -85,6 +85,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_phase_sync = enabled;
             Task::none()
         }
+        UpdateAutoCue(enabled) => {
+            app.settings.draft_auto_cue = enabled;
+            Task::none()
+        }
         UpdateSlicerBufferBars(bars) => {
             app.settings.draft_slicer_buffer_bars = bars;
             Task::none()
@@ -275,6 +279,8 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
             new_config.audio.phase_sync = app.settings.draft_phase_sync;
+            // Save auto-cue intent (effective value accounts for same-device constraint)
+            new_config.audio.auto_cue = app.settings.draft_auto_cue;
             // Save only buffer_bars (presets are read-only from shared file)
             new_config.slicer.buffer_bars = app.settings.draft_slicer_buffer_bars;
             // Save loudness settings
@@ -337,6 +343,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
 
             // Send settings to audio engine via domain
             app.domain.set_phase_sync(app.settings.draft_phase_sync);
+            // Auto-cue is only effective when master and cue outputs are different devices
+            let effective_auto_cue = app.settings.draft_auto_cue
+                && app.settings.draft_master_device != app.settings.draft_cue_device;
+            app.domain.set_auto_cue(effective_auto_cue);
             // Send loudness config to engine (triggers recalculation for all loaded decks)
             app.domain.set_loudness_config(app.config.audio.loudness.clone());
             // Send slicer buffer bars to audio engine for all decks and stems

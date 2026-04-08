@@ -76,6 +76,9 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
     let bpm_plus = button(text("+").size(sz(12.0)))
         .padding([4, 8])
         .on_press(Message::IncreaseBpm);
+    let bpm_tap = button(text("TAP").size(sz(12.0)))
+        .padding([4, 8])
+        .on_press(Message::TapTempo);
 
     let key_label = text("Key:");
     let key_input = text_input("Key", &state.key)
@@ -111,6 +114,7 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         bpm_minus,
         bpm_input,
         bpm_plus,
+        bpm_tap,
         key_label,
         key_input,
         grid_label,

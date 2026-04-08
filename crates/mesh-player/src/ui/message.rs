@@ -44,6 +44,8 @@ pub enum SettingsMessage {
     UpdateThemeIndex(usize),
     /// Update draft phase sync setting
     UpdatePhaseSync(bool),
+    /// Update draft auto-cue setting
+    UpdateAutoCue(bool),
     /// Update draft slicer buffer bars
     UpdateSlicerBufferBars(u32),
     /// Update draft auto-gain enabled

@@ -844,6 +844,11 @@ impl MeshDomain {
         self.send_command(EngineCommand::SetCueVolume { volume });
     }
 
+    /// Enable or disable auto-cue (routes low-volume decks to headphone output)
+    pub fn set_auto_cue(&mut self, enabled: bool) {
+        self.send_command(EngineCommand::SetAutoCue { enabled });
+    }
+
     // =========================================================================
     // Global Controls
     // =========================================================================

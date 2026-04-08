@@ -97,6 +97,8 @@ pub struct MeshCueApp {
     pub(crate) iced_theme: iced::Theme,
     /// Background track loader for progressive loading
     pub(crate) track_loader: crate::loader::CueTrackLoader,
+    /// Timestamps of recent BPM taps (for tap tempo — cleared on idle)
+    pub(crate) tap_tempo_times: Vec<std::time::Instant>,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -224,6 +226,7 @@ impl MeshCueApp {
             themes,
             iced_theme,
             track_loader: crate::loader::CueTrackLoader::spawn(),
+            tap_tempo_times: Vec::new(),
         };
 
         // Initial collection scan and playlist refresh
@@ -325,6 +328,7 @@ impl MeshCueApp {
             Message::SetBpm(bpm) => return self.handle_set_bpm(bpm),
             Message::IncreaseBpm => return self.handle_adjust_bpm(1.0),
             Message::DecreaseBpm => return self.handle_adjust_bpm(-1.0),
+            Message::TapTempo => return self.handle_tap_tempo(),
             Message::SetKey(key) => return self.handle_set_key(key),
             Message::AddCuePoint(position) => return self.handle_add_cue_point(position),
             Message::DeleteCuePoint(index) => return self.handle_delete_cue_point(index),
