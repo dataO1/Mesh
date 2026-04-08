@@ -19,7 +19,7 @@ impl MeshCueApp {
     pub fn handle_set_bpm(&mut self, bpm: f64) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {
             let old_bpm = state.bpm;
-            state.bpm = bpm.clamp(1.0, 250.0);
+            state.bpm = bpm.clamp(1.0, 2500.0);
 
             // Regenerate beat grid anchored on the beat nearest to playhead
             if !state.beat_grid.is_empty() && state.duration_samples > 0 {
@@ -55,7 +55,7 @@ impl MeshCueApp {
     /// Handle BPM adjustment (+/- delta)
     pub fn handle_adjust_bpm(&mut self, delta: f64) -> Task<Message> {
         if let Some(ref state) = self.collection.loaded_track {
-            let new_bpm = (state.bpm + delta).clamp(1.0, 250.0);
+            let new_bpm = (state.bpm + delta).clamp(1.0, 2500.0);
             return self.handle_set_bpm(new_bpm);
         }
         Task::none()
@@ -63,7 +63,10 @@ impl MeshCueApp {
 
     /// Handle TapTempo — record a tap and compute BPM from average interval.
     ///
-    /// Resets history if the gap since the last tap exceeds 3 seconds (< 20 BPM).
+    /// BPM is rounded to the nearest integer. After each tap the beat grid
+    /// downbeat is aligned to the current playhead (= tap position) via
+    /// `handle_align_beat_grid_to_playhead`, so tapping on the "1" automatically
+    /// sets both BPM and phase. Resets history on a gap > 3 seconds.
     /// Requires ≥ 2 taps; uses up to 8 recent taps for averaging.
     pub fn handle_tap_tempo(&mut self) -> Task<Message> {
         if self.collection.loaded_track.is_none() {
@@ -72,7 +75,7 @@ impl MeshCueApp {
 
         let now = std::time::Instant::now();
 
-        // Reset if idle too long (>3 seconds between taps)
+        // Reset if idle > 3 seconds between taps
         if let Some(&last) = self.tap_tempo_times.last() {
             if now.duration_since(last).as_secs_f64() > 3.0 {
                 self.tap_tempo_times.clear();
@@ -93,15 +96,23 @@ impl MeshCueApp {
         let first = *self.tap_tempo_times.first().unwrap();
         let last = *self.tap_tempo_times.last().unwrap();
         let total_secs = last.duration_since(first).as_secs_f64();
-        let num_intervals = (self.tap_tempo_times.len() - 1) as f64;
-        let avg_interval = total_secs / num_intervals;
+        let avg_interval = total_secs / (self.tap_tempo_times.len() - 1) as f64;
 
         if avg_interval <= 0.0 {
             return Task::none();
         }
 
-        let bpm = (60.0 / avg_interval).clamp(20.0, 250.0);
-        self.handle_set_bpm(bpm)
+        // Round to nearest integer BPM
+        let bpm = (60.0 / avg_interval).round().clamp(20.0, 2500.0);
+
+        // Write BPM to state so handle_align_beat_grid_to_playhead picks it up
+        if let Some(ref mut state) = self.collection.loaded_track {
+            state.bpm = bpm;
+            state.modified = true;
+        }
+
+        // Align beat grid downbeat to current tap position (reuses existing logic)
+        self.handle_align_beat_grid_to_playhead()
     }
 
     /// Handle SetKey message
