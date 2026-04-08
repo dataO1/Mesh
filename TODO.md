@@ -160,9 +160,9 @@ for v3 and beyond.
   since we have auto sync, a lot of this is useless, and for mesh its only
   important to prelisten to the newly cued track to verify its on the same
   beatgrid snap and that it musically fits. this means that all tracks, that are
-  loaded but currently at volume 0 (or a threshold very low, like 0.3 of 1)
+  loaded but currently at volume 0 (or a threshold very low, like less than 30%)
   should be send to cue headphones out. this should not just binary, but
-  gradually mixed in so at 0.5 they might be audible still a bit, at 0.3 fully (at 0 still fully )(exponential curve or just two stages linear, both is fine). users can still
+  gradually mixed in so at 50% they might be audible still a bit, at 30% fully (at 0 still fully )(exponential curve or just two stages linear, both is fine). users can still
   use the cue buttons (make this configurable in the player ui, default is
   auto-cue). Autocue should ONLY be active, when the master and cue outputs are
   different outputs, otherwise there is problems with the output! plan this thorougly, break it into subtasks, at the end document
@@ -204,4 +204,8 @@ for v3 and beyond.
 - we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-
+- [ ] mesh cue
+  - [ ] actually clamp to 2500 bpm instead
+  - [ ] the tapping feature should round down or up to the next fitting
+    integer and set the beat grid zero to the first tap ( so the user can play
+    the track and start tapping on the 1 to automatically set bpm and beat grid ).
