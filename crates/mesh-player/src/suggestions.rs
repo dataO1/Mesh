@@ -849,18 +849,23 @@ pub fn query_suggestions(
     // All non-HNSW weights sum to exactly 0.58 at every bias level (= 1.0 − 0.42),
     // so the total formula always sums to 1.00.
     //
-    // Center  (bias=0): 0.42 hnsw-sim + 0.25 key + 0.15 key_dir + 0.15 bpm + 0.03 prod = 1.00
-    // Extreme (|bias|=1): 0.42 hnsw-div + 0.10 key + 0.16 key_dir + 0.08 bpm + 0.01 prod
+    // Center  (bias=0): 0.42 hnsw-sim + 0.30 key + 0.12 key_dir + 0.13 bpm + 0.03 prod = 1.00
+    // Extreme (|bias|=1): 0.42 hnsw-div + 0.30 key + 0.05 key_dir + 0.00 bpm + 0.00 prod
     //                     + 0.05 dance + 0.02 approach + 0.01 contrast + 0.15 aggr = 1.00
+    //
+    // Key harmony (w_key) is intentionally kept CONSTANT at 0.30 across all bias levels.
+    // Harmonic compatibility is a hard constraint on mix quality — an energetic transition
+    // that clashes harmonically sounds wrong regardless of intent. BPM and key_dir instead
+    // shoulder the budget reduction as energy terms (aggression, dance) grow at extremes.
     let bias_abs = energy_bias.abs();
-    let w_key        = 0.25 - 0.15 * bias_abs;  // 0.25 → 0.10
-    let w_key_dir    = 0.15 + 0.01 * bias_abs;  // 0.15 → 0.16 (stable)
-    let w_bpm        = 0.15 - 0.07 * bias_abs;  // 0.15 → 0.08
-    let w_production = 0.03 - 0.02 * bias_abs;  // 0.03 → 0.01
-    let w_dance      = 0.05 * bias_abs;          // 0.00 → 0.05
-    let w_approach   = 0.02 * bias_abs;          // 0.00 → 0.02
-    let w_contrast   = 0.01 * bias_abs;          // 0.00 → 0.01
-    let w_aggression = 0.15 * bias_abs;          // 0.00 → 0.15
+    let w_key        = 0.30;                         // constant — harmonic quality always matters
+    let w_key_dir    = 0.12 - 0.07 * bias_abs;       // 0.12 → 0.05 (frees budget for energy terms)
+    let w_bpm        = 0.13 - 0.13 * bias_abs;       // 0.13 → 0.00 (energy direction overrides tempo)
+    let w_production = 0.03 - 0.03 * bias_abs;       // 0.03 → 0.00
+    let w_dance      = 0.05 * bias_abs;              // 0.00 → 0.05
+    let w_approach   = 0.02 * bias_abs;              // 0.00 → 0.02
+    let w_contrast   = 0.01 * bias_abs;              // 0.00 → 0.01
+    let w_aggression = 0.15 * bias_abs;              // 0.00 → 0.15
 
     // Pre-compute max HNSW distance across the candidate pool.
     // Used to normalise raw distances to [0,1] so the diversity/similarity

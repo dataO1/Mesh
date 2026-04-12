@@ -8,6 +8,15 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Smart suggestions — static key harmony weight** — The harmonic
+  compatibility weight (`w_key`) is now constant at 30% across all intent fader
+  positions (previously it dropped from 25% to 10% at extremes). Key harmony is
+  treated as a hard quality constraint: an energetic transition that clashes
+  harmonically sounds wrong regardless of intent. BPM and key-direction weights
+  instead shoulder the budget reduction as energy-related terms (aggression,
+  danceability) grow at extremes. At extreme bias, BPM weight falls to zero and
+  key-direction drops to 5%; at centre, BPM carries 13% and key-direction 12%.
+
 - **Smart suggestions — spectral diversity at extreme intent** — The HNSW
   similarity component now flips direction as the intent fader moves toward
   extremes. At the centre position it rewards spectral similarity (find tracks
