@@ -8,6 +8,26 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Smart suggestions — spectral diversity at extreme intent** — The HNSW
+  similarity component now flips direction as the intent fader moves toward
+  extremes. At the centre position it rewards spectral similarity (find tracks
+  that sound like the seed); at extreme positions it rewards spectral diversity
+  (find tracks that complement rather than copy the mix). At the halfway point
+  the component is flat for all candidates so energy signals drive the ranking
+  uncontested. Distances are normalised within the candidate pool before
+  blending so the effect is consistent regardless of collection size. The
+  reason-tag label updates to reflect the active mode: "Similar" at centre,
+  "Spectral" in the transition zone, "Variety" at extremes.
+
+- **Smart suggestions — fixed harmonic filter** — The adaptive harmonic filter
+  threshold (which relaxed from 0.50 to 0.10 at extreme intent) has been
+  replaced with a fixed 0.50 threshold. The relaxation was redundant: the
+  energy-direction blend inside `key_transition_score` already makes the filter
+  energy-aware at extremes — energy-appropriate transitions (SemitoneUp when
+  raising) naturally score above 0.50 while opposing ones (EnergyCool when
+  raising) fall below. The old relaxation was flooding the pool with
+  harmonically bad candidates and contributing to the uniformity problem.
+
 - **Stem mute/unmute fades** — Toggling a stem mute no longer cuts or restores
   audio instantly. A 50 ms linear fade is applied entirely inside the engine so
   the external API is unchanged. Muting fades the stem out over 2 400 samples

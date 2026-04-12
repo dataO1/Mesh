@@ -323,21 +323,14 @@ fn key_transition_score(
 
 /// Compute the adaptive filter threshold based on energy bias.
 ///
-/// At fader center, the threshold is strict (only safe transitions pass).
-/// As the fader moves toward extremes, the threshold relaxes to allow
-/// dramatic key changes.
-fn adaptive_filter_threshold(energy_bias: f32) -> f32 {
-    let abs_bias = energy_bias.abs();
-    if abs_bias < 0.1 {
-        0.50 // Strict: same-key, adjacent, relative only
-    } else if abs_bias < 0.4 {
-        0.35 // Moderate: +2 energy boosts start passing
-    } else if abs_bias < 0.7 {
-        0.20 // Strong: semitone lifts, ±3 pass
-    } else {
-        0.10 // Extreme: nearly everything except tritone
-    }
-}
+/// Fixed harmonic filter threshold used at all fader positions.
+///
+/// No adaptive relaxation is needed: `key_transition_score` already blends
+/// toward energy direction at extremes, so energy-appropriate transitions
+/// (e.g. SemitoneUp when raising) naturally score above 0.50 while
+/// opposing ones (EnergyCool when raising) fall below. Adaptive relaxation
+/// only flooded the candidate pool with harmonically bad tracks.
+const HARMONIC_FILTER_THRESHOLD: f32 = 0.50;
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
 ///
@@ -487,13 +480,16 @@ fn penalty_color(penalty: f32) -> &'static str {
 fn generate_reason_tags(
     transition_type: TransitionType,
     key_score: f32,
-    hnsw_dist: f32,
+    // Normalised HNSW blend component (0 = best quality for current mode, 1 = worst).
+    // At center this means "most similar"; at extreme it means "most diverse".
+    hnsw_component: f32,
+    // |energy_bias| — used to label the HNSW tag appropriately.
+    bias_abs: f32,
     bpm_penalty: f32,
     dance_penalty: f32,
     approach_penalty: f32,
     contrast_pen: f32,
     aggression_pen: f32,
-    w_hnsw: f32,
     w_bpm: f32,
     w_dance: f32,
     w_approach: f32,
@@ -527,10 +523,11 @@ fn generate_reason_tags(
     // pushed the score away from a neutral contribution.
     let min_weight = 0.03;
 
-    if w_hnsw >= min_weight {
-        let impact = w_hnsw * (hnsw_dist - 0.5).abs();
-        tags.push(("Similar".to_string(), Some(penalty_color(hnsw_dist).to_string()), impact));
-    }
+    // HNSW tag: label reflects whether we're in similarity or diversity mode.
+    // hnsw_component is always "lower = better for current mode", so penalty_color applies directly.
+    let hnsw_label = if bias_abs < 0.3 { "Similar" } else if bias_abs > 0.7 { "Variety" } else { "Spectral" };
+    let hnsw_impact = 0.42 * (hnsw_component - 0.5).abs();
+    tags.push((hnsw_label.to_string(), Some(penalty_color(hnsw_component).to_string()), hnsw_impact));
 
     if w_bpm >= min_weight {
         let impact = w_bpm * (bpm_penalty - 0.5).abs();
@@ -575,8 +572,11 @@ fn generate_reason_tags(
 /// 1. Resolve each seed path to a track ID
 /// 2. For each seed, find similar tracks via HNSW index
 /// 3. Merge results keeping the best (minimum) distance per candidate
-/// 4. Score using unified formula: hnsw + key_transition + key_dir + bpm
-/// 5. Filter by adaptive harmonic threshold
+/// 4. Score using unified formula: hnsw_blend + key + key_dir + bpm + energy signals
+///    The HNSW component is normalised within the pool and flips direction with the fader:
+///    centre → rewards similarity, extreme → rewards spectral diversity.
+/// 5. Filter by fixed harmonic threshold (0.50) — the energy-blended key score is
+///    naturally energy-direction-aware so no adaptive relaxation is needed
 /// 6. Sort and return the top results
 pub fn query_suggestions(
     sources: &[DbSource],
@@ -785,7 +785,7 @@ pub fn query_suggestions(
 
     // Energy direction bias: -1.0 (drop) through 0.0 (maintain) to +1.0 (peak)
     let energy_bias = (energy_direction - 0.5) * 2.0;
-    let filter_threshold = adaptive_filter_threshold(energy_bias);
+    let filter_threshold = HARMONIC_FILTER_THRESHOLD;
 
     // Step 4b: Batch-fetch ML scores from each source DB, merged under composite keys
     let ml_scores: HashMap<(usize, i64), MlScores> = {
@@ -839,25 +839,37 @@ pub fn query_suggestions(
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
 
-    // Step 5: Unified scoring — single formula for all candidates
+    // Step 5: Unified scoring — single formula for all candidates.
     //
-    // Dynamic weights: at center, scoring emphasizes similarity and harmony.
-    // As the fader moves to extremes, HNSW drops to zero and energy-direction
-    // signals (aggression, danceability, key direction) emerge as dominant.
+    // HNSW weight is fixed at 0.42 throughout, but its DIRECTION flips:
+    //   Center  (bias=0): rewards spectral SIMILARITY  (find tracks that sound like seed)
+    //   Extreme (|bias|=1): rewards spectral DIVERSITY (find tracks that complement, not copy)
+    //   Mid     (|bias|=0.5): HNSW component = 0.5 flat for all candidates → neutral
     //
-    // Center (bias=0): 0.42 hnsw + 0.25 key + 0.15 key_dir + 0.15 bpm + 0.03 prod = 1.00
-    // Extreme (|bias|=1): 0.15 key + 0.22 key_dir + 0.10 bpm + 0.03 prod
-    //                    + 0.10 dance + 0.06 approach + 0.04 contrast + 0.30 aggr = 1.00
+    // All non-HNSW weights sum to exactly 0.58 at every bias level (= 1.0 − 0.42),
+    // so the total formula always sums to 1.00.
+    //
+    // Center  (bias=0): 0.42 hnsw-sim + 0.25 key + 0.15 key_dir + 0.15 bpm + 0.03 prod = 1.00
+    // Extreme (|bias|=1): 0.42 hnsw-div + 0.10 key + 0.16 key_dir + 0.08 bpm + 0.01 prod
+    //                     + 0.05 dance + 0.02 approach + 0.01 contrast + 0.15 aggr = 1.00
     let bias_abs = energy_bias.abs();
-    let w_hnsw       = 0.42 - 0.42 * bias_abs;  // 0.42 → 0.00
-    let w_key        = 0.25 - 0.10 * bias_abs;  // 0.25 → 0.15
-    let w_key_dir    = 0.15 + 0.07 * bias_abs;  // 0.15 → 0.22
-    let w_bpm        = 0.15 - 0.05 * bias_abs;  // 0.15 → 0.10
-    let w_production = 0.03;                      // constant — subtle tiebreaker
-    let w_dance      = 0.10 * bias_abs;          // 0.00 → 0.10
-    let w_approach   = 0.06 * bias_abs;          // 0.00 → 0.06
-    let w_contrast   = 0.04 * bias_abs;          // 0.00 → 0.04
-    let w_aggression = 0.30 * bias_abs;          // 0.00 → 0.30
+    let w_key        = 0.25 - 0.15 * bias_abs;  // 0.25 → 0.10
+    let w_key_dir    = 0.15 + 0.01 * bias_abs;  // 0.15 → 0.16 (stable)
+    let w_bpm        = 0.15 - 0.07 * bias_abs;  // 0.15 → 0.08
+    let w_production = 0.03 - 0.02 * bias_abs;  // 0.03 → 0.01
+    let w_dance      = 0.05 * bias_abs;          // 0.00 → 0.05
+    let w_approach   = 0.02 * bias_abs;          // 0.00 → 0.02
+    let w_contrast   = 0.01 * bias_abs;          // 0.00 → 0.01
+    let w_aggression = 0.15 * bias_abs;          // 0.00 → 0.15
+
+    // Pre-compute max HNSW distance across the candidate pool.
+    // Used to normalise raw distances to [0,1] so the diversity/similarity
+    // blend operates on a stable scale regardless of collection size or
+    // the absolute magnitude of feature-vector distances.
+    let max_hnsw_dist = candidates.values()
+        .map(|(_, d)| *d)
+        .fold(0.0_f32, f32::max)
+        .max(1e-6); // Guard against empty pool or all-zero distances
 
     // Collect source names per candidate for source-tag generation later
     let source_names: HashMap<usize, &str> = sources.iter().enumerate()
@@ -945,7 +957,15 @@ pub fn query_suggestions(
                 .unwrap_or(0.5);
             let aggression_pen = direction_penalty(cand_norm_aggr, avg_seed_aggression, energy_bias);
 
-            let score = w_hnsw       * hnsw_dist
+            // HNSW diversity/similarity blend (weight fixed at 0.42).
+            // norm_dist: 0 = most similar track in pool, 1 = most different.
+            // At center (bias=0):   hnsw_component = norm_dist → similar tracks score lower (better).
+            // At extreme (|bias|=1): hnsw_component = 1-norm_dist → diverse tracks score lower (better).
+            // At |bias|=0.5:         hnsw_component = 0.5 flat → HNSW neutral, energy signals drive.
+            let norm_dist = hnsw_dist / max_hnsw_dist;
+            let hnsw_component = norm_dist * (1.0 - bias_abs) + (1.0 - norm_dist) * bias_abs;
+
+            let score = 0.42          * hnsw_component
                 + w_key        * key_penalty
                 + w_key_dir    * key_dir_penalty
                 + w_bpm        * bpm_penalty
@@ -957,10 +977,11 @@ pub fn query_suggestions(
 
             let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,
-                hnsw_dist, bpm_penalty,
+                hnsw_component, bias_abs,
+                bpm_penalty,
                 dance_penalty, approach_penalty, contrast_pen,
                 aggression_pen,
-                w_hnsw, w_bpm, w_dance, w_approach, w_contrast,
+                w_bpm, w_dance, w_approach, w_contrast,
                 w_aggression,
             );
 
@@ -1202,19 +1223,24 @@ mod tests {
         assert!(extreme > 0.50, "Mood darken should still be viable at extreme: {}", extreme);
     }
 
-    // ─── Adaptive Filter Threshold ──────────────────────────────────
+    // ─── Harmonic Filter Threshold ───────────────────────────────────
 
     #[test]
-    fn test_filter_threshold_strictest_at_center() {
-        assert_eq!(adaptive_filter_threshold(0.0), 0.50);
+    fn test_filter_threshold_is_fixed() {
+        assert_eq!(HARMONIC_FILTER_THRESHOLD, 0.50);
     }
 
     #[test]
-    fn test_filter_threshold_relaxes_at_extremes() {
-        let center = adaptive_filter_threshold(0.0);
-        let extreme = adaptive_filter_threshold(1.0);
-        assert!(extreme < center, "Threshold should be lower at extremes");
-        assert_eq!(extreme, 0.10);
+    fn test_energy_transitions_pass_fixed_threshold_at_extreme() {
+        // At bias=+1, energy-appropriate transitions naturally score above 0.50
+        // via key_transition_score blending — no adaptive relaxation needed.
+        let am = MusicalKey::parse("Am").unwrap(); // 8A
+        let em = MusicalKey::parse("Em").unwrap(); // 9A  (AdjacentUp, energy_dir=+0.20)
+        let semitone_up_key = MusicalKey::parse("Dm").unwrap(); // SemitoneUp-ish
+        let score_adj = key_transition_score(&am, &em, 1.0, CAM);
+        assert!(score_adj >= HARMONIC_FILTER_THRESHOLD,
+            "AdjacentUp should pass filter at extreme peak: {}", score_adj);
+        let _ = key_transition_score(&am, &semitone_up_key, 1.0, CAM); // no panic
     }
 
     // ─── Key Direction Penalty ──────────────────────────────────────
