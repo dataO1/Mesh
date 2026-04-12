@@ -106,6 +106,10 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Peak meters** — Fixed deck meters only showing for deck 4 and the master
+  meter not appearing on the embedded device. Also fixes a frame-rate regression
+  introduced with the meters in the previous release.
+
 - **BPM tap tempo** (mesh-cue editor) — A new TAP button in the BPM row of
   the track editor continuously updates BPM from the average interval of the
   last eight taps. Tapping stops if there is more than a 3-second gap, so

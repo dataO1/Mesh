@@ -20,9 +20,8 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use iced::mouse;
-use iced::widget::canvas::{self, Canvas};
 use iced::widget::shader;
-use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
+use iced::{Color, Element, Length, Rectangle, Theme};
 
 use super::state::{
     CombinedState, OverviewPeakCache, PlayerCanvasState, SharedPeakBuffer, ZoomedViewMode,
@@ -1976,227 +1975,173 @@ fn meter_norm(db: f32) -> f32 {
     ((db - METER_DB_MIN) / METER_DB_RANGE).clamp(0.0, 1.0)
 }
 
-/// Canvas program that draws one vertical PPM meter strip.
-///
-/// Zones (bottom-to-top):
-/// - Green  : −60 to −12 dBFS
-/// - Yellow : −12 to  0 dBFS
-/// - Red    :   0 to +3 dBFS
-///
-/// A 2-px peak-hold line floats at the highest recent level.
-struct PeakMeterCanvas {
-    level_norm: f32,
-    peak_norm: f32,
-    /// False when audio is disconnected — draws a gray ghost meter instead.
-    active: bool,
-}
-
-impl<Message> canvas::Program<Message> for PeakMeterCanvas {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &(),
-        renderer: &iced::Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<canvas::Geometry<iced::Renderer>> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let w = bounds.width;
-        let h = bounds.height;
-
-        // Background
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            Size::new(w, h),
-            Color::from_rgb(0.06, 0.06, 0.06),
-        );
-
-        // Color zone boundary norms
-        let norm_green_end = meter_norm(-12.0);   // 48/63 ≈ 0.762
-        let norm_yellow_end = meter_norm(0.0);    // 60/63 ≈ 0.952
-
-        let level = self.level_norm;
-
-        if !self.active {
-            // Audio disconnected: draw a dim ghost bar at a fixed low level so the
-            // meter is visible but obviously inactive.
-            let ghost_level = meter_norm(-30.0);
-            frame.fill_rectangle(
-                Point::new(0.0, h * (1.0 - ghost_level)),
-                Size::new(w, h * ghost_level),
-                Color::from_rgb(0.18, 0.18, 0.18),
-            );
-            return vec![frame.into_geometry()];
-        }
-
-        // Green segment — present whenever level > 0 (i.e. above silence floor)
-        if level > 0.0 {
-            let top = norm_green_end.min(level);
-            frame.fill_rectangle(
-                Point::new(0.0, h * (1.0 - top)),
-                Size::new(w, h * top),
-                Color::from_rgb(0.05, 0.75, 0.25),
-            );
-        }
-
-        // Yellow segment — only when level exceeds green zone
-        if level > norm_green_end {
-            let top = norm_yellow_end.min(level);
-            frame.fill_rectangle(
-                Point::new(0.0, h * (1.0 - top)),
-                Size::new(w, h * (top - norm_green_end)),
-                Color::from_rgb(0.90, 0.80, 0.05),
-            );
-        }
-
-        // Red segment — only when level exceeds 0 dBFS
-        if level > norm_yellow_end {
-            frame.fill_rectangle(
-                Point::new(0.0, h * (1.0 - level)),
-                Size::new(w, h * (level - norm_yellow_end)),
-                Color::from_rgb(1.0, 0.18, 0.10),
-            );
-        }
-
-        // Peak-hold line (2 px), colored to match the zone it sits in
-        let peak = self.peak_norm;
-        if peak > 0.0 {
-            let peak_y = h * (1.0 - peak);
-            let peak_color = if peak > norm_yellow_end {
-                Color::from_rgb(1.0, 0.40, 0.30)
-            } else if peak > norm_green_end {
-                Color::from_rgb(1.0, 0.95, 0.30)
-            } else {
-                Color::from_rgb(0.30, 1.0, 0.50)
-            };
-            frame.fill_rectangle(
-                Point::new(0.0, peak_y),
-                Size::new(w, 2.0),
-                peak_color,
-            );
-        }
-
-        vec![frame.into_geometry()]
-    }
-}
-
 /// Build a vertical peak meter strip for one deck.
 ///
-/// Returns an 8-pixel-wide canvas element that fills the available height.
-/// When `active` is false (audio disconnected) the meter renders as a dim ghost.
+/// 8 px wide, `Length::Fill` height. Zones bottom→top: green (−60..−12 dBFS),
+/// yellow (−12..0), red (0..+3). A 2 px peak-hold line floats above the bar.
+///
+/// Implemented with nested `container` + `FillPortion` instead of `Canvas` to
+/// avoid the iced multi-Canvas rendering bug on GLES backends (e.g. Mali G610).
 fn view_peak_meter<'a, Message: Clone + 'a>(
     level_db: f32,
     peak_hold_db: f32,
     active: bool,
 ) -> Element<'a, Message> {
-    Canvas::new(PeakMeterCanvas {
-        level_norm: meter_norm(level_db),
-        peak_norm: meter_norm(peak_hold_db),
-        active,
-    })
-    .width(METER_STRIP_WIDTH)
-    .height(Length::Fill)
-    .into()
+    use iced::widget::{column, container, Space};
+
+    // FillPortion scale: 10 000 units ≈ full height.
+    // Rounding error ≤ 0.5 px on a 500 px meter — visually negligible.
+    const SCALE: u16 = 10_000;
+
+    let bg = Color::from_rgb(0.06, 0.06, 0.06);
+
+    // Solid-colour rectangle taking `height` of the parent column.
+    let seg = |color: Color, height: Length| -> Element<'a, Message> {
+        container(Space::new())
+            .width(METER_STRIP_WIDTH)
+            .height(height)
+            .style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                ..container::Style::default()
+            })
+            .into()
+    };
+
+    if !active {
+        // Ghost meter: dim bar at −30 dBFS so the strip is visible but inactive.
+        let ghost_h = (SCALE as f32 * meter_norm(-30.0)) as u16;
+        return column![
+            seg(bg, Length::FillPortion(SCALE - ghost_h)),
+            seg(Color::from_rgb(0.18, 0.18, 0.18), Length::FillPortion(ghost_h)),
+        ]
+        .width(METER_STRIP_WIDTH)
+        .height(Length::Fill)
+        .into();
+    }
+
+    let norm_green  = meter_norm(-12.0);
+    let norm_yellow = meter_norm(0.0);
+    let level = meter_norm(level_db);
+    let peak  = meter_norm(peak_hold_db);
+
+    // Normalised value → u16 FillPortion amount.
+    let lp = |x: f32| -> u16 { (SCALE as f32 * x.clamp(0.0, 1.0)) as u16 };
+
+    // Bar segments (grow bottom→top, laid out top→bottom in the column).
+    let level_h  = lp(level);
+    let green_h  = if level > 0.0         { lp(level.min(norm_green)) } else { 0 };
+    let yellow_h = if level > norm_green  { lp(level.min(norm_yellow) - norm_green) } else { 0 };
+    let red_h    = if level > norm_yellow { lp(level - norm_yellow) } else { 0 };
+
+    // Peak-hold: only drawn when it floats strictly above the current bar.
+    let show_peak = peak > 0.0 && peak >= level;
+    let peak_h    = lp(peak);
+
+    // Empty space above the topmost visible element.
+    let empty_top: u16 = if show_peak { SCALE - peak_h } else { SCALE - level_h };
+
+    // Background gap between peak-hold line and bar top (zero when they touch).
+    let between: u16 = if show_peak && peak > level { lp(peak - level) } else { 0 };
+
+    let peak_color = if peak > norm_yellow {
+        Color::from_rgb(1.0, 0.40, 0.30)
+    } else if peak > norm_green {
+        Color::from_rgb(1.0, 0.95, 0.30)
+    } else {
+        Color::from_rgb(0.30, 1.0, 0.50)
+    };
+
+    // Assemble column top→bottom: empty | [peak line 2 px] | [gap] | red | yellow | green
+    let mut segs: Vec<Element<'a, Message>> = Vec::new();
+    if empty_top > 0 { segs.push(seg(bg,                               Length::FillPortion(empty_top))); }
+    if show_peak     { segs.push(seg(peak_color,                        Length::Fixed(2.0)));              }
+    if between > 0   { segs.push(seg(bg,                               Length::FillPortion(between)));    }
+    if red_h > 0     { segs.push(seg(Color::from_rgb(1.0, 0.18, 0.10), Length::FillPortion(red_h)));     }
+    if yellow_h > 0  { segs.push(seg(Color::from_rgb(0.90, 0.80, 0.05),Length::FillPortion(yellow_h))); }
+    if green_h > 0   { segs.push(seg(Color::from_rgb(0.05, 0.75, 0.25),Length::FillPortion(green_h)));  }
+    // Silence (level=0, peak=0): empty_top = SCALE so at least one segment always exists.
+
+    column(segs)
+        .width(METER_STRIP_WIDTH)
+        .height(Length::Fill)
+        .into()
 }
 
 /// Build a compact horizontal master output meter for the app header.
 ///
-/// Renders as a fixed-size horizontal bar (140×14 px) with the same three color
-/// zones as the vertical deck meters.  When `active` is false the meter shows a
-/// dim ghost bar so users can tell audio is not running.
+/// Fixed 140×14 px bar with the same three colour zones as the vertical deck
+/// meters. Implemented with `container` widgets instead of `Canvas` to avoid
+/// the iced multi-Canvas GLES rendering bug.
 pub fn view_master_meter_horizontal<'a, Message: Clone + 'a>(
     level_db: f32,
     peak_hold_db: f32,
     active: bool,
 ) -> Element<'a, Message> {
-    struct HorizMeter {
-        level_norm: f32,
-        peak_norm: f32,
-        active: bool,
+    use iced::widget::{container, row, Space};
+
+    const W: f32 = 140.0;
+    const H: f32 = 14.0;
+
+    let bg = Color::from_rgb(0.06, 0.06, 0.06);
+
+    // Solid-coloured rectangle of fixed pixel width.
+    let seg = |color: Color, width: f32| -> Element<'a, Message> {
+        container(Space::new())
+            .width(width)
+            .height(H)
+            .style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                ..container::Style::default()
+            })
+            .into()
+    };
+
+    if !active {
+        return row![
+            seg(Color::from_rgb(0.18, 0.18, 0.18), W * 0.25),
+            seg(bg, W * 0.75),
+        ]
+        .width(W)
+        .height(H)
+        .into();
     }
 
-    impl<Message> canvas::Program<Message> for HorizMeter {
-        type State = ();
+    let norm_green  = meter_norm(-12.0);
+    let norm_yellow = meter_norm(0.0);
+    let level = meter_norm(level_db);
+    let peak  = meter_norm(peak_hold_db);
 
-        fn draw(
-            &self,
-            _state: &(),
-            renderer: &iced::Renderer,
-            _theme: &Theme,
-            bounds: Rectangle,
-            _cursor: mouse::Cursor,
-        ) -> Vec<canvas::Geometry<iced::Renderer>> {
-            let mut frame = canvas::Frame::new(renderer, bounds.size());
-            let w = bounds.width;
-            let h = bounds.height;
+    let level_px  = W * level;
+    let green_px  = level_px.min(norm_green * W);
+    let yellow_px = if level > norm_green  { (level_px.min(norm_yellow * W) - norm_green  * W).max(0.0) } else { 0.0 };
+    let red_px    = if level > norm_yellow { (level_px                      - norm_yellow * W).max(0.0) } else { 0.0 };
 
-            frame.fill_rectangle(Point::ORIGIN, Size::new(w, h), Color::from_rgb(0.06, 0.06, 0.06));
+    let mut segs: Vec<Element<'a, Message>> = Vec::new();
+    if green_px  > 0.0 { segs.push(seg(Color::from_rgb(0.05, 0.75, 0.25), green_px));  }
+    if yellow_px > 0.0 { segs.push(seg(Color::from_rgb(0.90, 0.80, 0.05), yellow_px)); }
+    if red_px    > 0.0 { segs.push(seg(Color::from_rgb(1.0,  0.18, 0.10), red_px));    }
 
-            let norm_green_end = meter_norm(-12.0);
-            let norm_yellow_end = meter_norm(0.0);
-            let level = self.level_norm;
-
-            if !self.active {
-                let ghost_w = w * 0.25;
-                frame.fill_rectangle(
-                    Point::ORIGIN,
-                    Size::new(ghost_w, h),
-                    Color::from_rgb(0.18, 0.18, 0.18),
-                );
-                return vec![frame.into_geometry()];
-            }
-
-            if level > 0.0 {
-                let right = norm_green_end.min(level) * w;
-                frame.fill_rectangle(Point::ORIGIN, Size::new(right, h), Color::from_rgb(0.05, 0.75, 0.25));
-            }
-            if level > norm_green_end {
-                let left = norm_green_end * w;
-                let right = norm_yellow_end.min(level) * w;
-                frame.fill_rectangle(
-                    Point::new(left, 0.0),
-                    Size::new(right - left, h),
-                    Color::from_rgb(0.90, 0.80, 0.05),
-                );
-            }
-            if level > norm_yellow_end {
-                let left = norm_yellow_end * w;
-                let right = level * w;
-                frame.fill_rectangle(
-                    Point::new(left, 0.0),
-                    Size::new(right - left, h),
-                    Color::from_rgb(1.0, 0.18, 0.10),
-                );
-            }
-
-            // Peak-hold line: 2px vertical
-            let peak = self.peak_norm;
-            if peak > 0.0 {
-                let x = (peak * w - 1.0).max(0.0);
-                let peak_color = if peak > norm_yellow_end {
-                    Color::from_rgb(1.0, 0.40, 0.30)
-                } else if peak > norm_green_end {
-                    Color::from_rgb(1.0, 0.95, 0.30)
-                } else {
-                    Color::from_rgb(0.30, 1.0, 0.50)
-                };
-                frame.fill_rectangle(Point::new(x, 0.0), Size::new(2.0, h), peak_color);
-            }
-
-            vec![frame.into_geometry()]
-        }
+    // Peak-hold: 2 px vertical line, only drawn when it floats above the bar.
+    if peak > 0.0 && peak > level {
+        // x = (peak * W - 1) matches original canvas positioning
+        let peak_x   = (peak * W - 1.0).max(0.0);
+        let gap_px   = (peak_x - level_px).max(0.0);
+        let rest_px  = (W - peak_x - 2.0).max(0.0);
+        let peak_color = if peak > norm_yellow { Color::from_rgb(1.0, 0.40, 0.30) }
+            else if peak > norm_green          { Color::from_rgb(1.0, 0.95, 0.30) }
+            else                               { Color::from_rgb(0.30, 1.0, 0.50) };
+        if gap_px  > 0.0 { segs.push(seg(bg,         gap_px));  }
+        segs.push(seg(peak_color, 2.0));
+        if rest_px > 0.0 { segs.push(seg(bg,         rest_px)); }
+    } else {
+        let empty_px = (W - level_px).max(0.0);
+        if empty_px > 0.0 { segs.push(seg(bg, empty_px)); }
     }
 
-    Canvas::new(HorizMeter {
-        level_norm: meter_norm(level_db),
-        peak_norm: meter_norm(peak_hold_db),
-        active,
-    })
-    .width(140)
-    .height(14)
-    .into()
+    // Silence fallback: one background segment fills the full bar.
+    if segs.is_empty() { segs.push(seg(bg, W)); }
+
+    row(segs).width(W).height(H).into()
 }
 
 // =============================================================================
