@@ -182,7 +182,7 @@ pub struct AudioConfig {
     /// to the master deck's beat phase
     pub phase_sync: bool,
     /// Auto-cue: automatically route low-volume decks to headphone/cue output.
-    /// Decks at ≤30% volume are fully sent to cue bus; 30–50% fades out linearly.
+    /// Logarithmic decay: full cue at volume=0, silent at volume=1.
     /// Only effective when master and cue outputs are different devices.
     pub auto_cue: bool,
     /// Loudness normalization settings

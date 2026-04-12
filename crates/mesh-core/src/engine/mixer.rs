@@ -443,19 +443,18 @@ impl ChannelStrip {
 
 /// Auto-cue weight: how strongly a deck is routed to the cue bus based on volume.
 ///
-/// Two-stage linear:
-/// - volume ≤ 0.30 → weight 1.0 (fully in headphones)
-/// - 0.30 < volume < 0.50 → linear fade from 1.0 to 0.0
-/// - volume ≥ 0.50 → weight 0.0 (not in headphones)
+/// Logarithmic (exponential) decay over the full [0, 1] range:
+/// - volume = 0.0 → weight 1.0 (fully in headphones)
+/// - volume = 1.0 → weight 0.0 (silent in headphones)
+///
+/// Formula: (exp(-k·v) - exp(-k)) / (1 - exp(-k)), k=4.
+/// Normalized so endpoints are exact. At v=0.3, weight ≈ 0.29 (vs. 1.0 in the old linear).
 #[inline]
 fn auto_cue_weight(volume: f32) -> f32 {
-    if volume <= 0.30 {
-        1.0
-    } else if volume < 0.50 {
-        1.0 - (volume - 0.30) / 0.20
-    } else {
-        0.0
-    }
+    const K: f32 = 4.0;
+    const EXP_NEG_K: f32 = 0.018_315_64; // exp(-4.0)
+    const NORM: f32 = 1.0 - EXP_NEG_K;   // 0.981_684_36
+    ((-K * volume).exp() - EXP_NEG_K) / NORM
 }
 
 /// Main mixer combining all deck outputs
@@ -596,7 +595,7 @@ impl Mixer {
                     .max(master_sample.right.abs());
 
                 // Cue bus: weighted send based on auto-cue + manual CUE button.
-                // Auto-cue weight: 1.0 at volume ≤ 30%, linear fade 30%→50%, 0.0 above 50%.
+                // Auto-cue weight: logarithmic decay 1.0→0.0 across full volume range.
                 // Manual CUE button forces weight to 1.0 (additive/independent).
                 let auto_weight = if self.auto_cue {
                     auto_cue_weight(channel.volume)

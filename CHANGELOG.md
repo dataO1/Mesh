@@ -4,6 +4,20 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Auto headphones cue — logarithmic volume curve** — The auto-cue routing
+  now follows a smooth exponential decay across the full fader range instead of
+  the previous two-stage linear (full below 30%, linear fade 30→50%, off above
+  50%). The new curve maps volume 0→1 to cue weight 1.0→0.0 logarithmically: a
+  deck is nearly fully present in headphones at low volumes and fades away
+  naturally as the fader opens. At 30% fader the weight is now ~0.29 rather
+  than 1.0, providing a more gradual and musical transition.
+
+---
+
 ## [0.9.12]
 
 ### Changed

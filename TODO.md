@@ -200,13 +200,3 @@ for v3 and beyond.
 - we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-- [ ] auto cue: instead of linear from 0.3 to 0.5 and full under 0.3 go logarythmic down
-  from 1 to 0. so very silent on 1 to full on 0 channel volume.
-- [ ] when starting midi mapping on the embedded device, i see the ui, but when
-  turning the navigation encoder the file browser opens and scrolls instead of
-  the midi mapping selection browser scrolling. also theres no way of selecting
-  the cancel button via midi mappings purely, when clicking shift + encoder
-  press and we are currently at top level (so theres no way to go back) we
-  should select the cancel button (pressing back again, should go back to the
-  previous selection in the midi mapping list, so the user can cancel the cancel
-  action).
