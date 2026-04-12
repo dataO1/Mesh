@@ -8,6 +8,16 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Stem mute/unmute fades** — Toggling a stem mute no longer cuts or restores
+  audio instantly. A 50 ms linear fade is applied entirely inside the engine so
+  the external API is unchanged. Muting fades the stem out over 2 400 samples
+  (at 48 kHz); unmuting fades it back in at the same rate. The fade is applied
+  after multiband processing so effects trail off cleanly, and the per-sample
+  ramp runs on both the normal playback path and the scratch path. Solo
+  transitions also benefit — soloing a stem fades the others out rather than
+  cutting them. The duration is a single constant (`STEM_FADE_SAMPLES`) and
+  trivial to tune by ear.
+
 - **LUFS gain compensation — perceptual density bias** — Both quiet and loud
   tracks now receive a small extra correction beyond straight linear gain. The
   issue is perceptual density: a track at −4 LUFS, cut to match a −9 LUFS

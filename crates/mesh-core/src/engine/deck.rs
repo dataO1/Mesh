@@ -25,6 +25,12 @@ pub static PROCESS_EPOCH: std::sync::LazyLock<std::time::Instant> =
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
 
+/// Duration of stem mute/unmute fade in samples (50ms at 48kHz = 2400 samples).
+/// Short enough to feel snappy, long enough to avoid transient clicks.
+const STEM_FADE_SAMPLES: f32 = SAMPLE_RATE as f32 * 0.050;
+/// Per-sample gain step for the stem mute fade (≈ 0.000417 at 48kHz/50ms).
+const STEM_FADE_STEP: f32 = 1.0 / STEM_FADE_SAMPLES;
+
 /// Loop lengths available in beats (1/8 beat to 64 bars = 256 beats)
 pub const LOOP_LENGTHS: [f64; 12] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
@@ -348,10 +354,16 @@ pub struct StemState {
     /// Always present. Defaults to single-band mode (passthrough).
     /// User can expand to multiple bands and add effects per band.
     pub multiband: MultibandHost,
-    /// Whether this stem is muted
+    /// Whether this stem is muted (the *intent* — changes instantly on toggle)
     pub muted: bool,
     /// Whether this stem is soloed
     pub soloed: bool,
+    /// Current fade gain applied to this stem's output (0.0 = silent, 1.0 = full).
+    ///
+    /// Updated per-sample in the process loop toward the target derived from
+    /// `muted` and solo state. Never set directly from outside — callers just
+    /// toggle `muted` and the engine fades smoothly over `STEM_FADE_SAMPLES`.
+    pub fade_gain: f32,
 }
 
 impl Default for StemState {
@@ -368,6 +380,7 @@ impl StemState {
             multiband: MultibandHost::new(super::MAX_BUFFER_SIZE),
             muted: false,
             soloed: false,
+            fade_gain: 1.0, // Start fully audible
         }
     }
 }
@@ -1658,9 +1671,15 @@ impl Deck {
             // Process each stem with interpolation (sequential for scratch - simpler)
             for (stem_idx, stem_buffer) in self.stem_buffers.iter_mut().enumerate() {
                 let stem = Stem::ALL[stem_idx];
-                let stem_state = &self.stems[stem_idx];
 
-                if stem_state.muted || (any_soloed && !stem_state.soloed) {
+                // Derive target gain from mute/solo intent (0.0 = muted, 1.0 = audible)
+                let target_gain: f32 = {
+                    let s = &self.stems[stem_idx];
+                    if s.muted || (any_soloed && !s.soloed) { 0.0 } else { 1.0 }
+                };
+
+                // Skip processing only when fully faded out and staying muted
+                if self.stems[stem_idx].fade_gain == 0.0 && target_gain == 0.0 {
                     stem_buffer.fill_silence();
                     continue;
                 }
@@ -1675,6 +1694,23 @@ impl Deck {
                     velocity_ratio,
                     interpolation,
                 );
+
+                // Apply mute fade ramp: ramp fade_gain toward target per sample.
+                // Runs on both mute (1→0) and unmute (0→1) transitions.
+                let current = self.stems[stem_idx].fade_gain;
+                if current != target_gain {
+                    let step = if target_gain > current { STEM_FADE_STEP } else { -STEM_FADE_STEP };
+                    let mut gain = current;
+                    for sample in stem_buffer.as_mut_slice() {
+                        gain = (gain + step).clamp(0.0, 1.0);
+                        // Snap to target to prevent floating-point overshoot
+                        if (gain - target_gain).abs() <= STEM_FADE_STEP {
+                            gain = target_gain;
+                        }
+                        *sample = sample.scale(gain);
+                    }
+                    self.stems[stem_idx].fade_gain = gain;
+                }
             }
 
             // Sum stems to output
@@ -1749,8 +1785,12 @@ impl Deck {
             .for_each(|(stem_idx, ((stem_state, stem_buffer), slicer_state))| {
                 let stem = Stem::ALL[stem_idx];
 
-                // Skip if muted, or if others are soloed and this isn't
-                if stem_state.muted || (any_soloed && !stem_state.soloed) {
+                // Derive target gain from mute/solo intent (0.0 = muted, 1.0 = audible)
+                let target_gain: f32 =
+                    if stem_state.muted || (any_soloed && !stem_state.soloed) { 0.0 } else { 1.0 };
+
+                // Skip processing only when fully faded out and staying muted
+                if stem_state.fade_gain == 0.0 && target_gain == 0.0 {
                     stem_buffer.fill_silence();
                     return;
                 }
@@ -1833,6 +1873,23 @@ impl Deck {
 
                 // Process through multiband container (handles per-band effects)
                 stem_state.multiband.process(stem_buffer);
+
+                // Apply mute fade ramp after all processing: ramp fade_gain toward
+                // target_gain per sample. Handles both mute (1→0) and unmute (0→1).
+                // Applied last so the fade acts on the fully processed signal.
+                if stem_state.fade_gain != target_gain {
+                    let step = if target_gain > stem_state.fade_gain { STEM_FADE_STEP } else { -STEM_FADE_STEP };
+                    let mut gain = stem_state.fade_gain;
+                    for sample in stem_buffer.as_mut_slice() {
+                        gain = (gain + step).clamp(0.0, 1.0);
+                        // Snap to target to prevent floating-point overshoot
+                        if (gain - target_gain).abs() <= STEM_FADE_STEP {
+                            gain = target_gain;
+                        }
+                        *sample = sample.scale(gain);
+                    }
+                    stem_state.fade_gain = gain;
+                }
             });
 
         // Apply per-stem latency compensation (sequential - must happen after parallel)
