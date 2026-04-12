@@ -51,6 +51,38 @@ impl Default for LoudnessConfig {
 }
 
 impl LoudnessConfig {
+    /// Compute raw gain in dB before safety clamping.
+    ///
+    /// Applies a symmetric perceptual density correction on both boost and cut:
+    ///
+    ///   `gain = delta × (1 + 1 / |target|)`
+    ///
+    /// where `delta = target_lufs − track_lufs`.
+    ///
+    /// **Why symmetric:** the core issue is perceptual density, not LUFS measurement
+    /// accuracy. A track at −4 LUFS, cut to match a −9 LUFS target on the meter,
+    /// still carries the spectral saturation and consistent RMS of a heavily limited
+    /// track — it will punch through a mix even at the same measured level. Equally,
+    /// a −14 LUFS track boosted to −9 LUFS still feels sparse and weak because it
+    /// lacks that density. Both directions require extra correction.
+    ///
+    /// **Why `1/|target|`:** this normalises the bias against 0 LUFS (the density
+    /// ceiling). At a loud mixing standard (−6 LUFS, coefficient ≈ 0.167) density
+    /// differences between tracks are more perceptually significant, so the bias is
+    /// stronger. At a more dynamic standard (−14 LUFS, coefficient ≈ 0.071) LUFS
+    /// is a more honest perceptual measure and the correction weakens accordingly.
+    /// No separate config knob is needed — the target already encodes this.
+    ///
+    /// Example at target=−9: delta=±5 → gain=±5.56 dB (vs ±5.0 dB linear)
+    /// Example at target=−6: delta=±5 → gain=±5.83 dB (vs ±5.0 dB linear)
+    fn raw_gain_db(&self, track_lufs: f32) -> f32 {
+        let delta = self.target_lufs - track_lufs;
+        // Symmetric bias: same multiplier for boosts and cuts.
+        // At target=-9: multiplier = 1 + 1/9 ≈ 1.111
+        // At target=-6: multiplier = 1 + 1/6 ≈ 1.167
+        delta * (1.0 + 1.0 / self.target_lufs.abs())
+    }
+
     /// Calculate gain compensation in dB for a track
     ///
     /// Returns `None` if LUFS is not available or auto-gain is disabled.
@@ -66,15 +98,15 @@ impl LoudnessConfig {
     /// use mesh_core::config::LoudnessConfig;
     ///
     /// let config = LoudnessConfig::default();
-    /// // Track at -12 LUFS, target -9 LUFS = +3 dB boost
+    /// // Track at -12 LUFS, target -9 LUFS → delta=3, bias multiplier=1.111 → +3.33 dB
     /// let gain = config.calculate_gain_db(Some(-12.0));
-    /// assert!((gain.unwrap() - 3.0).abs() < 0.001);
+    /// assert!((gain.unwrap() - 3.333).abs() < 0.01);
     /// ```
     pub fn calculate_gain_db(&self, track_lufs: Option<f32>) -> Option<f32> {
         if !self.auto_gain_enabled {
             return None;
         }
-        track_lufs.map(|lufs| (self.target_lufs - lufs).clamp(self.min_gain_db, self.max_gain_db))
+        track_lufs.map(|lufs| self.raw_gain_db(lufs).clamp(self.min_gain_db, self.max_gain_db))
     }
 
     /// Calculate gain compensation in dB for a track (non-optional variant)
@@ -87,7 +119,7 @@ impl LoudnessConfig {
     /// # Returns
     /// The gain adjustment in dB, clamped to safety limits
     pub fn calculate_gain_db_direct(&self, track_lufs: f32) -> f32 {
-        (self.target_lufs - track_lufs).clamp(self.min_gain_db, self.max_gain_db)
+        self.raw_gain_db(track_lufs).clamp(self.min_gain_db, self.max_gain_db)
     }
 
     /// Calculate linear gain multiplier for a track
@@ -133,18 +165,43 @@ mod tests {
 
     #[test]
     fn test_gain_calculation_boost() {
-        let config = LoudnessConfig::default();
-        // Track at -12 LUFS, target -9 LUFS = +3 dB boost
+        let config = LoudnessConfig::default(); // target = -9.0
+        // Track at -12 LUFS, target -9 LUFS: delta=3, multiplier = 1 + 1/9 ≈ 1.111
+        // Expected: 3 × 1.111 = 3.333 dB (biased boost, not plain 3.0)
         let gain_db = config.calculate_gain_db(Some(-12.0)).unwrap();
-        assert!((gain_db - 3.0).abs() < 0.001);
+        assert!((gain_db - 3.333).abs() < 0.01);
     }
 
     #[test]
     fn test_gain_calculation_cut() {
-        let config = LoudnessConfig::default();
-        // Track at -4 LUFS, target -9 LUFS = -5 dB cut
+        let config = LoudnessConfig::default(); // target = -9.0
+        // Track at -4 LUFS, target -9 LUFS: delta=-5, multiplier = 1 + 1/9 ≈ 1.111
+        // Expected: -5 × 1.111 = -5.556 dB (more cut than plain -5, density bias)
         let gain_db = config.calculate_gain_db(Some(-4.0)).unwrap();
-        assert!((gain_db - (-5.0)).abs() < 0.001);
+        assert!((gain_db - (-5.556)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_boost_bias_scales_with_delta() {
+        // Larger deficit → larger proportional extra boost
+        let config = LoudnessConfig { target_lufs: -6.0, ..Default::default() };
+        let gain_small = config.calculate_gain_db_direct(-8.0); // delta=2
+        let gain_large = config.calculate_gain_db_direct(-14.0); // delta=8
+        // Both should exceed their plain linear values, and the ratio of extras should scale
+        assert!(gain_small > 2.0);
+        assert!(gain_large > 8.0);
+        let extra_small = gain_small - 2.0;
+        let extra_large = gain_large - 8.0;
+        // Extra boost grows proportionally: large/small ≈ 8/2 = 4
+        assert!((extra_large / extra_small - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cut_has_symmetric_bias() {
+        // Loud tracks get the same density bias as quiet tracks — symmetric formula
+        let config = LoudnessConfig { target_lufs: -6.0, ..Default::default() };
+        let gain = config.calculate_gain_db_direct(-4.0); // delta=-2, multiplier=1+1/6=1.167
+        assert!((gain - (-2.333)).abs() < 0.01);
     }
 
     #[test]
@@ -179,13 +236,13 @@ mod tests {
 
     #[test]
     fn test_linear_gain_conversion() {
-        let config = LoudnessConfig::default();
-        // +6 dB should be ~2x linear gain
-        let config_6db = LoudnessConfig {
+        // Track at -12 LUFS, target -6 LUFS: delta=6, multiplier=1+1/6=1.167 → 7.0 dB → ~2.239x
+        let config = LoudnessConfig {
             target_lufs: -6.0,
             ..Default::default()
         };
-        let linear = config_6db.calculate_gain_linear(Some(-12.0));
-        assert!((linear - 2.0).abs() < 0.01);
+        let linear = config.calculate_gain_linear(Some(-12.0));
+        let expected = 10.0_f32.powf(7.0 / 20.0); // ~2.239
+        assert!((linear - expected).abs() < 0.01);
     }
 }

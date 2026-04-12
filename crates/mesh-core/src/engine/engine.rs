@@ -215,6 +215,11 @@ impl AudioEngine {
         self.mixer.clip_indicator()
     }
 
+    /// Get the level atomics for UI peak metering
+    pub fn level_atomics(&self) -> std::sync::Arc<crate::engine::mixer::LevelAtomics> {
+        self.mixer.level_atomics()
+    }
+
     /// Get a reference to the mixer
     pub fn mixer(&self) -> &Mixer {
         &self.mixer

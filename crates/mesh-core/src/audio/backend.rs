@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
 
 use crate::db::DatabaseService;
-use crate::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
+use crate::engine::{DeckAtomics, LevelAtomics, LinkedStemAtomics, SlicerAtomics};
 use crate::loader::LinkedStemResultReceiver;
 use crate::types::NUM_DECKS;
 
@@ -62,6 +62,8 @@ pub struct AudioSystemResult {
     pub linked_stem_receiver: LinkedStemResultReceiver,
     /// Master clipper clip indicator (true = clipping occurred)
     pub clip_indicator: Arc<AtomicBool>,
+    /// Lock-free peak level atomics for UI metering
+    pub level_atomics: Arc<LevelAtomics>,
     /// Sample rate of the audio system
     pub sample_rate: u32,
     /// Actual buffer size in frames

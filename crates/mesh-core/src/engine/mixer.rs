@@ -4,7 +4,7 @@
 //! - Per-channel trim, 3-band EQ, filter, volume, cue
 //! - Master volume and cue/master blend
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -13,6 +13,38 @@ use super::master_clipper::MasterClipper;
 use super::master_limiter::MasterLimiter;
 use crate::effect::native::svf::SvfFilter;
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
+
+/// Lock-free peak level atomics exposed to the UI thread for metering.
+///
+/// Audio thread writes on every buffer; UI thread reads at ~60 fps.
+/// Values are linear amplitudes (not dBFS) — the UI converts to dB.
+pub struct LevelAtomics {
+    /// Per-channel post-fader peak (f32 bits, linear 0.0..~2.0)
+    pub channel_peaks: [AtomicU32; NUM_DECKS],
+    /// Master bus peak after clipper/limiter (f32 bits, linear 0.0..~2.0)
+    pub master_peak: AtomicU32,
+}
+
+impl LevelAtomics {
+    pub fn new() -> Self {
+        Self {
+            channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            master_peak: AtomicU32::new(0.0f32.to_bits()),
+        }
+    }
+
+    pub fn channel_peak(&self, deck: usize) -> f32 {
+        f32::from_bits(self.channel_peaks[deck].load(Ordering::Relaxed))
+    }
+
+    pub fn master_peak(&self) -> f32 {
+        f32::from_bits(self.master_peak.load(Ordering::Relaxed))
+    }
+}
+
+impl Default for LevelAtomics {
+    fn default() -> Self { Self::new() }
+}
 
 /// Biquad filter state for EQ bands
 #[derive(Debug, Clone, Default)]
@@ -438,6 +470,8 @@ pub struct Mixer {
     cue_volume: f32,
     /// Auto-cue: route low-volume decks to headphone output automatically
     auto_cue: bool,
+    /// Lock-free peak levels for UI metering
+    level_atomics: Arc<LevelAtomics>,
     /// Master bus lookahead limiter (transparent, before clipper)
     limiter: MasterLimiter,
     /// Master bus safety clipper (ClipOnly2-style, after limiter)
@@ -453,6 +487,7 @@ impl Mixer {
             cue_mix: 0.0,
             cue_volume: 0.8,
             auto_cue: true,
+            level_atomics: Arc::new(LevelAtomics::new()),
             limiter: MasterLimiter::new(),
             clipper: MasterClipper::new(),
         }
@@ -461,6 +496,11 @@ impl Mixer {
     /// Enable or disable auto-cue routing
     pub fn set_auto_cue(&mut self, enabled: bool) {
         self.auto_cue = enabled;
+    }
+
+    /// Get a clone of the level atomics Arc for the UI thread
+    pub fn level_atomics(&self) -> Arc<LevelAtomics> {
+        Arc::clone(&self.level_atomics)
     }
 
     /// Get a reference to a channel strip
@@ -535,10 +575,12 @@ impl Mixer {
                 channel.process(buffer);
             });
 
-        // Phase 2: Sequential summing to master/cue buses
+        // Phase 2: Sequential summing to master/cue buses + per-channel peak tracking
         // This is fast O(n) and must be sequential to avoid race conditions
+        let mut channel_peaks = [0.0f32; NUM_DECKS];
         for (deck_idx, buffer) in deck_buffers.iter().enumerate() {
             let channel = &self.channels[deck_idx];
+            let mut deck_peak: f32 = 0.0;
 
             // Add to master output (with volume fader)
             for i in 0..buffer_len.min(buffer.len()) {
@@ -547,6 +589,11 @@ impl Mixer {
                 // Master bus: apply volume fader
                 let master_sample = sample * channel.volume;
                 master_out.as_mut_slice()[i] += master_sample;
+
+                // Track post-fader peak (stereo max)
+                deck_peak = deck_peak
+                    .max(master_sample.left.abs())
+                    .max(master_sample.right.abs());
 
                 // Cue bus: weighted send based on auto-cue + manual CUE button.
                 // Auto-cue weight: 1.0 at volume ≤ 30%, linear fade 30%→50%, 0.0 above 50%.
@@ -561,6 +608,12 @@ impl Mixer {
                     cue_out.as_mut_slice()[i] += sample * cue_weight;
                 }
             }
+            channel_peaks[deck_idx] = deck_peak;
+        }
+
+        // Publish per-channel peaks to UI thread (lock-free)
+        for i in 0..NUM_DECKS {
+            self.level_atomics.channel_peaks[i].store(channel_peaks[i].to_bits(), Ordering::Relaxed);
         }
 
         // Apply master volume
@@ -571,6 +624,11 @@ impl Mixer {
 
         // Lookahead limiter: transparent gain reduction for sustained overs
         self.limiter.process(master_out);
+
+        // Publish master peak after all processing
+        let master_peak = master_out.as_slice().iter()
+            .fold(0.0f32, |acc, s| acc.max(s.left.abs()).max(s.right.abs()));
+        self.level_atomics.master_peak.store(master_peak.to_bits(), Ordering::Relaxed);
 
         // Mix cue/master for headphones (cue_out becomes the headphone output)
         for i in 0..buffer_len {

@@ -266,11 +266,11 @@ fn main() -> iced::Result {
     } else {
         start_audio_system(CLIENT_NAME, db_service.clone())
     };
-    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name, output_latency_samples, internal_latency_samples, direct_command_producer) =
+    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, level_atomics, audio_sample_rate, audio_client_name, output_latency_samples, internal_latency_samples, direct_command_producer) =
         match audio_start_result {
-            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate, client_name, output_lat, internal_lat, direct_producer)) => {
+            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, level_atomics, sample_rate, client_name, output_lat, internal_lat, direct_producer)) => {
                 println!("Audio system started successfully ({} Hz, client: {})", sample_rate, client_name);
-                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate, client_name, Some(output_lat), Some(internal_lat), Some(direct_producer))
+                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), Some(level_atomics), sample_rate, client_name, Some(output_lat), Some(internal_lat), Some(direct_producer))
             }
             Err(e) => {
                 eprintln!("Warning: Could not start audio system: {}", e);
@@ -278,7 +278,7 @@ fn main() -> iced::Result {
                 eprintln!();
                 eprintln!("Check that audio devices are available and not in use by other applications.");
                 // Default to 44100 Hz when audio is not available
-                (None, None, None, None, None, None, None, 44100, "mesh-player".to_string(), None, None, None)
+                (None, None, None, None, None, None, None, None, 44100, "mesh-player".to_string(), None, None, None)
             }
         };
 
@@ -294,6 +294,7 @@ fn main() -> iced::Result {
     let linked_stem_atomics_cell = std::cell::RefCell::new(linked_stem_atomics);
     let linked_stem_receiver_cell = std::cell::RefCell::new(linked_stem_receiver);
     let clip_indicator_cell = std::cell::RefCell::new(clip_indicator);
+    let level_atomics_cell = std::cell::RefCell::new(level_atomics);
     let output_latency_cell = std::cell::RefCell::new(output_latency_samples);
     let internal_latency_cell = std::cell::RefCell::new(internal_latency_samples);
     let direct_producer_cell = std::cell::RefCell::new(direct_command_producer);
@@ -324,6 +325,7 @@ fn main() -> iced::Result {
             let linked_stem_atomics = linked_stem_atomics_cell.borrow_mut().take();
             let linked_stem_receiver = linked_stem_receiver_cell.borrow_mut().take();
             let clip_indicator = clip_indicator_cell.borrow_mut().take();
+            let level_atomics = level_atomics_cell.borrow_mut().take();
             let output_latency = output_latency_cell.borrow_mut().take();
             let internal_latency = internal_latency_cell.borrow_mut().take();
             let direct_producer = direct_producer_cell.borrow_mut().take();
@@ -344,7 +346,7 @@ fn main() -> iced::Result {
             let show_mapping_ui = start_midi_learn;
             let start_learn = start_midi_learn || auto_learn;
 
-            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), show_mapping_ui, start_learn, output_latency, internal_latency, buffer_pool.clone());
+            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, level_atomics, audio_sample_rate, audio_client_name.clone(), show_mapping_ui, start_learn, output_latency, internal_latency, buffer_pool.clone());
 
             // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands
             if let (Some(ref mut controller), Some(dispatch)) = (&mut app.controller, direct_dispatch) {

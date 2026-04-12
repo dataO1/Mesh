@@ -6,6 +6,20 @@ All notable changes to Mesh are documented in this file.
 
 ## [0.9.12]
 
+### Changed
+
+- **LUFS gain compensation — perceptual density bias** — Both quiet and loud
+  tracks now receive a small extra correction beyond straight linear gain. The
+  issue is perceptual density: a track at −4 LUFS, cut to match a −9 LUFS
+  target on the meter, still carries the spectral saturation and consistent RMS
+  of a heavily limited track and will punch through a mix even at the same
+  measured level. Equally, a −14 LUFS track boosted to −9 LUFS still feels
+  sparse because it lacks that density. The correction uses the formula
+  `gain = delta × (1 + 1/|target|)` — the bias auto-scales with the target
+  level so it is stronger at a loud mixing standard (−6 LUFS, ≈ +16.7%)
+  and gentler at a dynamic one (−9 LUFS, ≈ +11.1%), reflecting how perceptual
+  density differences matter more when everything is loud.
+
 ### Added
 
 - **Playlist-aware smart suggestions** — The suggestion panel now splits into

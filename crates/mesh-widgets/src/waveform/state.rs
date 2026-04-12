@@ -1277,6 +1277,12 @@ pub struct PlayerCanvasState {
     pub abstraction_level: u8,
     /// Monotonic frame counter incremented every tick (vsync), used for loading pulse animation
     pub frame_count: u32,
+    /// Per-deck PPM level in dBFS for meter rendering (after UI-side ballistics)
+    pub channel_level_db: [f32; 4],
+    /// Per-deck peak-hold level in dBFS for meter rendering
+    pub channel_peak_hold_db: [f32; 4],
+    /// Whether the audio system is running (false = gray-out meters)
+    pub audio_connected: bool,
 
     // Peak caches (RefCell for interior mutability from draw())
     /// Cached overview peaks per deck — computed once, reused until track/width/linked change
@@ -1329,6 +1335,9 @@ impl PlayerCanvasState {
             vertical_inverted: false,
             abstraction_level: 1,                // Medium abstraction by default
             frame_count: 0,
+            channel_level_db: [-120.0; 4],
+            channel_peak_hold_db: [-120.0; 4],
+            audio_connected: false,
             overview_peak_caches: [
                 RefCell::new(OverviewPeakCache::new()),
                 RefCell::new(OverviewPeakCache::new()),

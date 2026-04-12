@@ -78,6 +78,63 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     // Decrement hold timer each tick
     app.clip_hold_frames = app.clip_hold_frames.saturating_sub(1);
 
+    // Read peak levels from audio engine atomics (LOCK-FREE) and apply PPM ballistics.
+    // Audio thread stores instantaneous linear peak amplitude; UI thread converts to dBFS
+    // and applies decay, keeping log10() off the real-time path.
+    if let Some(ref level_atomics) = app.level_atomics {
+        // Per-deck channel meters
+        for i in 0..4 {
+            let linear = level_atomics.channel_peak(i);
+            let raw_db = if linear > 0.0 { 20.0 * linear.log10() } else { -120.0_f32 };
+            let meter = &mut app.deck_meter[i];
+
+            // Instantaneous attack: new peak replaces level immediately
+            if raw_db >= meter.level_db {
+                meter.level_db = raw_db;
+            } else {
+                // Decay ~40 dB/sec at 60fps = 0.667 dB/frame
+                meter.level_db = (meter.level_db - 0.667).max(-120.0);
+            }
+
+            // Peak hold
+            if raw_db >= meter.peak_hold_db {
+                meter.peak_hold_db = raw_db;
+                meter.hold_frames = 180; // 3s at 60fps
+            } else if meter.hold_frames > 0 {
+                meter.hold_frames -= 1;
+            } else {
+                // Decay peak hold at ~20 dB/sec = 0.333 dB/frame
+                meter.peak_hold_db = (meter.peak_hold_db - 0.333).max(-120.0);
+            }
+
+            // Push display values into PlayerCanvasState for waveform renderer
+            app.player_canvas_state.channel_level_db[i] = meter.level_db;
+            app.player_canvas_state.channel_peak_hold_db[i] = meter.peak_hold_db;
+        }
+
+        // Master meter
+        {
+            let linear = level_atomics.master_peak();
+            let raw_db = if linear > 0.0 { 20.0 * linear.log10() } else { -120.0_f32 };
+            let meter = &mut app.master_meter;
+
+            if raw_db >= meter.level_db {
+                meter.level_db = raw_db;
+            } else {
+                meter.level_db = (meter.level_db - 0.667).max(-120.0);
+            }
+
+            if raw_db >= meter.peak_hold_db {
+                meter.peak_hold_db = raw_db;
+                meter.hold_frames = 180;
+            } else if meter.hold_frames > 0 {
+                meter.hold_frames -= 1;
+            } else {
+                meter.peak_hold_db = (meter.peak_hold_db - 0.333).max(-120.0);
+            }
+        }
+    }
+
     // Read deck positions from atomics (LOCK-FREE - never blocks audio thread)
     // Position/state reads happen ~60Hz with zero contention
     if let Some(ref atomics) = app.deck_atomics {

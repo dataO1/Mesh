@@ -179,6 +179,7 @@ fn start_master_only(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let level_atomics = engine.level_atomics();
     let output_latency_samples = engine.output_latency_samples();
     let internal_latency_samples = engine.internal_latency_samples();
 
@@ -219,6 +220,7 @@ fn start_master_only(
         linked_stem_atomics,
         linked_stem_receiver,
         clip_indicator,
+        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,
@@ -308,6 +310,7 @@ fn start_master_and_cue(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let level_atomics = engine.level_atomics();
     let output_latency_samples = engine.output_latency_samples();
     let internal_latency_samples = engine.internal_latency_samples();
 
@@ -370,6 +373,7 @@ fn start_master_and_cue(
         linked_stem_atomics,
         linked_stem_receiver,
         clip_indicator,
+        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,

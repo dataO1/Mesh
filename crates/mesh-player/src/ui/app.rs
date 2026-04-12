@@ -27,7 +27,7 @@ use crate::domain::MeshDomain;
 use crate::plugin_gui::PluginGuiManager;
 
 use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiEvent, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
-use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
+use mesh_core::engine::{DeckAtomics, LevelAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState, sz};
 use mesh_widgets::keyboard::{KeyboardState, KeyboardEvent, keyboard_view, keyboard_handle};
@@ -59,6 +59,29 @@ pub struct RecordingState {
     pub error_count: usize,
 }
 
+/// PPM ballistics state for a single meter channel
+///
+/// Holds the display level after decay and the peak-hold level + countdown.
+/// Updated each tick; owned exclusively by the UI thread.
+pub struct DeckMeterState {
+    /// Current display level in dBFS (after PPM decay)
+    pub level_db: f32,
+    /// Peak-hold level in dBFS
+    pub peak_hold_db: f32,
+    /// Remaining frames before peak hold starts decaying (180 = 3s at 60fps)
+    pub hold_frames: u32,
+}
+
+impl Default for DeckMeterState {
+    fn default() -> Self {
+        Self {
+            level_db: -120.0,
+            peak_hold_db: -120.0,
+            hold_frames: 0,
+        }
+    }
+}
+
 /// Application state
 pub struct MeshApp {
     /// Domain layer for service orchestration
@@ -75,6 +98,12 @@ pub struct MeshApp {
     pub(crate) clip_indicator: Option<Arc<AtomicBool>>,
     /// Hold timer for clip indicator UI (decremented each tick, show red dot when > 0)
     pub(crate) clip_hold_frames: u8,
+    /// Lock-free peak level atomics from the audio engine (None in UI-only mode)
+    pub(crate) level_atomics: Option<Arc<LevelAtomics>>,
+    /// Per-deck PPM meter ballistics state (UI-thread owned)
+    pub(crate) deck_meter: [DeckMeterState; NUM_DECKS],
+    /// Master output PPM meter ballistics state
+    pub(crate) master_meter: DeckMeterState,
     /// Unified waveform state for all 4 decks
     pub(crate) player_canvas_state: PlayerCanvasState,
     /// Local deck view states (controls only, waveform moved to player_canvas_state)
@@ -176,6 +205,7 @@ impl MeshApp {
         linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
         linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
         clip_indicator: Option<Arc<AtomicBool>>,
+        level_atomics: Option<Arc<LevelAtomics>>,
         sample_rate: u32,
         audio_client_name: String,
         mapping_mode: bool,
@@ -302,12 +332,16 @@ impl MeshApp {
             linked_stem_atomics,
             clip_indicator,
             clip_hold_frames: 0,
+            level_atomics,
+            deck_meter: std::array::from_fn(|_| DeckMeterState::default()),
+            master_meter: DeckMeterState::default(),
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
                 state.set_stem_colors(active.stem_colors());
                 state.set_vertical_layout(config.display.waveform_layout.is_vertical());
                 state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
                 state.abstraction_level = config.display.waveform_abstraction.as_level();
+                state.audio_connected = audio_connected;
                 state
             },
             deck_views,
@@ -1828,20 +1862,13 @@ impl MeshApp {
         // Global FX preset selector
         let fx_element = self.view_global_fx_dropdown();
 
-        let clipping = self.clip_hold_frames > 0;
-        let dot_color = if clipping {
-            Color::from_rgb(1.0, 0.15, 0.15)
-        } else {
-            Color::from_rgb(0.3, 0.8, 0.3)
-        };
-        let connection_status: Element<'_, Message> = if self.domain.is_audio_connected() {
-            row![
-                text("●").size(sz(12.0)).color(dot_color),
-                text(" Audio Connected").size(sz(12.0)),
-            ].into()
-        } else {
-            text("○ Audio Disconnected").size(sz(12.0)).into()
-        };
+        // Master output peak meter — replaces the old green/red dot + "Audio Connected" text.
+        // Grays out automatically when audio is disconnected (active=false).
+        let master_meter = mesh_widgets::view_master_meter_horizontal(
+            self.master_meter.level_db,
+            self.master_meter.peak_hold_db,
+            self.domain.is_audio_connected(),
+        );
 
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(sz(20.0)))
@@ -1933,11 +1960,11 @@ impl MeshApp {
             Space::new().into()
         };
 
-        // Right group: recording, stats, connection, latency, settings
+        // Right group: recording, stats, master meter, latency, settings
         let right_group: Element<'_, Message> = row![
             recording_indicator,
             stats_label,
-            connection_status,
+            master_meter,
             latency_label,
             settings_btn,
         ]

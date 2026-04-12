@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use mesh_core::audio::{self, AudioConfig, AudioHandle, AudioResult, DeviceId};
 use mesh_core::db::DatabaseService;
-use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
+use mesh_core::engine::{DeckAtomics, LevelAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::loader::LinkedStemResultReceiver;
 use mesh_core::types::NUM_DECKS;
 
@@ -34,6 +34,7 @@ pub type AudioSystemResult = (
     [Arc<LinkedStemAtomics>; NUM_DECKS],
     LinkedStemResultReceiver,
     Arc<AtomicBool>,  // clip_indicator
+    Arc<LevelAtomics>, // level_atomics for peak metering
     u32,              // sample_rate
     String,           // actual JACK client name
     Arc<AtomicU64>,   // output_latency_samples
@@ -69,6 +70,7 @@ pub fn start_audio_system(
         result.linked_stem_atomics,
         result.linked_stem_receiver,
         result.clip_indicator,
+        result.level_atomics,
         result.sample_rate,
         result.client_name,
         result.output_latency_samples,
@@ -99,6 +101,7 @@ pub fn start_audio_system_with_devices(
         result.linked_stem_atomics,
         result.linked_stem_receiver,
         result.clip_indicator,
+        result.level_atomics,
         result.sample_rate,
         result.client_name,
         result.output_latency_samples,

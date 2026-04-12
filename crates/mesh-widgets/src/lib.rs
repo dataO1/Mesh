@@ -77,6 +77,7 @@ pub use waveform::{
     SingleDeckAction, WaveformAction, view_deck_header,
     waveform_player_shader, waveform_shader_combined,
     waveform_shader_single_overview, waveform_shader_single_zoomed,
+    view_master_meter_horizontal,
 };
 
 // Tree widget for hierarchical navigation

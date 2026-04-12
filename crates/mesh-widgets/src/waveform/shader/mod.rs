@@ -20,10 +20,9 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use iced::mouse;
+use iced::widget::canvas::{self, Canvas};
 use iced::widget::shader;
-use iced::{Element, Length, Rectangle};
-
-use iced::Color;
+use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 
 use super::state::{
     CombinedState, OverviewPeakCache, PlayerCanvasState, SharedPeakBuffer, ZoomedViewMode,
@@ -1795,15 +1794,22 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
         let overview = waveform_shader_overview(state, idx, on_action.clone());
         let header = view_deck_header(state, idx);
 
-        // Wrap zoomed waveform with stem indicators on inner edge
+        // Peak meter: reads display values from PlayerCanvasState (set each tick from atomics)
+        let meter = view_peak_meter(
+            state.channel_level_db[idx],
+            state.channel_peak_hold_db[idx],
+            state.audio_connected,
+        );
+
+        // Wrap zoomed waveform with stem indicators + peak meter on inner edge
         let indicators = view_stem_indicators(state, idx);
         let is_left_column = idx % 2 == 0;
         let zoomed_with_indicators: Element<'a, Message> = if is_left_column {
-            // Left column (decks 0, 2): indicators on right (inner edge)
-            row![zoomed, indicators].width(Length::Fill).height(Length::Fill).into()
+            // Left column (decks 0, 2): indicators → meter on right (inner edge)
+            row![zoomed, indicators, meter].width(Length::Fill).height(Length::Fill).into()
         } else {
-            // Right column (decks 1, 3): indicators on left (inner edge)
-            row![indicators, zoomed].width(Length::Fill).height(Length::Fill).into()
+            // Right column (decks 1, 3): meter → indicators on left (inner edge)
+            row![meter, indicators, zoomed].width(Length::Fill).height(Length::Fill).into()
         };
 
         if mirrored {
@@ -1951,6 +1957,246 @@ fn view_stem_indicators<'a, Message: Clone + 'a>(
             .height(Length::Fill)
             .into()
     }
+}
+
+// =============================================================================
+// Peak meter widget (PPM-style, vertical, Canvas-based)
+// =============================================================================
+
+/// Scale constants for the PPM meter (−60 dBFS to +3 dBFS).
+const METER_DB_MIN: f32 = -60.0;
+const METER_DB_MAX: f32 = 3.0;
+const METER_DB_RANGE: f32 = METER_DB_MAX - METER_DB_MIN;
+/// Width of the peak meter strip in pixels.
+const METER_STRIP_WIDTH: f32 = 8.0;
+
+/// Normalize a dBFS value to 0.0 (bottom) .. 1.0 (top) within the meter scale.
+#[inline]
+fn meter_norm(db: f32) -> f32 {
+    ((db - METER_DB_MIN) / METER_DB_RANGE).clamp(0.0, 1.0)
+}
+
+/// Canvas program that draws one vertical PPM meter strip.
+///
+/// Zones (bottom-to-top):
+/// - Green  : −60 to −12 dBFS
+/// - Yellow : −12 to  0 dBFS
+/// - Red    :   0 to +3 dBFS
+///
+/// A 2-px peak-hold line floats at the highest recent level.
+struct PeakMeterCanvas {
+    level_norm: f32,
+    peak_norm: f32,
+    /// False when audio is disconnected — draws a gray ghost meter instead.
+    active: bool,
+}
+
+impl<Message> canvas::Program<Message> for PeakMeterCanvas {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry<iced::Renderer>> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let w = bounds.width;
+        let h = bounds.height;
+
+        // Background
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            Size::new(w, h),
+            Color::from_rgb(0.06, 0.06, 0.06),
+        );
+
+        // Color zone boundary norms
+        let norm_green_end = meter_norm(-12.0);   // 48/63 ≈ 0.762
+        let norm_yellow_end = meter_norm(0.0);    // 60/63 ≈ 0.952
+
+        let level = self.level_norm;
+
+        if !self.active {
+            // Audio disconnected: draw a dim ghost bar at a fixed low level so the
+            // meter is visible but obviously inactive.
+            let ghost_level = meter_norm(-30.0);
+            frame.fill_rectangle(
+                Point::new(0.0, h * (1.0 - ghost_level)),
+                Size::new(w, h * ghost_level),
+                Color::from_rgb(0.18, 0.18, 0.18),
+            );
+            return vec![frame.into_geometry()];
+        }
+
+        // Green segment — present whenever level > 0 (i.e. above silence floor)
+        if level > 0.0 {
+            let top = norm_green_end.min(level);
+            frame.fill_rectangle(
+                Point::new(0.0, h * (1.0 - top)),
+                Size::new(w, h * top),
+                Color::from_rgb(0.05, 0.75, 0.25),
+            );
+        }
+
+        // Yellow segment — only when level exceeds green zone
+        if level > norm_green_end {
+            let top = norm_yellow_end.min(level);
+            frame.fill_rectangle(
+                Point::new(0.0, h * (1.0 - top)),
+                Size::new(w, h * (top - norm_green_end)),
+                Color::from_rgb(0.90, 0.80, 0.05),
+            );
+        }
+
+        // Red segment — only when level exceeds 0 dBFS
+        if level > norm_yellow_end {
+            frame.fill_rectangle(
+                Point::new(0.0, h * (1.0 - level)),
+                Size::new(w, h * (level - norm_yellow_end)),
+                Color::from_rgb(1.0, 0.18, 0.10),
+            );
+        }
+
+        // Peak-hold line (2 px), colored to match the zone it sits in
+        let peak = self.peak_norm;
+        if peak > 0.0 {
+            let peak_y = h * (1.0 - peak);
+            let peak_color = if peak > norm_yellow_end {
+                Color::from_rgb(1.0, 0.40, 0.30)
+            } else if peak > norm_green_end {
+                Color::from_rgb(1.0, 0.95, 0.30)
+            } else {
+                Color::from_rgb(0.30, 1.0, 0.50)
+            };
+            frame.fill_rectangle(
+                Point::new(0.0, peak_y),
+                Size::new(w, 2.0),
+                peak_color,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Build a vertical peak meter strip for one deck.
+///
+/// Returns an 8-pixel-wide canvas element that fills the available height.
+/// When `active` is false (audio disconnected) the meter renders as a dim ghost.
+fn view_peak_meter<'a, Message: Clone + 'a>(
+    level_db: f32,
+    peak_hold_db: f32,
+    active: bool,
+) -> Element<'a, Message> {
+    Canvas::new(PeakMeterCanvas {
+        level_norm: meter_norm(level_db),
+        peak_norm: meter_norm(peak_hold_db),
+        active,
+    })
+    .width(METER_STRIP_WIDTH)
+    .height(Length::Fill)
+    .into()
+}
+
+/// Build a compact horizontal master output meter for the app header.
+///
+/// Renders as a fixed-size horizontal bar (140×14 px) with the same three color
+/// zones as the vertical deck meters.  When `active` is false the meter shows a
+/// dim ghost bar so users can tell audio is not running.
+pub fn view_master_meter_horizontal<'a, Message: Clone + 'a>(
+    level_db: f32,
+    peak_hold_db: f32,
+    active: bool,
+) -> Element<'a, Message> {
+    struct HorizMeter {
+        level_norm: f32,
+        peak_norm: f32,
+        active: bool,
+    }
+
+    impl<Message> canvas::Program<Message> for HorizMeter {
+        type State = ();
+
+        fn draw(
+            &self,
+            _state: &(),
+            renderer: &iced::Renderer,
+            _theme: &Theme,
+            bounds: Rectangle,
+            _cursor: mouse::Cursor,
+        ) -> Vec<canvas::Geometry<iced::Renderer>> {
+            let mut frame = canvas::Frame::new(renderer, bounds.size());
+            let w = bounds.width;
+            let h = bounds.height;
+
+            frame.fill_rectangle(Point::ORIGIN, Size::new(w, h), Color::from_rgb(0.06, 0.06, 0.06));
+
+            let norm_green_end = meter_norm(-12.0);
+            let norm_yellow_end = meter_norm(0.0);
+            let level = self.level_norm;
+
+            if !self.active {
+                let ghost_w = w * 0.25;
+                frame.fill_rectangle(
+                    Point::ORIGIN,
+                    Size::new(ghost_w, h),
+                    Color::from_rgb(0.18, 0.18, 0.18),
+                );
+                return vec![frame.into_geometry()];
+            }
+
+            if level > 0.0 {
+                let right = norm_green_end.min(level) * w;
+                frame.fill_rectangle(Point::ORIGIN, Size::new(right, h), Color::from_rgb(0.05, 0.75, 0.25));
+            }
+            if level > norm_green_end {
+                let left = norm_green_end * w;
+                let right = norm_yellow_end.min(level) * w;
+                frame.fill_rectangle(
+                    Point::new(left, 0.0),
+                    Size::new(right - left, h),
+                    Color::from_rgb(0.90, 0.80, 0.05),
+                );
+            }
+            if level > norm_yellow_end {
+                let left = norm_yellow_end * w;
+                let right = level * w;
+                frame.fill_rectangle(
+                    Point::new(left, 0.0),
+                    Size::new(right - left, h),
+                    Color::from_rgb(1.0, 0.18, 0.10),
+                );
+            }
+
+            // Peak-hold line: 2px vertical
+            let peak = self.peak_norm;
+            if peak > 0.0 {
+                let x = (peak * w - 1.0).max(0.0);
+                let peak_color = if peak > norm_yellow_end {
+                    Color::from_rgb(1.0, 0.40, 0.30)
+                } else if peak > norm_green_end {
+                    Color::from_rgb(1.0, 0.95, 0.30)
+                } else {
+                    Color::from_rgb(0.30, 1.0, 0.50)
+                };
+                frame.fill_rectangle(Point::new(x, 0.0), Size::new(2.0, h), peak_color);
+            }
+
+            vec![frame.into_geometry()]
+        }
+    }
+
+    Canvas::new(HorizMeter {
+        level_norm: meter_norm(level_db),
+        peak_norm: meter_norm(peak_hold_db),
+        active,
+    })
+    .width(140)
+    .height(14)
+    .into()
 }
 
 // =============================================================================

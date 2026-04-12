@@ -229,6 +229,7 @@ pub fn start_audio_system(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let level_atomics = engine.level_atomics();
     let output_latency_samples = engine.output_latency_samples();
     let internal_latency_samples = engine.internal_latency_samples();
 
@@ -294,6 +295,7 @@ pub fn start_audio_system(
         linked_stem_atomics,
         linked_stem_receiver,
         clip_indicator,
+        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,
