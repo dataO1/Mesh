@@ -8,6 +8,22 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Smart suggestions — dual harmonic filter** — The single fixed-threshold
+  filter has been replaced by a two-layer gate. A permanent **harmonic floor**
+  (`base_score ≥ 0.45`) blocks Semitone, FarStep, FarCross, and Tritone
+  transitions at every intent fader position regardless of energy bias or
+  personal curation — these are musically dissonant and never appropriate. A
+  separate **blended threshold** (`key_transition_score ≥ 0.65`) operates on
+  the energy-direction-blended score: at the centre position this equals the
+  raw base score, so EnergyBoost/Cool (0.50) are excluded and only the
+  flow-safe set (SameKey, Adjacent, Diagonal, MoodLift) appears — suitable for
+  mashups and multi-track layering. At extreme positions the blended score shifts
+  toward the energy-direction component: EnergyBoost rises to 0.75 and unlocks;
+  SameKey falls to 0.50 and is filtered out. The crossover happens naturally
+  near ±0.60–0.70 bias without any hard-coded knee. Personal curation (currently
+  browsed playlist) still receives 50% leniency on the blended layer only —
+  the harmonic floor is never relaxed.
+
 - **Smart suggestions — static key harmony weight** — The harmonic
   compatibility weight (`w_key`) is now constant at 30% across all intent fader
   positions (previously it dropped from 25% to 10% at extremes). Key harmony is

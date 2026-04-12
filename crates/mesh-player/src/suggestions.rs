@@ -321,16 +321,31 @@ fn key_transition_score(
     (base * (1.0 - blend) + energy_score * blend).clamp(0.0, 1.0)
 }
 
-/// Compute the adaptive filter threshold based on energy bias.
+/// Permanent harmonic floor applied to `base_score(best_tt)` — never relaxed.
 ///
-/// Fixed harmonic filter threshold used at all fader positions.
+/// Blocks Semitone (0.20), FarStep (0.08–0.25), FarCross (0.10), and Tritone (0.03)
+/// regardless of energy bias, personal curation, or any other signal. These transitions
+/// are genuinely dissonant and have no place in a DJ mix at any intent level.
 ///
-/// No adaptive relaxation is needed: `key_transition_score` already blends
-/// toward energy direction at extremes, so energy-appropriate transitions
-/// (e.g. SemitoneUp when raising) naturally score above 0.50 while
-/// opposing ones (EnergyCool when raising) fall below. Adaptive relaxation
-/// only flooded the candidate pool with harmonically bad tracks.
-const HARMONIC_FILTER_THRESHOLD: f32 = 0.50;
+/// EnergyBoost/Cool (0.50) are above this floor — they can appear when the blended
+/// threshold also passes.
+const HARMONIC_FLOOR: f32 = 0.45;
+
+/// Threshold applied to the energy-blended `key_transition_score`.
+///
+/// At **center** (bias=0): score = base_score.
+///   - EnergyBoost/Cool (0.50) are blocked — too bold for flow/mashup mixing.
+///   - Passing set: SameKey (1.00), Adjacent (0.85), Diagonal (0.75), MoodLift/Darken (0.70).
+///
+/// At **extreme** (|bias|=1): score = energy_direction_score.
+///   - EnergyBoost energy-aligned: (0.50+1)/2 = 0.75 → passes.
+///   - SameKey: (0.0+1)/2 = 0.50 → blocked. Flow tracks disappear at extreme.
+///   - AdjacentUp at extreme peak: (0.20+1)/2 = 0.60 → also blocked.
+///
+/// The crossover point where EnergyBoost (positive) unlocks is bias_abs ≈ 0.60,
+/// and SameKey starts being blocked at bias_abs > 0.70 — naturally placing the
+/// "break transition" zone near the slider extremes without any hard-coded knee.
+const BLENDED_THRESHOLD: f32 = 0.65;
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
 ///
@@ -785,8 +800,6 @@ pub fn query_suggestions(
 
     // Energy direction bias: -1.0 (drop) through 0.0 (maintain) to +1.0 (peak)
     let energy_bias = (energy_direction - 0.5) * 2.0;
-    let filter_threshold = HARMONIC_FILTER_THRESHOLD;
-
     // Step 4b: Batch-fetch ML scores from each source DB, merged under composite keys
     let ml_scores: HashMap<(usize, i64), MlScores> = {
         // Group IDs by source index
@@ -907,17 +920,26 @@ pub fn query_suggestions(
                 })
                 .unwrap_or((0.3, TransitionType::FarStep(6))); // No key = moderate penalty
 
-            // Apply adaptive filter threshold.
-            // Tracks in the user's preferred set (e.g. currently browsed playlist)
-            // use a 50% more lenient threshold — personal curation implies trust.
+            // Dual-layer harmonic filter.
+            //
+            // Layer 1: permanent harmonic floor on raw base_score — never relaxed.
+            // Blocks Semitone, FarStep, FarCross, Tritone at all bias levels.
+            let harmonic_base = base_score(best_tt);
+            if harmonic_base < HARMONIC_FLOOR {
+                return None;
+            }
+            // Layer 2: blended threshold on the energy-direction-aware key score.
+            // At center: filters out EnergyBoost (0.50) → pure flow set.
+            // At extreme: SameKey/Adjacent fall below 0.65; EnergyBoost rises to 0.75.
+            // Preferred tracks (personal curation) get 50% leniency on this layer only.
             let is_preferred = preferred_paths.map_or(false, |pp| {
                 let p = track.path.to_string_lossy();
                 pp.contains(p.as_ref())
             });
             let effective_threshold = if is_preferred {
-                filter_threshold * 0.5
+                BLENDED_THRESHOLD * 0.5
             } else {
-                filter_threshold
+                BLENDED_THRESHOLD
             };
             if best_key_score < effective_threshold {
                 return None;
@@ -1228,24 +1250,41 @@ mod tests {
         assert!(extreme > 0.50, "Mood darken should still be viable at extreme: {}", extreme);
     }
 
-    // ─── Harmonic Filter Threshold ───────────────────────────────────
+    // ─── Dual Harmonic Filter ───────────────────────────────────────
 
     #[test]
-    fn test_filter_threshold_is_fixed() {
-        assert_eq!(HARMONIC_FILTER_THRESHOLD, 0.50);
+    fn test_harmonic_floor_blocks_dissonant_transitions() {
+        // All permanently-blocked types must be below HARMONIC_FLOOR = 0.45
+        assert!(base_score(TransitionType::SemitoneUp)   < HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::SemitoneDown) < HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::FarStep(3))   < HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::FarCross(1))  < HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::Tritone)      < HARMONIC_FLOOR);
+        // EnergyBoost/Cool must be ABOVE the floor so the blended layer can unlock them
+        assert!(base_score(TransitionType::EnergyBoost) >= HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::EnergyCool)  >= HARMONIC_FLOOR);
     }
 
     #[test]
-    fn test_energy_transitions_pass_fixed_threshold_at_extreme() {
-        // At bias=+1, energy-appropriate transitions naturally score above 0.50
-        // via key_transition_score blending — no adaptive relaxation needed.
+    fn test_blended_threshold_flow_and_break_zones() {
         let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let em = MusicalKey::parse("Em").unwrap(); // 9A  (AdjacentUp, energy_dir=+0.20)
-        let semitone_up_key = MusicalKey::parse("Dm").unwrap(); // SemitoneUp-ish
-        let score_adj = key_transition_score(&am, &em, 1.0, CAM);
-        assert!(score_adj >= HARMONIC_FILTER_THRESHOLD,
-            "AdjacentUp should pass filter at extreme peak: {}", score_adj);
-        let _ = key_transition_score(&am, &semitone_up_key, 1.0, CAM); // no panic
+        let bm = MusicalKey::parse("Bm").unwrap(); // 10A = EnergyBoost from Am (+2 steps)
+
+        // At center: EnergyBoost base_score 0.50 < BLENDED_THRESHOLD 0.65 → blocked
+        let score_center = key_transition_score(&am, &bm, 0.0, CAM);
+        assert!(score_center < BLENDED_THRESHOLD,
+            "EnergyBoost blocked at center: {:.2} < {:.2}", score_center, BLENDED_THRESHOLD);
+
+        // At extreme positive: EnergyBoost blends to (0.50+1)/2 = 0.75 → passes
+        let score_extreme = key_transition_score(&am, &bm, 1.0, CAM);
+        assert!(score_extreme >= BLENDED_THRESHOLD,
+            "EnergyBoost unlocks at extreme: {:.2} >= {:.2}", score_extreme, BLENDED_THRESHOLD);
+
+        // SameKey energy_score at extreme = (0.0+1)/2 = 0.50 → filtered out
+        // This ensures flow-maintaining tracks disappear from extreme suggestions
+        let score_same = key_transition_score(&am, &am, 1.0, CAM);
+        assert!(score_same < BLENDED_THRESHOLD,
+            "SameKey blocked at extreme: {:.2} < {:.2}", score_same, BLENDED_THRESHOLD);
     }
 
     // ─── Key Direction Penalty ──────────────────────────────────────

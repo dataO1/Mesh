@@ -404,14 +404,14 @@ mod tests {
         assert_eq!(config.target_lufs, -9.0);
         assert!(config.auto_gain_enabled);
 
-        // Test gain calculation
-        // Track at -12 LUFS, target -9 LUFS = +3 dB boost
+        // Test gain calculation with perceptual density bias (multiplier = 1 + 1/9 ≈ 1.111)
+        // Track at -12 LUFS, target -9 LUFS: delta=3, biased → 3 × 1.111 = 3.333 dB
         let gain_db = config.calculate_gain_db(Some(-12.0)).unwrap();
-        assert!((gain_db - 3.0).abs() < 0.001);
+        assert!((gain_db - 3.333).abs() < 0.01);
 
-        // Track at -4 LUFS, target -9 LUFS = -5 dB cut
+        // Track at -4 LUFS, target -9 LUFS: delta=-5, biased → -5 × 1.111 = -5.556 dB
         let gain_db = config.calculate_gain_db(Some(-4.0)).unwrap();
-        assert!((gain_db - (-5.0)).abs() < 0.001);
+        assert!((gain_db - (-5.556)).abs() < 0.01);
 
         // No LUFS = no gain
         assert!(config.calculate_gain_db(None).is_none());
