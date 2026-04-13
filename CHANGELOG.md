@@ -8,6 +8,29 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Smart suggestions — neural audio matching + Goldilocks similarity** — The
+  suggestion engine now uses the 1280-dimensional Discogs-EffNet neural audio
+  fingerprint (already computed during import) as its primary similarity index,
+  replacing the previous hand-crafted 16-dimension feature vector. At the centre
+  of the intent slider (layering mode) the system rewards tracks in the same
+  musical neighbourhood at a "Goldilocks" distance — close enough to share
+  genre and character, far enough to avoid suggesting a near-identical clone. At
+  the extremes (transition mode) the engine switches to its original
+  diversity-seeking behaviour for bold energy shifts. Tracks analysed before
+  this update do not need re-importing; clicking **Re-analyse features** in
+  mesh-cue is enough to populate the new data.
+
+- **Smart suggestions — stem complement scoring** — At the centre intent
+  position the suggestion score now includes a stem balance component. The
+  system measures the vocal and melodic ("other") energy of each stem as a
+  fraction of the total RMS and rewards tracks that fill the current deck's
+  gaps: if your active deck is instrumental the scorer pushes vocal-rich tracks
+  up the list; if it is melody-heavy it favours sparser candidates. Tracks that
+  would clash (both decks loud in the same stem) are pushed down. The effect
+  fades smoothly to zero as the intent fader moves toward the extremes, where
+  complement scoring is not relevant to transition-style mixing. All four stem
+  densities (vocal, drums, bass, other) are stored and available for future use.
+
 - **Auto headphones cue — logarithmic volume curve** — The auto-cue routing
   now follows a smooth exponential decay across the full fader range instead of
   the previous two-stage linear (full below 30%, linear fade 30→50%, off above

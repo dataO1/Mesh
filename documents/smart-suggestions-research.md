@@ -412,25 +412,29 @@ On "Suggest" Trigger
 
 ## 8. Implementation Priority
 
-### Phase 1: Activate Existing Infrastructure (Low Effort)
-- [ ] Wire up `SimilarityQuery::find_similar()` to a UI suggestion panel
-- [ ] Populate `harmonic_match` table during track import
-- [ ] Add "Suggest Similar" button/MIDI trigger
-- [ ] Basic results: similar tracks by 16-dim features + BPM + key filter
+### Phase 1: Activate Existing Infrastructure ✅ Complete
+- [x] Wire up `SimilarityQuery::find_similar()` to a UI suggestion panel
+- [x] Add "Suggest Similar" button/MIDI trigger
+- [x] Basic results: similar tracks by 16-dim features + BPM + key filter
 
-### Phase 2: Neural Embeddings (Medium Effort)
-- [ ] Add `ort` dependency, download Discogs-EffNet ONNX model
-- [ ] Add mel spectrogram preprocessing (128 mel bands)
-- [ ] Compute 1280-dim embeddings during import (subprocess, like existing analysis)
-- [ ] Create second HNSW index for neural embeddings (dim=1280)
-- [ ] Update suggestion query to use neural embeddings as primary ranker
+### Phase 2: Neural Embeddings ✅ Complete
+- [x] Add `ort` dependency, download Discogs-EffNet ONNX model
+- [x] Add mel spectrogram preprocessing (128 mel bands)
+- [x] Compute 1280-dim embeddings during import
+- [x] Create second HNSW index for neural embeddings (dim=1280, m=32, ef=300)
+- [x] Update suggestion query to use neural embeddings as primary ranker
+- [x] 16-dim vector kept as silent fallback for tracks not yet re-analysed
 
-### Phase 3: Smart Ranking (Medium Effort)
-- [ ] Composite scoring function (similarity + key + energy + BPM + history)
-- [ ] Energy direction parameter (build/maintain/cool)
-- [ ] Exclude already-played tracks
-- [ ] Suggestion explanation text ("Compatible key, similar style, energy builds")
-- [ ] Record transitions in `played_after` graph during playback
+### Phase 3: Smart Ranking ✅ Complete
+- [x] Composite scoring function (see Section 11 for current weights)
+- [x] Intent slider: energy direction parameter (build/maintain/cool)
+- [x] Exclude already-played tracks (session memory)
+- [x] Suggestion reason tags ("Compatible key, similar style, energy builds")
+- [x] Goldilocks HNSW: rewards "close but not clone" at centre intent
+- [x] Stem complement scoring: fills vocal/melodic gaps in centre mode
+- [x] Dual harmonic filter: permanent floor + energy-direction blended threshold
+- [x] Krumhansl–Kessler perceptual key model as alternative to Camelot
+- [x] Genre-normalized aggression scoring
 
 ### Phase 4: Advanced Features (Higher Effort)
 - [ ] Community detection on similarity graph (auto-genre clusters)
@@ -438,6 +442,80 @@ On "Suggest" Trigger
 - [ ] Set position awareness (warm-up vs peak vs cool-down)
 - [ ] Transition quality feedback loop (rate transitions, improve `played_after` weights)
 - [ ] MinHash-LSH for remix/edit detection
+- [ ] Time-based stem complement (intro vocals don't clash with drop vocals)
+
+---
+
+## 11. Current Scoring Formula (as implemented)
+
+### 11.1 HNSW Routing
+
+Primary: EffNet 1280-dim HNSW (`ml_embeddings:similarity_index`, Cosine, m=32, ef=300).
+Fallback (silent, for tracks not yet re-analysed): 16-dim audio features HNSW.
+
+### 11.2 Weight Table
+
+All weights sum to **1.00** at every intent bias level.
+
+| Component | Center (bias=0) | Extreme (|bias|=1) | Notes |
+|-----------|----------------|-------------------|-------|
+| `w_hnsw` | 0.30 | 0.42 | Freed at center for complement scoring |
+| `w_key` | 0.30 | 0.30 | Constant — harmonic quality never trades off |
+| `w_key_dir` | 0.12 | 0.05 | Key energy direction match |
+| `w_bpm` | 0.13 | 0.00 | Irrelevant at extremes |
+| `w_production` | 0.03 | 0.00 | Acoustic/electronic style match |
+| `w_vocal_compl` | 0.07 | 0.00 | Stem complement — vocal stem |
+| `w_other_compl` | 0.05 | 0.00 | Stem complement — melodic/lead stem |
+| `w_dance` | 0.00 | 0.05 | Danceability direction |
+| `w_approach` | 0.00 | 0.02 | Approachability direction |
+| `w_contrast` | 0.00 | 0.01 | Timbre/tonal contrast |
+| `w_aggression` | 0.00 | 0.15 | Genre-normalized aggression direction |
+
+### 11.3 Goldilocks HNSW Formula
+
+Replaces the previous linear diversity/similarity blend at the centre position.
+
+```
+GOLD_TARGET = 0.35   (normalized EffNet distance sweet spot)
+GOLD_SIGMA2 = 0.08   (2σ², σ = 0.20)
+
+goldilocks     = exp(-(norm_dist - GOLD_TARGET)² / GOLD_SIGMA2)
+hnsw_component = goldilocks × (1 - bias_abs) + (1 - norm_dist) × bias_abs
+```
+
+Behavior at center:
+- `norm_dist = 0.00` → goldilocks = 0.22 (clone penalty)
+- `norm_dist = 0.35` → goldilocks = 1.00 (sweet spot — same genre, different texture)
+- `norm_dist = 0.70` → goldilocks = 0.22 (unrelated penalty)
+
+At extremes, blends fully to `1 - norm_dist` (diversity reward), preserving the original transition-mode behaviour.
+
+### 11.4 Stem Complement Formula
+
+Bipolar scoring normalized to [0, 1]:
+
+```
+stem_complement(seed, cand) = (|seed - cand| - min(seed, cand) + 1) / 2
+```
+
+| seed | cand | result | meaning |
+|------|------|--------|---------|
+| 1.0 | 0.0 | 1.0 | fully complementary → max boost |
+| 0.0 | 1.0 | 1.0 | fully complementary → max boost |
+| 1.0 | 1.0 | 0.0 | clashing → max penalty |
+| 0.0 | 0.0 | 0.5 | both silent → neutral |
+
+Applied independently to the vocal stem and the "other" (melody/lead) stem.
+Weights `w_vocal_compl` and `w_other_compl` scale smoothly from their center
+values to zero as `|bias|` increases, so complement scoring is fully inactive
+at the extremes.
+
+### 11.5 Stem Energy Storage
+
+Four densities stored per track in `stem_energy` relation:
+`(vocal_density, drums_density, bass_density, other_density)` each in [0, 1],
+summing to 1.0. Currently only vocal and other are used in scoring; drums and
+bass are stored for future use (e.g., linked-stem-aware scoring).
 
 ---
 
