@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.12-rc.4"
+version = "0.9.12-rc.5"
 edition = "2021"
 authors = ["Mesh Team"]
 license = "AGPL-3.0-or-later"
