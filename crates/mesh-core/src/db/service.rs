@@ -520,6 +520,16 @@ impl DatabaseService {
             }
         }
 
+        // 8. Sync EffNet ML embedding
+        if let Ok(Some(emb)) = source_db.get_ml_embedding_raw(source_track_id) {
+            let _ = self.store_ml_embedding(track_id, &emb);
+        }
+
+        // 9. Sync stem energy densities
+        if let Ok(Some((v, d, b, o))) = source_db.get_stem_energy(source_track_id) {
+            let _ = self.store_stem_energy(track_id, v, d, b, o);
+        }
+
         log::debug!("sync_track_atomic: SUCCESS id={}", track_id);
         Ok(track_id)
     }
@@ -973,6 +983,47 @@ impl DatabaseService {
     pub fn find_similar_by_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar_by_vector(&self.db, query_vec, limit)?;
         Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    // ── EffNet ML embedding ─────────────────────────────────────────────────
+
+    /// Store a 1280-dim EffNet embedding for similarity search.
+    pub fn store_ml_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        SimilarityQuery::upsert_ml_embedding(&self.db, track_id, embedding)
+    }
+
+    /// Retrieve the raw EffNet embedding for a track (None if not yet analysed).
+    pub fn get_ml_embedding_raw(&self, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        SimilarityQuery::get_ml_embedding_raw(&self.db, track_id)
+    }
+
+    /// Find similar tracks via EffNet HNSW (same DB, by track ID).
+    pub fn find_similar_tracks_ml(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+        let results = SimilarityQuery::find_similar_by_ml_id(&self.db, track_id, limit)?;
+        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    /// Find similar tracks via EffNet HNSW using a raw vector (cross-database).
+    pub fn find_similar_by_ml_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+        let results = SimilarityQuery::find_similar_by_ml_vector(&self.db, query_vec, limit)?;
+        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    // ── Stem energy densities ───────────────────────────────────────────────
+
+    /// Store per-stem RMS energy densities `(vocal, drums, bass, other)`.
+    pub fn store_stem_energy(&self, track_id: i64, vocal: f32, drums: f32, bass: f32, other: f32) -> Result<(), DbError> {
+        SimilarityQuery::upsert_stem_energy(&self.db, track_id, vocal, drums, bass, other)
+    }
+
+    /// Get per-stem energy densities for a single track.
+    pub fn get_stem_energy(&self, track_id: i64) -> Result<Option<(f32, f32, f32, f32)>, DbError> {
+        SimilarityQuery::get_stem_energy(&self.db, track_id)
+    }
+
+    /// Batch-fetch stem energy for multiple tracks (avoids N+1 in scoring loops).
+    pub fn batch_get_stem_energy(&self, track_ids: &[i64]) -> Result<HashMap<i64, (f32, f32, f32, f32)>, DbError> {
+        SimilarityQuery::batch_get_stem_energy(&self.db, track_ids)
     }
 
     // ========================================================================

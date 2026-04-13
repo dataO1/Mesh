@@ -34,7 +34,7 @@ use crate::analysis::{analyze_audio, fit_bpm_to_range, generate_beat_grid, Analy
 use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file;
 use crate::import::StemImporter;
-use crate::ml_analysis::{self, BeatThisAnalyzer, MlAnalyzer};
+use crate::ml_analysis::{self, BeatThisAnalyzer, MlAnalysisResult, MlAnalyzer};
 use crate::separation::{SeparationConfig, SeparationService};
 use anyhow::{Context, Result};
 use mesh_core::db::{DatabaseService, MlAnalysisData, Track};
@@ -514,6 +514,33 @@ pub fn scan_and_group_stems(import_folder: &Path) -> Result<Vec<StemGroup>> {
     Ok(result)
 }
 
+/// Compute per-stem RMS energy densities as fractions of total RMS.
+///
+/// Returns `(vocal, drums, bass, other)` where each value is in [0, 1] and
+/// the four values sum to 1.0. Captures the stem energy balance of a track
+/// for complement scoring in suggestions.
+pub fn compute_stem_energy_ratios(
+    buffers: &mesh_core::audio_file::StemBuffers,
+) -> (f32, f32, f32, f32) {
+    fn rms(buf: &mesh_core::types::StereoBuffer) -> f32 {
+        let s = buf.as_slice();
+        if s.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = s.iter().map(|s| s.left * s.left + s.right * s.right).sum();
+        (sum / (2.0 * s.len() as f32)).sqrt()
+    }
+    let v = rms(&buffers.vocals);
+    let d = rms(&buffers.drums);
+    let b = rms(&buffers.bass);
+    let o = rms(&buffers.other);
+    let total = v + d + b + o;
+    if total < 1e-9 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    (v / total, d / total, b / total, o / total)
+}
+
 /// Process a single track group: load stems, analyze, export
 ///
 /// This is run by worker threads. When `ml_analyzer` is provided,
@@ -579,6 +606,9 @@ fn process_single_track(
     };
     let source_sample_rate = imported.source_sample_rate;
     let buffers = imported.buffers;
+
+    // Compute stem energy ratios while buffers are in scope (before any move/drop)
+    let (vocal_density, drums_density, bass_density, other_density) = compute_stem_energy_ratios(&buffers);
 
     // Create full mix for subprocess analysis (key/LUFS always need all audio content)
     let mono_samples = match importer.get_mono_sum() {
@@ -822,7 +852,7 @@ fn process_single_track(
     );
 
     // ── ML Analysis (mel spectrogram → genre/arousal/mood/voice) ──
-    let ml_result: Option<MlAnalysisData> = if ml_analyzer.is_some() {
+    let ml_result: Option<MlAnalysisResult> = if ml_analyzer.is_some() {
         // Compute mel spectrogram from full mix mono (pure Rust DSP)
         let mono_for_mel = match importer.get_mono_sum() {
             Ok(m) => m,
@@ -854,27 +884,30 @@ fn process_single_track(
                         Ok(result) => {
                             log::info!(
                                 "process_single_track: '{}' ML analysis complete — genre={:?}, arousal={:?}, vocal={:.3}",
-                                base_name, result.top_genre, result.arousal, result.vocal_presence
+                                base_name, result.data.top_genre, result.data.arousal, result.data.vocal_presence
                             );
                             Some(result)
                         }
                         Err(e) => {
                             log::warn!("process_single_track: '{}' ML inference failed: {}", base_name, e);
-                            Some(MlAnalysisData {
-                                vocal_presence: 0.0,
-                                arousal: None,
-                                valence: None,
-                                top_genre: None,
-                                genre_scores: Vec::new(),
-                                mood_themes: None,
-                                binary_moods: None,
-                                danceability: None,
-                                approachability: None,
-                                reverb: None,
-                                timbre: None,
-                                tonal: None,
-                                mood_acoustic: None,
-                                mood_electronic: None,
+                            Some(MlAnalysisResult {
+                                data: MlAnalysisData {
+                                    vocal_presence: 0.0,
+                                    arousal: None,
+                                    valence: None,
+                                    top_genre: None,
+                                    genre_scores: Vec::new(),
+                                    mood_themes: None,
+                                    binary_moods: None,
+                                    danceability: None,
+                                    approachability: None,
+                                    reverb: None,
+                                    timbre: None,
+                                    tonal: None,
+                                    mood_acoustic: None,
+                                    mood_electronic: None,
+                                },
+                                embedding: Vec::new(),
                             })
                         }
                     }
@@ -886,21 +919,24 @@ fn process_single_track(
             }
         } else {
             // No mel spectrogram available
-            Some(MlAnalysisData {
-                vocal_presence: 0.0,
-                arousal: None,
-                valence: None,
-                top_genre: None,
-                genre_scores: Vec::new(),
-                mood_themes: None,
-                binary_moods: None,
-                danceability: None,
-                approachability: None,
-                reverb: None,
-                timbre: None,
-                tonal: None,
-                mood_acoustic: None,
-                mood_electronic: None,
+            Some(MlAnalysisResult {
+                data: MlAnalysisData {
+                    vocal_presence: 0.0,
+                    arousal: None,
+                    valence: None,
+                    top_genre: None,
+                    genre_scores: Vec::new(),
+                    mood_themes: None,
+                    binary_moods: None,
+                    danceability: None,
+                    approachability: None,
+                    reverb: None,
+                    timbre: None,
+                    tonal: None,
+                    mood_acoustic: None,
+                    mood_electronic: None,
+                },
+                embedding: Vec::new(),
             })
         }
     } else {
@@ -943,7 +979,7 @@ fn process_single_track(
 
             // Store ML analysis results and auto-tag
             if let Some(ref ml) = ml_result {
-                if let Err(e) = config.db_service.store_ml_analysis(track_id, ml) {
+                if let Err(e) = config.db_service.store_ml_analysis(track_id, &ml.data) {
                     log::warn!(
                         "process_single_track: Failed to store ML analysis for '{}': {}",
                         base_name, e
@@ -954,7 +990,19 @@ fn process_single_track(
                         base_name
                     );
                     // Auto-tag from ML results
-                    auto_tag_from_ml(track_id, ml, &config.db_service);
+                    auto_tag_from_ml(track_id, &ml.data, &config.db_service);
+                }
+
+                // Persist EffNet embedding for 1280-dim HNSW similarity search
+                if ml.embedding.len() == 1280 {
+                    if let Err(e) = config.db_service.store_ml_embedding(track_id, &ml.embedding) {
+                        log::warn!("process_single_track: Failed to store ML embedding for '{}': {}", base_name, e);
+                    }
+                }
+
+                // Persist stem energy densities for complement scoring in suggestions
+                if let Err(e) = config.db_service.store_stem_energy(track_id, vocal_density, drums_density, bass_density, other_density) {
+                    log::warn!("process_single_track: Failed to store stem energy for '{}': {}", base_name, e);
                 }
             }
         }

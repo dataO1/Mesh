@@ -413,6 +413,17 @@ fn production_match_penalty(
     (diff / 2.0).min(1.0)
 }
 
+/// Stem complement component — bipolar [0, 1].
+///
+/// - seed=1, cand=0 (or vice versa): → 1.0 (fully complementary, max boost)
+/// - seed=1, cand=1 (both high):     → 0.0 (fully clashing, max penalty)
+/// - seed=0, cand=0 (both silent):   → 0.5 (neutral)
+///
+/// Formula: `(|seed - cand| - min(seed, cand) + 1) / 2`
+fn stem_complement_component(seed: f32, cand: f32) -> f32 {
+    ((seed - cand).abs() - seed.min(cand) + 1.0) / 2.0
+}
+
 /// Per-genre z-score normalization of aggression values.
 ///
 /// Raw `mood_aggressive` scores are genre-biased — DnB tracks score higher
@@ -684,20 +695,31 @@ pub fn query_suggestions(
             None => continue,
         };
 
-        // Get the seed's feature vector for cross-DB search
+        // Get the seed's feature vectors for HNSW routing.
+        // EffNet 1280-dim is the primary path; 16-dim is a silent fallback for
+        // tracks not yet re-analysed.
         let seed_features = sources[seed_src_idx].db.get_audio_features(seed_id);
         let seed_vector = seed_features.ok().flatten().map(|f| f.to_vector());
+        let seed_ml_vec: Option<Vec<f64>> = sources[seed_src_idx]
+            .db.get_ml_embedding_raw(seed_id).ok().flatten()
+            .map(|e| e.iter().map(|&v| v as f64).collect());
         log::debug!(
-            "[SUGGESTIONS] Seed {} (src={}) has_features={}",
-            seed_id, sources[seed_src_idx].name, seed_vector.is_some()
+            "[SUGGESTIONS] Seed {} (src={}) has_features={} has_ml_vec={}",
+            seed_id, sources[seed_src_idx].name, seed_vector.is_some(), seed_ml_vec.is_some()
         );
 
         for (target_idx, target_source) in sources.iter().enumerate() {
-            let results = if target_idx == seed_src_idx {
-                // Same DB — efficient by-ID lookup
+            let results = if target_idx == seed_src_idx && seed_ml_vec.is_some() {
+                // Same DB — EffNet HNSW primary path
+                target_source.db.find_similar_tracks_ml(seed_id, per_seed_limit)
+            } else if target_idx == seed_src_idx {
+                // Same DB — 16-dim fallback (track not yet re-analysed)
                 target_source.db.find_similar_tracks(seed_id, per_seed_limit)
+            } else if let Some(ref ml_vec) = seed_ml_vec {
+                // Cross-DB — EffNet primary path
+                target_source.db.find_similar_by_ml_vector(ml_vec, per_seed_limit)
             } else if let Some(ref vec) = seed_vector {
-                // Different DB — cross-DB vector search
+                // Cross-DB — 16-dim fallback
                 target_source.db.find_similar_by_vector(vec, per_seed_limit)
             } else {
                 continue; // No features available for this seed
@@ -841,7 +863,35 @@ pub fn query_suggestions(
     let avg_seed_acoustic = avg_ml(|s| s.mood_acoustic);
     let avg_seed_electronic = avg_ml(|s| s.mood_electronic);
 
-    // Step 4c: Genre-normalize aggression across the candidate pool
+    // Step 4c: Stem energy — seed densities + batch candidate prefetch
+    // (vocal, drums, bass, other) as fractions of total RMS
+    let seed_stem: (f32, f32, f32, f32) = seed_tracks
+        .iter()
+        .find_map(|(idx, t)| {
+            t.id.and_then(|id| {
+                sources[*idx].db.get_stem_energy(id).ok().flatten()
+            })
+        })
+        .unwrap_or((0.5, 0.4, 0.1, 0.2)); // neutral defaults
+
+    // Batch-fetch candidate stem energies per source to avoid N+1 queries
+    let stem_map: HashMap<(usize, i64), (f32, f32, f32, f32)> = {
+        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            ids_by_source.entry(src_idx).or_default().push(track_id);
+        }
+        let mut merged = HashMap::new();
+        for (src_idx, ids) in &ids_by_source {
+            if let Ok(m) = sources[*src_idx].db.batch_get_stem_energy(ids) {
+                for (id, densities) in m {
+                    merged.insert((*src_idx, id), densities);
+                }
+            }
+        }
+        merged
+    };
+
+    // Step 4d: Genre-normalize aggression across the candidate pool
     let norm_aggression = normalize_aggression_by_genre(&ml_scores);
     let avg_seed_aggression = {
         let vals: Vec<f32> = seed_tracks
@@ -854,31 +904,33 @@ pub fn query_suggestions(
 
     // Step 5: Unified scoring — single formula for all candidates.
     //
-    // HNSW weight is fixed at 0.42 throughout, but its DIRECTION flips:
-    //   Center  (bias=0): rewards spectral SIMILARITY  (find tracks that sound like seed)
-    //   Extreme (|bias|=1): rewards spectral DIVERSITY (find tracks that complement, not copy)
-    //   Mid     (|bias|=0.5): HNSW component = 0.5 flat for all candidates → neutral
+    // EffNet HNSW weight varies: 0.30 at center (budget freed for complement scoring),
+    // 0.42 at extreme (full weight as in the original formula).
+    // Goldilocks bell curve rewards ~0.35 normalized EffNet distance at center (layering
+    // sweet spot: same genre zone, not a spectral clone). At extremes, blends to a
+    // diversity reward (1 - norm_dist) for transition mode.
     //
-    // All non-HNSW weights sum to exactly 0.58 at every bias level (= 1.0 − 0.42),
-    // so the total formula always sums to 1.00.
+    // Stem complement weights active only at center, fade to zero at extremes.
+    // All weights sum to 1.00 at every bias level.
     //
-    // Center  (bias=0): 0.42 hnsw-sim + 0.30 key + 0.12 key_dir + 0.13 bpm + 0.03 prod = 1.00
+    // Center  (bias=0): 0.30 hnsw + 0.30 key + 0.12 key_dir + 0.13 bpm + 0.03 prod
+    //                   + 0.07 vocal_compl + 0.05 other_compl = 1.00
     // Extreme (|bias|=1): 0.42 hnsw-div + 0.30 key + 0.05 key_dir + 0.00 bpm + 0.00 prod
     //                     + 0.05 dance + 0.02 approach + 0.01 contrast + 0.15 aggr = 1.00
     //
     // Key harmony (w_key) is intentionally kept CONSTANT at 0.30 across all bias levels.
-    // Harmonic compatibility is a hard constraint on mix quality — an energetic transition
-    // that clashes harmonically sounds wrong regardless of intent. BPM and key_dir instead
-    // shoulder the budget reduction as energy terms (aggression, dance) grow at extremes.
     let bias_abs = energy_bias.abs();
-    let w_key        = 0.30;                         // constant — harmonic quality always matters
-    let w_key_dir    = 0.12 - 0.07 * bias_abs;       // 0.12 → 0.05 (frees budget for energy terms)
-    let w_bpm        = 0.13 - 0.13 * bias_abs;       // 0.13 → 0.00 (energy direction overrides tempo)
-    let w_production = 0.03 - 0.03 * bias_abs;       // 0.03 → 0.00
-    let w_dance      = 0.05 * bias_abs;              // 0.00 → 0.05
-    let w_approach   = 0.02 * bias_abs;              // 0.00 → 0.02
-    let w_contrast   = 0.01 * bias_abs;              // 0.00 → 0.01
-    let w_aggression = 0.15 * bias_abs;              // 0.00 → 0.15
+    let w_hnsw       = 0.42 - 0.12 * (1.0 - bias_abs); // 0.30 center → 0.42 extreme
+    let w_key        = 0.30;                             // constant — harmonic quality always matters
+    let w_key_dir    = 0.12 - 0.07 * bias_abs;          // 0.12 → 0.05
+    let w_bpm        = 0.13 - 0.13 * bias_abs;          // 0.13 → 0.00
+    let w_production = 0.03 - 0.03 * bias_abs;          // 0.03 → 0.00
+    let w_dance      = 0.05 * bias_abs;                  // 0.00 → 0.05
+    let w_approach   = 0.02 * bias_abs;                  // 0.00 → 0.02
+    let w_contrast   = 0.01 * bias_abs;                  // 0.00 → 0.01
+    let w_aggression = 0.15 * bias_abs;                  // 0.00 → 0.15
+    let w_vocal_compl = 0.07 * (1.0 - bias_abs);        // 0.07 center → 0.00 extreme
+    let w_other_compl = 0.05 * (1.0 - bias_abs);        // 0.05 center → 0.00 extreme
 
     // Pre-compute max HNSW distance across the candidate pool.
     // Used to normalise raw distances to [0,1] so the diversity/similarity
@@ -984,15 +1036,32 @@ pub fn query_suggestions(
                 .unwrap_or(0.5);
             let aggression_pen = direction_penalty(cand_norm_aggr, avg_seed_aggression, energy_bias);
 
-            // HNSW diversity/similarity blend (weight fixed at 0.42).
+            // EffNet Goldilocks HNSW component.
             // norm_dist: 0 = most similar track in pool, 1 = most different.
-            // At center (bias=0):   hnsw_component = norm_dist → similar tracks score lower (better).
-            // At extreme (|bias|=1): hnsw_component = 1-norm_dist → diverse tracks score lower (better).
-            // At |bias|=0.5:         hnsw_component = 0.5 flat → HNSW neutral, energy signals drive.
+            //
+            // Center (bias=0): Gaussian bell rewards ~0.35 normalized distance.
+            //   d=0.00 → 0.22 (penalised spectral clone)
+            //   d=0.35 → 1.00 (layering sweet spot)
+            //   d=0.70 → 0.22 (penalised unrelated)
+            // Extreme (|bias|=1): blends to diversity reward (1-norm_dist) for transitions.
+            const GOLD_TARGET: f32 = 0.35;
+            const GOLD_SIGMA2: f32 = 0.08; // 2σ², σ=0.20
             let norm_dist = hnsw_dist / max_hnsw_dist;
-            let hnsw_component = norm_dist * (1.0 - bias_abs) + (1.0 - norm_dist) * bias_abs;
+            let goldilocks = (-(norm_dist - GOLD_TARGET).powi(2) / GOLD_SIGMA2).exp();
+            let hnsw_component = goldilocks * (1.0 - bias_abs) + (1.0 - norm_dist) * bias_abs;
 
-            let score = 0.42          * hnsw_component
+            // Stem complement scoring (bipolar, [0,1]).
+            // 1.0 = fully complementary (seed has energy, candidate doesn't, or vice versa)
+            // 0.5 = both silent (neutral)
+            // 0.0 = fully clashing (both at max energy)
+            // Fades smoothly to zero at extremes via w_vocal_compl / w_other_compl.
+            let cand_stem = track.id
+                .and_then(|id| stem_map.get(&(src_idx, id)).copied())
+                .unwrap_or((0.5, 0.4, 0.1, 0.2));
+            let vocal_comp = stem_complement_component(seed_stem.0, cand_stem.0);
+            let other_comp = stem_complement_component(seed_stem.3, cand_stem.3);
+
+            let score = w_hnsw         * hnsw_component
                 + w_key        * key_penalty
                 + w_key_dir    * key_dir_penalty
                 + w_bpm        * bpm_penalty
@@ -1000,7 +1069,9 @@ pub fn query_suggestions(
                 + w_dance      * dance_penalty
                 + w_approach   * approach_penalty
                 + w_contrast   * contrast_pen
-                + w_aggression * aggression_pen;
+                + w_aggression * aggression_pen
+                + w_vocal_compl * vocal_comp
+                + w_other_compl * other_comp;
 
             let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,

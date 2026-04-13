@@ -838,6 +838,191 @@ impl SimilarityQuery {
             .and_then(|v| v.get_int())
             .unwrap_or(0) as usize)
     }
+
+    // ── EffNet 1280-dim embedding ──────────────────────────────────────────
+
+    /// Insert or update a 1280-dim EffNet embedding for a track.
+    pub fn upsert_ml_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("vec".to_string(), DataValue::List(
+            embedding.iter().map(|&v| DataValue::from(v as f64)).collect(),
+        ));
+
+        db.run_script(r#"
+            ?[track_id, vec] <- [[$track_id, $vec]]
+            :put ml_embeddings {track_id => vec}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Find similar tracks via EffNet HNSW using the seed track's stored embedding.
+    pub fn find_similar_by_ml_id(
+        db: &MeshDb,
+        track_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(TrackRow, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        let k = (limit + 1) as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
+
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+                *ml_embeddings{track_id: $track_id, vec: query_vec},
+                ~ml_embeddings:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
+                track_id != $track_id,
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order dist
+        "#, params)?;
+
+        Ok(rows_to_tracks_with_distance(&result))
+    }
+
+    /// Find similar tracks via EffNet HNSW using a raw vector (cross-database).
+    pub fn find_similar_by_ml_vector(
+        db: &MeshDb,
+        query_vec: &[f64],
+        limit: usize,
+    ) -> Result<Vec<(TrackRow, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("query_vec".to_string(), DataValue::List(
+            query_vec.iter().map(|&v| DataValue::from(v)).collect(),
+        ));
+        let k = limit as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
+
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+                ~ml_embeddings:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order dist
+        "#, params)?;
+
+        Ok(rows_to_tracks_with_distance(&result))
+    }
+
+    /// Retrieve the raw 1280-dim EffNet embedding for a track (returns None if absent).
+    pub fn get_ml_embedding_raw(db: &MeshDb, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[vec] := *ml_embeddings{track_id: $track_id, vec}
+        "#, params)?;
+
+        let row = match result.rows.first() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let vec = match row.first() {
+            Some(DataValue::List(items)) => items
+                .iter()
+                .filter_map(|v| v.get_float().map(|f| f as f32))
+                .collect(),
+            _ => return Ok(None),
+        };
+        Ok(Some(vec))
+    }
+
+    // ── Stem energy densities ─────────────────────────────────────────────
+
+    /// Insert or update per-stem RMS energy densities for a track.
+    pub fn upsert_stem_energy(
+        db: &MeshDb,
+        track_id: i64,
+        vocal: f32,
+        drums: f32,
+        bass: f32,
+        other: f32,
+    ) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("vocal".to_string(), DataValue::from(vocal as f64));
+        params.insert("drums".to_string(), DataValue::from(drums as f64));
+        params.insert("bass".to_string(), DataValue::from(bass as f64));
+        params.insert("other".to_string(), DataValue::from(other as f64));
+
+        db.run_script(r#"
+            ?[track_id, vocal_density, drums_density, bass_density, other_density] <-
+                [[$track_id, $vocal, $drums, $bass, $other]]
+            :put stem_energy {track_id => vocal_density, drums_density, bass_density, other_density}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Get per-stem energy densities for a single track.
+    /// Returns `(vocal, drums, bass, other)` or None if absent.
+    pub fn get_stem_energy(
+        db: &MeshDb,
+        track_id: i64,
+    ) -> Result<Option<(f32, f32, f32, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[vocal, drums, bass, other] :=
+                *stem_energy{track_id: $track_id,
+                             vocal_density: vocal,
+                             drums_density: drums,
+                             bass_density: bass,
+                             other_density: other}
+        "#, params)?;
+
+        Ok(result.rows.first().and_then(|row| {
+            if row.len() < 4 { return None; }
+            let v = row[0].get_float()? as f32;
+            let d = row[1].get_float()? as f32;
+            let b = row[2].get_float()? as f32;
+            let o = row[3].get_float()? as f32;
+            Some((v, d, b, o))
+        }))
+    }
+
+    /// Batch-fetch stem energy for multiple tracks (avoids N+1 in the scoring loop).
+    /// Returns a map of `track_id → (vocal, drums, bass, other)`.
+    pub fn batch_get_stem_energy(
+        db: &MeshDb,
+        track_ids: &[i64],
+    ) -> Result<HashMap<i64, (f32, f32, f32, f32)>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let ids_list: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(ids_list));
+
+        let result = db.run_query(r#"
+            ?[track_id, vocal, drums, bass, other] :=
+                *stem_energy{track_id,
+                             vocal_density: vocal,
+                             drums_density: drums,
+                             bass_density: bass,
+                             other_density: other},
+                is_in(track_id, $ids)
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if row.len() < 5 { continue; }
+            let id = match row[0].get_int() { Some(v) => v, None => continue };
+            let v  = match row[1].get_float() { Some(f) => f as f32, None => continue };
+            let d  = match row[2].get_float() { Some(f) => f as f32, None => continue };
+            let b  = match row[3].get_float() { Some(f) => f as f32, None => continue };
+            let o  = match row[4].get_float() { Some(f) => f as f32, None => continue };
+            map.insert(id, (v, d, b, o));
+        }
+        Ok(map)
+    }
 }
 
 // ============================================================================

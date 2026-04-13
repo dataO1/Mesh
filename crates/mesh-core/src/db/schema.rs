@@ -440,6 +440,16 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         create_audio_features_index(db)?;
     }
 
+    // EffNet 1280-dim embedding relation + HNSW index
+    create_ml_embeddings_relation(db)?;
+    if !existing.contains("ml_embeddings") {
+        log::debug!("Creating 'ml_embeddings' HNSW index");
+        create_ml_embeddings_index(db)?;
+    }
+
+    // Stem energy density relation (vocal + other)
+    create_stem_energy_relation(db)?;
+
     Ok(())
 }
 
@@ -919,6 +929,71 @@ fn create_audio_features_index(db: &DbInstance) -> Result<(), DbError> {
             }
         }
     }
+}
+
+fn create_ml_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
+    // EffNet 1280-dim embedding vector — populated during ML import / re-analyse
+    run_schema(db, r#"
+        {:create ml_embeddings {
+            track_id: Int =>
+            vec: <F32; 1280>
+        }}
+    "#)
+}
+
+fn create_ml_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
+    // Ensure the relation exists first
+    create_ml_embeddings_relation(db)?;
+
+    // HNSW index for EffNet embeddings.
+    // m=32 (vs 16 for audio_features) — higher dimensionality benefits from more connections.
+    // ef_construction=300 for high recall during index building.
+    let result = db.run_script(
+        r#"
+        ::hnsw create ml_embeddings:similarity_index {
+            dim: 1280,
+            m: 32,
+            ef_construction: 300,
+            dtype: F32,
+            fields: [vec],
+            distance: Cosine,
+            extend_candidates: true,
+            keep_pruned_connections: false
+        }
+        "#,
+        Default::default(),
+        cozo::ScriptMutability::Mutable,
+    );
+
+    match result {
+        Ok(_) => {
+            log::info!("ML embeddings HNSW index created successfully");
+            Ok(())
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("already exists") {
+                log::debug!("ML embeddings HNSW index already exists");
+                Ok(())
+            } else {
+                Err(DbError::Schema(err_str))
+            }
+        }
+    }
+}
+
+fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Per-stem RMS energy density as fraction of total (vocals + drums + bass + other).
+    // Point-lookup only — no HNSW needed.
+    run_schema(db, r#"
+        {:create stem_energy {
+            track_id: Int =>
+            vocal_density: Float,
+            drums_density: Float,
+            bass_density: Float,
+            other_density: Float
+        }}
+    "#)
 }
 
 #[cfg(test)]

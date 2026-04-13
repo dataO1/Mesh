@@ -23,6 +23,17 @@ use mesh_core::db::MlAnalysisData;
 use super::models::MlModelType;
 use super::preprocessing::MelSpectrogramResult;
 
+/// Combined result of a full ML analysis run.
+///
+/// Bundles the structured `MlAnalysisData` together with the raw 1280-dim
+/// EffNet embedding so callers can persist both in a single pass.
+/// `embedding` is empty if the model was unavailable.
+pub struct MlAnalysisResult {
+    pub data: MlAnalysisData,
+    /// 1280-dim EffNet embedding (averaged across patches); empty if unavailable.
+    pub embedding: Vec<f32>,
+}
+
 /// Number of mel spectrogram frames expected by EffNet.
 /// EffNet input shape: [batch, 128 frames, 96 mel bands] at 16kHz.
 const PATCH_SIZE: usize = 128;
@@ -203,7 +214,7 @@ impl MlAnalyzer {
     pub fn analyze(
         &mut self,
         mel: &MelSpectrogramResult,
-    ) -> Result<MlAnalysisData, String> {
+    ) -> Result<MlAnalysisResult, String> {
         let patches = extract_patches(&mel.frames, PATCH_SIZE);
         if patches.is_empty() {
             return Err("Audio too short for ML analysis".to_string());
@@ -253,21 +264,24 @@ impl MlAnalyzer {
         // Approachability is a regression model (single float, not softmax)
         let approachability = run_regression_head(&mut self.approachability, &avg_embedding, "Approachability");
 
-        Ok(MlAnalysisData {
-            vocal_presence,
-            arousal: None,
-            valence: None,
-            top_genre,
-            genre_scores,
-            mood_themes,
-            binary_moods,
-            danceability,
-            approachability,
-            reverb,
-            timbre,
-            tonal,
-            mood_acoustic,
-            mood_electronic,
+        Ok(MlAnalysisResult {
+            data: MlAnalysisData {
+                vocal_presence,
+                arousal: None,
+                valence: None,
+                top_genre,
+                genre_scores,
+                mood_themes,
+                binary_moods,
+                danceability,
+                approachability,
+                reverb,
+                timbre,
+                tonal,
+                mood_acoustic,
+                mood_electronic,
+            },
+            embedding: avg_embedding,
         })
     }
 

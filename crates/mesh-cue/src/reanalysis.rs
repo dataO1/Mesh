@@ -504,14 +504,36 @@ fn reanalyze_metadata_track(
 
             log::info!(
                 "reanalyze_metadata_track: ML genre={:?}, arousal={:?}, vocal={:.3}",
-                ml_result.top_genre, ml_result.arousal, ml_result.vocal_presence
+                ml_result.data.top_genre, ml_result.data.arousal, ml_result.data.vocal_presence
             );
 
-            if let Err(e) = db.store_ml_analysis(track_id, &ml_result) {
+            if let Err(e) = db.store_ml_analysis(track_id, &ml_result.data) {
                 log::error!("reanalyze_metadata_track: Failed to store ML analysis: {:?}", e);
             }
             crate::batch_import::clear_ml_tags(track_id, db);
-            crate::batch_import::auto_tag_from_ml(track_id, &ml_result, db);
+            crate::batch_import::auto_tag_from_ml(track_id, &ml_result.data, db);
+
+            // Persist EffNet embedding
+            if ml_result.embedding.len() == 1280 {
+                if let Err(e) = db.store_ml_embedding(track_id, &ml_result.embedding) {
+                    log::warn!("reanalyze_metadata_track: Failed to store ML embedding: {:?}", e);
+                }
+            }
+
+            // Persist stem energy densities — load stem FLAC for RMS ratios
+            let stems_for_energy = AudioFileReader::open(path)
+                .and_then(|r| r.read_all_stems());
+            match stems_for_energy {
+                Ok(ref s) => {
+                    let (vocal, drums, bass, other) = crate::batch_import::compute_stem_energy_ratios(s);
+                    if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {
+                        log::warn!("reanalyze_metadata_track: Failed to store stem energy: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("reanalyze_metadata_track: Could not load stems for energy ratios: {:?}", e);
+                }
+            }
         } else {
             log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
         }

@@ -17,6 +17,6 @@ pub mod inference;
 pub mod beat_inference;
 
 // Re-export key types
-pub use inference::MlAnalyzer;
+pub use inference::{MlAnalyzer, MlAnalysisResult};
 pub use beat_inference::BeatThisAnalyzer;
 pub use models::{MlModelManager, MlModelType};

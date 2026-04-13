@@ -256,6 +256,24 @@ impl BatchQuery {
             ?[track_id] := *audio_features{track_id}, track_id = $track_id
             :rm audio_features {track_id}
         "#,
+            params.clone(),
+        )?;
+
+        // Delete EffNet ML embedding
+        db.run_script(
+            r#"
+            ?[track_id] := *ml_embeddings{track_id}, track_id = $track_id
+            :rm ml_embeddings {track_id}
+        "#,
+            params.clone(),
+        )?;
+
+        // Delete stem energy densities
+        db.run_script(
+            r#"
+            ?[track_id] := *stem_energy{track_id}, track_id = $track_id
+            :rm stem_energy {track_id}
+        "#,
             params,
         )?;
 
