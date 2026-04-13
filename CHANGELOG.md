@@ -31,6 +31,32 @@ All notable changes to Mesh are documented in this file.
   complement scoring is not relevant to transition-style mixing. All four stem
   densities (vocal, drums, bass, other) are stored and available for future use.
 
+- **Smart suggestions — stem complement reason tags** — Suggestions now show
+  **Vocals** and **Lead** pills in the reason tag row when stem complement
+  scoring influenced the result. Green means the candidate fills a gap in the
+  seed deck (complementary); red means it clashes. Tags only appear at
+  centre-ish intent fader positions where the stem weights are non-zero;
+  they disappear at the extremes where complement scoring is not active.
+
+- **Smart suggestions — playlist split toggle** — Settings › Browser ›
+  Suggestions now has a **Playlist Split** toggle (on by default). When
+  enabled, results are split: up to 15 tracks from the selected playlist
+  appear first, followed by up to 15 global results. Disabling shows 30
+  results from any playlist without any split or section distinction.
+
+- **Browser search — fuzzy artist + title matching** — The track table
+  search now matches against both title and artist simultaneously. The query
+  is tokenised by whitespace; every token must appear somewhere in the
+  combined title/artist string. Searching "massive berlin" finds "Massive
+  Attack" tracks filed under artist "Berlin" as well as tracks titled "Berlin
+  Calling" by "Massive Attack". Applies in both mesh-player and mesh-cue.
+
+- **Browser search — on-screen keyboard** — The browser header now shows a
+  **⌕** search button. Tapping it opens the existing on-screen QWERTY
+  keyboard (pre-filled with the current query) so the embedded device can
+  enter search text without a physical keyboard. A **×** clear button appears
+  next to it when a query is active.
+
 - **Auto headphones cue — logarithmic volume curve** — The auto-cue routing
   now follows a smooth exponential decay across the full fader range instead of
   the previous two-stage linear (full below 30%, linear fade 30→50%, off above
