@@ -47,6 +47,11 @@ pub struct UpdateState {
     pub install_status: UpdateInstallStatus,
     /// Journal output lines from the update service
     pub journal_lines: Vec<String>,
+    /// Unix timestamp (seconds) when installation was kicked off.
+    /// Used to anchor journal queries so we never miss old entries.
+    pub install_started_at: Option<u64>,
+    /// Poll tick counter — incremented on every journal poll for spinner animation.
+    pub install_tick: u32,
 }
 
 impl UpdateState {
@@ -57,6 +62,8 @@ impl UpdateState {
             check_status: UpdateCheckStatus::Idle,
             install_status: UpdateInstallStatus::Idle,
             journal_lines: Vec::new(),
+            install_started_at: None,
+            install_tick: 0,
         }
     }
 
@@ -278,9 +285,12 @@ pub fn start_update(version: &str) -> Result<(), String> {
         return Err("Failed to write update target".to_string());
     }
 
-    // Start the update service via sudo (bypasses polkit entirely)
+    // Start the update service via sudo (bypasses polkit entirely).
+    // --no-block: return immediately instead of waiting for the oneshot
+    // service to finish (which can take 5–30 min for a Nix rebuild).
+    // Journal polling tracks progress; cage auto-restarts on completion.
     let output = std::process::Command::new("sudo")
-        .args(["systemctl", "start", "mesh-update.service"])
+        .args(["systemctl", "start", "--no-block", "mesh-update.service"])
         .output()
         .map_err(|e| format!("Failed to start update service: {}", e))?;
 
@@ -292,13 +302,25 @@ pub fn start_update(version: &str) -> Result<(), String> {
     }
 }
 
-/// Poll journal for update service progress
-/// Returns (lines, still_active)
-pub fn poll_journal() -> Result<(Vec<String>, bool), String> {
-    // Get recent journal entries (sudo for reliable access from cage session)
+/// Poll journal for update service progress.
+///
+/// `since_unix`: Unix timestamp of when the update was started, used to anchor
+/// the journal query. Anchoring prevents missing entries on long updates (the
+/// old `--since "5 min ago"` strategy dropped everything older than 5 minutes).
+///
+/// Returns `(lines, still_active)`.
+pub fn poll_journal(since_unix: Option<u64>) -> Result<(Vec<String>, bool), String> {
+    // Anchor to install start time, or fall back to 30 min ago as a safety net.
+    let since_arg = match since_unix {
+        Some(ts) => format!("@{}", ts),
+        None => "30 min ago".to_string(),
+    };
+
+    // Get journal entries since install start (sudo for reliable access from cage session).
+    // -n 100: capture enough build output to be useful; scrollable in the UI.
     let output = std::process::Command::new("sudo")
-        .args(["journalctl", "-u", "mesh-update", "--since", "5 min ago",
-               "-n", "20", "--no-pager"])
+        .args(["journalctl", "-u", "mesh-update", "--since", &since_arg,
+               "-n", "100", "--no-pager", "--output=short-monotonic"])
         .output()
         .map_err(|e| format!("Failed to read journal: {}", e))?;
 
@@ -307,14 +329,20 @@ pub fn poll_journal() -> Result<(Vec<String>, bool), String> {
         .map(|l| l.to_string())
         .collect();
 
-    // Check if service is still active
-    let status = std::process::Command::new("systemctl")
-        .args(["is-active", "mesh-update.service"])
+    // Use `systemctl show` for a reliable active/inactive check.
+    // is-active returns "inactive" briefly between phase transitions;
+    // show's ActiveState is more stable during a long oneshot.
+    let show_output = std::process::Command::new("systemctl")
+        .args(["show", "mesh-update.service",
+               "--property=ActiveState,SubState"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    let still_active = status == "activating" || status == "active";
+    // Service is running while ActiveState=activating or active.
+    let still_active = show_output.contains("ActiveState=activating")
+        || show_output.contains("ActiveState=active");
+
     Ok((lines, still_active))
 }
 
@@ -388,6 +416,35 @@ fn wrap_focus<'a>(
         .into()
 }
 
+/// Build a "X min Y sec" elapsed string from an install start timestamp.
+fn format_elapsed(started_at: Option<u64>) -> String {
+    let started = match started_at {
+        Some(ts) => ts,
+        None => return String::new(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(started);
+    let elapsed = now.saturating_sub(started);
+    let mins = elapsed / 60;
+    let secs = elapsed % 60;
+    if mins > 0 {
+        format!("{}m {}s", mins, secs)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
+/// Rotating three-dot spinner using install_tick.
+fn spinner_dots(tick: u32) -> &'static str {
+    match tick % 3 {
+        0 => "●○○",
+        1 => "○●○",
+        _ => "○○●",
+    }
+}
+
 /// Render the system update settings section.
 /// `focused_action` is Some(idx) when in sub-panel (0=Check, 1=Install/Restart).
 pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -> Element<'_, Message> {
@@ -450,24 +507,35 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
                     ));
                 }
                 UpdateInstallStatus::Starting => {
+                    // This state is transient — shown briefly before InstallStarted fires.
                     let status = text("Starting update...")
                         .size(sz(12.0))
                         .color(Color::from_rgb(0.7, 0.7, 0.3));
                     content_items.push(row![label, Space::new().width(8), status].into());
                 }
                 UpdateInstallStatus::Installing => {
-                    let status = text("Installing...")
+                    let elapsed = format_elapsed(state.install_started_at);
+                    let dots = spinner_dots(state.install_tick);
+                    let label_str = if elapsed.is_empty() {
+                        format!("Installing {}", dots)
+                    } else {
+                        format!("Installing {} — {}", dots, elapsed)
+                    };
+                    let status = text(label_str)
                         .size(sz(12.0))
                         .color(Color::from_rgb(0.7, 0.7, 0.3));
                     content_items.push(row![label, Space::new().width(8), status].into());
                 }
                 UpdateInstallStatus::Complete => {
-                    let status = text("Update complete!")
+                    // cage-tty1 is restarted automatically by ExecStartPost in
+                    // mesh-update.service, so we're likely already dead here.
+                    // "Restart Now" is a manual fallback if auto-restart failed.
+                    let status = text("Update complete — restarting…")
                         .size(sz(12.0))
                         .color(Color::from_rgb(0.4, 0.8, 0.4));
-                    let restart_btn = button(text("Restart Now").size(sz(11.0)))
+                    let restart_btn = button(text("Force Restart").size(sz(11.0)))
                         .on_press(Message::SystemUpdate(SystemUpdateMessage::RestartCage))
-                        .style(button::primary);
+                        .style(button::secondary);
                     content_items.push(wrap_focus(
                         row![status, Space::new().width(Length::Fill), restart_btn]
                             .align_y(Alignment::Center)
@@ -501,15 +569,25 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
         }
     }
 
-    // Journal output (during installation)
+    // Journal output (during installation).
+    // Keep only the 25 most recent lines so the visible output is always current.
     if !state.journal_lines.is_empty() {
-        let journal_text = state.journal_lines.join("\n");
+        let tail: Vec<&str> = state.journal_lines
+            .iter()
+            .rev()
+            .take(25)
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let journal_text = tail.join("\n");
         let journal_view = scrollable(
             text(journal_text)
                 .size(sz(9.0))
                 .color(Color::from_rgb(0.6, 0.6, 0.6))
         )
-        .height(Length::Fixed(120.0));
+        .height(Length::Fixed(140.0));
 
         let journal_container = container(journal_view)
             .padding(8)
