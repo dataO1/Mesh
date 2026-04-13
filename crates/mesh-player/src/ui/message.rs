@@ -74,6 +74,8 @@ pub enum SettingsMessage {
     RefreshAudioDevices,
     /// Update prerelease channel toggle (include RC/beta in OTA checks)
     UpdatePrereleaseChannel(bool),
+    /// Toggle playlist split in suggestions (15 playlist + 15 global vs 30 any)
+    UpdateSuggestionPlaylistSplit(bool),
     /// Show power off confirmation dialog (embedded only)
     PowerOffConfirm,
     /// Cancel power off (dismiss dialog)

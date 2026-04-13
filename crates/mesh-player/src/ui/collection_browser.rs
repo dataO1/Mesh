@@ -91,6 +91,10 @@ pub enum CollectionBrowserMessage {
     RefreshSuggestions,
     /// Set energy direction fader value (0.0-1.0)
     SetEnergyDirection(f32),
+    /// Open on-screen keyboard to enter a search query
+    OpenSearch,
+    /// Clear the current search query
+    ClearSearch,
 }
 
 impl CollectionBrowserState {
@@ -486,8 +490,13 @@ impl CollectionBrowserState {
             }
             CollectionBrowserMessage::ToggleSuggestions
             | CollectionBrowserMessage::RefreshSuggestions
-            | CollectionBrowserMessage::SetEnergyDirection(_) => {
-                // Handled at app level in handlers/browser.rs (needs access to deck state)
+            | CollectionBrowserMessage::SetEnergyDirection(_)
+            | CollectionBrowserMessage::OpenSearch => {
+                // Handled at app level in handlers/browser.rs (needs access to deck state / keyboard)
+                None
+            }
+            CollectionBrowserMessage::ClearSearch => {
+                self.browser.table_state.set_search(String::new());
                 None
             }
             CollectionBrowserMessage::Back => {
@@ -739,10 +748,12 @@ impl CollectionBrowserState {
 
         // Suggest toggle button + energy slider
         let suggest_btn = self.view_suggest_button();
+        let search_btn = self.view_search_button();
 
         let mut header_row = row![load_buttons, Space::new().width(Length::Fill)]
             .spacing(8)
             .align_y(Alignment::Center);
+        header_row = header_row.push(search_btn);
         if let Some(energy_slider) = self.view_energy_slider() {
             header_row = header_row.push(energy_slider);
             header_row = header_row.push(Space::new().width(4));
@@ -769,9 +780,11 @@ impl CollectionBrowserState {
             CollectionBrowserMessage::Browser,
         );
 
-        // Header with energy slider + suggest button
+        // Header with search + energy slider + suggest button
         let suggest_btn = self.view_suggest_button();
+        let search_btn = self.view_search_button();
         let mut header_row = row![].spacing(8).align_y(Alignment::Center);
+        header_row = header_row.push(search_btn);
         if let Some(energy_slider) = self.view_energy_slider() {
             header_row = header_row.push(energy_slider);
         }
@@ -807,6 +820,36 @@ impl CollectionBrowserState {
             .padding([4, 10])
             .style(style)
             .into()
+    }
+
+    /// Build the search button for the browser header.
+    ///
+    /// Shows a "⌕" icon when the query is empty, or the truncated query with a "✕" clear
+    /// button when a search is active. Pressing opens the on-screen keyboard (for embedded)
+    /// or can be used alongside the in-table text_input on desktop.
+    fn view_search_button(&self) -> Element<'_, CollectionBrowserMessage> {
+        let query = &self.browser.table_state.search_query;
+        if query.is_empty() {
+            button(text("\u{2315}").size(sz(12.0))) // ⌕
+                .on_press(CollectionBrowserMessage::OpenSearch)
+                .padding([4, 10])
+                .into()
+        } else {
+            let label: String = std::iter::once('\u{2315}') // ⌕
+                .chain(std::iter::once(' '))
+                .chain(query.chars().take(10))
+                .collect();
+            row![
+                button(text(label).size(sz(11.0)))
+                    .on_press(CollectionBrowserMessage::OpenSearch)
+                    .padding([4, 8]),
+                button(text("\u{00D7}").size(sz(11.0))) // ×
+                    .on_press(CollectionBrowserMessage::ClearSearch)
+                    .padding([4, 6]),
+            ]
+            .spacing(2)
+            .into()
+        }
     }
 
     /// Build the energy direction slider (only visible when suggestions are active)

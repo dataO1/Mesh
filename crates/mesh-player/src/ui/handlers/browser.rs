@@ -64,6 +64,13 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             }
             return Task::none();
         }
+        CollectionBrowserMessage::OpenSearch => {
+            let current = app.collection_browser.browser.table_state.search_query.clone();
+            app.keyboard.open("Search tracks...", false);
+            app.keyboard.text = current; // pre-fill with existing query
+            app.keyboard_for_search = true;
+            return Task::none();
+        }
         _ => {}
     }
 
@@ -345,6 +352,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
 
     // Snapshot current playlist context for the split logic
     let playlist_paths = app.collection_browser.playlist_track_paths().map(|(p, _)| p);
+    let playlist_split = app.config.display.suggestion_playlist_split;
 
     Task::perform(
         async move {
@@ -373,7 +381,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
             }
 
             let (playlist_suggestions, global_suggestions) =
-                split_suggestions(all, playlist_paths.as_ref());
+                split_suggestions(all, if playlist_split { playlist_paths.as_ref() } else { None });
             Ok(SplitSuggestions { playlist_suggestions, global_suggestions })
         },
         |result| Message::SuggestionsReady(Arc::new(result)),

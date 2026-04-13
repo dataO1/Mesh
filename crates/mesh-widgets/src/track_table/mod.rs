@@ -776,14 +776,19 @@ where
     // Column headers
     let headers = build_headers(state, on_message.clone());
 
-    // Filter tracks by search query
+    // Filter tracks by search query: split by whitespace, all tokens must appear
+    // anywhere in the combined "title artist" text (case-insensitive).
     let mut filtered: Vec<_> = tracks
         .iter()
         .filter(|t| {
-            state.search_query.is_empty()
-                || t.title
-                    .to_lowercase()
-                    .contains(&state.search_query.to_lowercase())
+            if state.search_query.is_empty() { return true; }
+            let title_lc = t.title.to_lowercase();
+            let artist_lc = t.artist.as_deref().unwrap_or("").to_lowercase();
+            let haystack = format!("{} {}", title_lc, artist_lc);
+            state.search_query
+                .to_lowercase()
+                .split_whitespace()
+                .all(|token| haystack.contains(token))
         })
         .collect();
 

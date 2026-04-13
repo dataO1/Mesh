@@ -168,6 +168,8 @@ pub struct MeshApp {
     pub(crate) audio_sample_rate: u32,
     /// On-screen keyboard state (shared widget from mesh-widgets)
     pub(crate) keyboard: KeyboardState,
+    /// When true, keyboard Submit routes to collection browser search instead of WiFi
+    pub(crate) keyboard_for_search: bool,
     /// DJ session history manager — tracks all actions, writes to all active databases
     pub(crate) history: crate::history::HistoryManager,
     /// Active set recording state (None when not recording)
@@ -391,6 +393,7 @@ impl MeshApp {
             history,
             recording_state: None,
             keyboard: KeyboardState::new(),
+            keyboard_for_search: false,
             resource_monitor: mesh_core::resource_monitor::ResourceMonitor::new(),
             fps_frame_count: 0,
             fps_display: 0,
@@ -619,23 +622,30 @@ impl MeshApp {
             Message::Keyboard(kb_msg) => {
                 if let Some(event) = keyboard_handle(&mut self.keyboard, kb_msg) {
                     match event {
-                        KeyboardEvent::Submit(password) => {
-                            // Route to WiFi connect if a network was selected
-                            if let Some(ref net_state) = self.settings.network {
-                                if let Some(idx) = net_state.selected_network {
-                                    if let Some(network) = net_state.networks.get(idx) {
-                                        let ssid = network.ssid.clone();
-                                        return self.update(Message::Network(
-                                            super::network::NetworkMessage::ConnectSecured {
-                                                ssid,
-                                                password,
-                                            },
-                                        ));
+                        KeyboardEvent::Submit(text) => {
+                            if self.keyboard_for_search {
+                                // Route to browser search
+                                self.keyboard_for_search = false;
+                                self.collection_browser.browser.table_state.set_search(text);
+                            } else {
+                                // Route to WiFi connect if a network was selected
+                                if let Some(ref net_state) = self.settings.network {
+                                    if let Some(idx) = net_state.selected_network {
+                                        if let Some(network) = net_state.networks.get(idx) {
+                                            let ssid = network.ssid.clone();
+                                            return self.update(Message::Network(
+                                                super::network::NetworkMessage::ConnectSecured {
+                                                    ssid,
+                                                    password: text,
+                                                },
+                                            ));
+                                        }
                                     }
                                 }
                             }
                         }
                         KeyboardEvent::Cancel => {
+                            self.keyboard_for_search = false;
                             log::debug!("Keyboard cancelled");
                         }
                     }

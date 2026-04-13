@@ -251,6 +251,9 @@ pub struct DisplayConfig {
     pub font_size: FontSize,
     /// Keep browser overlay visible while browse mode is active (disable auto-hide timeout)
     pub persistent_browse: bool,
+    /// Split suggestion results: up to 15 from the selected playlist + up to 15 global.
+    /// When false, show 30 results from any playlist (no split).
+    pub suggestion_playlist_split: bool,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -270,7 +273,8 @@ impl Default for DisplayConfig {
             waveform_abstraction: WaveformAbstraction::default(), // Medium
             font: AppFont::default(), // Exo
             font_size: FontSize::default(), // Small
-            persistent_browse: false, // Auto-hide browser overlay by default
+            persistent_browse: false,           // Auto-hide browser overlay by default
+            suggestion_playlist_split: true,     // Split playlist/global results by default
         }
     }
 }

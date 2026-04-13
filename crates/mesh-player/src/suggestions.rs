@@ -521,6 +521,11 @@ fn generate_reason_tags(
     w_approach: f32,
     w_contrast: f32,
     w_aggression: f32,
+    // Stem complement scores (0=clashing, 0.5=neutral, 1=complementary)
+    vocal_comp: f32,
+    other_comp: f32,
+    w_vocal_compl: f32,
+    w_other_compl: f32,
 ) -> Vec<(String, Option<String>)> {
     let mut tags: Vec<(String, Option<String>, f32)> = Vec::with_capacity(8);
 
@@ -581,6 +586,25 @@ fn generate_reason_tags(
         let arrow = if aggression_pen < 0.4 { "▲" } else if aggression_pen > 0.6 { "▼" } else { "━" };
         let impact = w_aggression * (aggression_pen - 0.5).abs();
         tags.push((format!("{} Aggr", arrow), Some(penalty_color(aggression_pen).to_string()), impact));
+    }
+
+    // Stem complement tags: only shown at center-ish fader positions where weights are active.
+    // >0.65 = candidate fills a gap in the seed (complementary) → green
+    // <0.35 = candidate clashes with the seed (both loud in same stem) → red
+    // 0.35–0.65 = neutral → no tag
+    if w_vocal_compl >= min_weight {
+        if vocal_comp > 0.65 || vocal_comp < 0.35 {
+            let color = if vocal_comp > 0.65 { "#2d8a4e" } else { "#a63d40" };
+            let impact = w_vocal_compl * (vocal_comp - 0.5).abs();
+            tags.push(("Vocals".to_string(), Some(color.to_string()), impact));
+        }
+    }
+    if w_other_compl >= min_weight {
+        if other_comp > 0.65 || other_comp < 0.35 {
+            let color = if other_comp > 0.65 { "#2d8a4e" } else { "#a63d40" };
+            let impact = w_other_compl * (other_comp - 0.5).abs();
+            tags.push(("Lead".to_string(), Some(color.to_string()), impact));
+        }
     }
 
     // Sort non-key tags by impact descending (key stays first via f32::MAX)
@@ -1081,6 +1105,8 @@ pub fn query_suggestions(
                 aggression_pen,
                 w_bpm, w_dance, w_approach, w_contrast,
                 w_aggression,
+                vocal_comp, other_comp,
+                w_vocal_compl, w_other_compl,
             );
 
             // Prepend source library tag when results span multiple databases

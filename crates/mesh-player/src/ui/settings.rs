@@ -328,6 +328,13 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
         })
             .hint("Keep browser visible while browse mode is active (disable idle timeout)"),
 
+        SettingsItem::new("Playlist Split", SettingsBehavior::Toggle {
+            value: state.draft_suggestion_playlist_split,
+            on_toggle: |v| SettingsMessage::UpdateSuggestionPlaylistSplit(v),
+        })
+            .subsection("Suggestions")
+            .hint("Show up to 15 results from selected playlist + 15 global; off = 30 from any playlist"),
+
         SettingsItem::new("", SettingsBehavior::ButtonGroup {
             options: KeyScoringModel::ALL.iter().map(|m| m.display_name().to_string()).collect(),
             selected: KeyScoringModel::ALL.iter().position(|&m| m == state.draft_key_scoring_model).unwrap_or(0),
@@ -429,6 +436,7 @@ pub struct SettingsState {
     pub draft_show_local_collection: bool,
     /// Draft persistent browse (keep browser overlay visible while browse mode active)
     pub draft_persistent_browse: bool,
+    pub draft_suggestion_playlist_split: bool,
     /// Draft key scoring model for harmonic compatibility
     pub draft_key_scoring_model: KeyScoringModel,
     /// Draft waveform layout orientation
@@ -486,6 +494,7 @@ impl SettingsState {
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
             draft_persistent_browse: config.display.persistent_browse,
+            draft_suggestion_playlist_split: config.display.suggestion_playlist_split,
             draft_key_scoring_model: config.display.key_scoring_model,
             draft_waveform_layout: config.display.waveform_layout,
             draft_waveform_abstraction: config.display.waveform_abstraction,
@@ -520,6 +529,7 @@ impl SettingsState {
             target_lufs_index: self.draft_target_lufs_index,
             show_local_collection: self.draft_show_local_collection,
             persistent_browse: self.draft_persistent_browse,
+            suggestion_playlist_split: self.draft_suggestion_playlist_split,
             key_scoring_model: self.draft_key_scoring_model,
             waveform_layout: self.draft_waveform_layout,
             waveform_abstraction: self.draft_waveform_abstraction,
@@ -545,6 +555,7 @@ impl SettingsState {
             || self.draft_target_lufs_index != snap.target_lufs_index
             || self.draft_show_local_collection != snap.show_local_collection
             || self.draft_persistent_browse != snap.persistent_browse
+            || self.draft_suggestion_playlist_split != snap.suggestion_playlist_split
             || self.draft_key_scoring_model != snap.key_scoring_model
             || self.draft_waveform_layout != snap.waveform_layout
             || self.draft_waveform_abstraction != snap.waveform_abstraction
@@ -578,6 +589,7 @@ struct SettingsSnapshot {
     target_lufs_index: usize,
     show_local_collection: bool,
     persistent_browse: bool,
+    suggestion_playlist_split: bool,
     key_scoring_model: KeyScoringModel,
     waveform_layout: WaveformLayout,
     waveform_abstraction: WaveformAbstraction,
