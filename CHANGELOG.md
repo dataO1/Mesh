@@ -57,6 +57,15 @@ All notable changes to Mesh are documented in this file.
   enter search text without a physical keyboard. A **×** clear button appears
   next to it when a query is active.
 
+- **OTA updates — live progress display** — The update screen now shows a
+  rotating spinner and elapsed time counter (e.g. "Installing ●○○ — 2m 14s")
+  while a system update is in progress, and streams the last 25 lines of
+  journal output live so you can see exactly what Nix is doing. The UI no
+  longer freezes on "Starting update…" for the duration of the rebuild.
+  When the update finishes, the kiosk restarts automatically; a **Force
+  Restart** button is available as a fallback if the auto-restart did not
+  fire.
+
 - **Auto headphones cue — logarithmic volume curve** — The auto-cue routing
   now follows a smooth exponential decay across the full fader range instead of
   the previous two-stage linear (full below 30%, linear fade 30→50%, off above
