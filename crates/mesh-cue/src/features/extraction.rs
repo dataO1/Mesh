@@ -309,6 +309,11 @@ pub fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures, FeatureE
     // ASSEMBLE FEATURE VECTOR
     // =========================================================================
 
+    // Psychoacoustic dissonance: SpectralPeaks → Dissonance (Plomp-Levelt roughness curves).
+    // High values indicate intermodulation products from distortion/saturation (e.g. neuro DnB
+    // growling basses). Stored separately in `track_dissonance`; not included in the HNSW vector.
+    let dissonance = compute_dissonance(&essentia, &spectrum_data, sample_rate);
+
     Ok(AudioFeatures {
         // Rhythm
         bpm_normalized: ((bpm - 60.0) / 140.0).clamp(0.0, 1.0),
@@ -333,6 +338,7 @@ pub fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures, FeatureE
         spectral_bandwidth,
         spectral_rolloff,
         mfcc_flatness,
+        dissonance,
     })
 }
 
@@ -539,6 +545,52 @@ fn compute_energy_statistics(
     Ok((normalized_mean, normalized_variance))
 }
 
+/// Compute psychoacoustic dissonance using spectral peaks and Plomp-Levelt roughness curves.
+///
+/// High values (~0.6–1.0) indicate dense intermodulation products from distorted/saturated
+/// instruments — characteristic of neuro DnB growling basses, harsh synthesisers, and heavy
+/// overdrive. Clean instruments (liquid DnB sub-bass, pads, vocals) produce low values.
+///
+/// Uses the same middle-frame spectrum already computed for other spectral features.
+/// Returns `None` on algorithm error (non-fatal — dissonance is optional).
+fn compute_dissonance(
+    essentia: &essentia::essentia::Essentia,
+    spectrum: &[f32],
+    sample_rate: f32,
+) -> Option<f32> {
+    use essentia::algorithm::spectral::spectral_peaks::SpectralPeaks;
+    use essentia::algorithm::tonal::dissonance::Dissonance;
+    use essentia::data::GetFromDataContainer;
+
+    let mut peaks_algo = essentia
+        .create::<SpectralPeaks>()
+        .sample_rate(sample_rate)
+        .ok()?
+        .max_peaks(50_i32)
+        .ok()?
+        .order_by("frequency")
+        .ok()?
+        .configure()
+        .ok()?;
+
+    let peaks = peaks_algo.compute(spectrum).ok()?;
+    let freqs: Vec<f32> = peaks.frequencies().ok()?.get();
+    let mags: Vec<f32>  = peaks.magnitudes().ok()?.get();
+
+    if freqs.is_empty() {
+        return Some(0.0);
+    }
+
+    let mut diss_algo = essentia
+        .create::<Dissonance>()
+        .configure()
+        .ok()?;
+
+    let result = diss_algo.compute(freqs.as_slice(), mags.as_slice()).ok()?;
+    let d: f32 = result.dissonance().ok()?.get();
+    Some(d.clamp(0.0, 1.0))
+}
+
 /// Compute spectral bandwidth (frequency spread around centroid)
 fn compute_spectral_bandwidth(
     _essentia: &essentia::essentia::Essentia,
@@ -614,6 +666,7 @@ mod tests {
             spectral_bandwidth: 0.4,
             spectral_rolloff: 0.6,
             mfcc_flatness: 0.3,
+            dissonance: None,
         };
 
         let vec = features.to_vector();

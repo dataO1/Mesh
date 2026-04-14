@@ -57,6 +57,9 @@ pub struct MlScores {
     pub top_genre: Option<String>,
     /// Aggression probability extracted from binary_moods (0.0–1.0)
     pub aggression: Option<f32>,
+    /// Relaxed mood probability extracted from binary_moods (0.0–1.0).
+    /// Inverse complement of aggression for intra-genre intensity discrimination.
+    pub relaxed: Option<f32>,
 }
 
 // ============================================================================
@@ -1027,6 +1030,77 @@ impl DatabaseService {
     }
 
     // ========================================================================
+    // Psychoacoustic Dissonance
+    // ========================================================================
+
+    /// Store the computed dissonance score for a track.
+    pub fn store_dissonance(&self, track_id: i64, dissonance: f32) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("dissonance".to_string(), DataValue::from(dissonance as f64));
+        self.db.run_query(r#"
+            ?[track_id, dissonance] <- [[$track_id, $dissonance]]
+            :put track_dissonance {track_id => dissonance}
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Batch-fetch dissonance scores for multiple tracks (avoids N+1 in scoring loops).
+    pub fn batch_get_dissonance(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+        let result = self.db.run_query(r#"
+            ?[track_id, dissonance] :=
+                *track_dissonance{track_id, dissonance},
+                track_id in $ids
+        "#, params)?;
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if let (Some(tid), Some(d)) = (row[0].get_int(), row[1].get_float()) {
+                map.insert(tid, d as f32);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Batch-fetch mfcc_flatness from audio_features for multiple tracks.
+    /// Element at index 15 in the 16-dim feature vector.
+    pub fn batch_get_flatness(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+        let result = self.db.run_query(r#"
+            ?[track_id, vec] :=
+                *audio_features{track_id, vec},
+                track_id in $ids
+        "#, params)?;
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if let Some(tid) = row[0].get_int() {
+                let flatness = match &row[1] {
+                    DataValue::Vec(Vector::F32(arr)) if arr.len() == 16 => Some(arr[15]),
+                    DataValue::Vec(Vector::F64(arr)) if arr.len() == 16 => Some(arr[15] as f32),
+                    DataValue::List(v) if v.len() == 16 => {
+                        v[15].get_float().map(|f| f as f32)
+                    }
+                    _ => None,
+                };
+                if let Some(f) = flatness {
+                    map.insert(tid, f);
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    // ========================================================================
     // Internal Helpers
     // ========================================================================
 
@@ -1439,16 +1513,19 @@ impl DatabaseService {
         let mut map = HashMap::new();
         for row in &result.rows {
             if let Some(tid) = row[0].get_int() {
-                // Extract aggression probability from binary_moods_json
-                let aggression = row[8].get_str().and_then(|json_str| {
-                    serde_json::from_str::<Vec<(String, f32)>>(json_str)
-                        .ok()
-                        .and_then(|moods| {
-                            moods.iter()
-                                .find(|(label, _)| label == "Aggressive")
-                                .map(|(_, prob)| prob.clamp(0.0, 1.0))
-                        })
-                });
+                // Extract aggression and relaxed probabilities from binary_moods_json
+                let (aggression, relaxed) = row[8].get_str()
+                    .and_then(|s| serde_json::from_str::<Vec<(String, f32)>>(s).ok())
+                    .map(|moods| {
+                        let aggr = moods.iter()
+                            .find(|(l, _)| l == "Aggressive")
+                            .map(|(_, p)| p.clamp(0.0, 1.0));
+                        let rel = moods.iter()
+                            .find(|(l, _)| l == "Relaxed")
+                            .map(|(_, p)| p.clamp(0.0, 1.0));
+                        (aggr, rel)
+                    })
+                    .unwrap_or((None, None));
 
                 map.insert(tid, MlScores {
                     danceability: row[1].get_float().map(|f| f as f32),
@@ -1459,6 +1536,7 @@ impl DatabaseService {
                     mood_electronic: row[6].get_float().map(|f| f as f32),
                     top_genre: row[7].get_str().map(|s| s.to_string()),
                     aggression,
+                    relaxed,
                 });
             }
         }

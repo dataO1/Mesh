@@ -370,7 +370,53 @@ fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
     0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
 
-// ─── ML Score Penalty Functions ──────────────────────────────────
+// ─── Composite Intensity + Penalty Functions ─────────────────────
+
+/// Combine aggression, spectral flatness, relaxed mood, and dissonance into a
+/// single energy-intensity score [0, 1].
+///
+/// Why each component:
+/// - `mood_aggressive` (0.40): Captures overall harshness as classified by the
+///   Discogs-EffNet model. Alone it conflates genre with sub-style.
+/// - `mfcc_flatness` (0.25): Spectral flatness — ratio of geometric to arithmetic
+///   mean of the spectrum. High = distorted/noisy (neuro DnB growl). Low = clean
+///   tonal content (liquid sub-bass, pads). Direct proxy for saturation.
+/// - `(1 - mood_relaxed)` (0.20): Inverse of the Relaxed binary mood classifier.
+///   Liquid DnB scores high on relaxed; neuro scores low. Complements aggression.
+/// - `dissonance` (0.15): Plomp-Levelt psychoacoustic roughness from spectral peaks.
+///   High = dense intermodulation products from distortion. Zero for tracks not yet
+///   re-analysed (neutral default 0.5 avoids penalty).
+///
+/// Returns `None` only if aggression is missing (tracks without any ML analysis).
+fn composite_intensity(
+    aggression: Option<f32>,
+    flatness: Option<f32>,
+    relaxed: Option<f32>,
+    dissonance: Option<f32>,
+) -> Option<f32> {
+    let aggr = aggression?;
+    let flat = flatness.unwrap_or(0.5);
+    let rel  = relaxed.unwrap_or(0.5);
+    let diss = dissonance.unwrap_or(0.5); // neutral when not yet computed
+    Some(0.40 * aggr + 0.25 * flat + 0.20 * (1.0 - rel) + 0.15 * diss)
+}
+
+/// Intensity penalty that matches energy level at center and steers direction at extremes.
+///
+/// - **Center** (`bias=0`): penalises any deviation from the seed's intensity level.
+///   A neuro track (intensity 0.8) vs. a liquid seed (0.2) gets penalty 0.6.
+/// - **Extreme** (`|bias|=1`): directional — rewards candidates that are more aggressive
+///   (positive bias) or more relaxed (negative bias) than the seed.
+/// - **Intermediate**: smooth linear blend between match and direction behaviours.
+///
+/// This means `w_intensity` can be constant — the function adapts its semantics
+/// automatically based on where the slider is.
+fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: f32) -> f32 {
+    let bias_abs = energy_bias.abs();
+    let match_pen = (cand_intensity - seed_intensity).abs();
+    let dir_pen   = (0.5 - (cand_intensity - seed_intensity) * energy_bias).clamp(0.0, 1.0);
+    match_pen * (1.0 - bias_abs) + dir_pen * bias_abs
+}
 
 /// Compute a directional energy penalty for a candidate value vs seed average.
 ///
@@ -384,41 +430,6 @@ fn direction_penalty(cand_val: f32, seed_avg: f32, energy_bias: f32) -> f32 {
     (0.5 - (cand_val - seed_avg) * energy_bias).clamp(0.0, 1.0)
 }
 
-/// Compute a tonal/timbre contrast penalty.
-///
-/// At energy extremes, DJs often want contrasting characteristics (e.g., follow
-/// a dark/atonal track with a bright/tonal one for maximum impact). This penalty
-/// rewards candidates whose timbre and tonal scores differ from the seed averages.
-///
-/// Returns 0.0 (maximum contrast, best) to 1.0 (identical characteristics, worst).
-fn contrast_penalty(
-    cand_timbre: f32,
-    cand_tonal: f32,
-    seed_timbre: f32,
-    seed_tonal: f32,
-) -> f32 {
-    let timbre_contrast = (seed_timbre - cand_timbre).abs();
-    let tonal_contrast = (seed_tonal - cand_tonal).abs();
-    1.0 - (timbre_contrast + tonal_contrast) / 2.0
-}
-
-/// Compute acoustic/electronic production character match penalty.
-///
-/// Prefers candidates with similar production character to the seed average.
-/// A fully acoustic seed gets low penalty for acoustic candidates, etc.
-///
-/// Returns 0.0 (identical character) to 1.0 (opposite character).
-fn production_match_penalty(
-    cand_acoustic: f32,
-    cand_electronic: f32,
-    seed_acoustic: f32,
-    seed_electronic: f32,
-) -> f32 {
-    let diff = (cand_acoustic - seed_acoustic).abs()
-             + (cand_electronic - seed_electronic).abs();
-    (diff / 2.0).min(1.0)
-}
-
 /// Stem complement component — bipolar [0, 1].
 ///
 /// - seed=1, cand=0 (or vice versa): → 1.0 (fully complementary, max boost)
@@ -430,26 +441,35 @@ fn stem_complement_component(seed: f32, cand: f32) -> f32 {
     ((seed - cand).abs() - seed.min(cand) + 1.0) / 2.0
 }
 
-/// Per-genre z-score normalization of aggression values.
+/// Per-genre z-score normalization of composite intensity values.
 ///
-/// Raw `mood_aggressive` scores are genre-biased — DnB tracks score higher
-/// than house tracks regardless of relative intensity. This function groups
-/// tracks by their primary genre and normalizes within each group, answering
-/// "how aggressive is this track *for its genre*?"
+/// Raw intensity scores are genre-biased — DnB tracks score higher than house
+/// tracks globally regardless of sub-style. This function groups by primary genre
+/// and normalises within each group, answering "how intense is this track *relative
+/// to its genre peers*?" A neuro track at 0.8 and a liquid track at 0.3 both in
+/// "Drum n Bass" will be re-scaled so their relative difference is preserved while
+/// the absolute genre offset is removed.
 ///
 /// Genres with fewer than 3 tracks use raw values (insufficient sample for stats).
 /// The z-score is mapped to 0–1 via linear transform: `(z/3 + 0.5).clamp(0, 1)`.
-fn normalize_aggression_by_genre<K: Eq + std::hash::Hash + Copy>(
+fn normalize_intensity_by_genre<K: Eq + std::hash::Hash + Copy>(
     ml_scores: &HashMap<K, MlScores>,
+    flatness_map: &HashMap<K, f32>,
+    dissonance_map: &HashMap<K, f32>,
 ) -> HashMap<K, f32> {
     let mut genre_values: HashMap<&str, Vec<(K, f32)>> = HashMap::new();
     for (&tid, scores) in ml_scores {
-        let aggression = match scores.aggression {
-            Some(a) => a,
-            None => continue, // skip tracks without aggression data
+        let intensity = match composite_intensity(
+            scores.aggression,
+            flatness_map.get(&tid).copied(),
+            scores.relaxed,
+            dissonance_map.get(&tid).copied(),
+        ) {
+            Some(v) => v,
+            None => continue, // skip tracks without ML analysis
         };
         let genre = scores.top_genre.as_deref().unwrap_or("Unknown");
-        genre_values.entry(genre).or_default().push((tid, aggression));
+        genre_values.entry(genre).or_default().push((tid, intensity));
     }
 
     let mut normalized = HashMap::new();
@@ -517,8 +537,9 @@ fn generate_reason_tags(
     hnsw_component: f32,
     // |energy_bias| — used to label the HNSW tag appropriately.
     bias_abs: f32,
-    aggression_pen: f32,
-    w_aggression: f32,
+    // Intensity penalty (0=perfect energy match / raising, 1=opposing). See intensity_penalty().
+    intensity_pen: f32,
+    w_intensity: f32,
     // Stem complement scores (0=clashing, 0.5=neutral, 1=complementary)
     vocal_comp: f32,
     other_comp: f32,
@@ -558,10 +579,12 @@ fn generate_reason_tags(
     let hnsw_impact = 0.42 * (hnsw_component - 0.5).abs();
     tags.push((hnsw_label.to_string(), Some(penalty_color(hnsw_component).to_string()), hnsw_impact));
 
-    if w_aggression >= min_weight {
-        let arrow = if aggression_pen < 0.4 { "▲" } else if aggression_pen > 0.6 { "▼" } else { "━" };
-        let impact = w_aggression * (aggression_pen - 0.5).abs();
-        tags.push((format!("{} Aggr", arrow), Some(penalty_color(aggression_pen).to_string()), impact));
+    if w_intensity >= min_weight {
+        // At center: intensity_pen = |cand-seed|, so low = same energy (good), high = mismatch.
+        // At extremes: low = moving in the intended direction (good).
+        let arrow = if intensity_pen < 0.4 { "▲" } else if intensity_pen > 0.6 { "▼" } else { "━" };
+        let impact = w_intensity * (intensity_pen - 0.5).abs();
+        tags.push((format!("{} Energy", arrow), Some(penalty_color(intensity_pen).to_string()), impact));
     }
 
     // Stem complement tags: only shown at center-ish fader positions where weights are active.
@@ -806,15 +829,6 @@ pub fn query_suggestions(
 
     // Step 4: Compute seed averages for scoring
 
-    let avg_seed_bpm = {
-        let bpm_values: Vec<f64> = seed_tracks.iter().filter_map(|(_, t)| t.bpm).collect();
-        if bpm_values.is_empty() {
-            128.0
-        } else {
-            bpm_values.iter().sum::<f64>() / bpm_values.len() as f64
-        }
-    };
-
     // Collect seed keys for harmonic scoring
     let seed_keys: Vec<MusicalKey> = seed_tracks
         .iter()
@@ -847,22 +861,7 @@ pub fn query_suggestions(
         merged
     };
 
-    // Compute seed ML averages (fallback 0.5 when no data)
-    let seed_ml: Vec<&MlScores> = seed_tracks
-        .iter()
-        .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
-        .filter_map(|key| ml_scores.get(&key))
-        .collect();
-    let avg_ml = |f: fn(&MlScores) -> Option<f32>| -> f32 {
-        let vals: Vec<f32> = seed_ml.iter().filter_map(|s| f(s)).collect();
-        if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
-    };
-    let avg_seed_dance = avg_ml(|s| s.danceability);
-    let avg_seed_approach = avg_ml(|s| s.approachability);
-    let avg_seed_timbre = avg_ml(|s| s.timbre);
-    let avg_seed_tonal = avg_ml(|s| s.tonal);
-    let avg_seed_acoustic = avg_ml(|s| s.mood_acoustic);
-    let avg_seed_electronic = avg_ml(|s| s.mood_electronic);
+    // (seed_ml retained for any future per-seed ML averaging needs)
 
     // Step 4c: Stem energy — seed densities + batch candidate prefetch
     // (vocal, drums, bass, other) as fractions of total RMS
@@ -892,42 +891,81 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: Genre-normalize aggression across the candidate pool
-    let norm_aggression = normalize_aggression_by_genre(&ml_scores);
-    let avg_seed_aggression = {
+    // Step 4d: Batch-fetch flatness and dissonance for all candidates
+    let flatness_map: HashMap<(usize, i64), f32> = {
+        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            ids_by_source.entry(src_idx).or_default().push(track_id);
+        }
+        // Also include seed tracks so intensity normalization covers them
+        for (src_idx, t) in &seed_tracks {
+            if let Some(id) = t.id {
+                ids_by_source.entry(*src_idx).or_default().push(id);
+            }
+        }
+        let mut merged = HashMap::new();
+        for (src_idx, ids) in &ids_by_source {
+            if let Ok(m) = sources[*src_idx].db.batch_get_flatness(ids) {
+                for (id, f) in m { merged.insert((*src_idx, id), f); }
+            }
+        }
+        merged
+    };
+
+    let dissonance_map: HashMap<(usize, i64), f32> = {
+        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            ids_by_source.entry(src_idx).or_default().push(track_id);
+        }
+        for (src_idx, t) in &seed_tracks {
+            if let Some(id) = t.id {
+                ids_by_source.entry(*src_idx).or_default().push(id);
+            }
+        }
+        let mut merged = HashMap::new();
+        for (src_idx, ids) in &ids_by_source {
+            if let Ok(m) = sources[*src_idx].db.batch_get_dissonance(ids) {
+                for (id, d) in m { merged.insert((*src_idx, id), d); }
+            }
+        }
+        merged
+    };
+
+    // Step 4e: Genre-normalize composite intensity across the candidate pool.
+    // Removes genre-level bias (DnB always scores higher than house globally)
+    // so intensity comparison is within-genre: "is this track intense for its style?"
+    let norm_intensity = normalize_intensity_by_genre(&ml_scores, &flatness_map, &dissonance_map);
+    let avg_seed_intensity = {
         let vals: Vec<f32> = seed_tracks
             .iter()
             .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
-            .filter_map(|key| norm_aggression.get(&key).copied())
+            .filter_map(|key| norm_intensity.get(&key).copied())
             .collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
 
     // Step 5: Unified scoring — single formula for all candidates.
     //
-    // Simplified weight set — only key, HNSW, aggression, and (optional) stem complement.
-    // BPM, production, dance, approach, contrast removed after analysis showed they add
-    // noise relative to their small weight contribution.
+    // Weight design:
+    // - w_intensity (0.35, constant): highest weight across ALL bias levels. At center it
+    //   acts as an energy-matching signal (|cand-seed| penalty); at extremes it steers
+    //   directionally (intensity_penalty blends semantics automatically).
+    // - w_key (0.28, constant): harmonic compatibility always matters.
+    // - w_key_dir (0.12→0.05): transition's emotional direction vs. fader.
+    // - w_vocal / w_other: stem complement, center only, fades to 0 at extremes.
+    // - w_hnsw: self-normalizing remainder — HNSW provides the musical neighbourhood anchor.
     //
-    // w_hnsw is computed last so that weights always sum to exactly 1.00, regardless of
-    // whether stem complement is enabled or not.
-    //
-    // stem OFF, center  (bias=0):  0.58 hnsw + 0.30 key + 0.12 key_dir = 1.00
-    // stem ON,  center  (bias=0):  0.33 hnsw + 0.30 key + 0.12 key_dir + 0.15 vocal + 0.10 other = 1.00
-    // either,   extreme (|bias|=1): 0.40 hnsw + 0.30 key + 0.05 key_dir + 0.25 aggr = 1.00
-    //
-    // Key harmony (w_key) is constant at 0.30 across all bias levels.
-    // Aggression rises linearly from 0 at center to 0.25 at extreme.
-    // Stem complement (when on) fades from its center values to 0 at extreme.
+    // stem OFF, center  (bias=0):  0.25 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity = 1.00
+    // stem ON,  center  (bias=0):  0.08 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity + 0.10v + 0.07o = 1.00
+    // either,   extreme (|bias|=1): 0.32 hnsw + 0.28 key + 0.05 key_dir + 0.35 intensity = 1.00
     let bias_abs = energy_bias.abs();
-    let w_key         = 0.30;
+    let w_intensity   = 0.35;                              // constant — highest weight
+    let w_key         = 0.28;
     let w_key_dir     = 0.12 - 0.07 * bias_abs;          // 0.12 center → 0.05 extreme
-    let w_aggression  = 0.25 * bias_abs;                  // 0.00 center → 0.25 extreme
-    let w_vocal_compl = if suggestion_config.stem_complement { 0.15 * (1.0 - bias_abs) } else { 0.0 };
-    let w_other_compl = if suggestion_config.stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
+    let w_vocal_compl = if suggestion_config.stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
+    let w_other_compl = if suggestion_config.stem_complement { 0.07 * (1.0 - bias_abs) } else { 0.0 };
     // Self-normalizing: remainder goes to HNSW so sum = 1.00 at every bias level.
-    // stem OFF: 0.58 - 0.18*b | stem ON: 0.33 + 0.07*b
-    let w_hnsw = 1.0 - w_key - w_key_dir - w_aggression - w_vocal_compl - w_other_compl;
+    let w_hnsw = 1.0 - w_intensity - w_key - w_key_dir - w_vocal_compl - w_other_compl;
 
     // Pre-compute max HNSW distance across the candidate pool.
     // Used to normalise raw distances to [0,1] so the diversity/similarity
@@ -1001,37 +1039,15 @@ pub fn query_suggestions(
             // At center (bias=0) all transitions get 0.5 (neutral).
             let key_dir_penalty = key_direction_penalty(best_tt, energy_bias);
 
-            // BPM penalty: normalized distance (10 BPM diff → 1.0 penalty)
-            let bpm_penalty = track
-                .bpm
-                .map(|b| {
-                    let diff = (b - avg_seed_bpm).abs();
-                    (diff / 10.0).min(1.0) as f32
-                })
-                .unwrap_or(0.5);
-
-            // ML score penalties (fallback 0.5 = neutral when no data)
+            // ML key for map lookups
             let ml_key = track.id.map(|id| (src_idx, id));
-            let cand_ml = ml_key.and_then(|k| ml_scores.get(&k));
-            let cand_dance = cand_ml.and_then(|s| s.danceability).unwrap_or(0.5);
-            let cand_approach = cand_ml.and_then(|s| s.approachability).unwrap_or(0.5);
-            let cand_timbre = cand_ml.and_then(|s| s.timbre).unwrap_or(0.5);
-            let cand_tonal = cand_ml.and_then(|s| s.tonal).unwrap_or(0.5);
-            let cand_acoustic = cand_ml.and_then(|s| s.mood_acoustic).unwrap_or(0.5);
-            let cand_electronic = cand_ml.and_then(|s| s.mood_electronic).unwrap_or(0.5);
 
-            let dance_penalty = direction_penalty(cand_dance, avg_seed_dance, energy_bias);
-            let approach_penalty = direction_penalty(cand_approach, avg_seed_approach, energy_bias);
-            let contrast_pen = contrast_penalty(cand_timbre, cand_tonal, avg_seed_timbre, avg_seed_tonal);
-            let production_pen = production_match_penalty(
-                cand_acoustic, cand_electronic, avg_seed_acoustic, avg_seed_electronic,
-            );
-
-            // Genre-normalized aggression (fallback 0.5 when no data)
-            let cand_norm_aggr = ml_key
-                .and_then(|k| norm_aggression.get(&k).copied())
+            // Genre-normalised composite intensity for this candidate (fallback 0.5 = neutral)
+            let cand_norm_intensity = ml_key
+                .and_then(|k| norm_intensity.get(&k).copied())
                 .unwrap_or(0.5);
-            let aggression_pen = direction_penalty(cand_norm_aggr, avg_seed_aggression, energy_bias);
+            // intensity_penalty: matches energy at center, steers direction at extremes.
+            let intensity_pen = intensity_penalty(cand_norm_intensity, avg_seed_intensity, energy_bias);
 
             // EffNet Goldilocks HNSW component.
             // norm_dist: 0 = most similar track in pool, 1 = most different.
@@ -1061,14 +1077,14 @@ pub fn query_suggestions(
             let score = w_hnsw        * hnsw_component
                 + w_key         * key_penalty
                 + w_key_dir     * key_dir_penalty
-                + w_aggression  * aggression_pen
+                + w_intensity   * intensity_pen
                 + w_vocal_compl * vocal_comp
                 + w_other_compl * other_comp;
 
             let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,
                 hnsw_component, bias_abs,
-                aggression_pen, w_aggression,
+                intensity_pen, w_intensity,
                 vocal_comp, other_comp,
                 w_vocal_compl, w_other_compl,
             );
@@ -1315,15 +1331,16 @@ mod tests {
 
     #[test]
     fn test_harmonic_floor_blocks_dissonant_transitions() {
-        // All permanently-blocked types must be below HARMONIC_FLOOR = 0.45
-        assert!(base_score(TransitionType::SemitoneUp)   < HARMONIC_FLOOR);
-        assert!(base_score(TransitionType::SemitoneDown) < HARMONIC_FLOOR);
-        assert!(base_score(TransitionType::FarStep(3))   < HARMONIC_FLOOR);
-        assert!(base_score(TransitionType::FarCross(1))  < HARMONIC_FLOOR);
-        assert!(base_score(TransitionType::Tritone)      < HARMONIC_FLOOR);
+        // Strict filter floor = 0.45; Semitone/FarStep/FarCross/Tritone must be below it
+        const STRICT_FLOOR: f32 = 0.45;
+        assert!(base_score(TransitionType::SemitoneUp)   < STRICT_FLOOR);
+        assert!(base_score(TransitionType::SemitoneDown) < STRICT_FLOOR);
+        assert!(base_score(TransitionType::FarStep(3))   < STRICT_FLOOR);
+        assert!(base_score(TransitionType::FarCross(1))  < STRICT_FLOOR);
+        assert!(base_score(TransitionType::Tritone)      < STRICT_FLOOR);
         // EnergyBoost/Cool must be ABOVE the floor so the blended layer can unlock them
-        assert!(base_score(TransitionType::EnergyBoost) >= HARMONIC_FLOOR);
-        assert!(base_score(TransitionType::EnergyCool)  >= HARMONIC_FLOOR);
+        assert!(base_score(TransitionType::EnergyBoost) >= STRICT_FLOOR);
+        assert!(base_score(TransitionType::EnergyCool)  >= STRICT_FLOOR);
     }
 
     #[test]
@@ -1331,21 +1348,23 @@ mod tests {
         let am = MusicalKey::parse("Am").unwrap(); // 8A
         let bm = MusicalKey::parse("Bm").unwrap(); // 10A = EnergyBoost from Am (+2 steps)
 
-        // At center: EnergyBoost base_score 0.50 < BLENDED_THRESHOLD 0.65 → blocked
+        // Strict filter blended threshold = 0.65
+        const STRICT_BLENDED: f32 = 0.65;
+
+        // At center: EnergyBoost base_score 0.50 < 0.65 → blocked
         let score_center = key_transition_score(&am, &bm, 0.0, CAM);
-        assert!(score_center < BLENDED_THRESHOLD,
-            "EnergyBoost blocked at center: {:.2} < {:.2}", score_center, BLENDED_THRESHOLD);
+        assert!(score_center < STRICT_BLENDED,
+            "EnergyBoost blocked at center: {:.2} < {:.2}", score_center, STRICT_BLENDED);
 
         // At extreme positive: EnergyBoost blends to (0.50+1)/2 = 0.75 → passes
         let score_extreme = key_transition_score(&am, &bm, 1.0, CAM);
-        assert!(score_extreme >= BLENDED_THRESHOLD,
-            "EnergyBoost unlocks at extreme: {:.2} >= {:.2}", score_extreme, BLENDED_THRESHOLD);
+        assert!(score_extreme >= STRICT_BLENDED,
+            "EnergyBoost unlocks at extreme: {:.2} >= {:.2}", score_extreme, STRICT_BLENDED);
 
         // SameKey energy_score at extreme = (0.0+1)/2 = 0.50 → filtered out
-        // This ensures flow-maintaining tracks disappear from extreme suggestions
         let score_same = key_transition_score(&am, &am, 1.0, CAM);
-        assert!(score_same < BLENDED_THRESHOLD,
-            "SameKey blocked at extreme: {:.2} < {:.2}", score_same, BLENDED_THRESHOLD);
+        assert!(score_same < STRICT_BLENDED,
+            "SameKey blocked at extreme: {:.2} < {:.2}", score_same, STRICT_BLENDED);
     }
 
     // ─── Key Direction Penalty ──────────────────────────────────────
@@ -1509,104 +1528,45 @@ mod tests {
         assert!(half < center, "Half bias should be between center and full: {} vs {}", half, center);
     }
 
-    // ─── Contrast Penalty ──────────────────────────────────────────
+    // ─── Genre-Normalized Intensity ──────────────────────────────────
 
-    #[test]
-    fn test_contrast_penalty_identical_is_worst() {
-        // Identical characteristics → 1.0 (worst, no contrast)
-        assert_eq!(contrast_penalty(0.8, 0.7, 0.8, 0.7), 1.0);
+    fn make_ml_intensity(id: i64, aggr: f32, genre: &str) -> ((usize, i64), MlScores) {
+        ((0usize, id), MlScores {
+            aggression: Some(aggr),
+            top_genre: Some(genre.to_string()),
+            ..Default::default()
+        })
     }
 
     #[test]
-    fn test_contrast_penalty_opposite_is_best() {
-        // Maximum contrast: dark+atonal seed vs bright+tonal candidate
-        let p = contrast_penalty(1.0, 1.0, 0.0, 0.0);
-        assert!(p < 0.01, "Maximum contrast should be near 0: {}", p);
+    fn test_normalize_intensity_single_genre() {
+        let ml: HashMap<(usize, i64), MlScores> = [0.1_f32, 0.15, 0.2, 0.25, 0.3]
+            .iter().enumerate()
+            .map(|(i, &a)| make_ml_intensity(i as i64, a, "House"))
+            .collect();
+        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
+        // Highest raw aggression → highest normalized value
+        assert!(norm[&(0,4)] > norm[&(0,2)], "Highest should normalize highest: {} vs {}", norm[&(0,4)], norm[&(0,2)]);
+        assert!(norm[&(0,2)] > norm[&(0,0)], "Middle should be between: {} vs {}", norm[&(0,2)], norm[&(0,0)]);
     }
 
     #[test]
-    fn test_contrast_penalty_partial() {
-        // Only timbre differs, tonal same → partial contrast
-        let p = contrast_penalty(1.0, 0.5, 0.0, 0.5);
-        assert!(p > 0.0 && p < 1.0, "Partial contrast should be between 0 and 1: {}", p);
-        // timbre contrast = 1.0, tonal contrast = 0.0, avg = 0.5 → penalty = 0.5
-        assert!((p - 0.5).abs() < 0.01, "Should be 0.5: {}", p);
-    }
-
-    #[test]
-    fn test_contrast_penalty_symmetric() {
-        // Swapping candidate and seed should give same result
-        let a = contrast_penalty(0.8, 0.3, 0.2, 0.7);
-        let b = contrast_penalty(0.2, 0.7, 0.8, 0.3);
-        assert!((a - b).abs() < 0.001, "Should be symmetric: {} vs {}", a, b);
-    }
-
-    // ─── Production Match Penalty ────────────────────────────────────
-
-    #[test]
-    fn test_production_match_identical() {
-        let p = production_match_penalty(0.8, 0.9, 0.8, 0.9);
-        assert!(p < 0.01, "Identical production should be near 0: {}", p);
-    }
-
-    #[test]
-    fn test_production_match_opposite() {
-        // Fully acoustic seed vs fully electronic candidate
-        let p = production_match_penalty(0.0, 1.0, 1.0, 0.0);
-        assert!((p - 1.0).abs() < 0.01, "Opposite production should be 1.0: {}", p);
-    }
-
-    #[test]
-    fn test_production_match_partial() {
-        let p = production_match_penalty(0.6, 0.4, 0.4, 0.6);
-        // diff = |0.6-0.4| + |0.4-0.6| = 0.2 + 0.2 = 0.4, /2 = 0.2
-        assert!((p - 0.2).abs() < 0.01, "Partial diff should be 0.2: {}", p);
-    }
-
-    // ─── Genre-Normalized Aggression ─────────────────────────────────
-
-    #[test]
-    fn test_normalize_aggression_single_genre() {
-        let mut ml = HashMap::new();
-        // 5 tracks in "House" with different raw aggression
-        for (i, aggr) in [0.1, 0.15, 0.2, 0.25, 0.3].iter().enumerate() {
-            ml.insert(i as i64, MlScores {
-                aggression: Some(*aggr),
-                top_genre: Some("House".to_string()),
-                ..Default::default()
-            });
+    fn test_normalize_intensity_cross_genre_equity() {
+        let mut ml: HashMap<(usize, i64), MlScores> = HashMap::new();
+        // House: low raw aggression
+        for (i, a) in [0.10_f32, 0.12, 0.14, 0.16, 0.20].iter().enumerate() {
+            let (k, v) = make_ml_intensity(i as i64, *a, "House");
+            ml.insert(k, v);
         }
-        let norm = normalize_aggression_by_genre(&ml);
-        // The highest raw (0.3) should get the highest normalized value
-        assert!(norm[&4] > norm[&2], "Highest raw should normalize highest: {} vs {}", norm[&4], norm[&2]);
-        assert!(norm[&2] > norm[&0], "Middle should be between: {} vs {}", norm[&2], norm[&0]);
-    }
-
-    #[test]
-    fn test_normalize_aggression_cross_genre_equity() {
-        let mut ml = HashMap::new();
-        // House tracks: low raw aggression (0.1 to 0.2)
-        for (i, aggr) in [0.10, 0.12, 0.14, 0.16, 0.20].iter().enumerate() {
-            ml.insert(i as i64, MlScores {
-                aggression: Some(*aggr),
-                top_genre: Some("House".to_string()),
-                ..Default::default()
-            });
+        // DnB: high raw aggression
+        for (i, a) in [0.50_f32, 0.55, 0.60, 0.65, 0.70].iter().enumerate() {
+            let (k, v) = make_ml_intensity((i + 5) as i64, *a, "Drum and Bass");
+            ml.insert(k, v);
         }
-        // DnB tracks: high raw aggression (0.5 to 0.7)
-        for (i, aggr) in [0.50, 0.55, 0.60, 0.65, 0.70].iter().enumerate() {
-            ml.insert((i + 5) as i64, MlScores {
-                aggression: Some(*aggr),
-                top_genre: Some("Drum and Bass".to_string()),
-                ..Default::default()
-            });
-        }
-        let norm = normalize_aggression_by_genre(&ml);
-        // The most aggressive house track (0.20) should have a similar normalized
-        // score to the most aggressive DnB track (0.70), since both are at the
-        // top of their genre
-        let house_top = norm[&4]; // raw 0.20, top of House
-        let dnb_top = norm[&9];   // raw 0.70, top of DnB
+        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
+        // Genre-top tracks should converge regardless of absolute raw difference
+        let house_top = norm[&(0, 4)]; // raw 0.20, top of House
+        let dnb_top   = norm[&(0, 9)]; // raw 0.70, top of DnB
         assert!(
             (house_top - dnb_top).abs() < 0.15,
             "Genre-top tracks should have similar normalized scores: House={} DnB={}",
@@ -1615,80 +1575,68 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_aggression_small_genre_uses_raw() {
-        let mut ml = HashMap::new();
-        // Only 2 tracks in a genre — should use raw values
-        ml.insert(1, MlScores {
-            aggression: Some(0.3),
-            top_genre: Some("Ambient".to_string()),
-            ..Default::default()
-        });
-        ml.insert(2, MlScores {
-            aggression: Some(0.7),
-            top_genre: Some("Ambient".to_string()),
-            ..Default::default()
-        });
-        let norm = normalize_aggression_by_genre(&ml);
-        assert!((norm[&1] - 0.3).abs() < 0.001, "Small genre should use raw: {}", norm[&1]);
-        assert!((norm[&2] - 0.7).abs() < 0.001, "Small genre should use raw: {}", norm[&2]);
+    fn test_normalize_intensity_small_genre_uses_raw() {
+        // Only 2 tracks in a genre — no normalization, raw composite returned
+        let ml: HashMap<(usize, i64), MlScores> = [
+            make_ml_intensity(1, 0.3, "Ambient"),
+            make_ml_intensity(2, 0.7, "Ambient"),
+        ].into_iter().collect();
+        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
+        // composite_intensity(Some(0.3), None, None, None) = 0.40*0.3 + 0.25*0.5 + 0.20*(1-0.5) + 0.15*0.5
+        // = 0.12 + 0.125 + 0.10 + 0.075 = 0.42
+        // composite_intensity(Some(0.7), ...) = 0.40*0.7 + ... = 0.28 + 0.125 + 0.10 + 0.075 = 0.58
+        let expected_low = composite_intensity(Some(0.3), None, None, None).unwrap();
+        let expected_high = composite_intensity(Some(0.7), None, None, None).unwrap();
+        assert!((norm[&(0,1)] - expected_low).abs() < 0.001, "Small genre: {}", norm[&(0,1)]);
+        assert!((norm[&(0,2)] - expected_high).abs() < 0.001, "Small genre: {}", norm[&(0,2)]);
     }
 
     #[test]
-    fn test_normalize_aggression_no_data_excluded() {
-        let mut ml = HashMap::new();
-        ml.insert(1, MlScores {
-            aggression: None, // no aggression data
-            top_genre: Some("House".to_string()),
-            ..Default::default()
-        });
-        let norm = normalize_aggression_by_genre(&ml);
-        assert!(norm.is_empty(), "Tracks without aggression should be excluded");
+    fn test_normalize_intensity_no_data_excluded() {
+        let ml: HashMap<(usize, i64), MlScores> = [(
+            (0usize, 1i64),
+            MlScores { aggression: None, top_genre: Some("House".to_string()), ..Default::default() }
+        )].into_iter().collect();
+        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
+        assert!(norm.is_empty(), "Tracks without ML data should be excluded");
     }
 
     // ─── Weight Sum Verification ─────────────────────────────────────
+    // Verify the self-normalizing weight formula sums to 1.0 at all bias levels.
+    // w_hnsw = 1 - w_intensity - w_key - w_key_dir - w_vocal_compl - w_other_compl
+    //
+    // stem complement OFF (most common case):
+    //   center  (bias=0): 0.25 hnsw + 0.35 intensity + 0.28 key + 0.12 key_dir = 1.00
+    //   extreme (bias=1): 0.32 hnsw + 0.35 intensity + 0.28 key + 0.05 key_dir = 1.00
+    //
+    // stem complement ON:
+    //   center  (bias=0): 0.08 hnsw + 0.35 + 0.28 + 0.12 + 0.10v + 0.07o = 1.00
+
+    fn weights_at(bias_abs: f32, stem_complement: bool) -> f32 {
+        let w_intensity = 0.35_f32;
+        let w_key       = 0.28_f32;
+        let w_key_dir   = 0.12 - 0.07 * bias_abs;
+        let w_vocal     = if stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
+        let w_other     = if stem_complement { 0.07 * (1.0 - bias_abs) } else { 0.0 };
+        let w_hnsw      = 1.0 - w_intensity - w_key - w_key_dir - w_vocal - w_other;
+        w_hnsw + w_intensity + w_key + w_key_dir + w_vocal + w_other
+    }
 
     #[test]
     fn test_weights_sum_to_one_at_center() {
-        let bias_abs: f32 = 0.0;
-        let sum = (0.42 - 0.42 * bias_abs)  // hnsw
-                + (0.25 - 0.10 * bias_abs)   // key
-                + (0.15 + 0.07 * bias_abs)   // key_dir
-                + (0.15 - 0.05 * bias_abs)   // bpm
-                + 0.03                         // production
-                + 0.10 * bias_abs            // dance
-                + 0.06 * bias_abs            // approach
-                + 0.04 * bias_abs            // contrast
-                + 0.30 * bias_abs;           // aggression
-        assert!((sum - 1.0).abs() < 0.001, "Center weights should sum to 1.0: {sum}");
+        assert!((weights_at(0.0, false) - 1.0).abs() < 0.001, "Center stem-off: {}", weights_at(0.0, false));
+        assert!((weights_at(0.0, true)  - 1.0).abs() < 0.001, "Center stem-on: {}",  weights_at(0.0, true));
     }
 
     #[test]
     fn test_weights_sum_to_one_at_extreme() {
-        let bias_abs: f32 = 1.0;
-        let sum = (0.42 - 0.42 * bias_abs)  // hnsw
-                + (0.25 - 0.10 * bias_abs)   // key
-                + (0.15 + 0.07 * bias_abs)   // key_dir
-                + (0.15 - 0.05 * bias_abs)   // bpm
-                + 0.03                         // production
-                + 0.10 * bias_abs            // dance
-                + 0.06 * bias_abs            // approach
-                + 0.04 * bias_abs            // contrast
-                + 0.30 * bias_abs;           // aggression
-        assert!((sum - 1.0).abs() < 0.001, "Extreme weights should sum to 1.0: {sum}");
+        assert!((weights_at(1.0, false) - 1.0).abs() < 0.001, "Extreme stem-off: {}", weights_at(1.0, false));
+        assert!((weights_at(1.0, true)  - 1.0).abs() < 0.001, "Extreme stem-on: {}",  weights_at(1.0, true));
     }
 
     #[test]
     fn test_weights_sum_to_one_at_half() {
-        let bias_abs: f32 = 0.5;
-        let sum = (0.42 - 0.42 * bias_abs)
-                + (0.25 - 0.10 * bias_abs)
-                + (0.15 + 0.07 * bias_abs)
-                + (0.15 - 0.05 * bias_abs)
-                + 0.03
-                + 0.10 * bias_abs
-                + 0.06 * bias_abs
-                + 0.04 * bias_abs
-                + 0.30 * bias_abs;
-        assert!((sum - 1.0).abs() < 0.001, "Half weights should sum to 1.0: {sum}");
+        assert!((weights_at(0.5, false) - 1.0).abs() < 0.001, "Half stem-off: {}", weights_at(0.5, false));
+        assert!((weights_at(0.5, true)  - 1.0).abs() < 0.001, "Half stem-on: {}",  weights_at(0.5, true));
     }
 }

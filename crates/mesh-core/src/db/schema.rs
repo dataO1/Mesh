@@ -274,6 +274,10 @@ pub struct AudioFeatures {
     pub spectral_rolloff: f32,
     /// MFCC flatness (noisiness vs tonality)
     pub mfcc_flatness: f32,
+    /// Psychoacoustic dissonance from spectral peak roughness (0.0 = consonant, 1.0 = dissonant).
+    /// Computed via SpectralPeaks + Dissonance algorithms; None for tracks not yet re-analysed.
+    /// Stored in the separate `track_dissonance` relation, NOT included in the HNSW vector.
+    pub dissonance: Option<f32>,
 }
 
 impl AudioFeatures {
@@ -321,6 +325,7 @@ impl AudioFeatures {
             spectral_bandwidth: v[13] as f32,
             spectral_rolloff: v[14] as f32,
             mfcc_flatness: v[15] as f32,
+            dissonance: None,
         })
     }
 }
@@ -449,6 +454,9 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
 
     // Stem energy density relation (vocal + other)
     create_stem_energy_relation(db)?;
+
+    // Psychoacoustic dissonance relation (additive — safe on old DBs)
+    create_track_dissonance_relation(db)?;
 
     Ok(())
 }
@@ -996,6 +1004,18 @@ fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
     "#)
 }
 
+fn create_track_dissonance_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Psychoacoustic dissonance score per track (SpectralPeaks + Plomp-Levelt curves).
+    // Additive — tracks without this computed get None in scoring and use neutral default.
+    // Point-lookup only — no HNSW needed.
+    run_schema(db, r#"
+        {:create track_dissonance {
+            track_id: Int =>
+            dissonance: Float
+        }}
+    "#)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,6 +1039,7 @@ mod tests {
             spectral_bandwidth: 0.4,
             spectral_rolloff: 0.6,
             mfcc_flatness: 0.3,
+            dissonance: None,
         };
 
         let vec = features.to_vector();

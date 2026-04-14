@@ -975,6 +975,12 @@ fn process_single_track(
                         base_name
                     );
                 }
+                // Store dissonance separately (not part of the HNSW vector)
+                if let Some(d) = features.dissonance {
+                    if let Err(e) = config.db_service.store_dissonance(track_id, d) {
+                        log::warn!("process_single_track: Failed to store dissonance for '{}': {}", base_name, e);
+                    }
+                }
             }
 
             // Store ML analysis results and auto-tag
