@@ -93,11 +93,24 @@
   systemd.services.systemd-udev-settle.enable = false;
   systemd.services.NetworkManager-wait-online.enable = false;
 
-  # USB stick automounting (DJ plugs in USB stick with tracks)
-  # udisks2 for manual `udisksctl` debugging; udev rules for automatic mount.
-  # mesh-player polls /proc/mounts via sysinfo every 2s and detects new
-  # removable disks under /media/. No D-Bus session or polkit needed.
+  # USB stick automounting via udiskie + udisks2 — same stack used on the dev
+  # laptop, proven reliable for hotplug. udiskie runs as the mesh user so
+  # udisks2 mounts under /run/media/mesh/<label>. mesh-player detects any
+  # removable mount via sysinfo polling regardless of the path prefix.
+  # Polkit rule granting mesh user filesystem-mount is in kiosk.nix.
   services.udisks2.enable = true;
+  systemd.services.udiskie = {
+    description = "udiskie USB automounter";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "udisks2.service" ];
+    serviceConfig = {
+      Type = "simple";
+      User = "mesh";
+      ExecStart = "${pkgs.udiskie}/bin/udiskie --automount --no-notify --no-tray";
+      Restart = "on-failure";
+      RestartSec = 3;
+    };
+  };
 
   services.udev.extraRules = ''
     # /dev/cpu_dma_latency: allow audio group to prevent CPU idle transitions
@@ -113,26 +126,5 @@
       ATTR{queue/read_ahead_kb}="16384"
     ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="08", \
       TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}="-1"
-
-    # Auto-mount USB storage to /media/<label> (or /media/<devname> if unlabeled)
-    # FAT/exFAT/NTFS lack Unix ownership — mount as mesh user so recording works.
-    SUBSYSTEMS=="usb", SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_USAGE}=="filesystem", \
-      RUN+="${pkgs.writeShellScript "usb-automount" ''
-        LABEL="''${ID_FS_LABEL:-''${DEVNAME##*/}}"
-        OPTS="noatime,X-mount.mkdir"
-        case "''${ID_FS_TYPE}" in
-          vfat|exfat|ntfs) OPTS="$OPTS,uid=1000,gid=100" ;;
-        esac
-        ${pkgs.systemd}/bin/systemd-mount --no-block --collect \
-          --options="$OPTS" "$DEVNAME" "/media/$LABEL"
-      ''}"
-
-    # Clean up on removal
-    SUBSYSTEMS=="usb", SUBSYSTEM=="block", ACTION=="remove", ENV{ID_FS_USAGE}=="filesystem", \
-      RUN+="${pkgs.writeShellScript "usb-autoumount" ''
-        LABEL="''${ID_FS_LABEL:-''${DEVNAME##*/}}"
-        ${pkgs.systemd}/bin/systemd-umount "/media/$LABEL" 2>/dev/null || true
-        ${pkgs.coreutils}/bin/rmdir "/media/$LABEL" 2>/dev/null || true
-      ''}"
   '';
 }

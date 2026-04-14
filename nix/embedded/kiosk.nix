@@ -230,6 +230,15 @@ in
           return polkit.Result.YES;
         }
       });
+      // Allow mesh user to mount/unmount removable drives via udisks2 (udiskie).
+      // Required because the udiskie system service runs as mesh without a logind
+      // session, so udisks2 cannot infer active-session status automatically.
+      polkit.addRule(function(action, subject) {
+        if (subject.user === "mesh" &&
+            action.id.indexOf("org.freedesktop.udisks2.filesystem-") === 0) {
+          return polkit.Result.YES;
+        }
+      });
     '';
   };
 }

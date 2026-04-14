@@ -95,6 +95,24 @@ All notable changes to Mesh are documented in this file.
   naturally as the fader opens. At 30% fader the weight is now ~0.29 rather
   than 1.0, providing a more gradual and musical transition.
 
+### Fixed
+
+- **Embedded device — USB sticks not detected after boot** — Plugging in a USB
+  stick while mesh-player was already running on the embedded device had no
+  effect; only sticks present at startup were recognised. The root cause was
+  that the custom udev automount rules called `systemd-mount` from within
+  udev's private mount namespace, where the mount was silently discarded.
+  The automounting stack has been replaced with udiskie + udisks2 — the same
+  combination used on the development laptop — so hotplug, eject, and
+  re-insert all now work reliably.
+
+- **USB export — playlists not pre-selected when stick already connected** —
+  Opening the export panel with a USB stick already inserted did not
+  automatically tick the local playlists that exist on the stick. The
+  auto-select logic was comparing node IDs directly, but local IDs use the
+  format `playlists/Name` while USB IDs use `playlist:Name`, so they never
+  matched. The comparison now normalises both sides before matching.
+
 ---
 
 ## [0.9.12]
