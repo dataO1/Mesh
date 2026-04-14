@@ -201,11 +201,6 @@ for v3 and beyond.
 - we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-- [ ] newly connected usb sticks are not recognized by the embedded system.
-  already connected sticks during boot (or kios update?) are recognized just
-  normal, but disconnecting, then reconnecting or connecting a new stick does
-  not while the player is running. this is working normally for my laptop, so i
-  guess its the udisks systemservice maybe?
 
 Also i thnk we need to incorporate some user feedback to effectively
 fine-tune/tune the suggestions system. We need to collect feedback for good and
