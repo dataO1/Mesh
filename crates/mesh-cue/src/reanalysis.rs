@@ -534,6 +534,34 @@ fn reanalyze_metadata_track(
                     log::warn!("reanalyze_metadata_track: Could not load stems for energy ratios: {:?}", e);
                 }
             }
+
+            // Compute psychoacoustic dissonance via Essentia subprocess (needs 44100 Hz audio).
+            // This is a separate load from the ML audio above (which is at native rate for ort).
+            const ESSENTIA_RATE_FEAT: u32 = 44100;
+            match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(ESSENTIA_RATE_FEAT)) {
+                Ok(feat_stems) => {
+                    let mono_44 = create_mono_mix(&feat_stems);
+                    match crate::features::extract_audio_features_in_subprocess(mono_44) {
+                        Ok(features) => {
+                            if let Some(d) = features.dissonance {
+                                if let Err(e) = db.store_dissonance(track_id, d) {
+                                    log::warn!("reanalyze_metadata_track: Failed to store dissonance: {:?}", e);
+                                }
+                            }
+                            // Also refresh the 16-dim HNSW vector while we have fresh features
+                            if let Err(e) = db.store_audio_features(track_id, &features) {
+                                log::warn!("reanalyze_metadata_track: Failed to store audio features: {:?}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("reanalyze_metadata_track: Feature extraction failed (dissonance skipped): {:?}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("reanalyze_metadata_track: Could not load stems for feature extraction: {:?}", e);
+                }
+            }
         } else {
             log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
         }

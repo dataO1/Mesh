@@ -418,18 +418,6 @@ fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: f32)
     match_pen * (1.0 - bias_abs) + dir_pen * bias_abs
 }
 
-/// Compute a directional energy penalty for a candidate value vs seed average.
-///
-/// Used for danceability and approachability. When raising energy (positive bias),
-/// candidates with higher values than the seed average get lower penalties.
-/// When dropping energy (negative bias), lower values are preferred.
-///
-/// Returns 0.0 (best alignment) to 1.0 (worst). At center (bias=0), returns 0.5.
-/// Tracks without ML data should pass 0.5 as `cand_val` for neutral scoring.
-fn direction_penalty(cand_val: f32, seed_avg: f32, energy_bias: f32) -> f32 {
-    (0.5 - (cand_val - seed_avg) * energy_bias).clamp(0.0, 1.0)
-}
-
 /// Stem complement component — bipolar [0, 1].
 ///
 /// - seed=1, cand=0 (or vice versa): → 1.0 (fully complementary, max boost)
@@ -1477,55 +1465,6 @@ mod tests {
         // Both should rate Am→C highly, but values will differ
         assert!(camelot > 0.5, "Camelot Am→C should be high: {camelot}");
         assert!(krumhansl > 0.5, "Krumhansl Am→C should be high: {krumhansl}");
-    }
-
-    // ─── Direction Penalty ─────────────────────────────────────────
-
-    #[test]
-    fn test_direction_penalty_center_is_neutral() {
-        // At center (bias=0), penalty is always 0.5 regardless of values
-        assert_eq!(direction_penalty(0.8, 0.5, 0.0), 0.5);
-        assert_eq!(direction_penalty(0.2, 0.5, 0.0), 0.5);
-        assert_eq!(direction_penalty(0.5, 0.5, 0.0), 0.5);
-    }
-
-    #[test]
-    fn test_direction_penalty_raise_prefers_higher() {
-        // When raising energy (bias=1.0), higher candidate → lower penalty
-        let high = direction_penalty(0.8, 0.5, 1.0);
-        let same = direction_penalty(0.5, 0.5, 1.0);
-        let low = direction_penalty(0.2, 0.5, 1.0);
-        assert!(high < same, "Higher value should have lower penalty when raising: {} vs {}", high, same);
-        assert!(same < low, "Same value should beat lower when raising: {} vs {}", same, low);
-    }
-
-    #[test]
-    fn test_direction_penalty_drop_prefers_lower() {
-        // When dropping energy (bias=-1.0), lower candidate → lower penalty
-        let high = direction_penalty(0.8, 0.5, -1.0);
-        let same = direction_penalty(0.5, 0.5, -1.0);
-        let low = direction_penalty(0.2, 0.5, -1.0);
-        assert!(low < same, "Lower value should have lower penalty when dropping: {} vs {}", low, same);
-        assert!(same < high, "Same value should beat higher when dropping: {} vs {}", same, high);
-    }
-
-    #[test]
-    fn test_direction_penalty_clamped() {
-        // Extreme differences should clamp to 0.0 and 1.0
-        let best = direction_penalty(1.0, 0.0, 1.0);
-        let worst = direction_penalty(0.0, 1.0, 1.0);
-        assert!(best <= 0.01, "Maximum alignment should be near 0: {}", best);
-        assert!(worst >= 0.99, "Maximum opposition should be near 1: {}", worst);
-    }
-
-    #[test]
-    fn test_direction_penalty_scales_with_bias() {
-        // At half bias, penalty should be between center (0.5) and extreme
-        let full = direction_penalty(0.8, 0.5, 1.0);
-        let half = direction_penalty(0.8, 0.5, 0.5);
-        let center = direction_penalty(0.8, 0.5, 0.0);
-        assert!(full < half, "Full bias should give stronger signal: {} vs {}", full, half);
-        assert!(half < center, "Half bias should be between center and full: {} vs {}", half, center);
     }
 
     // ─── Genre-Normalized Intensity ──────────────────────────────────
