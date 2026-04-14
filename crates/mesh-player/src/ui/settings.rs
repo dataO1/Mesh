@@ -341,16 +341,16 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
             on_select: |idx| SettingsMessage::UpdateSuggestionSimilarityTarget(SuggestionSimilarityTarget::ALL[idx.min(SuggestionSimilarityTarget::ALL.len() - 1)]),
         })
             .subsection("Sound Target")
-            .subsection_hint("How different the ideal suggestion sounds from the seed at center intent")
+            .subsection_hint("How different the ideal suggestion sounds from the seed — Tight: near-clone · Open: cross-genre")
             .button_width(ButtonWidth::Fixed(72.0)),
 
         SettingsItem::new("", SettingsBehavior::ButtonGroup {
             options: SuggestionSimilarityFocus::ALL.iter().map(|f| f.display_name().to_string()).collect(),
-            selected: SuggestionSimilarityFocus::ALL.iter().position(|&f| f == state.draft_suggestion_similarity_focus).unwrap_or(1),
+            selected: SuggestionSimilarityFocus::ALL.iter().position(|&f| f == state.draft_suggestion_similarity_focus).unwrap_or(0),
             on_select: |idx| SettingsMessage::UpdateSuggestionSimilarityFocus(SuggestionSimilarityFocus::ALL[idx.min(SuggestionSimilarityFocus::ALL.len() - 1)]),
         })
             .subsection("Sound Focus")
-            .subsection_hint("Sharp: only tracks near the target distance score well  ·  Broad: gradual, forgiving")
+            .subsection_hint("Tolerance around that target — Sharp: exact match only · Broad: wider scoring band")
             .button_width(ButtonWidth::Fixed(72.0)),
 
         SettingsItem::new("", SettingsBehavior::ButtonGroup {

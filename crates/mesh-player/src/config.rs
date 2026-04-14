@@ -41,14 +41,14 @@ impl KeyScoringModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionSimilarityTarget {
-    /// Near-clones: same subgenre, very similar sound (d≈0.20)
-    Tight,
-    /// Same genre zone, distinct texture (d≈0.35 — default)
+    /// Very close match: same sub-style, near-identical sound (d≈0.10 — default)
     #[default]
+    Tight,
+    /// Same subgenre zone, similar but distinct texture (d≈0.20)
     Balanced,
-    /// Genre-adjacent, noticeably different feel (d≈0.45)
+    /// Same genre, noticeably different feel (d≈0.35)
     Wide,
-    /// Cross-genre zone, broad style spread (d≈0.55)
+    /// Genre-adjacent, broad style spread (d≈0.50)
     Open,
 }
 
@@ -72,10 +72,10 @@ impl SuggestionSimilarityTarget {
     /// Center of the Goldilocks bell curve in normalized EffNet distance.
     pub fn gold_target(self) -> f32 {
         match self {
-            SuggestionSimilarityTarget::Tight    => 0.20,
-            SuggestionSimilarityTarget::Balanced => 0.35,
-            SuggestionSimilarityTarget::Wide     => 0.45,
-            SuggestionSimilarityTarget::Open     => 0.55,
+            SuggestionSimilarityTarget::Tight    => 0.10,
+            SuggestionSimilarityTarget::Balanced => 0.20,
+            SuggestionSimilarityTarget::Wide     => 0.35,
+            SuggestionSimilarityTarget::Open     => 0.50,
         }
     }
 }
@@ -86,12 +86,12 @@ impl SuggestionSimilarityTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionSimilarityFocus {
-    /// Sharp bell: tight reward around the target distance (σ≈0.10)
-    Sharp,
-    /// Normal bell: balanced reward curve (σ≈0.20 — default)
+    /// Very tight bell: strict reward right at target distance (σ≈0.05 — default)
     #[default]
+    Sharp,
+    /// Tight bell: moderate tolerance around target (σ≈0.10)
     Normal,
-    /// Broad bell: wide plateau, forgiving of distance variation (σ≈0.28)
+    /// Broad bell: forgiving, wider scoring band (σ≈0.20)
     Broad,
 }
 
@@ -113,9 +113,9 @@ impl SuggestionSimilarityFocus {
     /// `GOLD_SIGMA2` = 2σ² used in the Goldilocks Gaussian.
     pub fn gold_sigma2(self) -> f32 {
         match self {
-            SuggestionSimilarityFocus::Sharp  => 0.02,
-            SuggestionSimilarityFocus::Normal => 0.08,
-            SuggestionSimilarityFocus::Broad  => 0.16,
+            SuggestionSimilarityFocus::Sharp  => 0.005,
+            SuggestionSimilarityFocus::Normal => 0.02,
+            SuggestionSimilarityFocus::Broad  => 0.08,
         }
     }
 }
@@ -414,8 +414,8 @@ impl Default for DisplayConfig {
             font_size: FontSize::default(), // Small
             persistent_browse: false,           // Auto-hide browser overlay by default
             suggestion_playlist_split: true,     // Split playlist/global results by default
-            suggestion_similarity_target: SuggestionSimilarityTarget::default(), // Balanced
-            suggestion_similarity_focus: SuggestionSimilarityFocus::default(),   // Normal
+            suggestion_similarity_target: SuggestionSimilarityTarget::default(), // Tight
+            suggestion_similarity_focus: SuggestionSimilarityFocus::default(),   // Sharp
             suggestion_key_filter: SuggestionKeyFilter::default(),               // Strict
             suggestion_stem_complement: true,    // On by default (matches previous behaviour)
         }
