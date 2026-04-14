@@ -1228,6 +1228,14 @@ impl MeshCueDomain {
         self.usb_manager.unmount(device_path);
     }
 
+    /// Scan playlists on a mounted USB device
+    ///
+    /// Asynchronously reads playlist names from the device's database.
+    /// Result is delivered via `UsbMessage::PlaylistScanComplete`.
+    pub fn scan_usb_playlists(&self, device_path: PathBuf) {
+        let _ = self.usb_manager.send(UsbCommand::ScanPlaylists { device_path });
+    }
+
     /// Build a sync plan for USB export
     ///
     /// Asynchronously builds a plan comparing local playlists with USB content.

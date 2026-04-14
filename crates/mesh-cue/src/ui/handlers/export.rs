@@ -54,8 +54,9 @@ impl MeshCueApp {
                 };
                 self.domain.mount_usb_device(device.device_path.clone());
             } else {
-                // Device already mounted, trigger sync plan computation
-                self.trigger_sync_plan_computation();
+                // Device already mounted — scan USB playlists first so we can
+                // auto-select the ones already present on the stick
+                self.domain.scan_usb_playlists(device.device_path.clone());
             }
         }
         Task::none()
@@ -216,15 +217,17 @@ impl MeshCueApp {
                 match result {
                     Ok(dev) => {
                         log::info!("Device mounted at {:?}", dev.mount_point);
+                        let device_path = dev.device_path.clone();
                         // Update device in list
                         if let Some(existing) = self.export_state.devices.iter_mut()
-                            .find(|d| d.device_path == dev.device_path)
+                            .find(|d| d.device_path == device_path)
                         {
                             *existing = dev;
                         }
-                        // Stay in SelectDevice phase, trigger sync plan computation
+                        // Stay in SelectDevice phase; scan USB playlists first so we
+                        // can auto-select those already present on the stick
                         self.export_state.phase = ExportPhase::SelectDevice;
-                        self.trigger_sync_plan_computation();
+                        self.domain.scan_usb_playlists(device_path);
                     }
                     Err(e) => {
                         log::error!("Mount failed: {}", e);
@@ -337,6 +340,26 @@ impl MeshCueApp {
                 if let Some(ref handle) = self.audio_handle {
                     handle.play();
                 }
+            }
+            UsbMsg::PlaylistScanComplete { tree_nodes, .. } => {
+                // Auto-select local playlists that already exist on the USB stick,
+                // but only when the user hasn't made any manual selection yet.
+                if self.export_state.selected_playlists.is_empty() {
+                    fn collect_ids(nodes: &[mesh_widgets::TreeNode<NodeId>], out: &mut std::collections::HashSet<NodeId>) {
+                        for node in nodes {
+                            out.insert(node.id.clone());
+                            collect_ids(&node.children, out);
+                        }
+                    }
+                    let mut local_ids = std::collections::HashSet::new();
+                    collect_ids(&self.collection.tree_nodes, &mut local_ids);
+                    for id in local_ids {
+                        if tree_nodes.contains_key(&id) {
+                            self.export_state.selected_playlists.insert(id);
+                        }
+                    }
+                }
+                self.trigger_sync_plan_computation();
             }
             _ => {
                 // Handle other messages as needed
