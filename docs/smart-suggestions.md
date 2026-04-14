@@ -26,38 +26,66 @@ fader.
 
 The fader controls what kind of energy transition you want:
 
-- **Left (Drop / Cool)** — Favor lower-energy, cooler tracks. Prefer
-  transitions that reduce intensity.
-- **Center (Maintain / Layer)** — No energy bias. Audio similarity, harmonic
-  safety, and stem complement scoring dominate. Ideal for building long
-  multi-track layers.
-- **Right (Peak / Build)** — Favor higher-energy tracks. Prefer transitions
-  that build intensity.
+- **Left (Drop / Cool)** — Favor tracks less intense than the current seed.
+  Prefer transitions that reduce energy.
+- **Center (Maintain / Layer)** — Match the energy level of what is playing.
+  Audio similarity, harmonic safety, and stem complement scoring dominate.
+  Ideal for building long multi-track layers.
+- **Right (Peak / Build)** — Favor tracks more intense than the current seed.
+  Prefer transitions that build energy.
+
+Intensity is always **relative to the seed**. If you are playing a mellow
+liquid DnB track, center suggests similarly mellow DnB, and pushing right
+suggests progressively more aggressive DnB — not globally loud tracks. The
+intensity is genre-normalized so relative comparisons work across styles.
 
 The fader continuously adjusts the scoring weights — there are no discrete
-modes. Moving it slightly right gently biases toward energy-raising
-transitions. Moving it fully right makes genre-normalized aggression the
-dominant signal.
+modes.
 
 ## Scoring Factors
 
-All weights sum to 100% at every fader position.
+All weights sum to 100% at every fader position. Stem complement weights shown
+for when stem complement is enabled.
 
-| Factor | Center (Neutral) | Extreme (Full Energy Bias) |
-|---|:-:|:-:|
-| Audio similarity (EffNet HNSW) | 30% | 42% |
-| Key compatibility | 30% | 30% |
-| Stem complement — vocal | 7% | 0% |
-| Stem complement — melodic | 5% | 0% |
-| Key energy direction | 12% | 5% |
-| BPM proximity | 13% | 0% |
-| Production match | 3% | 0% |
-| Genre-normalized aggression | 0% | 15% |
-| Danceability | 0% | 5% |
-| Approachability | 0% | 2% |
-| Tonal/timbre contrast | 0% | 1% |
+| Factor | Center (stem off) | Center (stem on) | Extreme |
+|---|:-:|:-:|:-:|
+| Composite intensity | 35% | 35% | 35% |
+| Key compatibility | 28% | 28% | 28% |
+| Audio similarity (EffNet HNSW) | 25% | 8% | 32% |
+| Key energy direction | 12% | 12% | 5% |
+| Stem complement — vocal | 0% | 10% | 0% |
+| Stem complement — melodic | 0% | 7% | 0% |
+
+Composite intensity and key compatibility are constant across all fader
+positions. HNSW weight is self-normalizing — it absorbs the remainder after
+all other weights are assigned.
+
+### Composite Intensity
+
+Intensity is not a single value. It is a weighted blend of four signals, each
+capturing a different aspect of a track's aggressiveness:
+
+| Signal | Weight | What It Measures |
+|---|:-:|---|
+| ML mood aggression | 40% | EffNet-based Discogs mood model |
+| Spectral flatness (MFCC) | 25% | Noise vs. tonality ratio — high in distorted/saturated sounds |
+| Relaxed mood (inverse) | 20% | Low relaxed score = high energy |
+| Psychoacoustic dissonance | 15% | Plomp-Levelt roughness from spectral peak intermodulation |
+
+Spectral flatness is particularly effective at separating sub-genres with
+similar loudness but different saturation levels — for example liquid DnB
+(smooth, tonal) vs. neuro DnB (distorted, noisy growl basses).
+
+Intensity is **genre-normalized** within the candidate pool — a mellow house
+track at the top of its genre range and an aggressive DnB track at the top of
+its genre range converge to similar normalized scores. This prevents louder
+genres from always dominating.
 
 ### At Center (Layering Mode)
+
+Intensity matching is a pure **match signal**: candidates with a similar
+intensity level to the seed score best. Tracks significantly more or less
+intense than the seed are penalized regardless of fader direction.
 
 Audio similarity uses a **Goldilocks** bell curve that rewards tracks at a
 "sweet spot" distance from the seed — in the same musical neighbourhood but
@@ -67,10 +95,14 @@ layering sweet spot. Stem complement scoring is fully active at this position.
 
 ### At Extremes (Transition Mode)
 
+Intensity becomes a **directional signal**: for a high-fader request, candidates
+more intense than the seed score better; for a low-fader request, calmer tracks
+score better. The blend between match and directional semantics is smooth across
+the full fader range.
+
 The Goldilocks curve blends to a diversity reward so bolder, contrasting tracks
-rise in the rankings. Stem complement and BPM weights fade to zero; energy
-signals (aggression, danceability) take over. Harmonic quality remains
-constant at 30% throughout.
+rise in the rankings. Stem complement weight fades to zero. Harmonic quality
+remains constant at 28% throughout.
 
 ## Stem Complement Scoring
 
@@ -196,8 +228,8 @@ Color is based on the key compatibility score:
 
 Note: A track can show a down-arrow even when the fader is pushed right. The
 arrow reflects the key transition itself, not the fader direction. That track
-may still have been suggested for other energy-related reasons (arousal, genre
-aggression, danceability).
+may still have been suggested for other energy-related reasons (intensity,
+genre, distortion character).
 
 ## ML Analysis Integration
 
@@ -209,19 +241,20 @@ If ML analysis was run during import, the suggestion system uses these signals:
 - **Stem energy** — RMS energy balance across all four stems (vocal, drums,
   bass, other) stored as fractions of total energy. Drives stem complement
   scoring at center intent.
-- **Arousal** replaces LUFS for energy direction scoring. Arousal is more
-  perceptually accurate than raw loudness for judging a track's energy level.
-- **Danceability** aligns with energy fader direction at extremes.
-- **Genre-normalized aggression** — Intensity is scored relative to the
-  track's own genre, so a house track and a DnB track can both register as
-  "high energy for their genre" without DnB always dominating.
+- **Composite intensity** — The primary energy signal, described above.
+  Constant 35% weight at all fader positions. Relative to the seed track.
+- **Psychoacoustic dissonance** — Plomp-Levelt roughness from spectral peak
+  intermodulation products. Particularly useful for separating sub-genres with
+  similar loudness but different distortion levels (e.g. liquid vs. neuro DnB).
 
-If no ML data is available (for example, older imports before ML was added),
-fallback weights are used: 45% similarity, 35% key, 20% BPM.
+Tracks without ML data are scored as intensity-neutral — they receive no
+bonus or penalty for the intensity component, and the HNSW similarity and key
+compatibility scores determine their ranking.
 
 To run ML analysis on existing tracks, right-click in the collection browser
-and select **Re-analyse Metadata > ML Tags**. This also populates the neural
-fingerprint and stem energy data without requiring a full re-import.
+and select **Re-analyse Metadata > ML Tags**. This populates the neural
+fingerprint, stem energy, composite intensity signals (including dissonance),
+and auto-tags without requiring a full re-import.
 
 ## Suggestion Refresh Behavior
 
@@ -249,10 +282,11 @@ pending refresh runs at a time.
   more interesting than an all-green set.
 - **Red tracks — use with caution.** The harmonic clash may be audible, but
   some DJs deliberately use tension for effect.
-- **Re-analyse for better results.** Run ML analysis on your collection to give
-  the system the neural fingerprint, stem energy, arousal, and genre data.
-  Suggestions improve significantly — especially the Goldilocks layering mode
-  and stem complement scoring.
+- **Re-analyse for better results.** Run **Re-analyse Metadata > ML Tags** on
+  your collection. This populates the neural fingerprint, composite intensity
+  (including distortion/dissonance signals), stem energy, and genre data.
+  Suggestions improve significantly — especially for sub-genre separation,
+  Goldilocks layering mode, and stem complement scoring.
 
 ## Known Limitations
 
@@ -263,5 +297,6 @@ pending refresh runs at a time.
 - Very small collections (under 50 tracks) may not produce diverse suggestions.
 - Tracks must have been analysed during import. Manually added database entries
   without audio features will not appear in suggestions.
-- Stem complement scoring and the Goldilocks algorithm require ML re-analysis
-  on tracks imported before these features were added.
+- Stem complement scoring, Goldilocks, and composite intensity (including
+  dissonance) require ML re-analysis on tracks imported before these features
+  were added. Run **Re-analyse Metadata > ML Tags** — no re-import needed.
