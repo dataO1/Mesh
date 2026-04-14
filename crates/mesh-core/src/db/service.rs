@@ -533,6 +533,11 @@ impl DatabaseService {
             let _ = self.store_stem_energy(track_id, v, d, b, o);
         }
 
+        // 10. Sync psychoacoustic dissonance
+        if let Ok(Some(diss)) = source_db.get_dissonance(source_track_id) {
+            let _ = self.store_dissonance(track_id, diss);
+        }
+
         log::debug!("sync_track_atomic: SUCCESS id={}", track_id);
         Ok(track_id)
     }
@@ -1043,6 +1048,18 @@ impl DatabaseService {
             :put track_dissonance {track_id => dissonance}
         "#, params)?;
         Ok(())
+    }
+
+    /// Get the dissonance score for a single track.
+    pub fn get_dissonance(&self, track_id: i64) -> Result<Option<f32>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        let result = self.db.run_query(r#"
+            ?[dissonance] := *track_dissonance{track_id: $track_id, dissonance}
+        "#, params)?;
+        Ok(result.rows.first()
+            .and_then(|row| row[0].get_float())
+            .map(|f| f as f32))
     }
 
     /// Batch-fetch dissonance scores for multiple tracks (avoids N+1 in scoring loops).
