@@ -284,9 +284,9 @@ pending refresh runs at a time.
   some DJs deliberately use tension for effect.
 - **Re-analyse for better results.** Run **Re-analyse Metadata > ML Tags** on
   your collection. This populates the neural fingerprint, composite intensity
-  (including distortion/dissonance signals), stem energy, and genre data.
-  Suggestions improve significantly — especially for sub-genre separation,
-  Goldilocks layering mode, and stem complement scoring.
+  (including dissonance), stem energy, and genre/mood data. Suggestions improve
+  significantly — especially for sub-genre separation, Goldilocks layering, and
+  stem complement scoring. No re-import needed.
 
 ## Known Limitations
 
@@ -297,6 +297,6 @@ pending refresh runs at a time.
 - Very small collections (under 50 tracks) may not produce diverse suggestions.
 - Tracks must have been analysed during import. Manually added database entries
   without audio features will not appear in suggestions.
-- Stem complement scoring, Goldilocks, and composite intensity (including
-  dissonance) require ML re-analysis on tracks imported before these features
-  were added. Run **Re-analyse Metadata > ML Tags** — no re-import needed.
+- Stem complement scoring, Goldilocks, and composite intensity signals require
+  ML re-analysis on tracks imported before these features were added. Run
+  **Re-analyse Metadata > ML Tags** — no re-import needed.
