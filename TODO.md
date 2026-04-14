@@ -202,6 +202,18 @@ for v3 and beyond.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
 
+Also i thnk we need to incorporate some user feedback to effectively
+fine-tune/tune the suggestions system. We need to collect feedback for good and
+bad suggestions (only the selected ones), then after a few sessions of collected
+input evaluate, which suggestions worked well and which ones did not work well.
+We need to know the starting track, the slider positions, the selected following
+track and the feedback. what else might be usefull?
+not for the specific tracks, but their characteristics, like hnsw index, key
+relations compared to each other etc. so we can exfiltrate the relations that
+make good transitions. for example maybe our complementarity bias system is
+bullshit, we might find out by that. or maybe mostly key + hnsw similarity is
+important. maybe the hnsw similarity scaling is off etc. evaluate.
+
 
 
 ● Here's my full evaluation of each feature (skipping touch):
@@ -455,32 +467,3 @@ like wav2vec or vggish or other? search online, evaluate if we can improve this.
    1 is essentially "stop throwing away the EffNet output" and wire it into a second HNSW index. The
   scoring quality improvement would be substantial, since the current 16-dim HNSW is genuinely a weak
    signal.
-
-
-
-
-
-
-   The stem complement scoring should not be fixed on in center, but
-   smoothly fade, from inside to outside, so at center its weighted more, at extremes its not weighted at all.
-
-   In general the intent slider should behave like this, more center behaviour
-   for layering mode, extremes for transitions (and somehwere in between we have
-   tracks that are more different, but still musically relevant, the key
-   analysis is already how it should behave).
-
-   For db changes, make sure that we can use the currently existing db as is,
-   can click re-analyse features (which will re-analyse and fill in the new
-   fields in the db) and dont need to reimport everything completely from new.
-   mesh-player should assume the new fields are there, jst for the
-   analysis/import path make it work with the current schema, so we can click
-   reanalysis data to adjust the data to have the new analysis information as
-   well.
-
-   I dont understand the vector branching. we should assume all information are
-   present, since we analyse all imported tracks. if this is just fallback
-   behaviour thats fine.
-
-  Again i think the stem complementary bias should penalise on clashing stems
-  and boost on compementary stems (energy in one track, less energy in another
-  track). this needs to be normalised.

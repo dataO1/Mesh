@@ -1,20 +1,16 @@
-# Smart Track Suggestions System — Research Report
+# Smart Track Suggestions — Research & Design Document
 
 ## Executive Summary
 
-Mesh already has a **production-ready foundation** for smart track suggestions:
-- 16-dimensional audio feature vectors extracted via Essentia
-- HNSW vector index in CozoDB with cosine similarity search
-- Camelot wheel key compatibility logic
-- BPM detection and normalization
-- Graph relation tables defined (similar_to, harmonic_match, played_after) but **not yet populated**
-- Database query infrastructure (SimilarityQuery) ready but unused in UI
-
-The gap is: building the **recommendation engine** on top of this infrastructure, adding **richer embeddings** (neural), and creating the **UI/UX** for suggestion triggers.
+Mesh has a production-ready neural suggestion system using 1280-dim Discogs-EffNet
+embeddings, Goldilocks HNSW similarity, harmonic scoring, and aggression-based energy
+direction. The system is now user-configurable via four settings (Sound Target, Sound
+Focus, Key Filter, Stem Complement), and is being evaluated through a planned feedback
+collection mechanism.
 
 ---
 
-## 1. What We Already Have
+## 1. Original Infrastructure (Pre-Neural)
 
 ### 1.1 Existing 16-Dimensional Feature Vector
 
@@ -39,6 +35,7 @@ Location: `crates/mesh-cue/src/features/extraction.rs`, stored in `audio_feature
 | | mfcc_flatness | Noisiness vs tonality |
 
 **HNSW Index**: dim=16, m=16, ef_construction=200, Cosine distance.
+Kept as silent fallback for tracks not yet re-analysed with EffNet.
 
 ### 1.2 Existing Harmonic Mixing
 
@@ -50,86 +47,11 @@ Location: `crates/mesh-core/src/music/mod.rs`
 - Semitone distance calculation
 - `is_harmonically_compatible()` check
 
-### 1.3 Existing Database Schema
+### 1.3 CozoDB Capabilities for Recommendations
 
-Defined but **empty** graph relations:
-- `similar_to(from_track, to_track, similarity_score)` — computed from vector search
-- `harmonic_match(from_track, to_track, match_type)` — Same/Adjacent/EnergyBoost/EnergyDrop
-- `played_after(from_track, to_track, count, avg_transition_quality)` — DJ history
+#### Vector Search (HNSW)
 
-### 1.4 Existing Query Infrastructure
-
-- `SimilarityQuery::find_similar(track_id, limit)` -> `Vec<(Track, f32)>`
-- `SimilarityQuery::upsert_features(track_id, features)`
-- `SimilarityQuery::has_features(track_id)` -> bool
-- HNSW search with ef=50, auto-excludes query track
-
----
-
-## 2. Audio Embedding Models — What's Available
-
-### 2.1 Neural Embedding Models (Deep Learning)
-
-| Model | Dims | Compute | Music-Specific | ONNX | Best For |
-|-------|------|---------|---------------|------|----------|
-| **Discogs-EffNet** | 1280 | Low | Yes (400 styles) | Yes | Genre/style similarity |
-| **MAEST** | 768-2304 | Medium | Yes (transformer) | Yes | Multi-scale temporal |
-| **MSD-MusiCNN** | 200 | Very Low | Yes (790k params) | Convertible | Timbre/temporal |
-| **VGGish** | 128 | Low | No (general) | Yes | General audio |
-| **OpenL3** | 512/6144 | Low-Med | Yes (music mode) | Convertible | Acoustic texture |
-| **CLAP** | 512 | Medium | Partial | Yes | Text-based search |
-| **MERT** | 768 | High | Yes (strong) | Convertible | Pitch/harmony/rhythm |
-| **PANNs CNN14** | 2048 | Medium | No (general) | Yes | General audio |
-
-**Recommended for Mesh: Discogs-EffNet**
-- 1280-dim embeddings trained on 400 Discogs music styles via contrastive learning
-- ONNX model directly available: `discogs-effnet-bsdynamic-1.onnx`
-- EfficientNet architecture = low compute cost
-- Embedding space naturally clusters by genre/subgenre
-- Already available through Essentia's model repository
-
-**Secondary: CLAP (optional future enhancement)**
-- 512-dim shared audio-text embedding space
-- Enables natural language queries: "find me dark atmospheric techno with heavy bass"
-- Useful for tag-based browsing without manual tagging
-
-### 2.2 Traditional Feature Vectors
-
-**bliss-audio** (Rust crate, pure feature extraction):
-- 20 dimensions: tempo(1) + timbre(7) + loudness(2) + chroma(10)
-- Euclidean distance (customizable via Mahalanobis)
-- Uses aubio + librosa-style chroma extraction
-- Lightweight, no neural network needed
-- Similar approach to our existing 16-dim vector but with different feature selection
-
-**Our existing 16-dim vector** covers similar ground to bliss-audio but with different emphasis (more energy/dynamics, less chroma). Could be **extended or replaced** rather than adding bliss as a dependency.
-
-### 2.3 Integration Path: ONNX in Rust
-
-**`ort` crate** (v2.0.0-rc.11) — primary recommendation:
-- Wraps ONNX Runtime v1.24.1
-- Execution providers: CPU, CUDA, TensorRT, CoreML, DirectML
-- Used by Google Magika, HuggingFace Text Embeddings Inference
-- Apache-2.0 / MIT dual license
-
-**Pipeline for Discogs-EffNet:**
-1. Load audio (already have this in Mesh — mono mixdown at 48kHz)
-2. Compute mel spectrogram (128 mel bands, matching Essentia's `TensorflowInputMusiCNN` preprocessing)
-3. Run inference via `ort` on `discogs-effnet-bsdynamic-1.onnx`
-4. Extract 1280-dim embedding from penultimate layer (`PartitionedCall:1`)
-5. Store in CozoDB HNSW index
-
-**Mel spectrogram crate**: `mel_spec` — aligned to whisper.cpp/librosa, streaming support, 480x faster than realtime.
-
-**Alternative: `tract`** (Sonos) — pure Rust ONNX inference, no C dependency, supports ~140 ONNX operators. Good fallback if `ort` is too heavy.
-
----
-
-## 3. CozoDB Capabilities for Recommendations
-
-### 3.1 Vector Search (HNSW)
-
-Already implemented in our schema. Key capabilities:
+Already implemented. Key capabilities:
 
 ```datalog
 // Find 10 tracks similar to seed track
@@ -152,7 +74,7 @@ Already implemented in our schema. Key capabilities:
 }
 ```
 
-### 3.2 Graph Queries
+#### Graph Queries
 
 **Built-in graph algorithms** (with `graph-algo` feature):
 - CommunityDetectionLouvain — find clusters of similar tracks
@@ -161,7 +83,8 @@ Already implemented in our schema. Key capabilities:
 - RandomWalk — stochastic playlist generation
 - ConnectedComponents — identify isolated track groups
 
-**Unique feature**: CozoDB exposes the **HNSW proximity graph itself** as a queryable relation. You can run community detection directly on the audio similarity graph:
+**Unique feature**: CozoDB exposes the **HNSW proximity graph itself** as a queryable
+relation. Community detection can run directly on the audio similarity graph:
 ```datalog
 ?[community, track_id] <~ CommunityDetectionLouvain(
     *tracks:audio_sim[fr_track_id, to_track_id, dist],
@@ -169,7 +92,7 @@ Already implemented in our schema. Key capabilities:
 )
 ```
 
-### 3.3 Hybrid Queries (Vector + Scalar + Graph)
+#### Hybrid Queries (Vector + Scalar + Graph)
 
 The killer feature: combine all three in a single Datalog query:
 
@@ -189,24 +112,47 @@ graph_candidates[track_id, play_count] :=
 :limit 10
 ```
 
-### 3.4 Additional CozoDB Indexes
+---
 
-- **FTS (Full-Text Search)**: For searching tracks by title/artist text
-- **MinHash-LSH**: For finding near-duplicate tracks (remixes, alternate versions)
+## 2. Audio Embedding Models — Evaluation
 
-### 3.5 Performance at Our Scale
+### 2.1 Neural Embedding Models (Deep Learning)
 
-For 10k-100k tracks:
-- HNSW search: single-digit milliseconds
-- Graph traversal (2-hop): sub-millisecond
-- Point reads: 100K+ QPS
-- Batch import: ~150K rows/second (RocksDB)
+| Model | Dims | Compute | Music-Specific | ONNX | Best For |
+|-------|------|---------|---------------|------|----------|
+| **Discogs-EffNet** | 1280 | Low | Yes (400 styles) | Yes | Genre/style similarity ✅ chosen |
+| **MAEST** | 768-2304 | Medium | Yes (transformer) | Yes | Multi-scale temporal |
+| **MSD-MusiCNN** | 200 | Very Low | Yes (790k params) | Convertible | Timbre/temporal |
+| **VGGish** | 128 | Low | No (general) | Yes | General audio |
+| **OpenL3** | 512/6144 | Low-Med | Yes (music mode) | Convertible | Acoustic texture |
+| **CLAP** | 512 | Medium | Partial | Yes | Text-based search |
+| **MERT** | 768 | High | Yes (strong) | Convertible | Pitch/harmony/rhythm |
+| **PANNs CNN14** | 2048 | Medium | No (general) | Yes | General audio |
+
+**Chosen: Discogs-EffNet**
+- 1280-dim embeddings trained on 400 Discogs music styles via contrastive learning
+- ONNX model directly available: `discogs-effnet-bsdynamic-1.onnx`
+- EfficientNet architecture = low compute cost
+- Embedding space naturally clusters by genre/subgenre
+
+**EffNet cosine distance empirical zones:**
+- `d < 0.15`: near-identical recordings, remixes, alternate masters
+- `d ≈ 0.20–0.40`: same subgenre, shared production aesthetic (DJ sweet spot)
+- `d ≈ 0.40–0.60`: genre-adjacent, shared era/energy
+- `d > 0.65`: cross-genre
+
+### 2.2 Integration Path: ONNX in Rust
+
+**`ort` crate** (v2.0.0-rc.11):
+- Wraps ONNX Runtime v1.24.1
+- Execution providers: CPU, CUDA, TensorRT, CoreML, DirectML
+- Used by Google Magika, HuggingFace Text Embeddings Inference
 
 ---
 
-## 4. Real-World DJ Software Approaches
+## 3. Real-World DJ Software Approaches
 
-### 4.1 Commercial Software
+### 3.1 Commercial Software
 
 | Software | Feature | Approach |
 |----------|---------|----------|
@@ -218,26 +164,35 @@ For 10k-100k tracks:
 | **Beatport** | Recommendations | Collaborative filtering + audio features |
 | **DJ.Studio** | Auto-mix | Harmonic + tempo + energy curve planning |
 
-### 4.2 Key Mixing Criteria (What Real DJs Use)
+### 3.2 Spotify
 
-**Primary filters (hard constraints):**
-1. **BPM compatibility**: ±5% range (e.g., 128 BPM matches 122-134)
-2. **Key compatibility**: Camelot wheel — same number, ±1 number, or A<->B (relative major/minor)
+Spotify's core is **collaborative filtering** — embedding tracks into a latent space where
+proximity reflects co-listening behavior (people who played X also played Y). Audio CNNs
+are used only for **cold-start** (new/obscure tracks with no listen history). Their audio
+model is similar in spirit to EffNet but trained end-to-end on engagement signals (saves,
+playlist adds, skip rate), not genre classification.
 
-**Secondary ranking (soft scoring):**
-3. **Energy flow**: Progressive build (70->80->90) vs maintain vs cool-down (90->80->70)
-4. **Genre/style similarity**: Neural embedding distance
-5. **Timbral similarity**: Similar spectral characteristics for smooth blends
-6. **Mood consistency**: Maintain or deliberately shift atmosphere
+Key insight: **their metric is re-listen probability, not transition smoothness**. Their
+"audio2vec"/"track2vec" embeddings are learned from *user behavior*. We have acoustic
+content (EffNet) but no behavior data — which is why the feedback collection system is the
+right direction.
 
-**Tertiary (context-aware):**
-7. **Already played**: Don't repeat tracks
-8. **Transition history**: Tracks that have worked together before (played_after graph)
-9. **Set position**: Warm-up tracks early, bangers at peak, cool-down at end
+### 3.3 Academic DJ Research
 
-### 4.3 Harmonic Mixing — Camelot Wheel
+Several papers (notably DJMD 2019, automatic DJ systems at ISMIR) converge on a similar
+feature set for transition quality:
+1. **Beat alignment** — grid phase match
+2. **Harmonic compatibility** — Camelot/circle of fifths
+3. **Timbral similarity** — CNN embeddings (same as EffNet)
+4. **Energy curve** — LUFS/arousal trajectory
 
-Full mapping (already implemented in `mesh-core/src/music/mod.rs`):
+The ML-based ones find that **timbral similarity + harmonic compatibility** are the strongest
+predictors of a "good transition" rated by human DJs. **BPM** is a **hygiene factor**
+(must be within ±8%) not a scoring signal. **Mood/aggression** features appear in none of
+the well-performing systems as primary signals — they are typically used only when no
+audio embedding is available.
+
+### 3.4 Camelot Wheel Reference
 
 | Code | Minor Key | | Code | Major Key |
 |------|-----------|---|------|-----------|
@@ -254,28 +209,9 @@ Full mapping (already implemented in `mesh-core/src/music/mod.rs`):
 | 11A | F#m | | 11B | A |
 | 12A | C#m/Dbm | | 12B | E |
 
-**Compatible moves:**
-- Same key (8A -> 8A) — score 1.0
-- Adjacent number (8A -> 7A, 8A -> 9A) — score 0.9
-- Relative major/minor (8A -> 8B) — score 0.85
-- ±2 numbers (8A -> 6A, 8A -> 10A) — score 0.6 (energy boost/drop)
-
-### 4.4 Energy Flow Patterns
-
-Professional DJ sets follow a narrative arc:
-1. **Warm Up** (low-medium energy): Deep, spacious tracks, long blends
-2. **Build** (medium-rising): Stronger drums, layered percussion
-3. **Peak** (high energy): Anthemic tracks, quick transitions — typically ~2/3 through the set
-4. **Release** (medium): Melodic, breakdowns
-5. **Finale** (decreasing): Familiar/emotional tracks
-
-**For suggestion system**: Allow user to specify desired energy direction (build/maintain/cool-down) as a filter parameter.
-
 ---
 
-## 5. Research Papers & Notable Implementations
-
-### 5.1 DJ-Specific Research
+## 4. Research Papers & Notable Implementations
 
 | Paper | Year | Key Contribution |
 |-------|------|-----------------|
@@ -283,219 +219,89 @@ Professional DJ sets follow a narrative arc:
 | **"Cue Point Estimation using Object Detection"** (Argüello et al.) | 2024 | Object detection transformer for DJ cue points, 21k annotated dataset |
 | **"Zero-shot DJ Tool Retrieval"** | 2024 | CLAP embeddings for classifying vocal hooks, drum breaks, etc. |
 | **"Enhancing Sequential Music Recommendation with Personalized Popularity Awareness"** | RecSys 2024 | Transformer + popularity awareness, 25-70% improvement |
-| **"Beyond Collaborative Filtering: Using Transformers"** | 2024 | Transformer models for playlist continuation |
-
-### 5.2 Audio Embedding Research
-
-| Paper/Model | Key Contribution |
-|-------------|-----------------|
-| **Discogs-EffNet** (MTG/UPF) | EfficientNet trained on 400 Discogs styles, contrastive learning |
-| **MAEST** (MTG/UPF) | Music Audio Efficient Spectrogram Transformer, multi-scale |
-| **CLAP** (LAION/Microsoft) | Contrastive Language-Audio Pretraining, text-audio shared space |
-| **MERT** (m-a-p) | Self-supervised music transformer, CQT + codebook teachers |
-| **PANNs** (Kong et al.) | Pretrained Audio Neural Networks, AudioSet, CNN14 architecture |
-
-### 5.3 Key Insight from Research
-
-> "Strict song order appears less crucial than previously thought" for playlist generation. What matters most is **local compatibility** (the next track fits the current one) and **global trajectory** (the set follows a coherent energy arc).
+| **Discogs-EffNet** (MTG/UPF) | — | EfficientNet trained on 400 Discogs styles, contrastive learning |
+| **MAEST** (MTG/UPF) | — | Music Audio Efficient Spectrogram Transformer, multi-scale |
+| **CLAP** (LAION/Microsoft) | — | Contrastive Language-Audio Pretraining, text-audio shared space |
 
 ---
 
-## 6. Rust Crates & Tools
+## 5. Current Scoring System (as implemented, v0.9.13+)
 
-### 6.1 ML Inference
-
-| Crate | Purpose | Notes |
-|-------|---------|-------|
-| **`ort`** (v2.0.0-rc.11) | ONNX Runtime wrapper | Primary choice, CUDA support, 2k+ stars |
-| **`tract`** (v0.22.0) | Pure-Rust ONNX inference | No C dependency, good for embedded, supports streaming (tract-pulse) |
-| **`candle`** (HuggingFace) | Rust ML framework | Whisper, encodec support; CPU/CUDA/Metal backends |
-| **`rten`** | Pure-Rust ONNX runtime | Lightweight alternative to ort |
-
-### 6.2 Audio Analysis
-
-| Crate | Purpose | Notes |
-|-------|---------|-------|
-| **`mel_spec`** | Mel spectrogram computation | 480x realtime, streaming, aligned to librosa |
-| **`bliss-audio`** (v0.9) | 20-dim audio features + playlist | Tempo, timbre, chroma, loudness; Euclidean/Mahalanobis distance |
-| **`rusty-chromaprint`** | Audio fingerprinting | Pure Rust, for remix/duplicate detection |
-| **`Spectrograms`** | Linear/Mel/CQT/MFCC | Multiple spectrogram types |
-
-### 6.3 Vector Similarity
-
-| Crate | Purpose | Notes |
-|-------|---------|-------|
-| **CozoDB HNSW** | Already integrated | Cosine/L2/IP, disk-based, MVCC |
-| **`fast_vector_similarity`** | CPU-optimized similarity | ndarray + rayon |
-| **`ndarray`** | Manual cosine similarity | Trivial to implement |
-
----
-
-## 7. Proposed Architecture
-
-### 7.1 Two-Tier Embedding System
-
-**Tier 1: Existing 16-dim features** (fast, already computed)
-- Used for initial candidate filtering and basic similarity
-- No additional compute needed — already in database
-- Good for BPM/key/energy matching
-
-**Tier 2: Neural 1280-dim Discogs-EffNet** (rich, compute at import time)
-- Used for deep style/genre similarity ranking
-- Computed during track import (background, like current analysis)
-- Stored in a second HNSW index in CozoDB
-
-### 7.2 Query Pipeline
-
-```
-User triggers "Suggest Next Track"
-    |
-    v
-[1] Get seed track(s) metadata
-    - Currently playing track(s) BPM, key, energy, embeddings
-    |
-    v
-[2] Hard filters (BPM ±5%, compatible key via Camelot)
-    - CozoDB in-search filter on HNSW query
-    - Exclude already-played tracks
-    |
-    v
-[3] Vector similarity ranking (Discogs-EffNet cosine distance)
-    - Top-K nearest neighbors from HNSW
-    |
-    v
-[4] Re-rank with composite score:
-    - 0.4 * audio_similarity (Discogs-EffNet cosine)
-    - 0.2 * key_compatibility (Camelot score)
-    - 0.2 * energy_direction (matches desired build/maintain/cool)
-    - 0.1 * bpm_closeness (normalized BPM distance)
-    - 0.1 * transition_history (played_after graph weight, if available)
-    |
-    v
-[5] Return top 10 suggestions with explanations
-    - "Similar style, compatible key (8A -> 9A), energy builds"
-```
-
-### 7.3 Suggestion Modes
-
-| Mode | Description | Primary Signal |
-|------|-------------|---------------|
-| **Similar** | "More like this" | Vector similarity only |
-| **Harmonic** | Key-compatible tracks | Camelot + energy |
-| **Energy Build** | Increase energy | Energy > current + vector sim |
-| **Energy Cool** | Decrease energy | Energy < current + vector sim |
-| **Surprise** | Intentional contrast | Random from compatible key/BPM |
-| **History** | "Worked before" | played_after graph + vector sim |
-
-### 7.4 Data Flow
-
-```
-Track Import
-    |
-    +-> Essentia analysis (existing: BPM, key, LUFS, 16-dim features)
-    +-> Discogs-EffNet via ort (new: 1280-dim neural embedding)
-    +-> Store both vectors in CozoDB HNSW indexes
-    +-> Pre-compute Camelot compatibility relations
-    |
-During Playback
-    |
-    +-> Record transitions in played_after graph
-    +-> Track energy curve position
-    |
-On "Suggest" Trigger
-    |
-    +-> Query CozoDB with hybrid query (vector + scalar + graph)
-    +-> Return ranked suggestions to UI
-```
-
----
-
-## 8. Implementation Priority
-
-### Phase 1: Activate Existing Infrastructure ✅ Complete
-- [x] Wire up `SimilarityQuery::find_similar()` to a UI suggestion panel
-- [x] Add "Suggest Similar" button/MIDI trigger
-- [x] Basic results: similar tracks by 16-dim features + BPM + key filter
-
-### Phase 2: Neural Embeddings ✅ Complete
-- [x] Add `ort` dependency, download Discogs-EffNet ONNX model
-- [x] Add mel spectrogram preprocessing (128 mel bands)
-- [x] Compute 1280-dim embeddings during import
-- [x] Create second HNSW index for neural embeddings (dim=1280, m=32, ef=300)
-- [x] Update suggestion query to use neural embeddings as primary ranker
-- [x] 16-dim vector kept as silent fallback for tracks not yet re-analysed
-
-### Phase 3: Smart Ranking ✅ Complete
-- [x] Composite scoring function (see Section 11 for current weights)
-- [x] Intent slider: energy direction parameter (build/maintain/cool)
-- [x] Exclude already-played tracks (session memory)
-- [x] Suggestion reason tags ("Compatible key, similar style, energy builds")
-- [x] Goldilocks HNSW: rewards "close but not clone" at centre intent
-- [x] Stem complement scoring: fills vocal/melodic gaps in centre mode
-- [x] Dual harmonic filter: permanent floor + energy-direction blended threshold
-- [x] Krumhansl–Kessler perceptual key model as alternative to Camelot
-- [x] Genre-normalized aggression scoring
-
-### Phase 4: Advanced Features (Higher Effort)
-- [ ] Community detection on similarity graph (auto-genre clusters)
-- [ ] CLAP text embeddings for natural language search ("dark minimal techno")
-- [ ] Set position awareness (warm-up vs peak vs cool-down)
-- [ ] Transition quality feedback loop (rate transitions, improve `played_after` weights)
-- [ ] MinHash-LSH for remix/edit detection
-- [ ] Time-based stem complement (intro vocals don't clash with drop vocals)
-
----
-
-## 11. Current Scoring Formula (as implemented)
-
-### 11.1 HNSW Routing
+### 5.1 HNSW Routing
 
 Primary: EffNet 1280-dim HNSW (`ml_embeddings:similarity_index`, Cosine, m=32, ef=300).
 Fallback (silent, for tracks not yet re-analysed): 16-dim audio features HNSW.
 
-### 11.2 Weight Table
+### 5.2 Simplified Weight Formula
 
-All weights sum to **1.00** at every intent bias level.
+Removed components after analysis: BPM, production, danceability, approachability,
+contrast/timbre. These were found to be either double-counted by HNSW or insufficiently
+predictive relative to their weight budget. The weight set is now:
 
-| Component | Center (bias=0) | Extreme (|bias|=1) | Notes |
-|-----------|----------------|-------------------|-------|
-| `w_hnsw` | 0.30 | 0.42 | Freed at center for complement scoring |
-| `w_key` | 0.30 | 0.30 | Constant — harmonic quality never trades off |
-| `w_key_dir` | 0.12 | 0.05 | Key energy direction match |
-| `w_bpm` | 0.13 | 0.00 | Irrelevant at extremes |
-| `w_production` | 0.03 | 0.00 | Acoustic/electronic style match |
-| `w_vocal_compl` | 0.07 | 0.00 | Stem complement — vocal stem |
-| `w_other_compl` | 0.05 | 0.00 | Stem complement — melodic/lead stem |
-| `w_dance` | 0.00 | 0.05 | Danceability direction |
-| `w_approach` | 0.00 | 0.02 | Approachability direction |
-| `w_contrast` | 0.00 | 0.01 | Timbre/tonal contrast |
-| `w_aggression` | 0.00 | 0.15 | Genre-normalized aggression direction |
+| Component | Formula | Center (bias=0) | Extreme (|bias|=1) | Notes |
+|-----------|---------|----------------|-------------------|-------|
+| `w_hnsw` | see below | 0.58 (stem off) / 0.33 (stem on) | 0.40 | Self-normalizing remainder |
+| `w_key` | 0.30 | 0.30 | 0.30 | Constant — harmonic quality never trades off |
+| `w_key_dir` | 0.12 − 0.07·b | 0.12 | 0.05 | Key energy direction match |
+| `w_aggression` | 0.25·b | 0.00 | 0.25 | Genre-normalized energy direction |
+| `w_vocal_compl` | 0.15·(1−b) if on | 0.15 | 0.00 | Stem complement — vocal |
+| `w_other_compl` | 0.10·(1−b) if on | 0.10 | 0.00 | Stem complement — melodic/lead |
 
-### 11.3 Goldilocks HNSW Formula
+`w_hnsw` is computed as `1.0 − w_key − w_key_dir − w_aggression − w_vocal − w_other`
+so the sum is always exactly 1.00 regardless of stem complement toggle state.
 
-Replaces the previous linear diversity/similarity blend at the centre position.
+**Budget verification:**
+- stem OFF, center: 0.58 + 0.30 + 0.12 = **1.00** ✓
+- stem ON,  center: 0.33 + 0.30 + 0.12 + 0.15 + 0.10 = **1.00** ✓
+- either,   extreme: 0.40 + 0.30 + 0.05 + 0.25 = **1.00** ✓
+
+### 5.3 Goldilocks HNSW Formula (Configurable)
 
 ```
-GOLD_TARGET = 0.35   (normalized EffNet distance sweet spot)
-GOLD_SIGMA2 = 0.08   (2σ², σ = 0.20)
+gold_target  (from SuggestionSimilarityTarget)  default 0.35
+gold_sigma2  (from SuggestionSimilarityFocus)   default 0.08 (2σ², σ=0.20)
 
-goldilocks     = exp(-(norm_dist - GOLD_TARGET)² / GOLD_SIGMA2)
-hnsw_component = goldilocks × (1 - bias_abs) + (1 - norm_dist) × bias_abs
+goldilocks     = exp(−(norm_dist − gold_target)² / gold_sigma2)
+hnsw_component = goldilocks × (1 − bias_abs) + (1 − norm_dist) × bias_abs
 ```
 
-Behavior at center:
-- `norm_dist = 0.00` → goldilocks = 0.22 (clone penalty)
-- `norm_dist = 0.35` → goldilocks = 1.00 (sweet spot — same genre, different texture)
-- `norm_dist = 0.70` → goldilocks = 0.22 (unrelated penalty)
+At center, rewards tracks at `gold_target` normalized distance from the seed. At extremes,
+blends fully to `1 − norm_dist` (diversity reward) for transition mode.
 
-At extremes, blends fully to `1 - norm_dist` (diversity reward), preserving the original transition-mode behaviour.
+**SuggestionSimilarityTarget values:**
+| Setting | gold_target | EffNet zone |
+|---------|------------|-------------|
+| Tight    | 0.20 | Near-clone, same subgenre |
+| Balanced | 0.35 | Same genre, different texture (default) |
+| Wide     | 0.45 | Genre-adjacent |
+| Open     | 0.55 | Cross-genre |
 
-### 11.4 Stem Complement Formula
+**SuggestionSimilarityFocus values:**
+| Setting | gold_sigma2 | σ | Effect |
+|---------|-----------|-----|--------|
+| Sharp  | 0.02 | ≈0.10 | Tight bell, strongly rewards the exact target distance |
+| Normal | 0.08 | ≈0.20 | Balanced (default) |
+| Broad  | 0.16 | ≈0.28 | Wide plateau, forgiving of distance variation |
+
+### 5.4 Harmonic Filter (Configurable)
+
+The dual-layer harmonic gate uses thresholds from `SuggestionKeyFilter`:
+
+| Setting | harmonic_floor | blended_threshold | Effect |
+|---------|---------------|-------------------|--------|
+| Strict  | 0.45 | 0.65 | Blocks Semitone, FarStep, FarCross, Tritone (default) |
+| Relaxed | 0.20 | 0.45 | Allows semitone and cross-key moves for atonal/mashup |
+| Off     | 0.00 | 0.00 | No filter — all key relationships scored |
+
+Preferred tracks (user-curated playlist) receive 50% leniency on the blended threshold
+layer only (not the base floor).
+
+### 5.5 Stem Complement Formula
 
 Bipolar scoring normalized to [0, 1]:
 
 ```
-stem_complement(seed, cand) = (|seed - cand| - min(seed, cand) + 1) / 2
+stem_complement(seed, cand) = (|seed − cand| − min(seed, cand) + 1) / 2
 ```
 
 | seed | cand | result | meaning |
@@ -505,17 +311,154 @@ stem_complement(seed, cand) = (|seed - cand| - min(seed, cand) + 1) / 2
 | 1.0 | 1.0 | 0.0 | clashing → max penalty |
 | 0.0 | 0.0 | 0.5 | both silent → neutral |
 
-Applied independently to the vocal stem and the "other" (melody/lead) stem.
-Weights `w_vocal_compl` and `w_other_compl` scale smoothly from their center
-values to zero as `|bias|` increases, so complement scoring is fully inactive
-at the extremes.
+Applied independently to vocal and "other" (melody/lead) stems. Fades to zero at extreme
+bias. Toggleable via Settings — default on.
 
-### 11.5 Stem Energy Storage
+**Status: unvalidated.** The hypothesis (fill vocal/melodic gaps) is musically plausible
+but RMS energy density is a coarse proxy. Many great mashups layer two vocal tracks
+intentionally. Feedback data will determine whether this component helps or hurts.
 
-Four densities stored per track in `stem_energy` relation:
-`(vocal_density, drums_density, bass_density, other_density)` each in [0, 1],
-summing to 1.0. Currently only vocal and other are used in scoring; drums and
-bass are stored for future use (e.g., linked-stem-aware scoring).
+### 5.6 TransitionType Scores and Energy Directions
+
+```
+SameKey     base=1.00  energy=0.00
+AdjacentUp  base=0.85  energy=+0.20
+AdjacentDn  base=0.85  energy=−0.20
+DiagonalUp  base=0.75  energy=+0.15
+DiagonalDn  base=0.75  energy=−0.15
+MoodLift    base=0.70  energy=+0.30
+MoodDarken  base=0.70  energy=−0.30
+EnergyBoost base=0.50  energy=+0.50
+EnergyCool  base=0.50  energy=−0.50
+SemitoneUp  base=0.20  energy=+0.70
+SemitoneDown base=0.20 energy=−0.50
+FarStep(±n) base=0.25/0.15/0.08/0.05  energy=±0.10
+FarCross    base=0.10  energy=±0.05
+Tritone     base=0.03  energy=−0.80
+```
+
+---
+
+## 6. User-Configurable Parameters
+
+All settings live in Settings › Browser › Suggestions.
+
+| Setting | Type | Options | What it controls |
+|---------|------|---------|-----------------|
+| Sound Target | Button group (4) | Tight / Balanced / Wide / Open | Center of Goldilocks bell (GOLD_TARGET) |
+| Sound Focus | Button group (3) | Sharp / Normal / Broad | Width of Goldilocks bell (GOLD_SIGMA2) |
+| Key Filter | Button group (3) | Strict / Relaxed / Off | Harmonic floor + blended threshold |
+| Stem Complement | Toggle | on/off | Enable vocal/lead gap-fill scoring |
+| Playlist Split | Toggle | on/off | 15 playlist + 15 global vs 30 any |
+
+**Design rationale for the choices made:**
+
+- **BPM removed**: Modern DJs pitch-correct freely; ±15% BPM is trivially matched. At 13%
+  weight it excluded excellent spectral candidates. Reduced to zero.
+- **Production/Timbre removed**: Double-counted by HNSW. Minimal unique signal.
+- **Dance/Approach/Contrast removed**: Small weights (0.01–0.05) at extremes only; three
+  ML heads from non-DJ-context models summing to 8% of the score. Noise floor.
+- **Aggression raised to 0.25 at extreme**: Stronger energy-direction signal for
+  transition mode (was 0.15). Linearly scales from 0 at center.
+- **Harmonic key kept constant at 0.30**: Harmonic quality is always relevant. The
+  original design rationale stands.
+
+---
+
+## 7. Signal Noise Assessment
+
+Ordered by confidence that the signal is primarily noise:
+
+**High confidence noise (removed):**
+- BPM penalty — hygiene factor, not a scoring dimension
+- Production match — double-counted by EffNet HNSW
+- Danceability/approachability/contrast at extremes — non-DJ-context ML heads at small weights
+
+**Uncertain (kept, needs feedback data):**
+- Stem complement (vocal/other) — theoretically motivated, empirically unvalidated
+- Aggression at extremes — increased weight but still from a non-DJ-context model
+
+**Likely signal (kept):**
+- EffNet HNSW distance — strongest signal; validated by academic research
+- Key transition score — industry standard; validated by all commercial DJ software
+- Key direction (energy direction via Camelot) — validated by energy arc research
+
+---
+
+## 8. Planned Feedback Collection System
+
+### 8.1 What to record
+
+For each suggestion selection event:
+
+```
+suggestion_feedback {
+  session_id:       String    -- groups events within one session
+  timestamp:        Int       -- unix seconds
+  energy_bias:      Float     -- fader position at time of selection (−1.0..1.0)
+
+  -- Track identifiers (for manual review)
+  seed_title:       String    -- seed track title
+  seed_artist:      String    -- seed track artist
+  selected_title:   String    -- selected suggestion title
+  selected_artist:  String    -- selected suggestion artist
+
+  -- Acoustic relationship
+  hnsw_dist_norm:   Float     -- normalized EffNet cosine distance (0..1)
+  key_relation:     String    -- TransitionType name ("Adjacent", "SameKey", etc.)
+  key_score:        Float     -- blended harmonic score (0..1)
+  bpm_ratio:        Float     -- candidate_bpm / seed_bpm
+
+  -- Component scores at time of selection
+  score_hnsw:       Float
+  score_key:        Float
+  score_aggression: Float
+  score_stem:       Float     -- (vocal + other combined)
+  score_total:      Float
+
+  -- Stem densities (for complement validation)
+  seed_vocal_den:   Float
+  seed_other_den:   Float
+  cand_vocal_den:   Float
+  cand_other_den:   Float
+
+  -- Algorithm config snapshot (for cross-config comparisons)
+  config_gold_target:  Float
+  config_gold_sigma2:  Float
+  config_key_filter:   String
+  config_stem_on:      Bool
+}
+```
+
+### 8.2 Signals NOT recorded
+
+- Negative signals (session ended without loading a suggestion) — too ambiguous
+- Skipped position in list — user browses freely, rank ≠ preference
+- Playback duration after load — out of scope for now
+
+### 8.3 Analysis questions the data answers
+
+1. **Is GOLD_TARGET calibrated?** Histogram of `hnsw_dist_norm` for selected tracks.
+   Peak should be at 0.35 (Balanced). If it's at 0.20 or 0.50, adjust the default.
+
+2. **Does BPM matter?** Correlation between `abs(bpm_ratio − 1.0)` and selection. If
+   selected tracks uniformly span ±15% BPM, the removal was correct.
+
+3. **Does stem complement predict selection?** Compare `score_stem` distribution for
+   selected vs non-selected candidates at the same fader position. If distributions
+   overlap, the feature is noise.
+
+4. **Is aggression predictive at extremes?** Filter `|energy_bias| > 0.7`, check if
+   `score_aggression` correlates with selection.
+
+5. **Is the harmonic floor too strict?** What fraction of sessions used Key Filter:
+   Strict but switched to Relaxed? User migration pattern is its own signal.
+
+### 8.4 Implementation plan
+
+Storage: CozoDB relation in the mesh-collection database. One row per selection.
+After 200–500 events (~5–10 active sessions), run correlation analysis.
+Export via `:put suggestion_feedback` CSV for external analysis if needed.
 
 ---
 
@@ -530,11 +473,60 @@ bass are stored for future use (e.g., linked-stem-aware scoring).
 | Transition graph edges | ~50 bytes/edge | ~50 MB (1M edges) |
 | **Total** | | **~1.3 GB** |
 
-Comfortable for any modern machine. HNSW search at 50k tracks with 1280 dims: ~5-10ms.
+HNSW search at 50k tracks with 1280 dims: ~5–10ms.
 
 ---
 
-## 10. Key Resources
+## 10. Implementation Phase Status
+
+### Phase 1: Activate Existing Infrastructure ✅ Complete
+- [x] Wire up `SimilarityQuery::find_similar()` to a UI suggestion panel
+- [x] Add "Suggest Similar" button/MIDI trigger
+- [x] Basic results: similar tracks by 16-dim features + BPM + key filter
+
+### Phase 2: Neural Embeddings ✅ Complete
+- [x] Add `ort` dependency, download Discogs-EffNet ONNX model
+- [x] Add mel spectrogram preprocessing (128 mel bands)
+- [x] Compute 1280-dim embeddings during import
+- [x] Create second HNSW index (dim=1280, m=32, ef=300)
+- [x] Update suggestion query to use neural embeddings as primary ranker
+- [x] 16-dim vector kept as silent fallback
+
+### Phase 3: Smart Ranking ✅ Complete
+- [x] Composite scoring function — unified intent slider
+- [x] Goldilocks HNSW: rewards "close but not clone" at center
+- [x] Stem complement scoring (vocal/melodic gap fill)
+- [x] Dual harmonic filter: permanent floor + energy-blended threshold
+- [x] Krumhansl–Kessler perceptual key model as alternative to Camelot
+- [x] Genre-normalized aggression scoring
+- [x] Suggestion reason tags with color-coded pills
+
+### Phase 4: User Configurability ✅ Complete
+- [x] Sound Target (Goldilocks center): Tight / Balanced / Wide / Open
+- [x] Sound Focus (bell width): Sharp / Normal / Broad
+- [x] Key Filter: Strict / Relaxed / Off
+- [x] Stem Complement toggle
+- [x] Playlist Split toggle
+- [x] Simplified weight set (removed BPM, production, dance, approach, contrast)
+- [x] Aggression raised to 0.25 at extremes
+
+### Phase 5: Feedback & Calibration (Planned)
+- [ ] `suggestion_feedback` CozoDB relation
+- [ ] Record selection events (seed/candidate identities + scores + config)
+- [ ] Correlation analysis: which components predict selection?
+- [ ] Adjust GOLD_TARGET default based on actual selection histograms
+- [ ] Validate or remove stem complement based on data
+
+### Phase 6: Advanced Features (Future)
+- [ ] Community detection on similarity graph (auto-genre clusters)
+- [ ] CLAP text embeddings for natural language search ("dark minimal techno")
+- [ ] Set position awareness (warm-up vs peak vs cool-down)
+- [ ] MinHash-LSH for remix/edit detection
+- [ ] PCA reduction of EffNet 1280-dim → ~200 dims before HNSW (noise reduction)
+
+---
+
+## 11. Key Resources
 
 ### Models
 - Essentia Models: https://essentia.upf.edu/models.html
@@ -553,7 +545,6 @@ Comfortable for any modern machine. HNSW search at 50k tracks with 1280 dims: ~5
 ### CozoDB
 - Vector search docs: https://docs.cozodb.org/en/latest/vector.html
 - Graph algorithms: https://docs.cozodb.org/en/latest/algorithms.html
-- Performance: https://docs.cozodb.org/en/latest/releases/v0.3.html
 
 ### Research
 - Music Collection Analyzer (Essentia embeddings): https://github.com/Masetto96/music-collection-analyzer

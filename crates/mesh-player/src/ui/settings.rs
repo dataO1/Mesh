@@ -11,7 +11,7 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{AppFont, FontSize, LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, FontSize, LOOP_LENGTH_OPTIONS, KeyScoringModel, SuggestionKeyFilter, SuggestionSimilarityFocus, SuggestionSimilarityTarget, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_widgets::sz;
@@ -336,6 +336,39 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
             .hint("Show up to 15 results from selected playlist + 15 global; off = 30 from any playlist"),
 
         SettingsItem::new("", SettingsBehavior::ButtonGroup {
+            options: SuggestionSimilarityTarget::ALL.iter().map(|t| t.display_name().to_string()).collect(),
+            selected: SuggestionSimilarityTarget::ALL.iter().position(|&t| t == state.draft_suggestion_similarity_target).unwrap_or(1),
+            on_select: |idx| SettingsMessage::UpdateSuggestionSimilarityTarget(SuggestionSimilarityTarget::ALL[idx.min(SuggestionSimilarityTarget::ALL.len() - 1)]),
+        })
+            .subsection("Sound Target")
+            .subsection_hint("How different the ideal suggestion sounds from the seed at center intent")
+            .button_width(ButtonWidth::Fixed(72.0)),
+
+        SettingsItem::new("", SettingsBehavior::ButtonGroup {
+            options: SuggestionSimilarityFocus::ALL.iter().map(|f| f.display_name().to_string()).collect(),
+            selected: SuggestionSimilarityFocus::ALL.iter().position(|&f| f == state.draft_suggestion_similarity_focus).unwrap_or(1),
+            on_select: |idx| SettingsMessage::UpdateSuggestionSimilarityFocus(SuggestionSimilarityFocus::ALL[idx.min(SuggestionSimilarityFocus::ALL.len() - 1)]),
+        })
+            .subsection("Sound Focus")
+            .subsection_hint("Sharp: only tracks near the target distance score well  ·  Broad: gradual, forgiving")
+            .button_width(ButtonWidth::Fixed(72.0)),
+
+        SettingsItem::new("", SettingsBehavior::ButtonGroup {
+            options: SuggestionKeyFilter::ALL.iter().map(|f| f.display_name().to_string()).collect(),
+            selected: SuggestionKeyFilter::ALL.iter().position(|&f| f == state.draft_suggestion_key_filter).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateSuggestionKeyFilter(SuggestionKeyFilter::ALL[idx.min(SuggestionKeyFilter::ALL.len() - 1)]),
+        })
+            .subsection("Key Filter")
+            .subsection_hint("Strict: only compatible keys  ·  Relaxed: allows semitone/cross-key moves  ·  Off: no harmonic filter")
+            .button_width(ButtonWidth::Fixed(72.0)),
+
+        SettingsItem::new("Stem Complement", SettingsBehavior::Toggle {
+            value: state.draft_suggestion_stem_complement,
+            on_toggle: |v| SettingsMessage::UpdateSuggestionStemComplement(v),
+        })
+            .hint("Boost candidates that fill vocal/melodic gaps in the seed deck (center intent only)"),
+
+        SettingsItem::new("", SettingsBehavior::ButtonGroup {
             options: KeyScoringModel::ALL.iter().map(|m| m.display_name().to_string()).collect(),
             selected: KeyScoringModel::ALL.iter().position(|&m| m == state.draft_key_scoring_model).unwrap_or(0),
             on_select: |idx| SettingsMessage::UpdateKeyScoringModel(KeyScoringModel::ALL[idx.min(KeyScoringModel::ALL.len() - 1)]),
@@ -437,6 +470,10 @@ pub struct SettingsState {
     /// Draft persistent browse (keep browser overlay visible while browse mode active)
     pub draft_persistent_browse: bool,
     pub draft_suggestion_playlist_split: bool,
+    pub draft_suggestion_similarity_target: SuggestionSimilarityTarget,
+    pub draft_suggestion_similarity_focus: SuggestionSimilarityFocus,
+    pub draft_suggestion_key_filter: SuggestionKeyFilter,
+    pub draft_suggestion_stem_complement: bool,
     /// Draft key scoring model for harmonic compatibility
     pub draft_key_scoring_model: KeyScoringModel,
     /// Draft waveform layout orientation
@@ -495,6 +532,10 @@ impl SettingsState {
             draft_show_local_collection: config.display.show_local_collection,
             draft_persistent_browse: config.display.persistent_browse,
             draft_suggestion_playlist_split: config.display.suggestion_playlist_split,
+            draft_suggestion_similarity_target: config.display.suggestion_similarity_target,
+            draft_suggestion_similarity_focus: config.display.suggestion_similarity_focus,
+            draft_suggestion_key_filter: config.display.suggestion_key_filter,
+            draft_suggestion_stem_complement: config.display.suggestion_stem_complement,
             draft_key_scoring_model: config.display.key_scoring_model,
             draft_waveform_layout: config.display.waveform_layout,
             draft_waveform_abstraction: config.display.waveform_abstraction,
@@ -530,6 +571,10 @@ impl SettingsState {
             show_local_collection: self.draft_show_local_collection,
             persistent_browse: self.draft_persistent_browse,
             suggestion_playlist_split: self.draft_suggestion_playlist_split,
+            suggestion_similarity_target: self.draft_suggestion_similarity_target,
+            suggestion_similarity_focus: self.draft_suggestion_similarity_focus,
+            suggestion_key_filter: self.draft_suggestion_key_filter,
+            suggestion_stem_complement: self.draft_suggestion_stem_complement,
             key_scoring_model: self.draft_key_scoring_model,
             waveform_layout: self.draft_waveform_layout,
             waveform_abstraction: self.draft_waveform_abstraction,
@@ -556,6 +601,10 @@ impl SettingsState {
             || self.draft_show_local_collection != snap.show_local_collection
             || self.draft_persistent_browse != snap.persistent_browse
             || self.draft_suggestion_playlist_split != snap.suggestion_playlist_split
+            || self.draft_suggestion_similarity_target != snap.suggestion_similarity_target
+            || self.draft_suggestion_similarity_focus != snap.suggestion_similarity_focus
+            || self.draft_suggestion_key_filter != snap.suggestion_key_filter
+            || self.draft_suggestion_stem_complement != snap.suggestion_stem_complement
             || self.draft_key_scoring_model != snap.key_scoring_model
             || self.draft_waveform_layout != snap.waveform_layout
             || self.draft_waveform_abstraction != snap.waveform_abstraction
@@ -590,6 +639,10 @@ struct SettingsSnapshot {
     show_local_collection: bool,
     persistent_browse: bool,
     suggestion_playlist_split: bool,
+    suggestion_similarity_target: SuggestionSimilarityTarget,
+    suggestion_similarity_focus: SuggestionSimilarityFocus,
+    suggestion_key_filter: SuggestionKeyFilter,
+    suggestion_stem_complement: bool,
     key_scoring_model: KeyScoringModel,
     waveform_layout: WaveformLayout,
     waveform_abstraction: WaveformAbstraction,

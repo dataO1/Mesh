@@ -38,6 +38,27 @@ All notable changes to Mesh are documented in this file.
   centre-ish intent fader positions where the stem weights are non-zero;
   they disappear at the extremes where complement scoring is not active.
 
+- **Smart suggestions — configurable algorithm settings** — Settings ›
+  Browser › Suggestions now exposes four algorithm controls. **Sound Target**
+  (Tight / Balanced / Wide / Open) sets the ideal Goldilocks EffNet distance:
+  Tight suggests near-clones; Open reaches further into adjacent subgenres.
+  **Sound Focus** (Sharp / Normal / Broad) controls how tightly the Goldilocks
+  bell penalises candidates outside the target distance. **Key Filter**
+  (Strict / Relaxed / Off) replaces the previous hard-coded harmonic floor:
+  Strict blocks dissonant transitions at all intent levels; Relaxed allows
+  semitone and far-key moves; Off removes the filter entirely for free-form or
+  non-tonal mixing. **Stem Complement** toggle turns the vocal/melodic gap-fill
+  scoring on or off — when disabled the freed weight is redistributed to HNSW.
+
+- **Smart suggestions — simplified scoring** — The scoring formula has been
+  tightened to the three signals with the clearest musical grounding: EffNet
+  neural similarity (HNSW), harmonic compatibility (key score + transition
+  direction), and energy/aggression. BPM matching, production similarity,
+  danceability, and approachability weights have been removed; the freed budget
+  flows to HNSW, raising its baseline from 0.42 to 0.58 with stem complement
+  off, or 0.33 with it on. Aggression (energy-direction signal) is raised to a
+  maximum of 0.25 at the extremes, scaling linearly from zero at center.
+
 - **Smart suggestions — playlist split toggle** — Settings › Browser ›
   Suggestions now has a **Playlist Split** toggle (on by default). When
   enabled, results are split: up to 15 tracks from the selected playlist

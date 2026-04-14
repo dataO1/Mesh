@@ -9,7 +9,36 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use mesh_core::db::{DatabaseService, MlScores, Track};
 use mesh_core::music::MusicalKey;
-use crate::config::KeyScoringModel;
+use crate::config::{KeyScoringModel, SuggestionKeyFilter, SuggestionSimilarityTarget, SuggestionSimilarityFocus};
+
+/// Scoring configuration derived from DisplayConfig, passed into `query_suggestions`.
+/// Groups the user-adjustable algorithm parameters so the function signature stays clean.
+#[derive(Debug, Clone, Copy)]
+pub struct SuggestionConfig {
+    pub gold_target: f32,
+    pub gold_sigma2: f32,
+    pub harmonic_floor: f32,
+    pub blended_threshold: f32,
+    pub stem_complement: bool,
+}
+
+impl SuggestionConfig {
+    pub fn from_display(
+        target: SuggestionSimilarityTarget,
+        focus: SuggestionSimilarityFocus,
+        key_filter: SuggestionKeyFilter,
+        stem_complement: bool,
+    ) -> Self {
+        let (harmonic_floor, blended_threshold) = key_filter.thresholds();
+        Self {
+            gold_target: target.gold_target(),
+            gold_sigma2: focus.gold_sigma2(),
+            harmonic_floor,
+            blended_threshold,
+            stem_complement,
+        }
+    }
+}
 
 /// A suggested track with its computed score (lower = better match)
 #[derive(Debug, Clone)]
@@ -321,31 +350,8 @@ fn key_transition_score(
     (base * (1.0 - blend) + energy_score * blend).clamp(0.0, 1.0)
 }
 
-/// Permanent harmonic floor applied to `base_score(best_tt)` — never relaxed.
-///
-/// Blocks Semitone (0.20), FarStep (0.08–0.25), FarCross (0.10), and Tritone (0.03)
-/// regardless of energy bias, personal curation, or any other signal. These transitions
-/// are genuinely dissonant and have no place in a DJ mix at any intent level.
-///
-/// EnergyBoost/Cool (0.50) are above this floor — they can appear when the blended
-/// threshold also passes.
-const HARMONIC_FLOOR: f32 = 0.45;
-
-/// Threshold applied to the energy-blended `key_transition_score`.
-///
-/// At **center** (bias=0): score = base_score.
-///   - EnergyBoost/Cool (0.50) are blocked — too bold for flow/mashup mixing.
-///   - Passing set: SameKey (1.00), Adjacent (0.85), Diagonal (0.75), MoodLift/Darken (0.70).
-///
-/// At **extreme** (|bias|=1): score = energy_direction_score.
-///   - EnergyBoost energy-aligned: (0.50+1)/2 = 0.75 → passes.
-///   - SameKey: (0.0+1)/2 = 0.50 → blocked. Flow tracks disappear at extreme.
-///   - AdjacentUp at extreme peak: (0.20+1)/2 = 0.60 → also blocked.
-///
-/// The crossover point where EnergyBoost (positive) unlocks is bias_abs ≈ 0.60,
-/// and SameKey starts being blocked at bias_abs > 0.70 — naturally placing the
-/// "break transition" zone near the slider extremes without any hard-coded knee.
-const BLENDED_THRESHOLD: f32 = 0.65;
+// Harmonic filter thresholds are now user-configurable via SuggestionKeyFilter
+// and passed in through SuggestionConfig. See config.rs for the values.
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
 ///
@@ -511,15 +517,7 @@ fn generate_reason_tags(
     hnsw_component: f32,
     // |energy_bias| — used to label the HNSW tag appropriately.
     bias_abs: f32,
-    bpm_penalty: f32,
-    dance_penalty: f32,
-    approach_penalty: f32,
-    contrast_pen: f32,
     aggression_pen: f32,
-    w_bpm: f32,
-    w_dance: f32,
-    w_approach: f32,
-    w_contrast: f32,
     w_aggression: f32,
     // Stem complement scores (0=clashing, 0.5=neutral, 1=complementary)
     vocal_comp: f32,
@@ -559,28 +557,6 @@ fn generate_reason_tags(
     let hnsw_label = if bias_abs < 0.3 { "Similar" } else if bias_abs > 0.7 { "Variety" } else { "Spectral" };
     let hnsw_impact = 0.42 * (hnsw_component - 0.5).abs();
     tags.push((hnsw_label.to_string(), Some(penalty_color(hnsw_component).to_string()), hnsw_impact));
-
-    if w_bpm >= min_weight {
-        let impact = w_bpm * (bpm_penalty - 0.5).abs();
-        tags.push(("BPM".to_string(), Some(penalty_color(bpm_penalty).to_string()), impact));
-    }
-
-    if w_dance >= min_weight {
-        let arrow = if dance_penalty < 0.4 { "▲" } else if dance_penalty > 0.6 { "▼" } else { "━" };
-        let impact = w_dance * (dance_penalty - 0.5).abs();
-        tags.push((format!("{} Dance", arrow), Some(penalty_color(dance_penalty).to_string()), impact));
-    }
-
-    if w_approach >= min_weight {
-        let arrow = if approach_penalty < 0.4 { "▲" } else if approach_penalty > 0.6 { "▼" } else { "━" };
-        let impact = w_approach * (approach_penalty - 0.5).abs();
-        tags.push((format!("{} Reach", arrow), Some(penalty_color(approach_penalty).to_string()), impact));
-    }
-
-    if w_contrast >= min_weight {
-        let impact = w_contrast * (contrast_pen - 0.5).abs();
-        tags.push(("Timbre".to_string(), Some(penalty_color(contrast_pen).to_string()), impact));
-    }
 
     if w_aggression >= min_weight {
         let arrow = if aggression_pen < 0.4 { "▲" } else if aggression_pen > 0.6 { "▼" } else { "━" };
@@ -633,6 +609,7 @@ pub fn query_suggestions(
     seed_paths: Vec<String>,
     energy_direction: f32,
     key_scoring_model: KeyScoringModel,
+    suggestion_config: SuggestionConfig,
     per_seed_limit: usize,
     total_limit: usize,
     played_paths: &HashSet<String>,
@@ -928,33 +905,29 @@ pub fn query_suggestions(
 
     // Step 5: Unified scoring — single formula for all candidates.
     //
-    // EffNet HNSW weight varies: 0.30 at center (budget freed for complement scoring),
-    // 0.42 at extreme (full weight as in the original formula).
-    // Goldilocks bell curve rewards ~0.35 normalized EffNet distance at center (layering
-    // sweet spot: same genre zone, not a spectral clone). At extremes, blends to a
-    // diversity reward (1 - norm_dist) for transition mode.
+    // Simplified weight set — only key, HNSW, aggression, and (optional) stem complement.
+    // BPM, production, dance, approach, contrast removed after analysis showed they add
+    // noise relative to their small weight contribution.
     //
-    // Stem complement weights active only at center, fade to zero at extremes.
-    // All weights sum to 1.00 at every bias level.
+    // w_hnsw is computed last so that weights always sum to exactly 1.00, regardless of
+    // whether stem complement is enabled or not.
     //
-    // Center  (bias=0): 0.30 hnsw + 0.30 key + 0.12 key_dir + 0.13 bpm + 0.03 prod
-    //                   + 0.07 vocal_compl + 0.05 other_compl = 1.00
-    // Extreme (|bias|=1): 0.42 hnsw-div + 0.30 key + 0.05 key_dir + 0.00 bpm + 0.00 prod
-    //                     + 0.05 dance + 0.02 approach + 0.01 contrast + 0.15 aggr = 1.00
+    // stem OFF, center  (bias=0):  0.58 hnsw + 0.30 key + 0.12 key_dir = 1.00
+    // stem ON,  center  (bias=0):  0.33 hnsw + 0.30 key + 0.12 key_dir + 0.15 vocal + 0.10 other = 1.00
+    // either,   extreme (|bias|=1): 0.40 hnsw + 0.30 key + 0.05 key_dir + 0.25 aggr = 1.00
     //
-    // Key harmony (w_key) is intentionally kept CONSTANT at 0.30 across all bias levels.
+    // Key harmony (w_key) is constant at 0.30 across all bias levels.
+    // Aggression rises linearly from 0 at center to 0.25 at extreme.
+    // Stem complement (when on) fades from its center values to 0 at extreme.
     let bias_abs = energy_bias.abs();
-    let w_hnsw       = 0.42 - 0.12 * (1.0 - bias_abs); // 0.30 center → 0.42 extreme
-    let w_key        = 0.30;                             // constant — harmonic quality always matters
-    let w_key_dir    = 0.12 - 0.07 * bias_abs;          // 0.12 → 0.05
-    let w_bpm        = 0.13 - 0.13 * bias_abs;          // 0.13 → 0.00
-    let w_production = 0.03 - 0.03 * bias_abs;          // 0.03 → 0.00
-    let w_dance      = 0.05 * bias_abs;                  // 0.00 → 0.05
-    let w_approach   = 0.02 * bias_abs;                  // 0.00 → 0.02
-    let w_contrast   = 0.01 * bias_abs;                  // 0.00 → 0.01
-    let w_aggression = 0.15 * bias_abs;                  // 0.00 → 0.15
-    let w_vocal_compl = 0.07 * (1.0 - bias_abs);        // 0.07 center → 0.00 extreme
-    let w_other_compl = 0.05 * (1.0 - bias_abs);        // 0.05 center → 0.00 extreme
+    let w_key         = 0.30;
+    let w_key_dir     = 0.12 - 0.07 * bias_abs;          // 0.12 center → 0.05 extreme
+    let w_aggression  = 0.25 * bias_abs;                  // 0.00 center → 0.25 extreme
+    let w_vocal_compl = if suggestion_config.stem_complement { 0.15 * (1.0 - bias_abs) } else { 0.0 };
+    let w_other_compl = if suggestion_config.stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
+    // Self-normalizing: remainder goes to HNSW so sum = 1.00 at every bias level.
+    // stem OFF: 0.58 - 0.18*b | stem ON: 0.33 + 0.07*b
+    let w_hnsw = 1.0 - w_key - w_key_dir - w_aggression - w_vocal_compl - w_other_compl;
 
     // Pre-compute max HNSW distance across the candidate pool.
     // Used to normalise raw distances to [0,1] so the diversity/similarity
@@ -996,26 +969,26 @@ pub fn query_suggestions(
                 })
                 .unwrap_or((0.3, TransitionType::FarStep(6))); // No key = moderate penalty
 
-            // Dual-layer harmonic filter.
+            // Dual-layer harmonic filter — thresholds come from SuggestionKeyFilter.
             //
-            // Layer 1: permanent harmonic floor on raw base_score — never relaxed.
-            // Blocks Semitone, FarStep, FarCross, Tritone at all bias levels.
+            // Layer 1: base_score floor (never relaxed for playlist preference).
+            //   Strict: blocks Semitone/FarStep/FarCross/Tritone.
+            //   Relaxed: allows Semitone/FarStep/FarCross (floor=0.20).
+            //   Off: no floor.
             let harmonic_base = base_score(best_tt);
-            if harmonic_base < HARMONIC_FLOOR {
+            if harmonic_base < suggestion_config.harmonic_floor {
                 return None;
             }
-            // Layer 2: blended threshold on the energy-direction-aware key score.
-            // At center: filters out EnergyBoost (0.50) → pure flow set.
-            // At extreme: SameKey/Adjacent fall below 0.65; EnergyBoost rises to 0.75.
-            // Preferred tracks (personal curation) get 50% leniency on this layer only.
+            // Layer 2: energy-direction-blended key score threshold.
+            // Preferred tracks (user-curated playlist) get 50% leniency on this layer.
             let is_preferred = preferred_paths.map_or(false, |pp| {
                 let p = track.path.to_string_lossy();
                 pp.contains(p.as_ref())
             });
             let effective_threshold = if is_preferred {
-                BLENDED_THRESHOLD * 0.5
+                suggestion_config.blended_threshold * 0.5
             } else {
-                BLENDED_THRESHOLD
+                suggestion_config.blended_threshold
             };
             if best_key_score < effective_threshold {
                 return None;
@@ -1063,15 +1036,15 @@ pub fn query_suggestions(
             // EffNet Goldilocks HNSW component.
             // norm_dist: 0 = most similar track in pool, 1 = most different.
             //
-            // Center (bias=0): Gaussian bell rewards ~0.35 normalized distance.
-            //   d=0.00 → 0.22 (penalised spectral clone)
-            //   d=0.35 → 1.00 (layering sweet spot)
-            //   d=0.70 → 0.22 (penalised unrelated)
+            // Center (bias=0): Gaussian bell rewards tracks near gold_target distance.
+            //   d=0.00 → penalised spectral clone
+            //   d=gold_target → 1.00 (sweet spot)
+            //   d=0.70 → penalised unrelated
             // Extreme (|bias|=1): blends to diversity reward (1-norm_dist) for transitions.
-            const GOLD_TARGET: f32 = 0.35;
-            const GOLD_SIGMA2: f32 = 0.08; // 2σ², σ=0.20
+            let gold_target = suggestion_config.gold_target;
+            let gold_sigma2 = suggestion_config.gold_sigma2;
             let norm_dist = hnsw_dist / max_hnsw_dist;
-            let goldilocks = (-(norm_dist - GOLD_TARGET).powi(2) / GOLD_SIGMA2).exp();
+            let goldilocks = (-(norm_dist - gold_target).powi(2) / gold_sigma2).exp();
             let hnsw_component = goldilocks * (1.0 - bias_abs) + (1.0 - norm_dist) * bias_abs;
 
             // Stem complement scoring (bipolar, [0,1]).
@@ -1085,26 +1058,17 @@ pub fn query_suggestions(
             let vocal_comp = stem_complement_component(seed_stem.0, cand_stem.0);
             let other_comp = stem_complement_component(seed_stem.3, cand_stem.3);
 
-            let score = w_hnsw         * hnsw_component
-                + w_key        * key_penalty
-                + w_key_dir    * key_dir_penalty
-                + w_bpm        * bpm_penalty
-                + w_production * production_pen
-                + w_dance      * dance_penalty
-                + w_approach   * approach_penalty
-                + w_contrast   * contrast_pen
-                + w_aggression * aggression_pen
+            let score = w_hnsw        * hnsw_component
+                + w_key         * key_penalty
+                + w_key_dir     * key_dir_penalty
+                + w_aggression  * aggression_pen
                 + w_vocal_compl * vocal_comp
                 + w_other_compl * other_comp;
 
             let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,
                 hnsw_component, bias_abs,
-                bpm_penalty,
-                dance_penalty, approach_penalty, contrast_pen,
-                aggression_pen,
-                w_bpm, w_dance, w_approach, w_contrast,
-                w_aggression,
+                aggression_pen, w_aggression,
                 vocal_comp, other_comp,
                 w_vocal_compl, w_other_compl,
             );
