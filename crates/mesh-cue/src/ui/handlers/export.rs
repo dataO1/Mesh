@@ -10,7 +10,7 @@ use super::super::app::MeshCueApp;
 use super::super::message::Message;
 use super::super::state::ExportPhase;
 use crate::analysis::{AnalysisType, MetadataOptions};
-use mesh_core::playlist::NodeId;
+use mesh_core::playlist::{NodeId, NodeKind};
 
 impl MeshCueApp {
     /// Handle OpenExport message
@@ -344,20 +344,46 @@ impl MeshCueApp {
             UsbMsg::PlaylistScanComplete { tree_nodes, .. } => {
                 // Auto-select local playlists that already exist on the USB stick,
                 // but only when the user hasn't made any manual selection yet.
+                //
+                // NodeId format differences:
+                //   Local:  "playlists/Name" or "playlists/Parent/Child"  (plural prefix, / separator)
+                //   USB:    "playlist:Name"  or "playlist:Parent:Child"   (singular prefix, : separator)
                 if self.export_state.selected_playlists.is_empty() {
-                    fn collect_ids(nodes: &[mesh_widgets::TreeNode<NodeId>], out: &mut std::collections::HashSet<NodeId>) {
+                    // Build a set of USB playlist qualified names by stripping the "playlist:"
+                    // prefix and replacing ":" with "/" to match the local qualified-name format.
+                    let usb_names: std::collections::HashSet<String> = tree_nodes
+                        .iter()
+                        .filter(|(_, node)| node.kind == NodeKind::Playlist)
+                        .filter_map(|(id, _)| {
+                            id.as_str()
+                                .strip_prefix("playlist:")
+                                .map(|s| s.replace(':', "/"))
+                        })
+                        .collect();
+
+                    // Walk the local tree and select playlist nodes whose qualified name
+                    // (i.e. the part after "playlists/") is present on the USB stick.
+                    // Track nodes and container nodes are skipped automatically because
+                    // their stripped names don't appear as USB playlist names.
+                    fn select_matching(
+                        nodes: &[mesh_widgets::TreeNode<NodeId>],
+                        usb_names: &std::collections::HashSet<String>,
+                        out: &mut std::collections::HashSet<NodeId>,
+                    ) {
                         for node in nodes {
-                            out.insert(node.id.clone());
-                            collect_ids(&node.children, out);
+                            if let Some(qualified) = node.id.as_str().strip_prefix("playlists/") {
+                                if usb_names.contains(qualified) {
+                                    out.insert(node.id.clone());
+                                }
+                            }
+                            select_matching(&node.children, usb_names, out);
                         }
                     }
-                    let mut local_ids = std::collections::HashSet::new();
-                    collect_ids(&self.collection.tree_nodes, &mut local_ids);
-                    for id in local_ids {
-                        if tree_nodes.contains_key(&id) {
-                            self.export_state.selected_playlists.insert(id);
-                        }
-                    }
+                    select_matching(
+                        &self.collection.tree_nodes,
+                        &usb_names,
+                        &mut self.export_state.selected_playlists,
+                    );
                 }
                 self.trigger_sync_plan_computation();
             }
