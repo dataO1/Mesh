@@ -827,6 +827,33 @@ impl SimilarityQuery {
             .collect())
     }
 
+    pub fn get_tracks_with_ml_embeddings(db: &MeshDb) -> Result<Vec<i64>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id] := *ml_embeddings{track_id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_int()))
+            .collect())
+    }
+
+    pub fn get_tracks_with_stem_energy(db: &MeshDb) -> Result<Vec<i64>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id] := *stem_energy{track_id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_int()))
+            .collect())
+    }
+
+    pub fn get_tracks_with_dissonance(db: &MeshDb) -> Result<Vec<i64>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id] := *track_dissonance{track_id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_int()))
+            .collect())
+    }
+
     /// Count tracks with audio features
     pub fn count_with_features(db: &MeshDb) -> Result<usize, DbError> {
         let result = db.run_query(r#"

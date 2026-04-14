@@ -43,6 +43,12 @@ pub struct TrackInfo {
     pub tags: Vec<(String, Option<String>)>,
     /// Whether audio features are stored for this track
     pub has_audio_features: bool,
+    /// Whether a 1280-dim EffNet ML embedding is stored for this track
+    pub has_ml_embedding: bool,
+    /// Whether stem energy densities are stored for this track
+    pub has_stem_energy: bool,
+    /// Whether a psychoacoustic dissonance score is stored for this track
+    pub has_dissonance: bool,
 }
 
 /// A track membership in a playlist (database record)
@@ -286,16 +292,21 @@ pub fn scan_local_collection_from_db(
     let loops_map = SavedLoopQuery::get_all(db).unwrap_or_default();
     let stem_links_map = StemLinkQuery::get_all(db).unwrap_or_default();
 
-    let (ml_analysis_map, tags_map, audio_features_set) = if let Some(svc) = db_service {
+    let (ml_analysis_map, tags_map, audio_features_set,
+         ml_embedding_set, stem_energy_set, dissonance_set) = if let Some(svc) = db_service {
         let ml = svc.get_all_ml_analysis().unwrap_or_default();
         let tags = svc.get_all_track_tags().unwrap_or_default();
         let features: HashSet<i64> = SimilarityQuery::get_tracks_with_features(db)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        (ml, tags, features)
+            .unwrap_or_default().into_iter().collect();
+        let embeddings: HashSet<i64> = SimilarityQuery::get_tracks_with_ml_embeddings(db)
+            .unwrap_or_default().into_iter().collect();
+        let stem_energy: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db)
+            .unwrap_or_default().into_iter().collect();
+        let dissonance: HashSet<i64> = SimilarityQuery::get_tracks_with_dissonance(db)
+            .unwrap_or_default().into_iter().collect();
+        (ml, tags, features, embeddings, stem_energy, dissonance)
     } else {
-        (HashMap::new(), HashMap::new(), HashSet::new())
+        (HashMap::new(), HashMap::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new())
     };
 
     // Get file metadata for all unique tracks (sequential — local disk I/O
@@ -326,6 +337,9 @@ pub fn scan_local_collection_from_db(
             let ml_analysis = ml_analysis_map.get(&db_track.id).cloned();
             let tags = tags_map.get(&db_track.id).cloned().unwrap_or_default();
             let has_audio_features = audio_features_set.contains(&db_track.id);
+            let has_ml_embedding   = ml_embedding_set.contains(&db_track.id);
+            let has_stem_energy    = stem_energy_set.contains(&db_track.id);
+            let has_dissonance     = dissonance_set.contains(&db_track.id);
 
             Ok(TrackInfo {
                 path,
@@ -339,6 +353,9 @@ pub fn scan_local_collection_from_db(
                 ml_analysis,
                 tags,
                 has_audio_features,
+                has_ml_embedding,
+                has_stem_energy,
+                has_dissonance,
             })
         })
         .collect();
@@ -386,9 +403,9 @@ pub fn scan_usb_collection(
     // Build map of filename -> metadata from USB database (bulk queries)
     #[allow(clippy::type_complexity)]
     let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>,
-        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool)> = HashMap::new();
+        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool, bool, bool, bool)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
-        // Bulk-fetch all supplementary data in 6 queries instead of 6×N
+        // Bulk-fetch all supplementary data in 9 queries instead of 9×N
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
             let cue_map = CuePointQuery::get_all(db_service.db()).unwrap_or_default();
             let loop_map = SavedLoopQuery::get_all(db_service.db()).unwrap_or_default();
@@ -396,9 +413,13 @@ pub fn scan_usb_collection(
             let ml_map = db_service.get_all_ml_analysis().unwrap_or_default();
             let tag_map = db_service.get_all_track_tags().unwrap_or_default();
             let features_set: HashSet<i64> = SimilarityQuery::get_tracks_with_features(db_service.db())
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+                .unwrap_or_default().into_iter().collect();
+            let embedding_set: HashSet<i64> = SimilarityQuery::get_tracks_with_ml_embeddings(db_service.db())
+                .unwrap_or_default().into_iter().collect();
+            let stem_energy_set: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db_service.db())
+                .unwrap_or_default().into_iter().collect();
+            let dissonance_set: HashSet<i64> = SimilarityQuery::get_tracks_with_dissonance(db_service.db())
+                .unwrap_or_default().into_iter().collect();
 
             for track in all_tracks {
                 let filename = PathBuf::from(&track.path)
@@ -413,9 +434,12 @@ pub fn scan_usb_collection(
                 let ml_analysis = ml_map.get(&track.id).cloned();
                 let tags = tag_map.get(&track.id).cloned().unwrap_or_default();
                 let has_audio_features = features_set.contains(&track.id);
+                let has_ml_embedding   = embedding_set.contains(&track.id);
+                let has_stem_energy    = stem_energy_set.contains(&track.id);
+                let has_dissonance     = dissonance_set.contains(&track.id);
 
                 db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links,
-                    ml_analysis, tags, has_audio_features));
+                    ml_analysis, tags, has_audio_features, has_ml_embedding, has_stem_energy, has_dissonance));
             }
         }
 
@@ -487,11 +511,14 @@ pub fn scan_usb_collection(
             }
 
             // Get database metadata if available
-            let (db_track, cue_points, saved_loops, stem_links, ml_analysis, tags, has_audio_features) =
+            let (db_track, cue_points, saved_loops, stem_links, ml_analysis, tags, has_audio_features,
+                 has_ml_embedding, has_stem_energy, has_dissonance) =
                 db_metadata
                     .get(&filename)
-                    .map(|(t, c, l, s, ml, tg, af)| (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *af))
-                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false));
+                    .map(|(t, c, l, s, ml, tg, af, me, se, di)| {
+                        (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *af, *me, *se, *di)
+                    })
+                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, false, false, false));
 
             Ok(TrackInfo {
                 path,
@@ -505,6 +532,9 @@ pub fn scan_usb_collection(
                 ml_analysis,
                 tags,
                 has_audio_features,
+                has_ml_embedding,
+                has_stem_energy,
+                has_dissonance,
             })
         })
         .collect();
@@ -618,6 +648,20 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
     // Compare audio features presence
     if local.has_audio_features != usb.has_audio_features {
         log::debug!("metadata_differs: audio_features presence differs for {}", local.filename);
+        return true;
+    }
+
+    // Compare ML embedding, stem energy, and dissonance presence
+    if local.has_ml_embedding != usb.has_ml_embedding {
+        log::debug!("metadata_differs: ml_embedding presence differs for {}", local.filename);
+        return true;
+    }
+    if local.has_stem_energy != usb.has_stem_energy {
+        log::debug!("metadata_differs: stem_energy presence differs for {}", local.filename);
+        return true;
+    }
+    if local.has_dissonance != usb.has_dissonance {
+        log::debug!("metadata_differs: dissonance presence differs for {}", local.filename);
         return true;
     }
 
@@ -962,6 +1006,9 @@ mod tests {
             ml_analysis: None,
             tags: Vec::new(),
             has_audio_features: false,
+            has_ml_embedding: false,
+            has_stem_energy: false,
+            has_dissonance: false,
         }
     }
 
