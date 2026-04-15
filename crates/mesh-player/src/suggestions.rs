@@ -49,6 +49,8 @@ pub struct SuggestedTrack {
     pub reason_tags: Vec<(String, Option<String>)>,
     /// Playlist names this track belongs to (populated after query)
     pub playlists: Vec<String>,
+    /// True when this track has been historically played after a current seed (co-play count ≥ threshold)
+    pub is_proven_followup: bool,
 }
 
 /// A database source for suggestion queries.
@@ -628,9 +630,18 @@ pub fn query_suggestions(
     // they receive a 50% more lenient key filter threshold so that user-curated
     // playlist tracks appear even when their key relationship is less ideal.
     preferred_paths: Option<&HashSet<String>>,
+    // Pre-computed blend vector for dual-deck mode (average of both seeds' PCA/ML embeddings,
+    // L2-normalised). When `Some`, the per-seed HNSW routing is skipped and a single
+    // vector query is issued per source instead.
+    blend_query_vec: Option<Vec<f64>>,
 ) -> Result<Vec<SuggestedTrack>, String> {
     if sources.is_empty() {
         return Ok(Vec::new());
+    }
+
+    // Opener mode: no seeds playing → score candidates on-the-fly from intro quality
+    if seed_paths.is_empty() {
+        return query_opener_suggestions(sources, energy_direction, total_limit, played_paths);
     }
 
     // Diagnostic: log audio features count per source
@@ -685,7 +696,7 @@ pub fn query_suggestions(
     }
 
     if seed_tracks.is_empty() {
-        log::debug!("[SUGGESTIONS] No seeds resolved — returning empty");
+        log::debug!("[SUGGESTIONS] No seeds resolved in any DB — returning empty");
         return Ok(Vec::new());
     }
 
@@ -696,10 +707,36 @@ pub fn query_suggestions(
         .collect();
 
     // Step 2 & 3: Cross-database HNSW search.
-    // For each seed, extract its feature vector and search ALL databases.
-    // In the seed's own DB we use the efficient by-ID lookup; in other DBs
-    // we pass the raw vector to their HNSW index.
+    // Two paths:
+    //   Blend mode (blend_query_vec.is_some()): single averaged-vector query per source —
+    //     used in dual-deck mode when the slider is at center and both decks are playing.
+    //   Per-seed mode: standard routing with PCA-128 > ML-1280 > 16-dim priority.
     let mut candidates: HashMap<(usize, i64), (Track, f32)> = HashMap::new();
+
+    if let Some(ref blend) = blend_query_vec {
+        // Dual-deck blend: query each source once with the averaged embedding.
+        // Try PCA index first (if built), fall back to ML-1280.
+        for (src_idx, source) in sources.iter().enumerate() {
+            let hits = source.db.find_similar_by_pca_vector(blend, per_seed_limit)
+                .or_else(|_| source.db.find_similar_by_ml_vector(blend, per_seed_limit))
+                .unwrap_or_default();
+            log::debug!("[SUGGESTIONS] blend query on source '{}': {} candidates", source.name, hits.len());
+            for (mut track, dist) in hits {
+                if let Some(track_id) = track.id {
+                    if let Some(name) = track.path.file_name() {
+                        if seed_filenames.contains(&*name.to_string_lossy()) { continue; }
+                    }
+                    if !track.path.is_absolute() {
+                        track.path = source.collection_root.join(&track.path);
+                    }
+                    if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
+                    candidates.entry((src_idx, track_id))
+                        .and_modify(|(_, d)| { if dist < *d { *d = dist; } })
+                        .or_insert((track, dist));
+                }
+            }
+        }
+    } else {
 
     for &(seed_src_idx, ref seed_track) in &seed_tracks {
         let seed_id = match seed_track.id {
@@ -708,25 +745,40 @@ pub fn query_suggestions(
         };
 
         // Get the seed's feature vectors for HNSW routing.
-        // EffNet 1280-dim is the primary path; 16-dim is a silent fallback for
-        // tracks not yet re-analysed.
+        // Priority: PCA-128 (best) > EffNet-1280 > 16-dim fallback (tracks not yet re-analysed)
         let seed_features = sources[seed_src_idx].db.get_audio_features(seed_id);
         let seed_vector = seed_features.ok().flatten().map(|f| f.to_vector());
         let seed_ml_vec: Option<Vec<f64>> = sources[seed_src_idx]
             .db.get_ml_embedding_raw(seed_id).ok().flatten()
             .map(|e| e.iter().map(|&v| v as f64).collect());
+        let seed_pca_vec: Option<Vec<f64>> = sources[seed_src_idx]
+            .db.get_pca_embedding_raw(seed_id).ok().flatten()
+            .map(|e| e.iter().map(|&v| v as f64).collect());
         log::debug!(
-            "[SUGGESTIONS] Seed {} (src={}) has_features={} has_ml_vec={}",
-            seed_id, sources[seed_src_idx].name, seed_vector.is_some(), seed_ml_vec.is_some()
+            "[SUGGESTIONS] seed={}: using {} HNSW path (same_db src={})",
+            seed_id,
+            match (&seed_pca_vec, &seed_ml_vec) {
+                (Some(_), _) => "PCA-128",
+                (None, Some(_)) => "ML-1280",
+                _ => "16-dim",
+            },
+            sources[seed_src_idx].name
         );
 
         for (target_idx, target_source) in sources.iter().enumerate() {
-            let results = if target_idx == seed_src_idx && seed_ml_vec.is_some() {
-                // Same DB — EffNet HNSW primary path
+            let same_db = target_idx == seed_src_idx;
+            let results = if same_db && seed_pca_vec.is_some() {
+                // Same DB — PCA-128 HNSW (primary: best separation, avoids concentration of measure)
+                target_source.db.find_similar_tracks_pca(seed_id, per_seed_limit)
+            } else if same_db && seed_ml_vec.is_some() {
+                // Same DB — EffNet-1280 HNSW
                 target_source.db.find_similar_tracks_ml(seed_id, per_seed_limit)
-            } else if target_idx == seed_src_idx {
-                // Same DB — 16-dim fallback (track not yet re-analysed)
+            } else if same_db {
+                // Same DB — 16-dim fallback
                 target_source.db.find_similar_tracks(seed_id, per_seed_limit)
+            } else if let Some(ref pca_vec) = seed_pca_vec {
+                // Cross-DB — PCA primary path
+                target_source.db.find_similar_by_pca_vector(pca_vec, per_seed_limit)
             } else if let Some(ref ml_vec) = seed_ml_vec {
                 // Cross-DB — EffNet primary path
                 target_source.db.find_similar_by_ml_vector(ml_vec, per_seed_limit)
@@ -779,6 +831,8 @@ pub fn query_suggestions(
         }
     }
 
+    } // end else (per-seed mode)
+
     // Cross-source dedup: same track may exist in both Local and USB DBs.
     // Group by filename, keep the entry with the lowest HNSW distance.
     if sources.len() > 1 {
@@ -814,6 +868,28 @@ pub fn query_suggestions(
         log::debug!("[SUGGESTIONS] No candidates — returning empty");
         return Ok(Vec::new());
     }
+
+    // Co-play boost: fetch historically proven follow-up tracks for all seeds.
+    // Key = (src_idx, track_id); value = time-decayed co-play weight in [0, 1].
+    // Only counts from the seed's source DB — co-play is source-local.
+    let coplay_boost: HashMap<(usize, i64), f32> = {
+        let mut boost: HashMap<(usize, i64), f32> = HashMap::new();
+        for &(seed_src_idx, ref seed_track) in &seed_tracks {
+            let Some(seed_id) = seed_track.id else { continue };
+            match sources[seed_src_idx].db.get_played_after_neighbors(seed_id, 100) {
+                Ok(neighbors) => {
+                    for (cand_id, w) in neighbors {
+                        boost.entry((seed_src_idx, cand_id))
+                            .and_modify(|v| *v = v.max(w))
+                            .or_insert(w);
+                    }
+                }
+                Err(e) => log::debug!("[SUGGESTIONS] co-play fetch failed for seed {}: {}", seed_id, e),
+            }
+        }
+        log::debug!("[SUGGESTIONS] co-play boost map: {} tracks have proven history", boost.len());
+        boost
+    };
 
     // Step 4: Compute seed averages for scoring
 
@@ -940,20 +1016,23 @@ pub fn query_suggestions(
     //   directionally (intensity_penalty blends semantics automatically).
     // - w_key (0.28, constant): harmonic compatibility always matters.
     // - w_key_dir (0.12→0.05): transition's emotional direction vs. fader.
+    // - w_coplay (0.08→0 at extreme): co-play history bonus, active near center.
+    //   Uses inverted coplay value (1-coplay) as a penalty so proven tracks score LOWER.
     // - w_vocal / w_other: stem complement, center only, fades to 0 at extremes.
     // - w_hnsw: self-normalizing remainder — HNSW provides the musical neighbourhood anchor.
     //
-    // stem OFF, center  (bias=0):  0.25 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity = 1.00
-    // stem ON,  center  (bias=0):  0.08 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity + 0.10v + 0.07o = 1.00
+    // stem OFF, center  (bias=0):  0.17 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity + 0.08 coplay = 1.00
+    // stem ON,  center  (bias=0):  0.00 hnsw + 0.28 key + 0.12 key_dir + 0.35 intensity + 0.08 coplay + 0.10v + 0.07o = 1.00
     // either,   extreme (|bias|=1): 0.32 hnsw + 0.28 key + 0.05 key_dir + 0.35 intensity = 1.00
     let bias_abs = energy_bias.abs();
     let w_intensity   = 0.35;                              // constant — highest weight
     let w_key         = 0.28;
     let w_key_dir     = 0.12 - 0.07 * bias_abs;          // 0.12 center → 0.05 extreme
+    let w_coplay      = 0.08 * (1.0 - bias_abs);          // 0.08 center → 0.00 extreme
     let w_vocal_compl = if suggestion_config.stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
     let w_other_compl = if suggestion_config.stem_complement { 0.07 * (1.0 - bias_abs) } else { 0.0 };
     // Self-normalizing: remainder goes to HNSW so sum = 1.00 at every bias level.
-    let w_hnsw = 1.0 - w_intensity - w_key - w_key_dir - w_vocal_compl - w_other_compl;
+    let w_hnsw = 1.0 - w_intensity - w_key - w_key_dir - w_coplay - w_vocal_compl - w_other_compl;
 
     // Pre-compute max HNSW distance across the candidate pool.
     // Used to normalise raw distances to [0,1] so the diversity/similarity
@@ -975,7 +1054,7 @@ pub fn query_suggestions(
 
     let mut suggestions: Vec<SuggestedTrack> = candidates
         .into_iter()
-        .filter_map(|((src_idx, _track_id), (track, hnsw_dist))| {
+        .filter_map(|((src_idx, track_id), (track, hnsw_dist))| {
             // Key transition score: best match across all seeds
             // Also capture transition type for reason tag generation
             let (best_key_score, best_tt) = track
@@ -1062,12 +1141,20 @@ pub fn query_suggestions(
             let vocal_comp = stem_complement_component(seed_stem.0, cand_stem.0);
             let other_comp = stem_complement_component(seed_stem.3, cand_stem.3);
 
+            // Co-play history: inverted as penalty so PROVEN tracks score lower (better ranking).
+            // Only applied when the track has proven co-play above the noise threshold.
+            let coplay = coplay_boost.get(&(src_idx, track_id)).copied().unwrap_or(0.0);
+            let coplay_pen = 1.0 - coplay; // 0 = proven (no penalty), 1 = unproven (full penalty)
+
             let score = w_hnsw        * hnsw_component
                 + w_key         * key_penalty
                 + w_key_dir     * key_dir_penalty
                 + w_intensity   * intensity_pen
+                + w_coplay      * coplay_pen
                 + w_vocal_compl * vocal_comp
                 + w_other_compl * other_comp;
+
+            let is_proven_followup = coplay >= 0.3;
 
             let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,
@@ -1083,7 +1170,7 @@ pub fn query_suggestions(
                 reason_tags.insert(0, (source_name.to_string(), Some("#808080".to_string())));
             }
 
-            Some(SuggestedTrack { track, score, reason_tags, playlists: Vec::new() })
+            Some(SuggestedTrack { track, score, reason_tags, playlists: Vec::new(), is_proven_followup })
         })
         .collect();
 
@@ -1092,6 +1179,103 @@ pub fn query_suggestions(
     suggestions.truncate(total_limit);
 
     Ok(suggestions)
+}
+
+/// Score candidates for opener mode: no decks playing, DJ is choosing the first track.
+///
+/// Scoring is on-the-fly from existing DB data — no re-import needed.
+/// Eligible tracks must have a `drop_marker` and at least 8 intro bars.
+///
+/// Quality formula (all components in [0, 1], lower total = better):
+/// - `long_intro`: rewards long intros (bars capped at 64) — more room to mix in
+/// - `other_interest`: Gaussian reward around `other_density ≈ 0.25` — melodic hooks without dominating
+/// - `vocal_interest`: Gaussian reward around `vocal_density ≈ 0.15` — warmth without a full diva hook
+/// - `drums_ok`: `1 - drums_density` — penalises full-energy drum entries at bar 1
+/// - `intensity_match`: `1 - |composite_intensity - intent_intensity|` — match the DJ's desired energy
+fn query_opener_suggestions(
+    sources: &[DbSource],
+    energy_direction: f32,
+    total_limit: usize,
+    played_paths: &HashSet<String>,
+) -> Result<Vec<SuggestedTrack>, String> {
+    let intent_intensity = energy_direction; // slider maps directly to [0, 1] intensity target
+    let mut results: Vec<SuggestedTrack> = Vec::new();
+
+    #[inline]
+    fn gauss(x: f32, mu: f32, sigma: f32) -> f32 {
+        (-(x - mu).powi(2) / (2.0 * sigma * sigma)).exp()
+    }
+
+    for source in sources {
+        let tracks = source.db.get_tracks_with_drop_marker()
+            .map_err(|e| e.to_string())?;
+
+        let ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
+        let stem_map     = source.db.batch_get_stem_energy(&ids).unwrap_or_default();
+        let ml_map       = source.db.get_ml_scores_batch(&ids).unwrap_or_default();
+        let flatness_map = source.db.batch_get_flatness(&ids).unwrap_or_default();
+
+        for track in &tracks {
+            if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
+            let Some(id) = track.id else { continue };
+            let Some(drop_sample) = track.drop_marker else { continue };
+            let Some(bpm) = track.bpm else { continue };
+            if bpm < 1.0 { continue; }
+
+            // Calculate intro length in bars (4/4 assumed)
+            let intro_secs = drop_sample as f32 / 44100.0;
+            let bars_per_sec = bpm as f32 / 240.0; // bpm / (60 * 4)
+            let intro_bars = intro_secs * bars_per_sec;
+            if intro_bars < 8.0 { continue; } // Minimum 8 bars to be useful
+
+            let (vocal, drums, _bass, other) = stem_map.get(&id)
+                .copied()
+                .unwrap_or((0.2, 0.3, 0.25, 0.25));
+
+            let ml       = ml_map.get(&id);
+            let flatness = flatness_map.get(&id).copied();
+            let relaxed  = ml.and_then(|m| m.relaxed);
+            let intensity = composite_intensity(
+                ml.and_then(|m| m.aggression), flatness, relaxed, None,
+            ).unwrap_or(0.5);
+
+            let long_intro     = (intro_bars / 64.0).min(1.0);
+            let other_interest = gauss(other, 0.25, 0.12);
+            let vocal_interest = gauss(vocal, 0.15, 0.10);
+            let drums_ok       = 1.0 - drums.clamp(0.0, 1.0);
+            let intensity_match = 1.0 - (intensity - intent_intensity).abs().clamp(0.0, 1.0);
+
+            // Higher quality = lower score (consistent with normal suggestion scoring)
+            let raw = 0.35 * long_intro + 0.20 * other_interest
+                    + 0.15 * vocal_interest + 0.15 * drums_ok + 0.15 * intensity_match;
+            let score = 1.0 - raw;
+
+            let reason_tags = vec![
+                (format!("{:.0}b intro", intro_bars), Some("#3b82f6".to_string())),
+            ];
+            let mut track_abs = track.clone();
+            if !track_abs.path.is_absolute() {
+                track_abs.path = source.collection_root.join(&track_abs.path);
+            }
+            results.push(SuggestedTrack {
+                track: track_abs,
+                score,
+                reason_tags,
+                playlists: Vec::new(),
+                is_proven_followup: false,
+            });
+        }
+    }
+
+    log::debug!(
+        "[SUGGESTIONS] opener mode: {} candidates scored (intent_intensity={:.2})",
+        results.len(), intent_intensity
+    );
+
+    results.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.dedup_by(|a, b| a.track.path == b.track.path);
+    results.truncate(total_limit);
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -1542,23 +1726,24 @@ mod tests {
 
     // ─── Weight Sum Verification ─────────────────────────────────────
     // Verify the self-normalizing weight formula sums to 1.0 at all bias levels.
-    // w_hnsw = 1 - w_intensity - w_key - w_key_dir - w_vocal_compl - w_other_compl
+    // w_hnsw = 1 - w_intensity - w_key - w_key_dir - w_coplay - w_vocal_compl - w_other_compl
     //
     // stem complement OFF (most common case):
-    //   center  (bias=0): 0.25 hnsw + 0.35 intensity + 0.28 key + 0.12 key_dir = 1.00
+    //   center  (bias=0): 0.17 hnsw + 0.35 intensity + 0.28 key + 0.12 key_dir + 0.08 coplay = 1.00
     //   extreme (bias=1): 0.32 hnsw + 0.35 intensity + 0.28 key + 0.05 key_dir = 1.00
     //
     // stem complement ON:
-    //   center  (bias=0): 0.08 hnsw + 0.35 + 0.28 + 0.12 + 0.10v + 0.07o = 1.00
+    //   center  (bias=0): 0.00 hnsw + 0.35 + 0.28 + 0.12 + 0.08 + 0.10v + 0.07o = 1.00
 
     fn weights_at(bias_abs: f32, stem_complement: bool) -> f32 {
         let w_intensity = 0.35_f32;
         let w_key       = 0.28_f32;
         let w_key_dir   = 0.12 - 0.07 * bias_abs;
+        let w_coplay    = 0.08 * (1.0 - bias_abs);
         let w_vocal     = if stem_complement { 0.10 * (1.0 - bias_abs) } else { 0.0 };
         let w_other     = if stem_complement { 0.07 * (1.0 - bias_abs) } else { 0.0 };
-        let w_hnsw      = 1.0 - w_intensity - w_key - w_key_dir - w_vocal - w_other;
-        w_hnsw + w_intensity + w_key + w_key_dir + w_vocal + w_other
+        let w_hnsw      = 1.0 - w_intensity - w_key - w_key_dir - w_coplay - w_vocal - w_other;
+        w_hnsw + w_intensity + w_key + w_key_dir + w_coplay + w_vocal + w_other
     }
 
     #[test]

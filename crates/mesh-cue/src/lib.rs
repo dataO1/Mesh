@@ -27,6 +27,7 @@ pub mod import;
 pub mod keybindings;
 pub mod loader;
 pub mod ml_analysis;
+pub mod pca;
 pub mod reanalysis;
 pub mod separation;
 pub mod ui;

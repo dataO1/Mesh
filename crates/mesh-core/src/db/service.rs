@@ -1034,6 +1034,62 @@ impl DatabaseService {
         SimilarityQuery::batch_get_stem_energy(&self.db, track_ids)
     }
 
+    // ── PCA 128-dim embeddings ───────────────────────────────────────────────
+
+    /// Store a 128-dim PCA-projected embedding (built by "Build Similarity Index").
+    pub fn store_pca_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        SimilarityQuery::upsert_pca_embedding(&self.db, track_id, embedding)
+    }
+
+    /// Retrieve the raw 128-dim PCA embedding (None if not yet built).
+    pub fn get_pca_embedding_raw(&self, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        SimilarityQuery::get_pca_embedding_raw(&self.db, track_id)
+    }
+
+    /// Find similar tracks via PCA HNSW (same DB, by track ID).
+    pub fn find_similar_tracks_pca(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+        let results = SimilarityQuery::find_similar_by_pca_id(&self.db, track_id, limit)?;
+        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    /// Find similar tracks via PCA HNSW using a raw 128-dim vector (cross-database).
+    pub fn find_similar_by_pca_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+        let results = SimilarityQuery::find_similar_by_pca_vector(&self.db, query_vec, limit)?;
+        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    /// Scan all 1280-dim EffNet embeddings — input for PCA build.
+    pub fn get_all_ml_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        SimilarityQuery::get_all_ml_embeddings(&self.db)
+    }
+
+    // ── Transition graph (played_after) ─────────────────────────────────────
+
+    /// Rebuild the played_after transition graph from all co-play records.
+    /// Called from "Analyse Library" in mesh-cue. Returns edge count written.
+    pub fn build_played_after_graph(&self) -> Result<usize, DbError> {
+        HistoryQuery::build_played_after_graph(&self.db)
+    }
+
+    /// Time-decayed co-play neighbors for a seed track (count ≥ 5 threshold).
+    pub fn get_played_after_neighbors(&self, track_id: i64, limit: usize) -> Result<Vec<(i64, f32)>, DbError> {
+        HistoryQuery::get_played_after_neighbors(&self.db, track_id, limit)
+    }
+
+    /// Batch time-decayed co-play neighbors for multiple seeds.
+    /// Returns map of to_track_id → max weight across all seeds.
+    pub fn batch_get_played_after_neighbors(&self, ids: &[i64], limit_per_seed: usize) -> Result<HashMap<i64, f32>, DbError> {
+        HistoryQuery::batch_get_played_after_neighbors(&self.db, ids, limit_per_seed)
+    }
+
+    // ── Opener candidates ────────────────────────────────────────────────────
+
+    /// All tracks that have a drop marker set — used for on-the-fly opener scoring.
+    pub fn get_tracks_with_drop_marker(&self) -> Result<Vec<Track>, DbError> {
+        let rows = TrackQuery::get_with_drop_marker(&self.db)?;
+        Ok(rows.into_iter().map(Track::from_row_only).collect())
+    }
+
     // ========================================================================
     // Psychoacoustic Dissonance
     // ========================================================================

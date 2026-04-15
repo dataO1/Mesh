@@ -293,6 +293,8 @@ pub struct TrackRow<Id: Clone> {
     pub track_path: Option<String>,
     /// Whether this is a global suggestion (not from the selected playlist) — triggers subtle row tint
     pub is_global_suggestion: bool,
+    /// Whether this is a historically proven follow-up (co-play count ≥ threshold) — triggers green tint
+    pub is_proven_followup: bool,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -312,6 +314,7 @@ impl<Id: Clone> TrackRow<Id> {
             dimmed: false,
             track_path: None,
             is_global_suggestion: false,
+            is_proven_followup: false,
         }
     }
 
@@ -366,6 +369,12 @@ impl<Id: Clone> TrackRow<Id> {
     /// Mark this as a global suggestion row (shown with a subtle warm background tint)
     pub fn with_global_suggestion(mut self, v: bool) -> Self {
         self.is_global_suggestion = v;
+        self
+    }
+
+    /// Mark this as a proven follow-up row (shown with a subtle green background tint)
+    pub fn with_proven_followup(mut self, v: bool) -> Self {
+        self.is_proven_followup = v;
         self
     }
 
@@ -1062,6 +1071,7 @@ where
     let is_selected = state.is_selected(&track.id);
     let is_dimmed = track.dimmed;
     let is_global_suggestion = track.is_global_suggestion;
+    let is_proven_followup = track.is_proven_followup;
     let selection_override = state.selection_color_override;
     let id = track.id.clone();
     let id_activate = track.id.clone();
@@ -1090,6 +1100,15 @@ where
             let palette = theme.extended_palette();
             let bg = if is_selected {
                 selection_override.unwrap_or(palette.primary.weak.color)
+            } else if is_proven_followup {
+                // Proven follow-up tracks (historically played together) get a subtle green tint
+                match status {
+                    button::Status::Hovered => palette.background.weak.color,
+                    _ => {
+                        let base = palette.background.base.color;
+                        Color { r: base.r, g: base.g + 0.06, b: base.b + 0.02, a: 1.0 }
+                    }
+                }
             } else if is_global_suggestion {
                 // Global suggestions (not from the selected playlist) get a subtle warm tint
                 // derived from the theme's base background — theme-adaptive across light/dark.

@@ -382,6 +382,21 @@ impl TrackQuery {
         log::info!("TrackQuery::count: total tracks = {}", count);
         Ok(count)
     }
+
+    /// Get all tracks that have a drop marker set.
+    /// Used for opener suggestions (no deck playing) — scored on-the-fly.
+    pub fn get_with_drop_marker(db: &MeshDb) -> Result<Vec<TrackRow>, DbError> {
+        let result = db.run_query(r#"
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                is_not_null(drop_marker)
+            :order id
+        "#, BTreeMap::new())?;
+
+        Ok(rows_to_tracks(&result))
+    }
 }
 
 // ============================================================================
@@ -1050,6 +1065,120 @@ impl SimilarityQuery {
         }
         Ok(map)
     }
+
+    // ── PCA 128-dim embeddings ─────────────────────────────────────────────
+
+    /// Insert or update a 128-dim PCA-projected embedding for a track.
+    pub fn upsert_pca_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("vec".to_string(), DataValue::List(
+            embedding.iter().map(|&v| DataValue::from(v as f64)).collect(),
+        ));
+
+        db.run_script(r#"
+            ?[track_id, vec] <- [[$track_id, $vec]]
+            :put ml_pca_embeddings {track_id => vec}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Find similar tracks via PCA HNSW using the seed track's stored embedding.
+    pub fn find_similar_by_pca_id(
+        db: &MeshDb,
+        track_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(TrackRow, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        let k = (limit + 1) as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
+
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+                *ml_pca_embeddings{track_id: $track_id, vec: query_vec},
+                ~ml_pca_embeddings:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
+                track_id != $track_id,
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order dist
+        "#, params)?;
+
+        Ok(rows_to_tracks_with_distance(&result))
+    }
+
+    /// Find similar tracks via PCA HNSW using a raw 128-dim vector (cross-database).
+    pub fn find_similar_by_pca_vector(
+        db: &MeshDb,
+        query_vec: &[f64],
+        limit: usize,
+    ) -> Result<Vec<(TrackRow, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("query_vec".to_string(), DataValue::List(
+            query_vec.iter().map(|&v| DataValue::from(v)).collect(),
+        ));
+        let k = limit as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
+
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+                ~ml_pca_embeddings:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order dist
+        "#, params)?;
+
+        Ok(rows_to_tracks_with_distance(&result))
+    }
+
+    /// Retrieve the raw 128-dim PCA embedding for a track (returns None if not yet built).
+    pub fn get_pca_embedding_raw(db: &MeshDb, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[vec] := *ml_pca_embeddings{track_id: $track_id, vec}
+        "#, params)?;
+
+        let row = match result.rows.first() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let vec = match row.first() {
+            Some(DataValue::List(items)) => items
+                .iter()
+                .filter_map(|v| v.get_float().map(|f| f as f32))
+                .collect(),
+            _ => return Ok(None),
+        };
+        Ok(Some(vec))
+    }
+
+    /// Scan all 1280-dim EffNet embeddings — used as input for PCA build.
+    /// Returns (track_id, 1280-dim vector) for every track that has been ML-analysed.
+    pub fn get_all_ml_embeddings(db: &MeshDb) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, vec] := *ml_embeddings{track_id, vec}
+        "#, BTreeMap::new())?;
+
+        Ok(result.rows.iter().filter_map(|row| {
+            let id = row.get(0)?.get_int()?;
+            let vec: Vec<f32> = match row.get(1)? {
+                DataValue::List(items) => items
+                    .iter()
+                    .filter_map(|v| v.get_float().map(|f| f as f32))
+                    .collect(),
+                _ => return None,
+            };
+            if vec.len() != 1280 { return None; }
+            Some((id, vec))
+        }).collect())
+    }
 }
 
 // ============================================================================
@@ -1475,6 +1604,182 @@ impl HistoryQuery {
             }
         "#, params)?;
         Ok(())
+    }
+
+    // ── Transition graph ──────────────────────────────────────────────────
+
+    /// Rebuild the played_after graph from all track_plays records.
+    ///
+    /// Reads every track_play with a known track_id and a played_with_json in the
+    /// new `[[id, "name"], ...]` format. Aggregates counts and max epoch per edge,
+    /// clears the existing relation, and batch-upserts the result.
+    ///
+    /// Safe to call repeatedly — always produces a consistent snapshot of the history.
+    pub fn build_played_after_graph(db: &MeshDb) -> Result<usize, DbError> {
+        // Fetch all co-play records with IDs
+        let result = db.run_query(r#"
+            ?[from_id, played_with_json, play_started_at] :=
+                *track_plays{track_id: from_id, played_with_json, play_started_at},
+                is_not_null(from_id),
+                is_not_null(played_with_json)
+        "#, BTreeMap::new())?;
+
+        // Parse JSON and aggregate: (from_id, to_id) → (count, max_epoch)
+        let mut edges: HashMap<(i64, i64), (u32, i64)> = HashMap::new();
+        let mut parsed_count = 0usize;
+        let mut skipped_old_format = 0usize;
+
+        for row in &result.rows {
+            let from_id = match row.get(0).and_then(|v| v.get_int()) {
+                Some(id) => id,
+                None => continue,
+            };
+            let json_str = match row.get(1).and_then(|v| v.get_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let epoch = row.get(2).and_then(|v| v.get_int()).unwrap_or(0);
+
+            // New format: [[i64, "name"], ...]. Old format (["name", ...]) will fail to
+            // deserialize as Vec<(i64, String)> and is silently skipped.
+            let pairs: Vec<(i64, String)> = match serde_json::from_str(&json_str) {
+                Ok(p) => p,
+                Err(_) => { skipped_old_format += 1; continue; }
+            };
+
+            for (to_id, _) in &pairs {
+                let entry = edges.entry((from_id, *to_id)).or_insert((0, epoch));
+                entry.0 += 1;
+                if epoch > entry.1 { entry.1 = epoch; }
+            }
+            parsed_count += 1;
+        }
+
+        log::info!(
+            "[HISTORY GRAPH] Parsed {} play records ({} old-format skipped), found {} unique co-play edges",
+            parsed_count, skipped_old_format, edges.len()
+        );
+
+        if edges.is_empty() {
+            return Ok(0);
+        }
+
+        // Clear existing played_after data (full rebuild)
+        db.run_script(r#"
+            ?[from_id, to_id] := *played_after{from_id, to_id}
+            :rm played_after { from_id, to_id }
+        "#, BTreeMap::new())?;
+
+        // Batch upsert all edges
+        let rows: Vec<DataValue> = edges.iter().map(|((from, to), (cnt, epoch))| {
+            DataValue::List(vec![
+                DataValue::from(*from),
+                DataValue::from(*to),
+                DataValue::from(*cnt as i64),
+                DataValue::from(*epoch),
+            ])
+        }).collect();
+
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        db.run_script(r#"
+            ?[from_id, to_id, count, last_played_epoch] <- $rows
+            :put played_after { from_id, to_id => count, last_played_epoch }
+        "#, params)?;
+
+        log::info!("[HISTORY GRAPH] Built {} co-play edges from {} play records", edges.len(), parsed_count);
+        Ok(edges.len())
+    }
+
+    /// Time-decayed co-play neighbors for a single seed track.
+    ///
+    /// Returns `(to_track_id, weight)` pairs where:
+    /// `weight = min(count/10, 1.0) * exp(-age_days / 30.0)`
+    ///
+    /// Only returns pairs with count ≥ 5 (noise threshold).
+    pub fn get_played_after_neighbors(
+        db: &MeshDb,
+        track_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("from_id".to_string(), DataValue::from(track_id));
+        let k = limit as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+
+        let result = db.run_query(r#"
+            ?[to_id, count, last_played_epoch] :=
+                *played_after{from_id: $from_id, to_id, count, last_played_epoch}
+            :order -count
+            :limit $k
+        "#, params)?;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let neighbors = result.rows.iter().filter_map(|row| {
+            let to_id     = row.get(0)?.get_int()?;
+            let count     = row.get(1)?.get_int()? as f32;
+            let last_epoch = row.get(2)?.get_int()?;
+
+            if count < 5.0 { return None; } // noise threshold
+
+            let age_days = (now_ms - last_epoch).max(0) as f32 / 86_400_000.0;
+            let weight = (count / 10.0).min(1.0) * (-age_days / 30.0f32).exp();
+            Some((to_id, weight))
+        }).collect();
+
+        Ok(neighbors)
+    }
+
+    /// Batch time-decayed co-play neighbors for multiple seed tracks.
+    ///
+    /// Returns a map of `to_track_id → max_weight_across_seeds`.
+    /// Only entries with count ≥ 5 are included.
+    pub fn batch_get_played_after_neighbors(
+        db: &MeshDb,
+        seed_ids: &[i64],
+        limit_per_seed: usize,
+    ) -> Result<HashMap<i64, f32>, DbError> {
+        if seed_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("from_ids".to_string(), DataValue::List(
+            seed_ids.iter().map(|&id| DataValue::from(id)).collect(),
+        ));
+        // Note: CozoDB has no per-key limit; fetch all and limit in Rust
+        let _ = limit_per_seed; // documented: used as hint only
+
+        let result = db.run_query(r#"
+            ?[from_id, to_id, count, last_played_epoch] :=
+                *played_after{from_id, to_id, count, last_played_epoch},
+                is_in(from_id, $from_ids)
+        "#, params)?;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let mut map: HashMap<i64, f32> = HashMap::new();
+        for row in &result.rows {
+            let to_id      = match row.get(1).and_then(|v| v.get_int()) { Some(v) => v, None => continue };
+            let count      = match row.get(2).and_then(|v| v.get_int()) { Some(v) => v as f32, None => continue };
+            let last_epoch = match row.get(3).and_then(|v| v.get_int()) { Some(v) => v, None => continue };
+
+            if count < 5.0 { continue; }
+
+            let age_days = (now_ms - last_epoch).max(0) as f32 / 86_400_000.0;
+            let weight = (count / 10.0).min(1.0) * (-age_days / 30.0f32).exp();
+            map.entry(to_id).and_modify(|v| *v = v.max(weight)).or_insert(weight);
+        }
+
+        Ok(map)
     }
 
     /// Get all track paths played in a session (for suggestion filtering and browser dimming)

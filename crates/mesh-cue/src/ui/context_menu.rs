@@ -197,6 +197,10 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                     "Re-analyse Beats (All)",
                     Message::StartBeatsReanalysis { scope },
                 ),
+                menu_item(
+                    "Build Similarity Index",
+                    Message::BuildSimilarityIndex,
+                ),
             ]
         }
     };

@@ -284,6 +284,7 @@ fn suggestion_to_row(
     }
 
     if is_global { row = row.with_global_suggestion(true); }
+    if s.is_proven_followup { row = row.with_proven_followup(true); }
 
     let track_path_str = track.path.to_string_lossy().to_string();
     row.track_path = Some(track_path_str.clone());
@@ -311,24 +312,90 @@ pub fn active_seed_paths(app: &MeshApp) -> Vec<String> {
         .collect()
 }
 
+/// When bias is high (|bias| > 0.6) and multiple decks are playing, seed suggestions from the
+/// deck most likely to stay (highest mixer volume). The next track needs to work with what's
+/// staying, not what's being faded out.
+fn staying_seed_path(app: &MeshApp, seed_paths: &[String]) -> Vec<String> {
+    if seed_paths.len() <= 1 { return seed_paths.to_vec(); }
+    let best = (0..4)
+        .filter(|&i| {
+            app.deck_views[i].loaded_track_path()
+                .map(|p| seed_paths.contains(&p.to_string()))
+                .unwrap_or(false)
+        })
+        .max_by(|&a, &b| {
+            app.mixer_view.channel_volume(a)
+                .partial_cmp(&app.mixer_view.channel_volume(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    best.and_then(|i| app.deck_views[i].loaded_track_path().map(|p| vec![p.to_string()]))
+        .unwrap_or_else(|| seed_paths.to_vec())
+}
+
+/// When the slider is near center (|bias| < 0.3) and 2+ decks are playing, compute an
+/// averaged embedding so the HNSW query finds tracks that bridge both sonic spaces.
+/// Prefers PCA-128 vectors; falls back to ML-1280. Returns None if fewer than 2 available.
+fn compute_blend_vec(app: &MeshApp, seed_paths: &[String], bias_abs: f32) -> Option<Vec<f64>> {
+    if seed_paths.len() < 2 || bias_abs > 0.6 { return None; }
+
+    let local_db = app.domain.local_db_arc();
+
+    let vecs: Vec<Vec<f64>> = seed_paths.iter()
+        .filter_map(|path| {
+            local_db.get_track_by_path(path).ok().flatten()
+                .and_then(|t| t.id)
+                .and_then(|id| {
+                    local_db.get_pca_embedding_raw(id).ok().flatten()
+                        .or_else(|| local_db.get_ml_embedding_raw(id).ok().flatten())
+                        .map(|v| v.iter().map(|&x| x as f64).collect::<Vec<f64>>())
+                })
+        })
+        .collect();
+
+    if vecs.len() < 2 { return None; }
+
+    let dim = vecs[0].len();
+    let avg: Vec<f64> = (0..dim)
+        .map(|i| vecs.iter().map(|v| v[i]).sum::<f64>() / vecs.len() as f64)
+        .collect();
+
+    // L2-normalise: geodesic midpoint on the unit hypersphere
+    let norm = avg.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm < 1e-9 { return None; }
+    let blend: Vec<f64> = avg.iter().map(|x| x / norm).collect();
+
+    log::debug!(
+        "[SUGGESTIONS] dual-deck blend: {} vecs averaged (dim={}, bias_abs={:.2})",
+        vecs.len(), dim, bias_abs
+    );
+    Some(blend)
+}
+
 /// Build and dispatch a background suggestion query from current deck seeds.
 ///
-/// Only decks that are loaded, playing, and have volume > 0 are used as seeds.
-/// This ensures suggestions reflect what the audience is actually hearing.
-///
-/// Collects all available database sources (local + mounted USBs) so the
-/// suggestion engine can search across all libraries simultaneously.
-///
-/// When a playlist is selected in the browser, results are split: up to 15 tracks
-/// from that playlist appear first (tagged with the playlist name), and up to 15
-/// global suggestions fill the remaining slots (shown with a subtle row tint).
+/// When no decks are playing, delegates to opener mode which scores candidates
+/// on-the-fly by intro quality. When 2+ decks are playing:
+/// - Slider near center (|bias| < 0.3): blend mode — averaged embedding query
+/// - Slider at edge (|bias| > 0.6): staying mode — seed from highest-volume deck
 pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
     let seed_paths = active_seed_paths(app);
+    let energy_direction = app.collection_browser.energy_direction();
+    let energy_bias = (energy_direction - 0.5) * 2.0;
+    let bias_abs = energy_bias.abs();
 
-    if seed_paths.is_empty() {
-        app.collection_browser.set_suggestion_loading(false);
-        return Task::none();
-    }
+    // Compute blend vec before any seed mutation (needs all seed paths)
+    let blend_query_vec = compute_blend_vec(app, &seed_paths, bias_abs);
+
+    // Biased with multiple decks: reduce to the staying deck
+    let seed_paths = if bias_abs > 0.6 && seed_paths.len() > 1 {
+        let staying = staying_seed_path(app, &seed_paths);
+        log::debug!("[SUGGESTIONS] biased mode: reduced to staying deck {:?}", staying);
+        staying
+    } else {
+        seed_paths
+    };
+
+    // Opener mode (no playing decks) is handled inside query_suggestions — don't bail here
 
     // Collect all available database sources: local collection + all mounted USBs
     let mut sources = vec![DbSource {
@@ -346,7 +413,6 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
         }
     }
 
-    let energy_direction = app.collection_browser.energy_direction();
     let key_model = app.config.display.key_scoring_model;
     let played = app.history.played_paths().clone();
 
@@ -368,7 +434,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
             // No pre-split truncation — carry all scored candidates into split_suggestions
             // so each bucket independently picks its best 15 from the full pool.
             // Playlist tracks get a lenient key threshold via preferred_paths.
-            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref())?;
+            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref(), blend_query_vec)?;
 
             // Attach per-track playlist memberships via a single reverse-lookup query per source
             for src in &sources {

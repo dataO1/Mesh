@@ -72,7 +72,9 @@ struct DeckPlayState {
     play_start_sample: Option<i64>,
     hot_cues_used: Vec<u8>,
     loop_was_active: bool,
-    played_with: Vec<String>,
+    /// Co-playing tracks: (track_id, display_name). IDs are used to build the
+    /// played_after transition graph. Entries with unknown IDs are omitted.
+    played_with: Vec<(i64, String)>,
 }
 
 /// A write target: a database + its collection root (for identification on removal)
@@ -218,8 +220,8 @@ impl HistoryManager {
         });
 
         log::info!(
-            "[HISTORY] Track loaded: deck={}, name=\"{}\", source={:?}",
-            deck, track_name, source
+            "[HISTORY] Track loaded: deck={}, id={:?}, name=\"{}\", source={:?}",
+            deck, track_id, track_name, source
         );
     }
 
@@ -237,34 +239,48 @@ impl HistoryManager {
 
         let now = now_millis();
 
-        // Collect co-playing tracks: other decks with play_started, volume > 0
-        let co_playing: Vec<(usize, String)> = (0..4)
+        // Collect co-playing tracks: other decks with play_started, volume > 0.
+        // Only entries where track_id is known are included — IDs are required for
+        // the played_after transition graph. Name-only records (old format) are skipped.
+        let co_playing: Vec<(usize, i64, String)> = (0..4)
             .filter(|&d| d != deck && channel_volumes[d] > 0.0)
             .filter_map(|d| {
                 self.deck_state[d].as_ref()
                     .filter(|s| s.play_started_at.is_some())
-                    .map(|s| (d, s.track_name.clone()))
+                    .and_then(|s| s.track_id.map(|id| (d, id, s.track_name.clone())))
             })
             .collect();
 
-        let played_with_names: Vec<String> = co_playing.iter().map(|(_, n)| n.clone()).collect();
-        let played_with_json = if played_with_names.is_empty() {
+        let played_with_pairs: Vec<(i64, String)> =
+            co_playing.iter().map(|(_, id, name)| (*id, name.clone())).collect();
+        let played_with_json = if played_with_pairs.is_empty() {
             None
         } else {
-            serde_json::to_string(&played_with_names).ok()
+            serde_json::to_string(&played_with_pairs).ok()
         };
+
+        log::debug!(
+            "[HISTORY] on_play_started: deck={}, track_id={:?}, co_playing=[{}]",
+            deck,
+            self.deck_state[deck].as_ref().and_then(|s| s.track_id),
+            co_playing.iter().map(|(_, id, n)| format!("{id}:{n}")).collect::<Vec<_>>().join(", ")
+        );
 
         // Update this deck's state
         let state = self.deck_state[deck].as_mut().unwrap();
         state.play_started_at = Some(now);
         state.play_start_sample = Some(position_samples as i64);
-        state.played_with = played_with_names;
+        state.played_with = played_with_pairs;
 
         let loaded_at = state.loaded_at;
         let session_id = self.session_id;
 
         // Write play_started to all DBs (background — never block UI)
         let position_i64 = position_samples as i64;
+        log::debug!(
+            "[HISTORY] update_play_started: session={}, loaded_at={}, co_playing_json={:?}",
+            session_id, loaded_at, played_with_json
+        );
         self.write_to_all_bg(move |db| {
             if let Err(e) = db.update_play_started(
                 session_id, loaded_at, now, position_i64, played_with_json.clone(),
@@ -273,26 +289,30 @@ impl HistoryManager {
             }
         });
 
-        // Bidirectional: add this track to each co-player's played_with
-        let new_track_name = self.deck_state[deck].as_ref().unwrap().track_name.clone();
-        for (co_deck, _) in &co_playing {
-            if let Some(co_state) = self.deck_state[*co_deck].as_mut() {
-                if !co_state.played_with.contains(&new_track_name) {
-                    co_state.played_with.push(new_track_name.clone());
-                    let co_loaded_at = co_state.loaded_at;
-                    let updated_json = serde_json::to_string(&co_state.played_with).ok();
-                    self.write_to_all_bg(move |db| {
-                        if let Err(e) = db.update_played_with(session_id, co_loaded_at, updated_json.clone()) {
-                            log::warn!("[HISTORY] Failed to update co-player played_with: {e}");
-                        }
-                    });
+        // Bidirectional: add this track to each co-player's played_with (if we have its ID)
+        let self_track_id = self.deck_state[deck].as_ref().and_then(|s| s.track_id);
+        let self_track_name = self.deck_state[deck].as_ref().unwrap().track_name.clone();
+        if let Some(self_id) = self_track_id {
+            for (co_deck, _, _) in &co_playing {
+                if let Some(co_state) = self.deck_state[*co_deck].as_mut() {
+                    if !co_state.played_with.iter().any(|(id, _)| *id == self_id) {
+                        co_state.played_with.push((self_id, self_track_name.clone()));
+                        let co_loaded_at = co_state.loaded_at;
+                        let updated_json = serde_json::to_string(&co_state.played_with).ok();
+                        self.write_to_all_bg(move |db| {
+                            if let Err(e) = db.update_played_with(session_id, co_loaded_at, updated_json.clone()) {
+                                log::warn!("[HISTORY] Failed to update co-player played_with: {e}");
+                            }
+                        });
+                    }
                 }
             }
         }
 
         log::info!(
-            "[HISTORY] Play started: deck={}, sample={}, played_with={:?}",
-            deck, position_samples, self.deck_state[deck].as_ref().unwrap().played_with
+            "[HISTORY] Play started: deck={}, sample={}, co_playing_count={}",
+            deck, position_samples,
+            self.deck_state[deck].as_ref().map(|s| s.played_with.len()).unwrap_or(0)
         );
     }
 

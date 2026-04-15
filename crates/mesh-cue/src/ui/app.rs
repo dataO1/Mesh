@@ -606,6 +606,17 @@ impl MeshCueApp {
             Message::PresetLoaded(msg) => {
                 return self.handle_preset_loaded(msg);
             }
+
+            // Similarity index (PCA build)
+            Message::BuildSimilarityIndex => {
+                return self.handle_build_similarity_index();
+            }
+            Message::SimilarityIndexProgress { done, total } => {
+                log::debug!("[PCA] Progress: {}/{}", done, total);
+            }
+            Message::SimilarityIndexComplete(result) => {
+                return self.handle_similarity_index_complete(result);
+            }
         }
 
         Task::none()

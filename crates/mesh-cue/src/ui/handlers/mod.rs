@@ -14,6 +14,7 @@ pub mod keyboard;
 pub mod playback;
 pub mod reanalysis;
 pub mod settings;
+pub mod similarity;
 pub mod slicer;
 pub mod stem_links;
 pub mod tick;

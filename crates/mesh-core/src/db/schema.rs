@@ -458,6 +458,18 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // Psychoacoustic dissonance relation (additive — safe on old DBs)
     create_track_dissonance_relation(db)?;
 
+    // Transition graph: tracks played together → time-decayed co-play edges
+    // Built explicitly via build_played_after_graph(); not auto-populated on import.
+    create_played_after_relation(db)?;
+
+    // PCA-reduced 128-dim embeddings for sharpened HNSW similarity
+    // (concentration of measure mitigation). Built via "Build Similarity Index" in mesh-cue.
+    create_ml_pca_embeddings_relation(db)?;
+    if !existing.contains("ml_pca_embeddings") {
+        log::debug!("Creating 'ml_pca_embeddings' HNSW index");
+        create_ml_pca_embeddings_index(db)?;
+    }
+
     Ok(())
 }
 
@@ -1014,6 +1026,63 @@ fn create_track_dissonance_relation(db: &DbInstance) -> Result<(), DbError> {
             dissonance: Float
         }}
     "#)
+}
+
+fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Transition graph: how many times track A was playing when track B started.
+    // Bidirectional (both directions stored separately). Built from track_plays.played_with_json
+    // via build_played_after_graph(). Point-lookup only — no HNSW.
+    // Time-decayed at query time: weight = count * exp(-age_days / 30.0).
+    run_schema(db, r#"
+        {:create played_after {
+            from_id: Int,
+            to_id: Int =>
+            count: Int,
+            last_played_epoch: Int
+        }}
+    "#)
+}
+
+fn create_ml_pca_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
+    // PCA-projected 128-dim embeddings for library-tuned HNSW similarity.
+    // Reduces concentration-of-measure effect present in raw 1280-dim cosine distances.
+    // Built by "Build Similarity Index" in mesh-cue; primary HNSW path when present.
+    run_schema(db, r#"
+        {:create ml_pca_embeddings {
+            track_id: Int =>
+            vec: <F32; 128>
+        }}
+    "#)
+}
+
+fn create_ml_pca_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
+    match db.run_script(
+        r#"
+        ::hnsw create ml_pca_embeddings:similarity_index {
+            dim: 128,
+            m: 32,
+            ef_construction: 200,
+            dtype: F32,
+            fields: [vec],
+            distance: Cosine,
+            extend_candidates: true,
+            keep_pruned_connections: false
+        }
+        "#,
+        Default::default(),
+        cozo::ScriptMutability::Mutable,
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("already exists") {
+                log::debug!("PCA embeddings HNSW index already exists");
+                Ok(())
+            } else {
+                Err(DbError::Schema(err_str))
+            }
+        }
+    }
 }
 
 #[cfg(test)]

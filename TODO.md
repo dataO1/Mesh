@@ -1,27 +1,167 @@
 If unsure ask questions, dont assume stuff. Try to make sure that logic lies
 as much as possible in mesh-core and mesh-widget and only if necessary in the ui.
 
-# Priority — Next Steps (as of 2026-03-17)
-
-1. **Documentation overhaul** — README rewrite, linked docs (collection, MIDI,
-   effects, embedded), GitHub issue templates. Highest ROI non-code work; front
-   door for anyone discovering mesh. See [Documentation](#documentation) below.
-2. **Auto headphones cue** — Volume-based automatic cue routing. Well-specced,
-   contained change (engine routing + one settings toggle), directly supports
-   the "easy for beginners" philosophy. See [Auto Headphones Cue system](#auto-headphones-cue-system).
-3. **Tag editing UI** — Tags exist in DB and render as pills, but no way to
-   add/edit/remove from the browser yet. See [Collection Browser](#collection-browser).
-4. **Database versioning** — Schema version tracking for forward-compatibility
-   with USB sticks. Should happen before v1.0. See [DB](#db).
-5. **Live peak meters** — Per-channel and master peak meters. Standard DJ
-   visual feedback, data already available. See [Audio Processing](#audio-processing).
-6. **WiFi auto-reconnect** — Check stored NetworkManager credentials before
-   prompting for password on embedded. See [UPDATE LIFECYCLE](#update-lifecycle).
 7. **Built-in native effects** — Beat-synced echo, flanger, phaser, gater.
    Tighter integration than CLAP/PD. See [Audio Processing](#audio-processing).
 
 Post-v1.0: B2B mode, history-informed suggestions, set reconstruction UI,
-slicer morph knob, jog wheel nudging, GPU waveform optimization.
+slicer morph knob, jog wheel nudging.
+
+---
+
+# Smart Suggestions & Library Intelligence (v3)
+
+## Transition Graph — History-Informed Suggestions
+
+Real-world co-play data captures musical compatibility that audio features alone
+miss (genre nuance, crowd energy, DJ taste). `played_with_json` already records
+which tracks were playing simultaneously, but uses names — ambiguous for graph
+traversal. These TODOs turn raw co-play data into a queryable graph.
+
+- [ ] **Store track IDs in co-play records**: `played_with_json` currently stores
+  track names only. Change to `Vec<(i64, String)>` (id + name) in
+  `TrackPlayRecord`. No backwards compat needed — old name-only records are
+  ignored when building the graph.
+
+- [ ] **Materialize `played_after` graph relation**: CozoDB relation
+  `{ from_id: Int, to_id: Int => count: Int, last_played_epoch: Int }`
+  built from `track_plays.played_with` data. Add
+  `build_played_after_graph()` on `DatabaseService` using CozoDB `+=` bulk
+  insert. Rebuild on "Analyse Library" button (mesh-cue) or incrementally on
+  session end. Time-decay at query time: `count * exp(-age_days / 30.0)`.
+
+- [ ] **Co-play score bonus in suggestion scoring**: after normal HNSW scoring,
+  fetch `played_after` neighbors of the seed and apply a +0.10 bonus (capped,
+  decays beyond count=10). Minimum 5 co-plays before any bonus to avoid
+  noise from single-session accidents.
+
+- [ ] **Played-after row highlight in file browser**: tracks with proven
+  played_after edges to the current seed get a subtle tint in the browser —
+  distinct from the already-played dimming. Shows the DJ their own proven
+  follow-ups at a glance without changing the suggestion panel.
+
+---
+
+## Library Community Detection — Smart Playlists
+
+HNSW similarity finds neighbors but doesn't reveal macro structure. Louvain
+clustering on the HNSW graph (already available via CozoDB `graph-algo`) can
+partition the library into 10–40 sonic clusters automatically, enabling
+playlist auto-generation, new-music discovery, and a visual library map.
+
+- [ ] **"Analyse Library" action** (mesh-cue): button in library settings that
+  runs Louvain community detection on the HNSW graph. Stores `community_id`
+  and `community_size` per track in a new `track_community` relation.
+
+- [ ] **Auto-generated "Sound Clusters" in browser sidebar**: mesh-cue browser
+  sidebar section "Clusters" lists each community with track count. Selecting
+  one filters the browser to that cluster — automatic genre/vibe grouping
+  without any manual tagging.
+
+- [ ] **New Music Discovery mode** in suggestions panel: an "Explore" toggle
+  that suggests one representative track from each *neighboring* community
+  instead of the seed's own cluster. Breaks the echo-chamber problem where
+  HNSW always surfaces the same genre zone.
+
+- [ ] **2D cluster scatter plot** in mesh-cue library view: X = spectral
+  centroid (tonal brightness), Y = `composite_intensity` normalized over the
+  library. Each dot is one track, colored by community_id. Lets DJs visually
+  scan collection density and plan a set arc by identifying clusters to move
+  through. Requires the Analyse Library step first.
+
+---
+
+## PCA Dimension Reduction — Library-Tuned Similarity
+
+At 1280 dims, cosine distances cluster around 1/√1280 ≈ 0.028 — a
+concentration-of-measure effect that makes all HNSW distances look the same and
+degrades suggestion quality. PCA reduces to ~200 dims capturing *this library's*
+variance, sharpening the distance field for the specific collection.
+
+- [ ] **"Build Similarity Index" action** (mesh-cue): runs incremental PCA on
+  all stored EffNet 1280-dim embeddings, projects to ~200 dims, stores in a new
+  `ml_pca_embeddings { track_id => vec: <F32; 200> }` relation + separate HNSW
+  index. Suggestion system uses PCA HNSW when present, 1280-dim as fallback.
+  Show a stale warning if library has grown >10% since last build. Re-run does
+  not require re-import; all ingredients are already in `ml_embeddings`.
+
+---
+
+## Session Energy Arc — Intensity History Strip
+
+DJs currently have no at-a-glance read of the energy arc they've built during a
+set. This strip solves the "where am I in the set?" awareness problem.
+
+- [ ] **Intensity strip at bottom of file browser**: horizontal bar strip showing
+  `composite_intensity` of each track played in the current session, left→right
+  chronologically. Bar height = intensity, color = same gradient as suggestion
+  rows (green→red). Intensity is normalized per-library
+  `(track_intensity - lib_mean) / lib_stddev` so the strip is meaningful
+  regardless of genre mix.
+  - Needs a one-time per-track `composite_intensity` computation for tracks
+    loaded from the browser (not only suggestion candidates). Compute at load
+    time and cache in a `track_intensity_cache` relation or in `audio_features`.
+  - Gives the DJ visual confirmation that they've been building for 40 min and
+    it's time to cool down — without leaving the browser.
+
+---
+
+## Camelot Wheel in Suggestion Panel
+
+DJs think in Camelot notation. Reading key tags in a list is slow; a radial
+view maps directly to the Camelot wheel muscle memory.
+
+- [ ] **Radial key display in suggestion panel**: 24-segment wheel (12 positions
+  × A/B mode). Seed track's key = highlighted segment. Compatible zones
+  (SameKey, AdjacentUp/Down) = green; diagonal transitions = amber; far-step/
+  cross = red. Candidate suggestion tracks rendered as small dots on their wheel
+  position, sized by score. Drives from the `classify_transition()` result
+  already computed per candidate — no new scoring needed, purely a view change.
+
+---
+
+## Dual-Deck Context-Aware Suggestions
+
+Currently always seeds from one deck. DJs layering two tracks need a suggestion
+that works *with both*, not just one — especially for long ambient/techno layers.
+
+- [ ] **Blend-aware seed selection**: when two decks are playing simultaneously,
+  infer the suggestion target from the intent slider position (0.0–1.0):
+  - **Slider at 0.5 (middle, `|bias| < 0.3`)**: blend mode — compute a "blend
+    embedding" = weighted average of both decks' EffNet vectors → query HNSW
+    for the blend point → suggests a third track that bridges both sonic spaces.
+  - **Slider at edges (0 or 1, `|bias| > 0.6`)**: transition mode — identify
+    the outgoing deck (lower volume or longer playing time) → use only its
+    embedding as seed, same as current single-deck behaviour.
+  - Middle range (0.5→0 or 0.5→1): linear interpolation between blend and
+    outgoing-deck modes.
+  Key scoring still uses the outgoing deck's key regardless of blend mode.
+
+---
+
+## Intro / Set-Opener Suggestions (No Seed)
+
+When all decks are empty the current suggestion panel is useless. Opener quality
+is a distinct signal — long vocal-free intros, high intensity delta (build) —
+derivable from data already in the DB without new analysis.
+
+- [ ] **Opener quality scoring**: when no deck is playing, rank the library by
+  opener suitability instead of default sort. Score components:
+  - **Intro length in bars** (`intro_bars`): from drop marker beat position ÷
+    beats-per-bar (beat grid). Long intros (≥32 bars) strongly preferred.
+  - **Vocal-free intro** (`intro_vocal_free: bool`): `vocal_density` of the
+    intro segment < 0.15. Clean opener without an immediate vocal hook.
+  - **Intensity delta** (`intensity_delta`): `composite_intensity` at drop
+    segment minus at intro segment. High delta = dramatic build.
+  - **BPM range**: configurable sweet-spot range (default 120–135), soft penalty
+    outside it. Avoids suggesting 180 BPM tracks as openers in a progressive set.
+  - Store `intro_bars`, `intro_vocal_free`, `intensity_delta` in a new
+    `track_intro_profile` relation computed at import time (all ingredients
+    already available: drop markers, beat grid, `vocal_density`, per-segment
+    intensity). No re-import needed once stem_energy and ml_embeddings are
+    populated (via "Re-analyse features").
+
+---
 
 # Features
 
@@ -109,7 +249,7 @@ for v3 and beyond.
   (rename "export" to "sync") as its own import step before the export step.
 
 ## Audio Processing
-- [ ] Live peak meter per channel and master channel.
+- [x] Live peak meter per channel and master channel.
 - [ ] Built-in native effects (beat-synced echo, phaser, reverb, filter),
   which we can use via the multiband plugin preset system.
 
@@ -140,9 +280,6 @@ for v3 and beyond.
 # Bugs
 
 # Stubbed / Deferred
-- [ ] **Crossfader**: `SetCrossfader` engine command exists (`engine.rs:1291`) but the mixer
-  does not implement it yet. UI and MIDI mapping stubs remain. Intentionally deferred —
-  crossfader is not a priority until the mixer UI is redesigned.
 
 # Performance
 
@@ -197,7 +334,7 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-  - [ ] Touch support for certain actions? Is it the screen or iced?
+- [ ] Touch support for certain actions? Is it the screen or iced?
 - we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
@@ -467,3 +604,8 @@ like wav2vec or vggish or other? search online, evaluate if we can improve this.
    1 is essentially "stop throwing away the EffNet output" and wire it into a second HNSW index. The
   scoring quality improvement would be substantial, since the current 16-dim HNSW is genuinely a weak
    signal.
+
+
+
+
+

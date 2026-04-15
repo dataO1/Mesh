@@ -366,6 +366,11 @@ impl MeshCueDomain {
             .map_err(|e| anyhow!("Failed to delete track: {}", e))
     }
 
+    /// Get a cloned Arc to the underlying database service (for background tasks).
+    pub fn db_arc(&self) -> std::sync::Arc<DatabaseService> {
+        self.db_service.clone()
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Playlist Queries (high-level database access)
     // ═══════════════════════════════════════════════════════════════════════

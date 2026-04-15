@@ -373,4 +373,12 @@ pub enum Message {
     // Background Preset Loading
     /// Background preset load completed (MultibandHost built on loader thread)
     PresetLoaded(PresetLoadedMsg),
+
+    // Similarity Index (PCA dimension reduction)
+    /// Trigger background PCA build from all ML embeddings in the library
+    BuildSimilarityIndex,
+    /// Progress tick while building the similarity index
+    SimilarityIndexProgress { done: usize, total: usize },
+    /// PCA build complete (Ok) or failed (Err)
+    SimilarityIndexComplete(Result<(), String>),
 }
