@@ -538,6 +538,11 @@ impl DatabaseService {
             let _ = self.store_dissonance(track_id, diss);
         }
 
+        // 11. Sync PCA embedding (128-dim library-tuned similarity index)
+        if let Ok(Some(pca_emb)) = source_db.get_pca_embedding_raw(source_track_id) {
+            let _ = self.store_pca_embedding(track_id, &pca_emb);
+        }
+
         log::debug!("sync_track_atomic: SUCCESS id={}", track_id);
         Ok(track_id)
     }

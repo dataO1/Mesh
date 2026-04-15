@@ -8,6 +8,45 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Smart suggestions v3 — PCA-128 similarity index** — A new "Build Similarity
+  Index" action in the Collection context menu (mesh-cue) reduces each track's
+  1280-dimension EffNet embedding to 128 dimensions via PCA/SVD, tuned to the
+  shape of your specific library. The compressed vectors are stored in a
+  dedicated HNSW index and become the primary similarity source for suggestions.
+  The reduction eliminates the concentration-of-measure effect that makes
+  1280-dim cosine distances cluster together, producing sharper neighbour
+  rankings. Tracks without a PCA embedding fall back gracefully to the ML-1280
+  index, then the legacy 16-dim index. PCA vectors are synced to USB sticks
+  during export so the improved matching works from USB sources too. The index
+  needs to be rebuilt after importing new tracks.
+
+- **Smart suggestions v3 — dual-deck context awareness** — When two decks are
+  playing simultaneously the suggestion engine now reads the mixer state. With
+  the intent slider near centre (layering), it queries a blended vector — the
+  L2-normalised average of both decks' embeddings — so results feel like a
+  bridge between the two playing tracks. With the slider pushed toward an
+  extreme (transitioning), it seeds from the **staying deck** (the one with the
+  highest channel volume) because the next track needs to work with what is
+  staying, not with what is leaving.
+
+- **Smart suggestions v3 — opener mode** — When no deck is loaded the
+  suggestion panel now shows scored opener candidates instead of nothing. Tracks
+  are ranked on-the-fly using existing DB data: intro length derived from the
+  drop marker and BPM (minimum 8 bars required), low drum density at bar 1
+  (rewards builds over immediate drops), moderate vocal and melodic presence,
+  and energy level matched to the intent slider position. No re-import needed.
+
+- **Smart suggestions v3 — transition graph co-play bonus** — The history
+  system now records the track IDs of co-playing tracks in each session (in
+  addition to names). A `played_after` graph is derived from this data: every
+  transition pair gets a time-decayed edge weight (30-day half-life). When
+  building suggestions the scorer applies a small co-play bonus (up to 8%,
+  fading to zero at the intent extremes) for tracks with proven follow-up
+  history. Tracks with a strong co-play relationship (decayed weight ≥ 0.3,
+  roughly 12+ past transitions at half-life) are highlighted with a green row
+  tint in the suggestion panel. The graph is built via "Analyse Library" or
+  programmatically; it is separate from HNSW and uses point lookups only.
+
 - **Smart suggestions — neural audio matching + Goldilocks similarity** — The
   suggestion engine now uses the 1280-dimensional Discogs-EffNet neural audio
   fingerprint (already computed during import) as its primary similarity index,

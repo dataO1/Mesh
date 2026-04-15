@@ -283,6 +283,15 @@ impl BatchQuery {
             ?[track_id] := *track_dissonance{track_id}, track_id = $track_id
             :rm track_dissonance {track_id}
         "#,
+            params.clone(),
+        )?;
+
+        // Delete PCA embedding (128-dim similarity index)
+        db.run_script(
+            r#"
+            ?[track_id] := *ml_pca_embeddings{track_id}, track_id = $track_id
+            :rm ml_pca_embeddings {track_id}
+        "#,
             params,
         )?;
 
