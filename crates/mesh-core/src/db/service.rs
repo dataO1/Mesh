@@ -192,7 +192,12 @@ impl Track {
 
     /// Convert to internal database row representation
     pub(crate) fn to_row(&self, collection_root: &Path) -> TrackRow {
-        let id = self.id.unwrap_or_else(|| generate_track_id(&self.path));
+        let id = self.id.unwrap_or_else(|| {
+            // Hash the path RELATIVE to the collection root so the same track
+            // gets the same ID regardless of where the USB stick is mounted.
+            let rel = self.path.strip_prefix(collection_root).unwrap_or(&self.path);
+            generate_track_id(rel)
+        });
         let folder_path = if self.folder_path.is_empty() {
             extract_folder_path(&self.path, collection_root)
         } else {
@@ -325,6 +330,28 @@ impl DatabaseService {
     /// Run a read-only CozoScript query (crate-internal delegation to MeshDb)
     pub(crate) fn run_query(&self, script: &str, params: BTreeMap<String, DataValue>) -> Result<cozo::NamedRows, DbError> {
         self.db.run_query(script, params)
+    }
+
+    /// Compute the stable (relative-path) track ID for a given absolute path.
+    ///
+    /// This is the same algorithm used by `to_row()` when `Track.id` is None.
+    /// Use this to predict/verify IDs without inserting a track.
+    pub fn compute_stable_track_id(&self, absolute_path: &Path) -> i64 {
+        let rel = absolute_path.strip_prefix(&self.collection_root).unwrap_or(absolute_path);
+        generate_track_id(rel)
+    }
+
+    /// List every track as (id, absolute_path) — for migration and diagnostics.
+    pub fn get_all_track_ids_and_paths(&self) -> Result<Vec<(i64, PathBuf)>, DbError> {
+        let result = self.db.run_query(
+            "?[id, path] := *tracks{id, path} :order id",
+            BTreeMap::new(),
+        )?;
+        Ok(result.rows.iter().filter_map(|row| {
+            let id = row.get(0)?.get_int()?;
+            let path = row.get(1)?.get_str().map(PathBuf::from)?;
+            Some((id, path))
+        }).collect())
     }
 
     // ========================================================================
