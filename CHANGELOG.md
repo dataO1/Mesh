@@ -47,6 +47,15 @@ All notable changes to Mesh are documented in this file.
   tint in the suggestion panel. The graph is built via "Analyse Library" or
   programmatically; it is separate from HNSW and uses point lookups only.
 
+- **Stable track IDs across collection moves** — Track identifiers are now
+  derived from the file's path relative to the collection root instead of an
+  auto-incrementing integer. This means your play history, co-play transition
+  graph, hot cues, saved loops, and all other per-track data survive if you
+  rename or move your collection folder — previously a folder rename would
+  orphan all existing data because every track got a new ID. A one-time
+  migration runs automatically when opening a database created with the old
+  scheme. Existing USB sticks are migrated during the next export.
+
 - **Smart suggestions — neural audio matching + Goldilocks similarity** — The
   suggestion engine now uses the 1280-dimensional Discogs-EffNet neural audio
   fingerprint (already computed during import) as its primary similarity index,
@@ -135,6 +144,16 @@ All notable changes to Mesh are documented in this file.
   than 1.0, providing a more gradual and musical transition.
 
 ### Fixed
+
+- **"Re-analyse Metadata" on entire collection now works** — Right-clicking
+  the Collection root and choosing "Re-analyse Metadata" would silently find
+  zero tracks and do nothing. The scope resolver was walking the playlist tree
+  to collect child nodes, which only returns sub-folder nodes like
+  "tracks/Techno" — a flat collection where all tracks sit directly under
+  "tracks/" was invisible to this walk. The resolver now queries the database
+  directly by folder path, matching the same logic the browser uses to display
+  the collection, so all tracks are found regardless of how the library is
+  structured.
 
 - **Embedded device — USB sticks not detected after boot** — Plugging in a USB
   stick while mesh-player was already running on the embedded device had no
