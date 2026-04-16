@@ -36,10 +36,13 @@ impl MeshCueApp {
                     .collect()
             }
             ReanalysisScope::EntireCollection => {
-                self.domain.get_children(&NodeId::tracks())
+                // get_children only returns sub-folder nodes (e.g. "tracks/Techno") —
+                // it misses flat collections where all tracks sit directly in "tracks/".
+                // Use get_tracks_for_display which queries by folder_path directly and
+                // always returns the correct set regardless of nesting.
+                self.domain.get_tracks_for_display(&NodeId::tracks())
                     .into_iter()
-                    .flat_map(|folder| self.domain.get_children(&folder.id))
-                    .filter_map(|node| node.track_path)
+                    .filter_map(|row| row.track_path.map(PathBuf::from))
                     .collect()
             }
         }

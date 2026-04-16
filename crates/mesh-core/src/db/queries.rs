@@ -1620,8 +1620,8 @@ impl HistoryQuery {
         let result = db.run_query(r#"
             ?[from_id, played_with_json, play_started_at] :=
                 *track_plays{track_id: from_id, played_with_json, play_started_at},
-                is_not_null(from_id),
-                is_not_null(played_with_json)
+                from_id != null,
+                played_with_json != null
         "#, BTreeMap::new())?;
 
         // Parse JSON and aggregate: (from_id, to_id) → (count, max_epoch)
@@ -1664,10 +1664,15 @@ impl HistoryQuery {
             return Ok(0);
         }
 
-        // Clear existing played_after data (full rebuild)
+        // Clear existing played_after data (full rebuild via drop+recreate)
+        let _ = db.run_script("::remove played_after", BTreeMap::new());
         db.run_script(r#"
-            ?[from_id, to_id] := *played_after{from_id, to_id}
-            :rm played_after { from_id, to_id }
+            {:create played_after {
+                from_id: Int,
+                to_id: Int =>
+                count: Int,
+                last_played_epoch: Int
+            }}
         "#, BTreeMap::new())?;
 
         // Batch upsert all edges

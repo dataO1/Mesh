@@ -235,10 +235,10 @@ fn migrate_one_track(
 
     // ── stem_energy ───────────────────────────────────────────────────────────
     db.run_script(r#"
-        ?[track_id, vocal, drums, bass, other] :=
-            *stem_energy{track_id: o, vocal, drums, bass, other},
+        ?[track_id, vocal_density, drums_density, bass_density, other_density] :=
+            *stem_energy{track_id: o, vocal_density, drums_density, bass_density, other_density},
             o = $old_id, track_id = $new_id
-        :put stem_energy {track_id => vocal, drums, bass, other}
+        :put stem_energy {track_id => vocal_density, drums_density, bass_density, other_density}
     "#, p.clone())?;
     db.run_script(r#"
         ?[track_id] := *stem_energy{track_id}, track_id = $old_id
@@ -272,21 +272,25 @@ fn migrate_one_track(
 
     // ── similar_to ────────────────────────────────────────────────────────────
     db.run_script(r#"
-        ?[from_track, to_track, match_type] :=
-            *similar_to{from_track: o, to_track, match_type},
+        ?[from_track, to_track, similarity_score] :=
+            *similar_to{from_track: o, to_track, similarity_score},
             o = $old_id, from_track = $new_id
-        :put similar_to {from_track, to_track => match_type}
+        :put similar_to {from_track, to_track => similarity_score}
     "#, p.clone())?;
     db.run_script(r#"
-        ?[from_track, to_track, match_type] :=
-            *similar_to{from_track, to_track: o, match_type},
+        ?[from_track, to_track, similarity_score] :=
+            *similar_to{from_track, to_track: o, similarity_score},
             o = $old_id, to_track = $new_id
-        :put similar_to {from_track, to_track => match_type}
+        :put similar_to {from_track, to_track => similarity_score}
     "#, p.clone())?;
     db.run_script(r#"
         ?[from_track, to_track] :=
-            *similar_to{from_track, to_track},
-            or(from_track = $old_id, to_track = $old_id)
+            *similar_to{from_track, to_track}, from_track = $old_id
+        :rm similar_to {from_track, to_track}
+    "#, p.clone())?;
+    db.run_script(r#"
+        ?[from_track, to_track] :=
+            *similar_to{from_track, to_track}, to_track = $old_id
         :rm similar_to {from_track, to_track}
     "#, p.clone())?;
 
@@ -305,8 +309,12 @@ fn migrate_one_track(
     "#, p.clone())?;
     db.run_script(r#"
         ?[from_track, to_track] :=
-            *harmonic_match{from_track, to_track},
-            or(from_track = $old_id, to_track = $old_id)
+            *harmonic_match{from_track, to_track}, from_track = $old_id
+        :rm harmonic_match {from_track, to_track}
+    "#, p.clone())?;
+    db.run_script(r#"
+        ?[from_track, to_track] :=
+            *harmonic_match{from_track, to_track}, to_track = $old_id
         :rm harmonic_match {from_track, to_track}
     "#, p.clone())?;
 
@@ -378,7 +386,7 @@ fn remap_played_with_json(db: &MeshDb, id_map: &HashMap<i64, i64>) -> Result<(),
     let result = db.run_query(r#"
         ?[session_id, loaded_at, played_with_json] :=
             *track_plays{session_id, loaded_at, played_with_json},
-            is_not_null(played_with_json)
+            played_with_json != null
     "#, BTreeMap::new())?;
 
     let mut updated = 0usize;
@@ -421,9 +429,16 @@ fn remap_played_with_json(db: &MeshDb, id_map: &HashMap<i64, i64>) -> Result<(),
 // ── played_after helpers ──────────────────────────────────────────────────────
 
 fn clear_played_after(db: &MeshDb) -> Result<(), DbError> {
+    // Drop entirely and recreate to avoid any schema drift from earlier DB versions.
+    // The relation is fully derived from track_plays so rebuilding from scratch is safe.
+    let _ = db.run_script("::remove played_after", BTreeMap::new());
     db.run_script(r#"
-        ?[from_id, to_id] := *played_after{from_id, to_id}
-        :rm played_after {from_id, to_id}
+        {:create played_after {
+            from_id: Int,
+            to_id: Int =>
+            count: Int,
+            last_played_epoch: Int
+        }}
     "#, BTreeMap::new())
     .map(|_| ())
 }
