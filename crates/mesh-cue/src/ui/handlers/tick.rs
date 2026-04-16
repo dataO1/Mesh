@@ -164,6 +164,24 @@ impl MeshCueApp {
             tasks.push(task);
         }
 
+        // Poll PCA build progress channel (collect first to avoid borrow conflict)
+        let pca_messages: Vec<_> = self
+            .pca_progress_rx
+            .as_ref()
+            .map(|rx| {
+                let mut msgs = Vec::new();
+                while let Ok(pair) = rx.try_recv() {
+                    msgs.push(pair);
+                }
+                msgs
+            })
+            .unwrap_or_default();
+
+        for (done, total) in pca_messages {
+            let task = self.update(Message::SimilarityIndexProgress { done, total });
+            tasks.push(task);
+        }
+
         if tasks.is_empty() {
             Task::none()
         } else {

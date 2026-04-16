@@ -12,12 +12,20 @@ use super::super::message::Message;
 impl MeshCueApp {
     /// Kick off the background PCA build from all ML embeddings in the library.
     pub fn handle_build_similarity_index(&mut self) -> Task<Message> {
+        // Guard against double-start
+        if self.pca_build_progress.is_some() {
+            return Task::none();
+        }
+
         self.context_menu_state.close();
         let db = self.domain.db_arc();
 
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pca_progress_rx = Some(rx);
+        self.pca_build_progress = Some((0, 0));
+
         Task::perform(
             async move {
-                // Run heavy computation in a blocking thread pool worker
                 tokio::task::spawn_blocking(move || {
                     log::info!("[PCA] Loading ML embeddings for similarity index build...");
 
@@ -26,6 +34,7 @@ impl MeshCueApp {
 
                     let total = embeddings.len();
                     log::info!("[PCA] Starting build: {} tracks with ML embeddings", total);
+                    let _ = tx.send((0, total));
 
                     if total < 10 {
                         return Err(format!(
@@ -33,20 +42,24 @@ impl MeshCueApp {
                         ));
                     }
 
-                    // Compute PCA projection (CPU-intensive, blocks this thread)
+                    // Compute PCA projection (CPU-intensive)
                     let projection = pca::compute_pca_projection(&embeddings, 128)
                         .map_err(|e| format!("PCA computation failed: {e}"))?;
 
                     log::info!("[PCA] Projection built. Storing 128-dim vectors...");
 
-                    // Store projected vectors back to DB
+                    // Store projected vectors with progress updates
                     let mut stored = 0usize;
-                    for (track_id, raw_vec) in &embeddings {
+                    for (i, (track_id, raw_vec)) in embeddings.iter().enumerate() {
                         let pca_vec = projection.project(raw_vec);
                         if let Err(e) = db.store_pca_embedding(*track_id, &pca_vec) {
                             log::warn!("[PCA] Failed to store embedding for track {}: {}", track_id, e);
                         } else {
                             stored += 1;
+                        }
+                        // Send progress every 10 tracks to avoid channel spam
+                        if (i + 1) % 10 == 0 || i + 1 == total {
+                            let _ = tx.send((i + 1, total));
                         }
                     }
 

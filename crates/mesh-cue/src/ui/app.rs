@@ -99,6 +99,10 @@ pub struct MeshCueApp {
     pub(crate) track_loader: crate::loader::CueTrackLoader,
     /// Timestamps of recent BPM taps (for tap tempo — cleared on idle)
     pub(crate) tap_tempo_times: Vec<std::time::Instant>,
+    /// PCA similarity index build progress: (done, total). None when idle.
+    pub(crate) pca_build_progress: Option<(usize, usize)>,
+    /// Channel to receive PCA build progress ticks from worker
+    pub(crate) pca_progress_rx: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -227,6 +231,8 @@ impl MeshCueApp {
             iced_theme,
             track_loader: crate::loader::CueTrackLoader::spawn(),
             tap_tempo_times: Vec::new(),
+            pca_build_progress: None,
+            pca_progress_rx: None,
         };
 
         // Initial collection scan and playlist refresh
@@ -612,9 +618,11 @@ impl MeshCueApp {
                 return self.handle_build_similarity_index();
             }
             Message::SimilarityIndexProgress { done, total } => {
-                log::debug!("[PCA] Progress: {}/{}", done, total);
+                self.pca_build_progress = Some((done, total));
             }
             Message::SimilarityIndexComplete(result) => {
+                self.pca_build_progress = None;
+                self.pca_progress_rx = None;
                 return self.handle_similarity_index_complete(result);
             }
         }
@@ -634,6 +642,7 @@ impl MeshCueApp {
         let import_bar = super::import_modal::view_progress_bar(&self.import_state);
         let export_bar = super::export_modal::view_progress_bar(&self.export_state);
         let reanalysis_bar = self.view_reanalysis_progress_bar();
+        let pca_bar = self.view_pca_progress_bar();
 
         let mut main = column![header, content].spacing(10);
         if let Some(bar) = import_bar {
@@ -643,6 +652,9 @@ impl MeshCueApp {
             main = main.push(bar);
         }
         if let Some(bar) = reanalysis_bar {
+            main = main.push(bar);
+        }
+        if let Some(bar) = pca_bar {
             main = main.push(bar);
         }
 
@@ -1057,6 +1069,18 @@ impl MeshCueApp {
         } else {
             Some(bar)
         }
+    }
+
+    fn view_pca_progress_bar(&self) -> Option<Element<'_, Message>> {
+        let (done, total) = self.pca_build_progress?;
+        let progress = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        let label = format!("Building similarity index: {}/{}", done, total);
+        Some(super::import_modal::build_status_bar(
+            label,
+            format!("{:.0}%", progress * 100.0),
+            progress,
+            Message::BuildSimilarityIndex, // no cancel support — reuse as no-op
+        ))
     }
 
     /// View header with app title and settings
