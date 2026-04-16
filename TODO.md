@@ -18,24 +18,24 @@ miss (genre nuance, crowd energy, DJ taste). `played_with_json` already records
 which tracks were playing simultaneously, but uses names — ambiguous for graph
 traversal. These TODOs turn raw co-play data into a queryable graph.
 
-- [ ] **Store track IDs in co-play records**: `played_with_json` currently stores
+- [x] **Store track IDs in co-play records**: `played_with_json` currently stores
   track names only. Change to `Vec<(i64, String)>` (id + name) in
   `TrackPlayRecord`. No backwards compat needed — old name-only records are
   ignored when building the graph.
 
-- [ ] **Materialize `played_after` graph relation**: CozoDB relation
+- [x] **Materialize `played_after` graph relation**: CozoDB relation
   `{ from_id: Int, to_id: Int => count: Int, last_played_epoch: Int }`
   built from `track_plays.played_with` data. Add
   `build_played_after_graph()` on `DatabaseService` using CozoDB `+=` bulk
   insert. Rebuild on "Analyse Library" button (mesh-cue) or incrementally on
   session end. Time-decay at query time: `count * exp(-age_days / 30.0)`.
 
-- [ ] **Co-play score bonus in suggestion scoring**: after normal HNSW scoring,
+- [x] **Co-play score bonus in suggestion scoring**: after normal HNSW scoring,
   fetch `played_after` neighbors of the seed and apply a +0.10 bonus (capped,
   decays beyond count=10). Minimum 5 co-plays before any bonus to avoid
   noise from single-session accidents.
 
-- [ ] **Played-after row highlight in file browser**: tracks with proven
+- [x] **Played-after row highlight in file browser**: tracks with proven
   played_after edges to the current seed get a subtle tint in the browser —
   distinct from the already-played dimming. Shows the DJ their own proven
   follow-ups at a glance without changing the suggestion panel.
@@ -78,7 +78,7 @@ concentration-of-measure effect that makes all HNSW distances look the same and
 degrades suggestion quality. PCA reduces to ~200 dims capturing *this library's*
 variance, sharpening the distance field for the specific collection.
 
-- [ ] **"Build Similarity Index" action** (mesh-cue): runs incremental PCA on
+- [x] **"Build Similarity Index" action** (mesh-cue): runs incremental PCA on
   all stored EffNet 1280-dim embeddings, projects to ~200 dims, stores in a new
   `ml_pca_embeddings { track_id => vec: <F32; 200> }` relation + separate HNSW
   index. Suggestion system uses PCA HNSW when present, 1280-dim as fallback.
@@ -125,7 +125,7 @@ view maps directly to the Camelot wheel muscle memory.
 Currently always seeds from one deck. DJs layering two tracks need a suggestion
 that works *with both*, not just one — especially for long ambient/techno layers.
 
-- [ ] **Blend-aware seed selection**: when two decks are playing simultaneously,
+- [x] **Blend-aware seed selection**: when two decks are playing simultaneously,
   infer the suggestion target from the intent slider position (0.0–1.0):
   - **Slider at 0.5 (middle, `|bias| < 0.3`)**: blend mode — compute a "blend
     embedding" = weighted average of both decks' EffNet vectors → query HNSW
@@ -145,7 +145,7 @@ When all decks are empty the current suggestion panel is useless. Opener quality
 is a distinct signal — long vocal-free intros, high intensity delta (build) —
 derivable from data already in the DB without new analysis.
 
-- [ ] **Opener quality scoring**: when no deck is playing, rank the library by
+- [x] **Opener quality scoring**: when no deck is playing, rank the library by
   opener suitability instead of default sort. Score components:
   - **Intro length in bars** (`intro_bars`): from drop marker beat position ÷
     beats-per-bar (beat grid). Long intros (≥32 bars) strongly preferred.
@@ -202,7 +202,7 @@ for v3 and beyond.
 - [x] **Session history foundation**: HistoryManager records all play data
   (loads, plays, hot cues, loops, co-play, suggestion metadata) to all active
   databases. Played tracks excluded from suggestions and dimmed in browser.
-- [ ] **Play history graph**: feed co-play data into the suggestion algorithm
+- [x] **Play history graph**: feed co-play data into the suggestion algorithm
   via the graph DB. Tracks that have been played together frequently across
   sessions should score higher as candidates — they have proven real-world
   compatibility that audio features alone cannot capture. Time-decayed
