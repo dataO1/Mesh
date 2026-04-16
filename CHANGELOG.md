@@ -147,13 +147,12 @@ All notable changes to Mesh are documented in this file.
 
 - **"Re-analyse Metadata" on entire collection now works** — Right-clicking
   the Collection root and choosing "Re-analyse Metadata" would silently find
-  zero tracks and do nothing. The scope resolver was walking the playlist tree
-  to collect child nodes, which only returns sub-folder nodes like
-  "tracks/Techno" — a flat collection where all tracks sit directly under
-  "tracks/" was invisible to this walk. The resolver now queries the database
-  directly by folder path, matching the same logic the browser uses to display
-  the collection, so all tracks are found regardless of how the library is
-  structured.
+  zero tracks and do nothing. Two bugs were fixed: (1) the scope resolver was
+  walking the playlist tree to collect child nodes, which only returns
+  sub-folder nodes like "tracks/Techno" — a flat collection where all tracks
+  sit directly under "tracks/" was invisible; (2) the track display builder
+  never populated the file path field that reanalysis reads, so every track
+  appeared path-less even after the query found them. Both are now fixed.
 
 - **Embedded device — USB sticks not detected after boot** — Plugging in a USB
   stick while mesh-player was already running on the embedded device had no

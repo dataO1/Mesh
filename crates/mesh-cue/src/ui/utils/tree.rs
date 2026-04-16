@@ -68,6 +68,7 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
             if info.cue_count > 0 {
                 row = row.with_cue_count(info.cue_count);
             }
+            row.track_path = Some(info.path.to_string_lossy().into_owned());
             if !info.tags.is_empty() {
                 let mut sorted_tags = info.tags.clone();
                 sorted_tags.sort_by_key(|(_, color)| {
