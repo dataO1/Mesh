@@ -52,9 +52,7 @@ All notable changes to Mesh are documented in this file.
   auto-incrementing integer. This means your play history, co-play transition
   graph, hot cues, saved loops, and all other per-track data survive if you
   rename or move your collection folder — previously a folder rename would
-  orphan all existing data because every track got a new ID. A one-time
-  migration runs automatically when opening a database created with the old
-  scheme. Existing USB sticks are migrated during the next export.
+  orphan all existing data because every track got a new ID.
 
 - **Smart suggestions — neural audio matching + Goldilocks similarity** — The
   suggestion engine now uses the 1280-dimensional Discogs-EffNet neural audio
@@ -153,6 +151,13 @@ All notable changes to Mesh are documented in this file.
   sit directly under "tracks/" was invisible; (2) the track display builder
   never populated the file path field that reanalysis reads, so every track
   appeared path-less even after the query found them. Both are now fixed.
+
+- **"Build Similarity Index" now works** — The PCA index build always reported
+  "0 ML embeddings found" even after a full re-analysis. The EffNet embeddings
+  were being written to the database correctly, but the read-back silently
+  returned empty because CozoDB's typed vector columns use a different internal
+  format than the code expected. All vector reads are now fixed; building the
+  similarity index works as intended.
 
 - **Embedded device — USB sticks not detected after boot** — Plugging in a USB
   stick while mesh-player was already running on the embedded device had no

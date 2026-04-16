@@ -63,6 +63,11 @@ jack = { version = "0.11", optional = true }
 libc = "0.2"        # posix_fadvise for sequential read hints on USB export
 
 [[bin]]
+name = "db-inspect"
+path = "src/bin/db_inspect.rs"
+required-features = []
+
+[[bin]]
 name = "export-analysis"
 path = "src/bin/export_analysis.rs"
 required-features = []

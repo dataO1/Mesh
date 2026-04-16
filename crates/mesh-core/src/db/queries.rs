@@ -4,7 +4,7 @@
 
 use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
-use cozo::{DataValue, NamedRows};
+use cozo::{DataValue, NamedRows, Vector};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Column list for track queries (must match schema order for first_beat_sample)
@@ -728,6 +728,25 @@ impl PlaylistQuery {
 /// Query builder for similarity search
 pub struct SimilarityQuery;
 
+/// Extract an f32 vector from a CozoDB DataValue.
+///
+/// CozoDB typed vectors (`<F32; N>`) are returned as `DataValue::Vec(Vector::F32(...))`,
+/// while ad-hoc lists come back as `DataValue::List(...)`. This handles both.
+fn extract_f32_vec(val: Option<&DataValue>) -> Result<Option<Vec<f32>>, DbError> {
+    match val {
+        Some(DataValue::Vec(Vector::F32(arr))) => Ok(Some(arr.to_vec())),
+        Some(DataValue::Vec(Vector::F64(arr))) => Ok(Some(arr.iter().map(|&v| v as f32).collect())),
+        Some(DataValue::List(items)) => {
+            let v: Vec<f32> = items
+                .iter()
+                .filter_map(|v| v.get_float().map(|f| f as f32))
+                .collect();
+            if v.is_empty() { Ok(None) } else { Ok(Some(v)) }
+        }
+        _ => Ok(None),
+    }
+}
+
 impl SimilarityQuery {
     /// Find similar tracks using HNSW vector search
     ///
@@ -964,14 +983,7 @@ impl SimilarityQuery {
             Some(r) => r,
             None => return Ok(None),
         };
-        let vec = match row.first() {
-            Some(DataValue::List(items)) => items
-                .iter()
-                .filter_map(|v| v.get_float().map(|f| f as f32))
-                .collect(),
-            _ => return Ok(None),
-        };
-        Ok(Some(vec))
+        extract_f32_vec(row.first())
     }
 
     // ── Stem energy densities ─────────────────────────────────────────────
@@ -1149,14 +1161,8 @@ impl SimilarityQuery {
             Some(r) => r,
             None => return Ok(None),
         };
-        let vec = match row.first() {
-            Some(DataValue::List(items)) => items
-                .iter()
-                .filter_map(|v| v.get_float().map(|f| f as f32))
-                .collect(),
-            _ => return Ok(None),
-        };
-        Ok(Some(vec))
+        let vec = extract_f32_vec(row.first())?;
+        Ok(vec)
     }
 
     /// Scan all 1280-dim EffNet embeddings — used as input for PCA build.
@@ -1168,13 +1174,7 @@ impl SimilarityQuery {
 
         Ok(result.rows.iter().filter_map(|row| {
             let id = row.get(0)?.get_int()?;
-            let vec: Vec<f32> = match row.get(1)? {
-                DataValue::List(items) => items
-                    .iter()
-                    .filter_map(|v| v.get_float().map(|f| f as f32))
-                    .collect(),
-                _ => return None,
-            };
+            let vec = extract_f32_vec(row.get(1)).ok().flatten()?;
             if vec.len() != 1280 { return None; }
             Some((id, vec))
         }).collect())
