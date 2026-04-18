@@ -463,9 +463,9 @@ pub fn query_suggestions(
     // ┌─────────────────────────────────────────────────────────────────────┐
     // │ Component     │ Weight │ Center (layering)  │ Extremes (transition)│
     // ├───────────────┼────────┼────────────────────┼──────────────────────┤
-    // │ Intensity     │ 0.33   │ Same level → high  │ Directional → high  │
+    // │ Intensity     │ 0.30   │ Same level → high  │ Directional → high  │
     // │ Key compat.   │ 0.30   │ Compatible → high  │ Energy-aligned→high │
-    // │ Vector sim.   │ 0.30   │ Similar → high     │ Dissimilar → high   │
+    // │ Vector sim.   │ 0.25   │ Similar → high     │ Dissimilar → high   │
     // │ Co-play hist. │ 0.07   │ Proven → high      │ Fades to 0          │
     // ├───────────────┼────────┼────────────────────┴──────────────────────┤
     // │ Stem penalty  │ -0.13  │ Clashing vocals/lead SUBTRACT from score │
@@ -487,9 +487,9 @@ pub fn query_suggestions(
     // Sort: DESCENDING (higher score = better match).
 
     let bias_abs = energy_bias.abs();
-    let w_intensity   = 0.33;
+    let w_intensity   = 0.30;
     let w_key         = 0.30;
-    let w_vector      = 0.30;
+    let w_vector      = 0.25;
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
@@ -616,7 +616,7 @@ pub fn query_suggestions(
 
             let component_scores = if emit_components {
                 Some(ComponentScores {
-                    hnsw_distance: hnsw_dist,
+                    hnsw_distance: vec_reward, // store reward, not raw distance
                     hnsw_component: vec_reward,
                     key_score: key_reward,
                     key_direction: key_reward, // same value, key already includes direction

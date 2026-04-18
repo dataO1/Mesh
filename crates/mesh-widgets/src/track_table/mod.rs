@@ -1144,7 +1144,7 @@ where
         TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Duration => track.format_duration(),
         TrackColumn::Lufs => track.format_lufs(),
-        TrackColumn::HnswDist => track.hnsw_dist.map(|v| format!("{:.0}%", (1.0 - v) * 100.0)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::HnswDist => track.hnsw_dist.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::KeyScore => track.key_score.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::EnergyMatch => track.energy_match.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::CoplayCount => track.coplay_count.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
