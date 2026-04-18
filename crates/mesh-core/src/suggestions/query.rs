@@ -463,11 +463,11 @@ pub fn query_suggestions(
     // ┌─────────────────────────────────────────────────────────────────────┐
     // │ Component     │ Weight │ Center (layering)  │ Extremes (transition)│
     // ├───────────────┼────────┼────────────────────┼──────────────────────┤
-    // │ Vector sim.   │ 0.30   │ Similar → high     │ Dissimilar → high   │
-    // │ Key compat.   │ 0.25   │ Compatible → high  │ Energy-aligned→high │
-    // │ Intensity     │ 0.25   │ Same level → high  │ Directional → high  │
-    // │ Key direction │ 0.10   │ Neutral (0.5)      │ Aligned → high      │
-    // │ Co-play hist. │ 0.08   │ Proven → high      │ Fades to 0          │
+    // │ Intensity     │ 0.50   │ Same level → high  │ Directional → high  │
+    // │ Vector sim.   │ 0.20   │ Similar → high     │ Dissimilar → high   │
+    // │ Key compat.   │ 0.15   │ Compatible → high  │ Energy-aligned→high │
+    // │ Key direction │ 0.08   │ Neutral (0.5)      │ Aligned → high      │
+    // │ Co-play hist. │ 0.07   │ Proven → high      │ Fades to 0          │
     // ├───────────────┼────────┼────────────────────┴──────────────────────┤
     // │ Stem penalty  │ -0.13  │ Clashing vocals/lead SUBTRACT from score │
     // │ (only center) │        │ Complementary = no penalty               │
@@ -484,11 +484,11 @@ pub fn query_suggestions(
     // Sort: DESCENDING (higher score = better match).
 
     let bias_abs = energy_bias.abs();
-    let w_vector      = 0.30;
-    let w_key         = 0.25;
-    let w_intensity   = 0.25;
-    let w_key_dir     = 0.10;
-    let w_coplay      = 0.08 * (1.0 - bias_abs);           // 0.08 center → 0.00 extreme
+    let w_intensity   = 0.50;
+    let w_vector      = 0.20;
+    let w_key         = 0.15;
+    let w_key_dir     = 0.08;
+    let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
     let w_other_pen = if suggestion_config.stem_complement { 0.05 * (1.0 - bias_abs) } else { 0.0 };

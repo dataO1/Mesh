@@ -178,7 +178,10 @@ pub fn transition_energy_direction(tt: TransitionType) -> f32 {
         TransitionType::MoodDarken => -0.30,
         TransitionType::EnergyCool => -0.50,
         TransitionType::SemitoneDown => -0.50,
-        TransitionType::Tritone => -0.80,
+        // Tritone: maximum dissonance, but NOT directional — it's chaotic tension,
+        // not an energy-lowering move. Neutral direction prevents it from being
+        // rewarded at extreme slider positions.
+        TransitionType::Tritone => 0.0,
     }
 }
 
@@ -276,9 +279,13 @@ pub fn key_transition_score(
     let energy_dir = transition_energy_direction(tt);
     let energy_score = (energy_dir * energy_bias.signum() + 1.0) / 2.0;
 
-    // Blend: linear interpolation from harmonic (center) to energy (extremes).
+    // Blend: interpolation from harmonic (center) to energy (extremes).
+    // Harmonic floor of 25% ensures good harmonic quality always matters —
+    // a tritone never outranks a compatible transition regardless of slider.
     let blend = energy_bias.abs();
-    (base * (1.0 - blend) + energy_score * blend).clamp(0.0, 1.0)
+    let harmonic_weight = (1.0 - blend).max(0.25);
+    let energy_weight = 1.0 - harmonic_weight;
+    (base * harmonic_weight + energy_score * energy_weight).clamp(0.0, 1.0)
 }
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
@@ -659,7 +666,7 @@ mod tests {
         let center_score = key_transition_score(&am, &bm, 0.0, CAM);
         let peak_score = key_transition_score(&am, &bm, 1.0, CAM);
         assert!(peak_score > center_score, "Energy boost should improve at peak");
-        assert!(peak_score >= 0.75, "Energy boost at peak should be competitive: {}", peak_score);
+        assert!(peak_score >= 0.65, "Energy boost at peak should be competitive: {}", peak_score);
     }
 
     #[test]
