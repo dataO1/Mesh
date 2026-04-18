@@ -43,9 +43,10 @@ All notable changes to Mesh are documented in this file.
   newly imported tracks were invisible to the suggestion system until the user
   manually triggered "Build Similarity Index" from the context menu.
 
-- **PCA library clustering** — The graph view's initial (no-seed) layout uses
-  the first two PCA components as 2D coordinates, showing natural genre and
-  style clusters. Replaces the previous uniform scatter.
+- **t-SNE library clustering** — The graph view's initial (no-seed) layout uses
+  Barnes-Hut t-SNE (via bhtsne crate, pure Rust) to project 128-dim PCA
+  embeddings to 2D, showing natural genre and style clusters with tight local
+  grouping. Runs in background on first Graph tab open.
 
 - **Auto-zoom to suggestions** — Selecting a seed in the graph automatically
   zooms and pans to frame the seed and its top 30 suggestions.

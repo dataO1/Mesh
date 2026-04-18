@@ -97,27 +97,46 @@ impl MeshCueApp {
         state.track_meta = track_meta;
         self.collection.graph_state = Some(state);
 
-        // Use PCA first 2 components as 2D positions for natural clustering.
-        // Components 0 and 1 capture the most variance — similar tracks cluster
-        // together without any extra dependency (no LAPACK needed).
+        // Run Barnes-Hut t-SNE on PCA-128 embeddings for 2D library view.
+        // t-SNE produces tight local clusters where spectrally similar tracks
+        // group together — ideal for seeing genre/style communities.
         let db = self.domain.db_arc();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    if all_pca.is_empty() {
+                    if all_pca.len() < 10 {
+                        log::warn!("[GRAPH] Not enough PCA embeddings for t-SNE ({})", all_pca.len());
                         return Vec::new();
                     }
 
-                    log::info!("[GRAPH] Projecting {} tracks to 2D via PCA components 0+1", all_pca.len());
-                    let positions: Vec<(i64, f32, f32)> = all_pca.iter()
-                        .filter_map(|(track, pca)| {
-                            let id = track.id?;
-                            if pca.len() < 2 { return None; }
-                            Some((id, pca[0], pca[1]))
-                        })
+                    let n = all_pca.len();
+                    log::info!("[GRAPH] Running Barnes-Hut t-SNE on {} tracks (128-dim → 2D)...", n);
+
+                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
+                    let samples: Vec<&[f32]> = all_pca.iter().map(|(_, pca)| pca.as_slice()).collect();
+
+                    // Perplexity scales with dataset size (rule of thumb: sqrt(n)/2)
+                    let perplexity = ((n as f32).sqrt() / 2.0).clamp(5.0, 50.0);
+
+                    let mut tsne = bhtsne::tSNE::new(&samples);
+                    tsne.embedding_dim(2)
+                        .perplexity(perplexity)
+                        .epochs(750)
+                        .barnes_hut(0.5, |a: &&[f32], b: &&[f32]| {
+                            a.iter().zip(b.iter())
+                                .map(|(x, y)| (x - y).powi(2))
+                                .sum::<f32>()
+                                .sqrt()
+                        });
+
+                    let embedding = tsne.embedding();
+                    // embedding is flat [x0, y0, x1, y1, ...] for 2D
+                    let positions: Vec<(i64, f32, f32)> = ids.iter().enumerate()
+                        .map(|(i, &id)| (id, embedding[i * 2], embedding[i * 2 + 1]))
                         .collect();
-                    log::info!("[GRAPH] 2D projection complete — {} positions", positions.len());
+
+                    log::info!("[GRAPH] t-SNE complete — {} 2D positions", positions.len());
                     positions
                 })
                 .await
