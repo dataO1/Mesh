@@ -489,13 +489,6 @@ impl MeshCueApp {
 
         state.clear_caches();
 
-        // Center on seed without changing zoom
-        if let Some(seed_id) = current_seed {
-            if let Some(&(x, y)) = state.positions.get(&seed_id) {
-                state.pan = (-x, -y);
-            }
-        }
-
         // Build left panel rows (top 30 only) with reason tags and score components
         let mut rows: Vec<TrackRow<NodeId>> = Vec::with_capacity(SUGGESTION_HIGHLIGHT_LIMIT);
         for (i, s) in suggestions.iter().take(SUGGESTION_HIGHLIGHT_LIMIT).enumerate() {
