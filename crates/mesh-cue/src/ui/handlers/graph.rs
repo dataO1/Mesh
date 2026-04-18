@@ -461,33 +461,11 @@ impl MeshCueApp {
 
         let current_seed = state.seed_stack.last().copied();
 
-        // Apply fisheye distortion centered on seed — magnifies nearby nodes,
-        // compresses distant ones, preserves cluster structure.
-        if let Some(seed_id) = current_seed {
-            if let Some(&(sx, sy)) = state.tsne_positions.get(&seed_id) {
-                let magnification = 3.0; // how much to magnify the focal area
-                // Find max distance for normalization
-                let max_dist = state.tsne_positions.values()
-                    .map(|&(x, y)| ((x - sx).powi(2) + (y - sy).powi(2)).sqrt())
-                    .fold(0.0f32, f32::max)
-                    .max(0.001);
-
-                for (&id, &(tx, ty)) in &state.tsne_positions {
-                    let dx = tx - sx;
-                    let dy = ty - sy;
-                    let d = (dx * dx + dy * dy).sqrt();
-                    if d < 0.001 {
-                        state.positions.insert(id, (sx, sy));
-                        continue;
-                    }
-                    // Sarkar-Brown fisheye: normalized version for our coordinate space
-                    let d_norm = d / max_dist;
-                    let d_prime = (d_norm + 0.1) / (1.0 / magnification + d_norm);
-                    let d_new = d_prime * max_dist;
-                    let scale = d_new / d;
-                    state.positions.insert(id, (sx + dx * scale, sy + dy * scale));
-                }
-            }
+        // Restore t-SNE positions — the 2D projection always stays as the base
+        // layout. Selecting a seed only changes highlighting and auto-zoom,
+        // not node positions. This preserves cluster structure visually.
+        for (&id, &(x, y)) in &state.tsne_positions {
+            state.positions.insert(id, (x, y));
         }
 
         // Update highlights: top N are suggestions, rest are unrelated

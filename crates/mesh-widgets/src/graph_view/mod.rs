@@ -287,45 +287,6 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             COLOR_BACKGROUND,
         );
 
-        // ── Layer 0: Cluster regions (semi-transparent colored circles) ──
-        if !self.clusters.is_empty() {
-            // Compute cluster centroids
-            let mut centroids: HashMap<i32, (f32, f32, usize)> = HashMap::new();
-            for (&id, &cluster_id) in &self.clusters {
-                if cluster_id < 0 { continue; } // skip noise
-                if let Some(&(x, y)) = self.positions.get(&id) {
-                    let entry = centroids.entry(cluster_id).or_insert((0.0, 0.0, 0));
-                    entry.0 += x;
-                    entry.1 += y;
-                    entry.2 += 1;
-                }
-            }
-
-            for (&cluster_id, &(sum_x, sum_y, count)) in &centroids {
-                if count == 0 { continue; }
-                let cx = sum_x / count as f32;
-                let cy = sum_y / count as f32;
-
-                // Find max distance from centroid to any member
-                let mut max_r = 0.0f32;
-                for (&id, &cid) in &self.clusters {
-                    if cid != cluster_id { continue; }
-                    if let Some(&(x, y)) = self.positions.get(&id) {
-                        let r = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-                        max_r = max_r.max(r);
-                    }
-                }
-
-                let screen_center = to_screen((cx, cy), self.pan, self.zoom, bounds);
-                let screen_radius = max_r * self.zoom + 15.0; // padding
-
-                if let Some(&color) = self.cluster_colors.get(&cluster_id) {
-                    let circle = Path::circle(screen_center, screen_radius);
-                    frame.fill(&circle, Color { a: 0.08, ..color });
-                }
-            }
-        }
-
         let seed_set: HashSet<i64> = self.seed_stack.iter().copied().collect();
         let current_seed = self.seed_stack.last().copied();
         let has_seed = current_seed.is_some();
@@ -378,8 +339,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             }
         }
 
-        // ── Layer 3: Unrelated nodes (dimmed, no edges) ─────────────────
-        // Only draw if no seed is selected (overview) or as faint dots with seed
+        // ── Layer 3: Unrelated nodes (cluster-colored or dimmed) ────────
         let dim_alpha = if has_seed { 0.15 } else { 0.5 };
         for (&id, &pos) in &self.positions {
             if seed_set.contains(&id) || self.suggestion_ids.contains(&id) {
@@ -394,8 +354,14 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                 continue;
             }
 
+            // Color by cluster if available, otherwise dim gray
+            let base_color = self.clusters.get(&id)
+                .and_then(|&cid| if cid >= 0 { self.cluster_colors.get(&cid) } else { None })
+                .copied()
+                .unwrap_or(COLOR_NODE_DIM);
+
             let circle = Path::circle(screen, 3.0);
-            frame.fill(&circle, Color { a: dim_alpha, ..COLOR_NODE_DIM });
+            frame.fill(&circle, Color { a: dim_alpha, ..base_color });
         }
 
         // ── Layer 4: Suggestion nodes (colored by score) ────────────────
