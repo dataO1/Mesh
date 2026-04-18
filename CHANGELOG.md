@@ -4,7 +4,7 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.9.13]
 
 ### Added
 
@@ -37,6 +37,11 @@ All notable changes to Mesh are documented in this file.
   Transition) replaces the old Sound Target and Sound Focus settings. Controls
   how far the intent slider must move before the vector component flips from
   rewarding similarity (layering) to rewarding dissimilarity (transitions).
+
+- **Auto-rebuild PCA similarity index** — The PCA-128 similarity index is now
+  automatically rebuilt after batch import and ML re-analysis. Previously,
+  newly imported tracks were invisible to the suggestion system until the user
+  manually triggered "Build Similarity Index" from the context menu.
 
 ### Changed
 
