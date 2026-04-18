@@ -76,7 +76,14 @@ impl MeshCueApp {
     /// Handle PCA build result
     pub fn handle_similarity_index_complete(&mut self, result: Result<(), String>) -> Task<Message> {
         match result {
-            Ok(()) => log::info!("[PCA] Similarity index build complete"),
+            Ok(()) => {
+                log::info!("[PCA] Similarity index build complete");
+                // Invalidate graph state so next Graph tab visit rebuilds
+                // with the new PCA embeddings (possibly different dimensionality)
+                self.collection.graph_state = None;
+                self.collection.graph_edges = None;
+                self.collection.graph_suggestion_rows.clear();
+            }
             Err(e) => log::error!("[PCA] Similarity index build failed: {}", e),
         }
         Task::none()
