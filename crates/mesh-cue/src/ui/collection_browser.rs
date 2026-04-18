@@ -295,7 +295,14 @@ fn view_breadcrumbs(graph_state: &mesh_widgets::GraphViewState) -> Element<'_, M
     // Show breadcrumb labels
     for (i, &seed_id) in graph_state.seed_stack.iter().enumerate() {
         let label: String = graph_state.track_meta.get(&seed_id)
-            .map(|m| m.title.chars().take(15).collect::<String>())
+            .map(|m| {
+                let display = if let Some(ref artist) = m.artist {
+                    format!("{} - {}", artist, m.title)
+                } else {
+                    m.title.clone()
+                };
+                display.chars().take(25).collect::<String>()
+            })
             .unwrap_or_else(|| format!("#{}", seed_id));
 
         if i > 0 {

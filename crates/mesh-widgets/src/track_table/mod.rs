@@ -305,13 +305,14 @@ impl TrackColumn {
     }
 
     /// Get columns for graph view suggestion list:
-    /// score + sub-components, name, key, BPM, reason pills
+    /// score + sub-components, artist, title, key, BPM, reason pills
     pub fn graph_analysis() -> &'static [TrackColumn] {
         &[
             TrackColumn::FinalScore,
             TrackColumn::HnswDist,
             TrackColumn::KeyScore,
             TrackColumn::EnergyMatch,
+            TrackColumn::Artist,
             TrackColumn::Name,
             TrackColumn::Tags,
             TrackColumn::Key,

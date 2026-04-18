@@ -76,9 +76,7 @@ impl MeshCueApp {
                 node_ids.push(id);
                 track_meta.insert(id, TrackMeta {
                     id,
-                    title: track.path.file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default(),
+                    title: track.title.clone(),
                     artist: track.artist.clone(),
                     key: track.key.clone(),
                     bpm: track.bpm,
