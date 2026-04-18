@@ -43,9 +43,9 @@ All notable changes to Mesh are documented in this file.
   newly imported tracks were invisible to the suggestion system until the user
   manually triggered "Build Similarity Index" from the context menu.
 
-- **PaCMAP library clustering** — The graph view's initial (no-seed) layout
-  uses PaCMAP dimensionality reduction (128-dim PCA → 2D) to show natural
-  genre and style clusters. Replaces the previous uniform scatter.
+- **PCA library clustering** — The graph view's initial (no-seed) layout uses
+  the first two PCA components as 2D coordinates, showing natural genre and
+  style clusters. Replaces the previous uniform scatter.
 
 - **Auto-zoom to suggestions** — Selecting a seed in the graph automatically
   zooms and pans to frame the seed and its top 30 suggestions.

@@ -92,7 +92,6 @@ serde_json = "1.0"
 ort = { version = "2.0.0-rc.11", features = ["ndarray"] }  # ONNX Runtime for model inference
 charon-audio = { version = "0.1.0", optional = true }  # Alternative separation backend (pure Rust)
 ndarray = "0.17"  # Array operations for audio processing (ort requires 0.17.x)
-ndarray_016 = { package = "ndarray", version = "0.16" }  # PaCMAP interop (pacmap requires 0.16.x)
 ureq = "2.9"  # HTTP client for model downloads
 hound = "3.5"  # WAV file handling for temp stems
 flacenc = "0.5"  # FLAC encoding for collection export
@@ -101,7 +100,6 @@ lofty = "0.22"  # Audio tag reading (ID3v2, Vorbis, MP4, FLAC, WAV RIFF)
 regex = "1"     # Filename pattern matching
 realfft = "3.4"  # FFT for STFT preprocessing (Demucs requires spectrogram input)
 faer = "0.19"   # Pure-Rust SVD for PCA similarity index build
-pacmap = "0.2.6"
 
 [features]
 # JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)

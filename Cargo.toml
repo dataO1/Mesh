@@ -31,9 +31,6 @@ cozo = { version = "0.7.6", features = ["storage-sqlite", "graph-algo"] }
 crossbeam = "0.8"
 notify = "6"
 rayon = "1.10"  # Using patched graph_builder for rayon 1.10+ compatibility
-
-# mesh-cue dependencies
-essentia = "0.1.5"
 anyhow = "1.0"
 thiserror = { version = "2.0", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }

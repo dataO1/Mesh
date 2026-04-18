@@ -9,7 +9,6 @@ use iced::Task;
 use mesh_core::suggestions::query::GraphEdge;
 use mesh_widgets::graph_view::{GraphViewState, TrackMeta};
 use mesh_widgets::graph_view::layout;
-use pacmap;
 
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
@@ -98,44 +97,27 @@ impl MeshCueApp {
         state.track_meta = track_meta;
         self.collection.graph_state = Some(state);
 
-        // Kick off PaCMAP 2D projection in background for natural clustering
+        // Use PCA first 2 components as 2D positions for natural clustering.
+        // Components 0 and 1 capture the most variance — similar tracks cluster
+        // together without any extra dependency (no LAPACK needed).
         let db = self.domain.db_arc();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    if all_pca.len() < 10 {
-                        log::warn!("[GRAPH] Not enough PCA embeddings for PaCMAP ({}) — keeping scatter", all_pca.len());
+                    if all_pca.is_empty() {
                         return Vec::new();
                     }
 
-                    log::info!("[GRAPH] Running PaCMAP on {} tracks...", all_pca.len());
-                    let n = all_pca.len();
-                    let dim = 128;
-
-                    // Build flat Vec for PaCMAP's ndarray (it uses ndarray 0.15 internally)
-                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
-                    let mut flat_data = vec![0.0f32; n * dim];
-                    for (i, (_, pca_vec)) in all_pca.iter().enumerate() {
-                        for (j, &v) in pca_vec.iter().take(dim).enumerate() {
-                            flat_data[i * dim + j] = v;
-                        }
-                    }
-
-                    // PaCMAP uses its own ndarray version — build Array2 from raw shape+data
-                    let data = ndarray_016::Array2::from_shape_vec((n, dim), flat_data)
-                        .expect("PaCMAP data shape mismatch");
-
-                    // Run PaCMAP to 2D
-                    let config = pacmap::Configuration::default();
-                    let (embedding, _) = pacmap::fit_transform(data.view(), config)
-                        .expect("PaCMAP fit_transform failed");
-
-                    // Extract positions
-                    let positions: Vec<(i64, f32, f32)> = ids.iter().enumerate()
-                        .map(|(i, &id)| (id, embedding[[i, 0]], embedding[[i, 1]]))
+                    log::info!("[GRAPH] Projecting {} tracks to 2D via PCA components 0+1", all_pca.len());
+                    let positions: Vec<(i64, f32, f32)> = all_pca.iter()
+                        .filter_map(|(track, pca)| {
+                            let id = track.id?;
+                            if pca.len() < 2 { return None; }
+                            Some((id, pca[0], pca[1]))
+                        })
                         .collect();
-                    log::info!("[GRAPH] PaCMAP complete — {} 2D positions", positions.len());
+                    log::info!("[GRAPH] 2D projection complete — {} positions", positions.len());
                     positions
                 })
                 .await
