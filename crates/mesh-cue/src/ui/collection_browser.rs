@@ -3,9 +3,9 @@
 use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
 use super::state::BrowserTab;
-use iced::widget::{button, column, container, row, rule, scrollable, slider, text, Canvas, Space};
+use iced::widget::{button, column, container, row, rule, slider, text, Canvas, Space};
 use iced::{Alignment, Element, Length};
-use mesh_widgets::{playlist_browser_with_drop_highlight, sz};
+use mesh_widgets::{playlist_browser_with_drop_highlight, sz, track_table};
 
 /// Render the collection view (editor + dual browsers below)
 pub fn view<'a>(
@@ -221,7 +221,7 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                 graph_canvas,
             ]
             .spacing(2)
-            .width(Length::FillPortion(2))
+            .width(Length::FillPortion(1))
             .height(Length::Fill);
 
             // Left panel: breadcrumbs + suggestion list
@@ -235,63 +235,12 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                 .center_y(Length::Fill)
                 .into()
             } else {
-                // Build suggestion list with score, title, artist, key, BPM
-                let mut list_col = column![].spacing(1);
-                // Header
-                list_col = list_col.push(
-                    container(
-                        row![
-                            text("#").size(sz(10.0)).width(25.0),
-                            text("Match").size(sz(10.0)).width(45.0),
-                            text("Title").size(sz(10.0)).width(Length::Fill),
-                            text("Artist").size(sz(10.0)).width(100.0),
-                            text("Key").size(sz(10.0)).width(40.0),
-                            text("BPM").size(sz(10.0)).width(45.0),
-                        ]
-                        .spacing(4)
-                        .padding([2, 4]),
-                    )
-                    .style(|_theme: &iced::Theme| container::Style {
-                        background: Some(iced::Background::Color(iced::Color::from_rgb(0.15, 0.15, 0.18))),
-                        ..Default::default()
-                    })
-                );
-
-                for row in &state.graph_suggestion_rows {
-                    // Display as match % (reward score: 1.0 = 100% match)
-                    let score_str = row.final_score
-                        .map(|s| format!("{:.0}%", s * 100.0))
-                        .unwrap_or_else(|| "-".to_string());
-                    let bpm_str = row.bpm
-                        .map(|b| format!("{:.0}", b))
-                        .unwrap_or_else(|| "-".to_string());
-                    let key_str = row.key.as_deref().unwrap_or("-");
-                    let artist_str = row.artist.as_deref().unwrap_or("-");
-
-                    list_col = list_col.push(
-                        container(
-                            row![
-                                text(format!("{}", row.order)).size(sz(10.0)).width(25.0),
-                                text(score_str).size(sz(10.0)).width(45.0),
-                                text(&row.title).size(sz(10.0)).width(Length::Fill),
-                                text(artist_str).size(sz(10.0)).width(100.0),
-                                text(key_str).size(sz(10.0)).width(40.0),
-                                text(bpm_str).size(sz(10.0)).width(45.0),
-                            ]
-                            .spacing(4)
-                            .padding([2, 4]),
-                        )
-                        .style(|_theme: &iced::Theme| container::Style {
-                            background: Some(iced::Background::Color(iced::Color::from_rgb(0.12, 0.12, 0.14))),
-                            ..Default::default()
-                        })
-                    );
-                }
-
-                scrollable(list_col)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
+                // Use the standard track_table widget for consistent look
+                track_table(
+                    &state.graph_suggestion_rows,
+                    &state.graph_table_state,
+                    |msg| Message::GraphTable(msg),
+                )
             };
 
             let suggestion_count = state.graph_suggestion_rows.len();

@@ -6,6 +6,34 @@ All notable changes to Mesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Suggestion Graph View (mesh-cue)** — New "Graph" tab in the collection
+  browser visualises the entire library as an interactive node graph. Select any
+  track as a seed to see scored suggestions radiating outward (closer = better
+  match). The intent slider dynamically re-scores and re-layouts the graph:
+  centre favours similar tracks for layering/mashups, extremes favour dissimilar
+  tracks for transitions. Includes breadcrumb seed history (red trail), ranked
+  suggestion list with match percentages, and score component breakdown.
+
+- **Reward-based suggestion scoring** — The scoring algorithm is rewritten from
+  penalty-based (lower = better) to reward-based (higher = better). Each
+  component contributes up to its weight: vector similarity (30%), key
+  compatibility (25%), intensity matching (25%), key direction (10%), co-play
+  history (8%). Stem complement works as a penalty (clashing vocals subtract
+  from score). Score range now spans 0-100% instead of a narrow 44-86% band.
+
+- **Brute-force all-tracks scoring** — Suggestion queries now compute exact PCA
+  cosine distances for every track in the library instead of relying on HNSW
+  approximate nearest-neighbour search. This removes the ~100 candidate limit
+  and gives every track a meaningful score. Trivially fast for libraries up to
+  5000 tracks.
+
+- **Blend Mode setting** — New "Blend Mode" setting (Layering / Balanced /
+  Transition) replaces the old Sound Target and Sound Focus settings. Controls
+  how far the intent slider must move before the vector component flips from
+  rewarding similarity (layering) to rewarding dissimilarity (transitions).
+
 ### Changed
 
 - **Smart suggestions v3 — PCA-128 similarity index** — A new "Build Similarity

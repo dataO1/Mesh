@@ -151,6 +151,8 @@ pub struct CollectionState {
     pub graph_building: bool,
     /// Suggestion tracks for graph left panel (populated on seed select)
     pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
+    /// Table state for the graph suggestion list
+    pub graph_table_state: mesh_widgets::TrackTableState<NodeId>,
 }
 
 impl std::fmt::Debug for CollectionState {
@@ -252,6 +254,11 @@ impl Default for CollectionState {
             graph_edges: None,
             graph_building: false,
             graph_suggestion_rows: Vec::new(),
+            graph_table_state: {
+                let mut ts = mesh_widgets::TrackTableState::new();
+                ts.display_columns = Some(mesh_widgets::TrackColumn::graph_analysis());
+                ts
+            },
         }
     }
 }

@@ -636,6 +636,9 @@ impl MeshCueApp {
             Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
+            Message::GraphTable(_table_msg) => {
+                // Graph suggestion table is read-only — no action needed
+            }
             Message::GraphSuggestionsReady { seed_id, suggestions, positions, queried_energy } => {
                 return self.handle_graph_suggestions_ready(seed_id, suggestions, positions, queried_energy);
             }

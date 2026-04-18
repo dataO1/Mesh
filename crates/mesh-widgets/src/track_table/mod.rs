@@ -246,16 +246,16 @@ impl TrackColumn {
             Self::Key => "Key",
             Self::Duration => "Duration",
             Self::Lufs => "LUFS",
-            Self::HnswDist => "HNSW",
-            Self::KeyScore => "Key",
-            Self::EnergyMatch => "Energy",
+            Self::HnswDist => "Vector",
+            Self::KeyScore => "Key%",
+            Self::EnergyMatch => "Intens",
             Self::CoplayCount => "CoPlay",
             Self::Aggression => "Aggr",
             Self::Timbre => "Timbr",
             Self::Danceability => "Dance",
             Self::Genre => "Genre",
             Self::StemBalance => "Stems",
-            Self::FinalScore => "Score",
+            Self::FinalScore => "Match",
         }
     }
 
@@ -304,23 +304,18 @@ impl TrackColumn {
         ]
     }
 
-    /// Get analysis columns for graph view display
+    /// Get columns for graph view suggestion list:
+    /// score + sub-components, name, key, BPM, reason pills
     pub fn graph_analysis() -> &'static [TrackColumn] {
         &[
-            TrackColumn::Name,
-            TrackColumn::Artist,
-            TrackColumn::Bpm,
-            TrackColumn::Key,
+            TrackColumn::FinalScore,
             TrackColumn::HnswDist,
             TrackColumn::KeyScore,
             TrackColumn::EnergyMatch,
-            TrackColumn::CoplayCount,
-            TrackColumn::Aggression,
-            TrackColumn::Timbre,
-            TrackColumn::Danceability,
-            TrackColumn::Genre,
-            TrackColumn::StemBalance,
-            TrackColumn::FinalScore,
+            TrackColumn::Name,
+            TrackColumn::Tags,
+            TrackColumn::Key,
+            TrackColumn::Bpm,
         ]
     }
 }
@@ -616,6 +611,9 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     /// Which columns are editable (empty = none). Configured per-app:
     /// mesh-cue sets Name/Artist/Bpm/Key, mesh-player leaves empty.
     pub editable_columns: HashSet<TrackColumn>,
+    /// Override which columns to display (None = TrackColumn::all()).
+    /// Used by graph view to show analysis columns.
+    pub display_columns: Option<&'static [TrackColumn]>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -642,7 +640,13 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             tag_category_colors: None,
             name_column_width: None,
             editable_columns: HashSet::new(),
+            display_columns: None,
         }
+    }
+
+    /// Get the columns to display (overridable via `display_columns`).
+    pub fn columns(&self) -> &'static [TrackColumn] {
+        self.display_columns.unwrap_or_else(TrackColumn::all)
     }
 
     /// Get the width for a column
@@ -982,7 +986,7 @@ where
     Id: Clone + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
-    let headers: Vec<Element<'a, Message>> = TrackColumn::all()
+    let headers: Vec<Element<'a, Message>> = state.columns()
         .iter()
         .map(|&col| build_header_cell(col, state, on_message.clone()))
         .collect();
@@ -1140,15 +1144,15 @@ where
         TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Duration => track.format_duration(),
         TrackColumn::Lufs => track.format_lufs(),
-        TrackColumn::HnswDist => track.hnsw_dist.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
-        TrackColumn::KeyScore => track.key_score.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
-        TrackColumn::EnergyMatch => track.energy_match.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::HnswDist => track.hnsw_dist.map(|v| format!("{:.0}%", (1.0 - v) * 100.0)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::KeyScore => track.key_score.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::EnergyMatch => track.energy_match.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::CoplayCount => track.coplay_count.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Aggression => track.aggression.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Timbre => track.timbre.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Danceability => track.danceability.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Genre => track.genre.clone().unwrap_or_else(|| "-".to_string()),
-        TrackColumn::FinalScore => track.final_score.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::FinalScore => track.final_score.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
     };
 
     if is_editing {
@@ -1230,7 +1234,7 @@ where
     let is_row_editing = state.editing.as_ref().map(|(id, _)| id == &track.id).unwrap_or(false);
 
     // Build cells for each column
-    let cells: Vec<Element<'a, Message>> = TrackColumn::all()
+    let cells: Vec<Element<'a, Message>> = state.columns()
         .iter()
         .map(|&col| build_cell(track, col, state, on_message.clone()))
         .collect();

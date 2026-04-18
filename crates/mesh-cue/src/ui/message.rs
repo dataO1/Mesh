@@ -401,6 +401,8 @@ pub enum Message {
     GraphPanZoom { pan: (f32, f32), zoom: f32 },
     /// Navigate back in seed history (pop breadcrumb)
     GraphSeedBack,
+    /// Message from the graph suggestion track table (selection, sort, etc.)
+    GraphTable(mesh_widgets::TrackTableMessage<mesh_core::playlist::NodeId>),
     /// Suggestion query for graph view completed (includes radial positions)
     GraphSuggestionsReady {
         seed_id: i64,

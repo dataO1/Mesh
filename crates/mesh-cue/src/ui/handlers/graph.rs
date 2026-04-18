@@ -414,24 +414,31 @@ impl MeshCueApp {
 
         state.clear_caches();
 
-        // Build left panel rows (top 30 only)
+        // Build left panel rows (top 30 only) with reason tags and score components
         let mut rows: Vec<TrackRow<NodeId>> = Vec::with_capacity(SUGGESTION_HIGHLIGHT_LIMIT);
         for (i, s) in suggestions.iter().take(SUGGESTION_HIGHLIGHT_LIMIT).enumerate() {
-            let title = s.track.path.file_stem()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
             let node_id = NodeId(format!("graph_{}", s.track.id.unwrap_or(i as i64)));
-            let mut row = TrackRow::new(node_id, title, (i + 1) as i32);
+            let mut row = TrackRow::new(node_id, &s.track.title, (i + 1) as i32);
             row.artist = s.track.artist.clone();
             row.bpm = s.track.bpm;
             row.key = s.track.key.clone();
             row.final_score = Some(s.score);
+            row.track_path = Some(s.track.path.to_string_lossy().to_string());
 
+            // Reason tags as colored pills
+            row.tags = s.reason_tags.iter().map(|(label, color)| {
+                let mut tag = mesh_widgets::TrackTag::new(label);
+                if let Some(hex) = color {
+                    tag.color = mesh_widgets::parse_hex_color(hex);
+                }
+                tag
+            }).collect();
+
+            // Score component breakdown
             if let Some(ref cs) = s.component_scores {
                 row.hnsw_dist = Some(cs.hnsw_distance);
                 row.key_score = Some(cs.key_score);
-                row.energy_match = Some(cs.intensity_penalty);
+                row.energy_match = Some(cs.intensity_penalty); // actually reward now
                 row.coplay_count = Some(cs.coplay_score);
             }
 
