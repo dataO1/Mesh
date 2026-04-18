@@ -48,6 +48,26 @@ All notable changes to Mesh are documented in this file.
   embeddings to 2D, showing natural genre and style clusters with tight local
   grouping. Runs in background on first Graph tab open.
 
+- **HDBSCAN cluster overlays** — Auto-detects genre/style clusters from PCA-128
+  embeddings and renders them as semi-transparent colored regions behind nodes
+  in the graph view. Provides immediate visual orientation.
+
+- **Fisheye lens distortion** — Selecting a seed in the graph now applies a
+  nonlinear magnification centered on the seed, spreading nearby suggestions
+  while compressing distant nodes. Preserves t-SNE cluster structure instead of
+  destroying it with a radial layout.
+
+- **Bidirectional hover brushing** — Hovering a node in the graph highlights the
+  corresponding row in the suggestion list. Clicking a row highlights the node.
+
+- **L2-normalized PCA vectors** — PCA embeddings are now L2-normalized before
+  cosine distance computation, removing magnitude distortion from descending
+  component variance.
+
+- **Genre-normalized vector distances** — Cosine distances are z-score normalized
+  within genre groups so spectrally tight genres (e.g., DnB) don't monopolize
+  suggestions over more spread genres (e.g., house).
+
 - **Auto-zoom to suggestions** — Selecting a seed in the graph automatically
   zooms and pans to frame the seed and its top 30 suggestions.
 
