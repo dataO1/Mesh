@@ -95,6 +95,12 @@ impl MeshCueApp {
         state.positions = positions;
         state.track_meta = track_meta;
         state.normalize_vectors = self.collection.graph_normalize_vectors;
+        // Detect PCA dimensionality from any stored embedding
+        if let Some(first_id) = node_ids.first() {
+            if let Ok(Some(pca)) = db.get_pca_embedding_raw(*first_id) {
+                state.pca_dims = pca.len();
+            }
+        }
         self.collection.graph_state = Some(state);
 
         let normalize = self.collection.graph_normalize_vectors;

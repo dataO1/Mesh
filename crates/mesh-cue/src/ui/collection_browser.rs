@@ -191,16 +191,26 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
             )
             .width(Length::Fill);
 
-            // Legend
+            // Legend with PCA dims info
+            let dims_info = if graph_state.pca_dims > 0 {
+                format!("PCA: {}d", graph_state.pca_dims)
+            } else {
+                "PCA: ?".to_string()
+            };
+            let tracks_info = format!("{} tracks", graph_state.track_meta.len());
+            let clusters_info = {
+                let n_clusters = graph_state.cluster_colors.len();
+                if n_clusters > 0 { format!("{} clusters", n_clusters) } else { String::new() }
+            };
             let legend = container(
                 row![
-                    text("Nodes = tracks").size(sz(10.0)),
+                    text(dims_info).size(sz(10.0)),
                     text(" | ").size(sz(10.0)),
-                    text("Edges = composite suggestion score (key + HNSW + energy + co-play)").size(sz(10.0)),
+                    text(tracks_info).size(sz(10.0)),
+                    text(if clusters_info.is_empty() { "" } else { " | " }).size(sz(10.0)),
+                    text(clusters_info).size(sz(10.0)),
                     text(" | ").size(sz(10.0)),
-                    text("Green/thick = best match").size(sz(10.0)),
-                    text(" | ").size(sz(10.0)),
-                    text("Red/thin = weakest").size(sz(10.0)),
+                    text("Green = best match | Red = weakest").size(sz(10.0)),
                 ]
                 .spacing(0)
                 .align_y(Alignment::Center)
