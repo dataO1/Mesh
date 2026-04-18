@@ -462,13 +462,32 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // Built explicitly via build_played_after_graph(); not auto-populated on import.
     create_played_after_relation(db)?;
 
-    // PCA-reduced 128-dim embeddings for sharpened HNSW similarity
-    // (concentration of measure mitigation). Built via "Build Similarity Index" in mesh-cue.
-    create_ml_pca_embeddings_relation(db)?;
-    if !existing.contains("ml_pca_embeddings") {
-        log::debug!("Creating 'ml_pca_embeddings' HNSW index");
-        create_ml_pca_embeddings_index(db)?;
+    // PCA-reduced embeddings for brute-force similarity scoring.
+    // Dynamic dimensionality (auto-detected via 95% explained variance).
+    // Built via "Build Similarity Index" in mesh-cue or auto-rebuilt after import.
+    //
+    // Migration: old DBs have <F32; 128> typed vectors + HNSW index.
+    // New schema uses [Float] (untyped list, any dimension). Drop and recreate
+    // if the old typed relation exists — PCA will be rebuilt on next index build.
+    if existing.contains("ml_pca_embeddings") {
+        // Check if it's the old fixed-128 schema by trying to store a short vector
+        let params = std::collections::BTreeMap::new();
+        let test_result = db.run_script(
+            "?[track_id, vec] <- [[0, [1.0, 2.0, 3.0]]] :put ml_pca_embeddings {track_id => vec}",
+            params,
+            cozo::ScriptMutability::Mutable,
+        );
+        if test_result.is_err() {
+            // Old typed schema — drop and recreate
+            log::info!("Migrating ml_pca_embeddings from fixed <F32; 128> to dynamic [Float]");
+            let _ = db.run_script("::hnsw drop ml_pca_embeddings:similarity_index", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
+            let _ = db.run_script("::remove ml_pca_embeddings", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
+        } else {
+            // Clean up test row
+            let _ = db.run_script("?[track_id] <- [[0]] :rm ml_pca_embeddings {track_id}", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
+        }
     }
+    create_ml_pca_embeddings_relation(db)?;
 
     Ok(())
 }
@@ -1044,17 +1063,21 @@ fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
 }
 
 fn create_ml_pca_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
-    // PCA-projected 128-dim embeddings for library-tuned HNSW similarity.
-    // Reduces concentration-of-measure effect present in raw 1280-dim cosine distances.
-    // Built by "Build Similarity Index" in mesh-cue; primary HNSW path when present.
+    // PCA-projected embeddings with dynamic dimensionality (auto-detected via
+    // 95% explained variance threshold). Uses [Float] list instead of typed
+    // <F32; N> to support variable dimensions across index rebuilds.
+    // No HNSW index — brute-force cosine distance is used for scoring.
     run_schema(db, r#"
         {:create ml_pca_embeddings {
             track_id: Int =>
-            vec: <F32; 128>
+            vec: [Float]
         }}
     "#)
 }
 
+// Legacy: HNSW index creation removed — brute-force PCA is now the default.
+// The typed <F32; 128> relation and its HNSW index are auto-migrated on startup.
+#[allow(dead_code)]
 fn create_ml_pca_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
     match db.run_script(
         r#"
