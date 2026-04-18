@@ -241,8 +241,11 @@ impl MeshCueApp {
                     self.trigger_usb_export_after_lufs();
                 }
 
-                // Refresh collection to show updated metadata
-                return Task::perform(async {}, |_| Message::RefreshCollection);
+                // Refresh collection and rebuild PCA index (ML embeddings may have changed)
+                return Task::batch([
+                    Task::perform(async {}, |_| Message::RefreshCollection),
+                    Task::perform(async {}, |_| Message::BuildSimilarityIndex),
+                ]);
             }
         }
         Task::none()

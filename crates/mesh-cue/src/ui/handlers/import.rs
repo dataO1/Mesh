@@ -256,11 +256,12 @@ impl MeshCueApp {
                 // Clear domain import state
                 self.domain.clear_import_state();
 
-                // Refresh collection to show newly imported tracks
-                // Need both: RefreshCollection scans for tracks, RefreshPlaylists updates tree
+                // Refresh collection to show newly imported tracks, then rebuild
+                // PCA similarity index so new tracks are visible to suggestions
                 return Task::batch([
                     Task::perform(async {}, |_| Message::RefreshCollection),
                     Task::perform(async {}, |_| Message::RefreshPlaylists),
+                    Task::perform(async {}, |_| Message::BuildSimilarityIndex),
                 ]);
             }
         }
