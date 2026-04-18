@@ -345,8 +345,11 @@ pub fn composite_intensity(
 /// - **Low extreme** (`bias=-1`): rewards candidates LESS aggressive than the seed.
 ///   Much less aggressive → 1.0, much more → 0.0.
 /// - **Intermediate**: smooth linear blend between match and direction behaviours.
-pub fn intensity_reward(cand_intensity: f32, seed_intensity: f32, energy_bias: f32) -> f32 {
-    let bias_abs = energy_bias.abs();
+/// `blend_crossover`: from `SuggestionBlendMode` — controls how far the slider
+/// must move before switching from relative (layering) to absolute (transition).
+/// Coupled with the vector similarity crossover for consistent behavior.
+pub fn intensity_reward(cand_intensity: f32, seed_intensity: f32, energy_bias: f32, blend_crossover: f32) -> f32 {
+    let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
     // Match component (center): 1.0 when same intensity as seed, 0.0 when opposite.
     // Used for layering — you want tracks at the same energy level.
     let match_reward = 1.0 - (cand_intensity - seed_intensity).abs();
@@ -359,12 +362,12 @@ pub fn intensity_reward(cand_intensity: f32, seed_intensity: f32, energy_bias: f
     } else {
         1.0 - cand_intensity // drop: less intense = better
     };
-    match_reward * (1.0 - bias_abs) + abs_reward * bias_abs
+    match_reward * (1.0 - blend_t) + abs_reward * blend_t
 }
 
 /// Intensity penalty (legacy wrapper, used by generate_reason_tags).
 pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: f32) -> f32 {
-    1.0 - intensity_reward(cand_intensity, seed_intensity, energy_bias)
+    1.0 - intensity_reward(cand_intensity, seed_intensity, energy_bias, 0.6)
 }
 
 /// Stem complement component — bipolar [0, 1].

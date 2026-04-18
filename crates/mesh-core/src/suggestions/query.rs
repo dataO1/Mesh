@@ -609,7 +609,7 @@ pub fn query_suggestions(
             let cand_norm_intensity = ml_key
                 .and_then(|k| norm_intensity.get(&k).copied())
                 .unwrap_or(0.5);
-            let int_reward = intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias);
+            let int_reward = intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover);
 
             // ── Vector similarity reward ──
             // Center: similarity → high reward (1 - normalized_distance).
