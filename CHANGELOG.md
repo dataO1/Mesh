@@ -48,32 +48,38 @@ All notable changes to Mesh are documented in this file.
   embeddings to 2D, showing natural genre and style clusters with tight local
   grouping. Runs in background on first Graph tab open.
 
-- **HDBSCAN cluster overlays** — Auto-detects genre/style clusters from PCA-128
-  embeddings and renders them as semi-transparent colored regions behind nodes
-  in the graph view. Provides immediate visual orientation.
-
-- **Fisheye lens distortion** — Selecting a seed in the graph now applies a
-  nonlinear magnification centered on the seed, spreading nearby suggestions
-  while compressing distant nodes. Preserves t-SNE cluster structure instead of
-  destroying it with a radial layout.
+- **HDBSCAN cluster detection** — Auto-detects genre/style clusters from PCA
+  embeddings. Nodes are colored by cluster assignment for visual orientation.
 
 - **Bidirectional hover brushing** — Hovering a node in the graph highlights the
   corresponding row in the suggestion list. Clicking a row highlights the node.
-
-- **L2-normalized PCA vectors** — PCA embeddings are now L2-normalized before
-  cosine distance computation, removing magnitude distortion from descending
-  component variance.
 
 - **Genre-normalized vector distances** — Cosine distances are z-score normalized
   within genre groups so spectrally tight genres (e.g., DnB) don't monopolize
   suggestions over more spread genres (e.g., house).
 
-- **Auto-zoom to suggestions** — Selecting a seed in the graph automatically
-  zooms and pans to frame the seed and its top 30 suggestions.
-
 - **Click suggestion → seed** — Double-clicking a track in the suggestion list
-  navigates to it as the new seed in the graph, enabling keyboard-driven
-  library exploration.
+  navigates to it as the new seed in the graph.
+
+- **Normalize vectors toggle** — Toggle in the graph view header to L2-normalize
+  PCA vectors. Off by default (preserves natural variance for sharper clusters).
+  On = equal component weight. Rebuilds t-SNE and suggestions when toggled.
+
+- **Dynamic PCA dimensionality** — PCA projection now auto-detects the optimal
+  number of components via 95% explained variance threshold instead of
+  hardcoding 128. Typically selects 40-80 dimensions for a focused library,
+  removing noise components that diluted distances and fuzzied clusters.
+  Dimensionality displayed in graph legend alongside track and cluster count.
+
+- **Static t-SNE layout** — The t-SNE 2D positions are always the base layout,
+  even when a seed is selected. Selecting a seed only changes highlighting and
+  edges, not node positions. Cluster structure is always visible.
+
+- **Absolute intensity at slider extremes** — At peak/drop slider positions,
+  intensity scoring uses absolute level (aggressive/calm tracks) instead of
+  relative to seed. Fixes "neuro seed at peak shows 0% intensity for
+  everything" when the seed is already at max intensity. Coupled to the
+  SuggestionBlendMode crossover for consistent behavior.
 
 ### Changed
 
