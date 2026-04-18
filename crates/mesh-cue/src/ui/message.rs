@@ -403,12 +403,10 @@ pub enum Message {
     GraphSeedBack,
     /// Message from the graph suggestion track table (selection, sort, etc.)
     GraphTable(mesh_widgets::TrackTableMessage<mesh_core::playlist::NodeId>),
-    /// Suggestion query for graph view completed (includes radial positions)
+    /// Suggestion query for graph view completed
     GraphSuggestionsReady {
         seed_id: i64,
         suggestions: std::sync::Arc<Vec<mesh_core::suggestions::query::SuggestedTrack>>,
-        /// Radial positions computed from scores (seed at center, distance = score)
-        positions: std::sync::Arc<Vec<(i64, f32, f32)>>,
         /// Energy direction at query time (for debounce detection)
         queried_energy: f32,
     },

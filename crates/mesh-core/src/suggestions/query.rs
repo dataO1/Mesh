@@ -222,18 +222,23 @@ pub fn query_suggestions(
     let mut candidates: HashMap<(usize, i64), (Track, f32)> = HashMap::new();
 
     // Build seed PCA vectors (for cosine distance computation)
+    // L2-normalize to remove magnitude distortion from descending PCA variance.
     let seed_pca_vecs: Vec<(usize, Vec<f32>)> = seed_tracks
         .iter()
         .filter_map(|(src_idx, track)| {
             let id = track.id?;
-            let vec = sources[*src_idx].db.get_pca_embedding_raw(id).ok().flatten()?;
+            let mut vec = sources[*src_idx].db.get_pca_embedding_raw(id).ok().flatten()?;
+            l2_normalize(&mut vec);
             Some((*src_idx, vec))
         })
         .collect();
 
-    // If blend vector provided, use that instead of per-seed vectors
+    // If blend vector provided, use that instead of per-seed vectors.
+    // L2-normalize to match seed vector normalization.
     let blend_pca: Option<Vec<f32>> = blend_query_vec.as_ref().map(|v| {
-        v.iter().map(|&x| x as f32).collect()
+        let mut pca: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+        l2_normalize(&mut pca);
+        pca
     });
 
     for (src_idx, source) in sources.iter().enumerate() {
@@ -251,7 +256,7 @@ pub fn query_suggestions(
             source.name, all_pca.len()
         );
 
-        for (mut track, pca_vec) in all_pca {
+        for (mut track, mut pca_vec) in all_pca {
             let track_id = match track.id {
                 Some(id) => id,
                 None => continue,
@@ -269,6 +274,9 @@ pub fn query_suggestions(
 
             // Skip already-played tracks
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
+
+            // L2-normalize candidate PCA vector (matching seed normalization)
+            l2_normalize(&mut pca_vec);
 
             // Compute cosine distance to seed(s)
             let dist = if let Some(ref blend) = blend_pca {
@@ -322,6 +330,49 @@ pub fn query_suggestions(
     if candidates.is_empty() {
         log::debug!("[SUGGESTIONS] No candidates — returning empty");
         return Ok(Vec::new());
+    }
+
+    // Genre-normalize vector distances: z-score within genre groups
+    // so DnB tracks don't monopolize suggestions due to tighter clustering.
+    {
+        // Batch-fetch genre for all candidates
+        let mut genre_by_cand: HashMap<(usize, i64), String> = HashMap::new();
+        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            ids_by_source.entry(src_idx).or_default().push(track_id);
+        }
+        for (src_idx, ids) in &ids_by_source {
+            if let Ok(scores) = sources[*src_idx].db.get_ml_scores_batch(ids) {
+                for (id, ml) in scores {
+                    let genre = ml.top_genre.unwrap_or_else(|| "Unknown".to_string());
+                    genre_by_cand.insert((*src_idx, id), genre);
+                }
+            }
+        }
+
+        // Group distances by genre
+        let mut genre_dists: HashMap<&str, Vec<((usize, i64), f32)>> = HashMap::new();
+        for (&key, (_, dist)) in &candidates {
+            let genre = genre_by_cand.get(&key).map(|s| s.as_str()).unwrap_or("Unknown");
+            genre_dists.entry(genre).or_default().push((key, *dist));
+        }
+
+        // Z-score normalize within each genre (same pattern as normalize_intensity_by_genre)
+        for (_genre, tracks) in &genre_dists {
+            if tracks.len() < 3 { continue; } // too few for stats
+            let mean = tracks.iter().map(|t| t.1).sum::<f32>() / tracks.len() as f32;
+            let variance = tracks.iter().map(|t| (t.1 - mean).powi(2)).sum::<f32>() / tracks.len() as f32;
+            let std = variance.sqrt().max(0.001);
+            for &(key, raw) in tracks {
+                let z = (raw - mean) / std;
+                // Map z-score to [0, max_dist] range: center at mean, ±1.5 std maps to [0, 2*mean]
+                let normalized = (mean + z * mean / 1.5).max(0.0);
+                if let Some((_, dist)) = candidates.get_mut(&key) {
+                    *dist = normalized;
+                }
+            }
+        }
+        log::debug!("[SUGGESTIONS] Genre-normalized {} candidate vector distances", candidates.len());
     }
 
     // Co-play boost: fetch historically proven follow-up tracks for all seeds.
@@ -745,6 +796,16 @@ pub struct GraphEdge {
     pub is_played_after: bool,
     /// Time-decayed co-play weight (0 if no co-play history)
     pub played_after_weight: f32,
+}
+
+/// L2-normalize a vector in-place. No-op for near-zero vectors.
+fn l2_normalize(v: &mut Vec<f32>) {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-10 {
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
+    }
 }
 
 /// Cosine distance between two vectors: 1 - cosine_similarity.

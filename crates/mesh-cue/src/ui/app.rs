@@ -637,18 +637,28 @@ impl MeshCueApp {
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
             Message::GraphTable(table_msg) => {
-                // Double-click a suggestion row → seed from that track in the graph
-                if let mesh_widgets::TrackTableMessage::Activate(node_id) = table_msg {
-                    // Parse track_id from NodeId format "graph_{track_id}"
-                    if let Some(id_str) = node_id.0.strip_prefix("graph_") {
-                        if let Ok(track_id) = id_str.parse::<i64>() {
-                            return self.handle_graph_seed_selected(track_id);
+                match table_msg {
+                    mesh_widgets::TrackTableMessage::Activate(node_id) => {
+                        // Double-click a suggestion row → seed from that track in the graph
+                        if let Some(id_str) = node_id.0.strip_prefix("graph_") {
+                            if let Ok(track_id) = id_str.parse::<i64>() {
+                                return self.handle_graph_seed_selected(track_id);
+                            }
                         }
                     }
+                    mesh_widgets::TrackTableMessage::Select(node_id) => {
+                        // Single click: highlight the node in the graph
+                        if let Some(id_str) = node_id.0.strip_prefix("graph_") {
+                            if let Ok(track_id) = id_str.parse::<i64>() {
+                                return self.handle_graph_node_hovered(Some(track_id));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
-            Message::GraphSuggestionsReady { seed_id, suggestions, positions, queried_energy } => {
-                return self.handle_graph_suggestions_ready(seed_id, suggestions, positions, queried_energy);
+            Message::GraphSuggestionsReady { seed_id, suggestions, queried_energy } => {
+                return self.handle_graph_suggestions_ready(seed_id, suggestions, queried_energy);
             }
         }
 

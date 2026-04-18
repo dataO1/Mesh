@@ -1,14 +1,15 @@
 //! Graph view message handlers
 //!
-//! Handles graph edge building, layout (radial score-based), seed selection,
-//! energy slider changes, and breadcrumb navigation.
+//! Handles graph edge building, t-SNE layout with fisheye distortion,
+//! HDBSCAN cluster overlays, seed selection, energy slider changes,
+//! and breadcrumb navigation.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use iced::Color;
 use iced::Task;
 use mesh_core::suggestions::query::GraphEdge;
 use mesh_widgets::graph_view::{GraphViewState, TrackMeta};
-use mesh_widgets::graph_view::layout;
 
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
@@ -151,9 +152,65 @@ impl MeshCueApp {
         if let Some(ref mut state) = self.collection.graph_state {
             for &(id, x, y) in &positions {
                 state.positions.insert(id, (x, y));
+                state.tsne_positions.insert(id, (x, y));
             }
             state.clear_caches();
         }
+
+        // Run HDBSCAN clustering on PCA embeddings for cluster overlays
+        let db = self.domain.db_arc();
+        if let Some(ref mut state) = self.collection.graph_state {
+            if let Ok(all_pca) = db.get_all_pca_with_tracks() {
+                let n = all_pca.len();
+                if n >= 20 {
+                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
+                    let data: Vec<Vec<f64>> = all_pca.iter()
+                        .map(|(_, pca)| pca.iter().map(|&v| v as f64).collect())
+                        .collect();
+
+                    let min_cluster_size = (n / 30).max(8).min(20); // scale with library size
+                    let hp = hdbscan::HdbscanHyperParams::builder()
+                        .min_cluster_size(min_cluster_size)
+                        .build();
+                    let clusterer = hdbscan::Hdbscan::new(&data, hp);
+
+                    match clusterer.cluster() {
+                        Ok(labels) => {
+                            state.clusters.clear();
+                            for (i, &label) in labels.iter().enumerate() {
+                                if i < ids.len() {
+                                    state.clusters.insert(ids[i], label);
+                                }
+                            }
+
+                            // Generate distinct colors for each cluster
+                            let unique_clusters: HashSet<i32> = labels.iter()
+                                .filter(|&&l| l >= 0)
+                                .copied()
+                                .collect();
+                            state.cluster_colors.clear();
+                            let palette = [
+                                Color::from_rgb(0.27, 0.53, 0.80), // blue
+                                Color::from_rgb(0.80, 0.40, 0.27), // orange
+                                Color::from_rgb(0.33, 0.70, 0.40), // green
+                                Color::from_rgb(0.73, 0.33, 0.73), // purple
+                                Color::from_rgb(0.80, 0.73, 0.27), // yellow
+                                Color::from_rgb(0.27, 0.73, 0.73), // teal
+                                Color::from_rgb(0.87, 0.47, 0.53), // pink
+                                Color::from_rgb(0.53, 0.53, 0.80), // lavender
+                            ];
+                            for (i, &cluster_id) in unique_clusters.iter().enumerate() {
+                                state.cluster_colors.insert(cluster_id, palette[i % palette.len()]);
+                            }
+                            log::info!("[GRAPH] HDBSCAN found {} clusters from {} tracks (min_cluster_size={})",
+                                unique_clusters.len(), n, min_cluster_size);
+                        }
+                        Err(e) => log::warn!("[GRAPH] HDBSCAN failed: {:?}", e),
+                    }
+                }
+            }
+        }
+
         Task::none()
     }
 
@@ -200,6 +257,14 @@ impl MeshCueApp {
         if let Some(ref mut state) = self.collection.graph_state {
             state.hovered_id = id;
             state.node_cache.clear();
+        }
+        // Highlight corresponding row in suggestion table
+        if let Some(track_id) = id {
+            let node_id = mesh_core::playlist::NodeId(format!("graph_{}", track_id));
+            self.collection.graph_table_state.selected.clear();
+            self.collection.graph_table_state.selected.insert(node_id);
+        } else {
+            self.collection.graph_table_state.selected.clear();
         }
         Task::none()
     }
@@ -297,37 +362,15 @@ impl MeshCueApp {
                         true, // emit_components
                     )?;
 
-                    // Fetch PCA embeddings for angular positioning
-                    let pca_map: HashMap<i64, Vec<f32>> = sources[0].db
-                        .get_all_pca_with_tracks()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(|(t, vec)| t.id.map(|id| (id, vec)))
-                        .collect();
-
-                    let seed_pca = pca_map.get(&seed_id).cloned().unwrap_or_default();
-
-                    // Build scored tracks with PCA embeddings for layout
-                    let scored: Vec<(i64, f32, Vec<f32>)> = suggestions.iter()
-                        .filter_map(|s| {
-                            let id = s.track.id?;
-                            let pca = pca_map.get(&id).cloned().unwrap_or_default();
-                            Some((id, s.score, pca))
-                        })
-                        .collect();
-
-                    let positions = layout::radial_layout(seed_id, &scored, &seed_pca);
-
-                    Ok::<_, String>((suggestions, positions, energy_direction))
+                    Ok::<_, String>((suggestions, energy_direction))
                 })
                 .await
                 .map_err(|e| format!("{e}"))?
             },
             move |result| match result {
-                Ok((suggestions, positions, queried_energy)) => Message::GraphSuggestionsReady {
+                Ok((suggestions, queried_energy)) => Message::GraphSuggestionsReady {
                     seed_id,
                     suggestions: Arc::new(suggestions),
-                    positions: Arc::new(positions),
                     queried_energy,
                 },
                 Err(e) => {
@@ -335,7 +378,6 @@ impl MeshCueApp {
                     Message::GraphSuggestionsReady {
                         seed_id,
                         suggestions: Arc::new(Vec::new()),
-                        positions: Arc::new(Vec::new()),
                         queried_energy: 0.5,
                     }
                 }
@@ -348,7 +390,6 @@ impl MeshCueApp {
         &mut self,
         _seed_id: i64,
         suggestions: Arc<Vec<mesh_core::suggestions::query::SuggestedTrack>>,
-        positions: Arc<Vec<(i64, f32, f32)>>,
         queried_energy: f32,
     ) -> Task<Message> {
         use mesh_core::playlist::NodeId;
@@ -410,16 +451,6 @@ impl MeshCueApp {
                 "[GRAPH STATS] top {} suggestion score threshold: {:.3} | library nodes: {} | scored tracks: {}",
                 SUGGESTION_HIGHLIGHT_LIMIT, threshold, total_nodes, n
             );
-
-            // Radius distribution (what the graph actually shows)
-            let radii: Vec<f32> = scores.iter().map(|s| s.sqrt()).collect();
-            let r_min = radii.iter().cloned().fold(f32::MAX, f32::min);
-            let r_max = radii.iter().cloned().fold(f32::MIN, f32::max);
-            let r_mean = radii.iter().sum::<f32>() / n as f32;
-            log::info!(
-                "[GRAPH STATS] radius range [{:.3}, {:.3}] mean={:.3} (sqrt of score)",
-                r_min, r_max, r_mean
-            );
         }
         // ── End diagnostic ──────────────────────────────────────────────
 
@@ -428,17 +459,41 @@ impl MeshCueApp {
             None => return Task::none(),
         };
 
-        // Apply radial positions
-        for &(id, x, y) in positions.iter() {
-            state.positions.insert(id, (x, y));
+        let current_seed = state.seed_stack.last().copied();
+
+        // Apply fisheye distortion centered on seed — magnifies nearby nodes,
+        // compresses distant ones, preserves cluster structure.
+        if let Some(seed_id) = current_seed {
+            if let Some(&(sx, sy)) = state.tsne_positions.get(&seed_id) {
+                let magnification = 3.0; // how much to magnify the focal area
+                // Find max distance for normalization
+                let max_dist = state.tsne_positions.values()
+                    .map(|&(x, y)| ((x - sx).powi(2) + (y - sy).powi(2)).sqrt())
+                    .fold(0.0f32, f32::max)
+                    .max(0.001);
+
+                for (&id, &(tx, ty)) in &state.tsne_positions {
+                    let dx = tx - sx;
+                    let dy = ty - sy;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d < 0.001 {
+                        state.positions.insert(id, (sx, sy));
+                        continue;
+                    }
+                    // Sarkar-Brown fisheye: normalized version for our coordinate space
+                    let d_norm = d / max_dist;
+                    let d_prime = (d_norm + 0.1) / (1.0 / magnification + d_norm);
+                    let d_new = d_prime * max_dist;
+                    let scale = d_new / d;
+                    state.positions.insert(id, (sx + dx * scale, sy + dy * scale));
+                }
+            }
         }
 
         // Update highlights: top N are suggestions, rest are unrelated
         state.suggestion_ids.clear();
         state.suggestion_scores.clear();
         state.suggestion_edges.clear();
-
-        let current_seed = state.seed_stack.last().copied();
 
         // ALL scored tracks get their score stored (for positioning)
         // but only top SUGGESTION_HIGHLIGHT_LIMIT get highlighted

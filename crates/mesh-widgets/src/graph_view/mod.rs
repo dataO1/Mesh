@@ -40,6 +40,8 @@ pub enum GraphViewMessage {
 pub struct GraphViewState {
     // Layout
     pub positions: HashMap<i64, (f32, f32)>,
+    /// Original t-SNE positions (preserved for fisheye distortion on seed select)
+    pub tsne_positions: HashMap<i64, (f32, f32)>,
     pub pan: (f32, f32),
     pub zoom: f32,
     // Selection
@@ -57,6 +59,11 @@ pub struct GraphViewState {
     pub node_cache: canvas::Cache,
     // Energy slider
     pub energy_direction: f32,
+    // Cluster overlays
+    /// Cluster assignments from HDBSCAN (track_id → cluster_id, -1 = noise)
+    pub clusters: HashMap<i64, i32>,
+    /// Cluster colors (cluster_id → color)
+    pub cluster_colors: HashMap<i32, Color>,
 }
 
 impl GraphViewState {
@@ -64,6 +71,7 @@ impl GraphViewState {
     pub fn new() -> Self {
         Self {
             positions: HashMap::new(),
+            tsne_positions: HashMap::new(),
             pan: (0.0, 0.0),
             zoom: 10.0,
             seed_stack: Vec::new(),
@@ -75,6 +83,8 @@ impl GraphViewState {
             edge_cache: canvas::Cache::new(),
             node_cache: canvas::Cache::new(),
             energy_direction: 0.5,
+            clusters: HashMap::new(),
+            cluster_colors: HashMap::new(),
         }
     }
 
@@ -276,6 +286,45 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             bounds.size(),
             COLOR_BACKGROUND,
         );
+
+        // ── Layer 0: Cluster regions (semi-transparent colored circles) ──
+        if !self.clusters.is_empty() {
+            // Compute cluster centroids
+            let mut centroids: HashMap<i32, (f32, f32, usize)> = HashMap::new();
+            for (&id, &cluster_id) in &self.clusters {
+                if cluster_id < 0 { continue; } // skip noise
+                if let Some(&(x, y)) = self.positions.get(&id) {
+                    let entry = centroids.entry(cluster_id).or_insert((0.0, 0.0, 0));
+                    entry.0 += x;
+                    entry.1 += y;
+                    entry.2 += 1;
+                }
+            }
+
+            for (&cluster_id, &(sum_x, sum_y, count)) in &centroids {
+                if count == 0 { continue; }
+                let cx = sum_x / count as f32;
+                let cy = sum_y / count as f32;
+
+                // Find max distance from centroid to any member
+                let mut max_r = 0.0f32;
+                for (&id, &cid) in &self.clusters {
+                    if cid != cluster_id { continue; }
+                    if let Some(&(x, y)) = self.positions.get(&id) {
+                        let r = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+                        max_r = max_r.max(r);
+                    }
+                }
+
+                let screen_center = to_screen((cx, cy), self.pan, self.zoom, bounds);
+                let screen_radius = max_r * self.zoom + 15.0; // padding
+
+                if let Some(&color) = self.cluster_colors.get(&cluster_id) {
+                    let circle = Path::circle(screen_center, screen_radius);
+                    frame.fill(&circle, Color { a: 0.08, ..color });
+                }
+            }
+        }
 
         let seed_set: HashSet<i64> = self.seed_stack.iter().copied().collect();
         let current_seed = self.seed_stack.last().copied();

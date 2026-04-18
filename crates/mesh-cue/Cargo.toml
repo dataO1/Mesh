@@ -101,6 +101,7 @@ regex = "1"     # Filename pattern matching
 realfft = "3.4"  # FFT for STFT preprocessing (Demucs requires spectrogram input)
 faer = "0.19"   # Pure-Rust SVD for PCA similarity index build
 bhtsne = "0.5.4"
+hdbscan = "0.12.0"
 
 [features]
 # JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)
