@@ -94,7 +94,10 @@ impl MeshCueApp {
         let mut state = GraphViewState::new();
         state.positions = positions;
         state.track_meta = track_meta;
+        state.normalize_vectors = self.collection.graph_normalize_vectors;
         self.collection.graph_state = Some(state);
+
+        let normalize = self.collection.graph_normalize_vectors;
 
         // Run Barnes-Hut t-SNE on PCA-128 embeddings for 2D library view.
         // t-SNE produces tight local clusters where spectrally similar tracks
@@ -113,7 +116,19 @@ impl MeshCueApp {
                     log::info!("[GRAPH] Running Barnes-Hut t-SNE on {} tracks (128-dim → 2D)...", n);
 
                     let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
-                    let samples: Vec<&[f32]> = all_pca.iter().map(|(_, pca)| pca.as_slice()).collect();
+
+                    // Optionally L2-normalize PCA vectors for t-SNE input
+                    let mut owned_vecs: Vec<Vec<f32>> = if normalize {
+                        all_pca.iter().map(|(_, pca)| {
+                            let mut v = pca.clone();
+                            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                            if norm > 1e-10 { for x in v.iter_mut() { *x /= norm; } }
+                            v
+                        }).collect()
+                    } else {
+                        all_pca.iter().map(|(_, pca)| pca.clone()).collect()
+                    };
+                    let samples: Vec<&[f32]> = owned_vecs.iter().map(|v| v.as_slice()).collect();
 
                     // Perplexity scales with dataset size (rule of thumb: sqrt(n)/2)
                     let perplexity = ((n as f32).sqrt() / 2.0).clamp(5.0, 50.0);
@@ -229,6 +244,18 @@ impl MeshCueApp {
         self.run_graph_suggestion_query(track_id)
     }
 
+    /// Toggle L2-normalization — rebuilds t-SNE and re-queries suggestions.
+    pub fn handle_graph_toggle_normalize(&mut self, enabled: bool) -> Task<Message> {
+        let normalize = enabled;
+        // Force full rebuild: clear graph state, re-trigger edge build + t-SNE
+        self.collection.graph_state = None;
+        self.collection.graph_edges = None;
+        self.collection.graph_suggestion_rows.clear();
+        // Store the flag so handle_graph_edges_ready picks it up
+        self.collection.graph_normalize_vectors = normalize;
+        self.handle_build_graph_edges()
+    }
+
     /// Navigate back in seed history.
     pub fn handle_graph_seed_back(&mut self) -> Task<Message> {
         let state = match self.collection.graph_state.as_mut() {
@@ -328,11 +355,13 @@ impl MeshCueApp {
 
         // Use Off filter to score ALL tracks (no key filtering)
         // The top 30 will be highlighted as suggestions
+        let normalize = self.collection.graph_normalize_vectors;
         let config = SuggestionConfig {
             blend_crossover: SuggestionBlendMode::Balanced.crossover(),
             harmonic_floor: 0.0,
             blended_threshold: 0.0,
             stem_complement: false,
+            normalize_vectors: normalize,
         };
 
         let sources = vec![DbSource {

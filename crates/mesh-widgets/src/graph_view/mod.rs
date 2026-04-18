@@ -59,6 +59,9 @@ pub struct GraphViewState {
     pub node_cache: canvas::Cache,
     // Energy slider
     pub energy_direction: f32,
+    /// Whether to L2-normalize PCA vectors before distance computation.
+    /// On = equal component weight (flatter clusters). Off = natural variance (sharper clusters).
+    pub normalize_vectors: bool,
     // Cluster overlays
     /// Cluster assignments from HDBSCAN (track_id → cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
@@ -83,6 +86,7 @@ impl GraphViewState {
             edge_cache: canvas::Cache::new(),
             node_cache: canvas::Cache::new(),
             energy_direction: 0.5,
+            normalize_vectors: false, // off by default — preserve natural PCA variance
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
         }

@@ -25,6 +25,9 @@ pub struct SuggestionConfig {
     pub blended_threshold: f32,
     /// Enable stem complement penalty (clashing vocals/lead reduce score).
     pub stem_complement: bool,
+    /// L2-normalize PCA vectors before cosine distance.
+    /// On = equal component weight. Off = natural PCA variance preserved.
+    pub normalize_vectors: bool,
 }
 
 impl SuggestionConfig {
@@ -40,6 +43,7 @@ impl SuggestionConfig {
             harmonic_floor,
             blended_threshold,
             stem_complement,
+            normalize_vectors: false, // preserve natural PCA variance by default
         }
     }
 }
@@ -222,22 +226,21 @@ pub fn query_suggestions(
     let mut candidates: HashMap<(usize, i64), (Track, f32)> = HashMap::new();
 
     // Build seed PCA vectors (for cosine distance computation)
-    // L2-normalize to remove magnitude distortion from descending PCA variance.
+    let normalize = suggestion_config.normalize_vectors;
     let seed_pca_vecs: Vec<(usize, Vec<f32>)> = seed_tracks
         .iter()
         .filter_map(|(src_idx, track)| {
             let id = track.id?;
             let mut vec = sources[*src_idx].db.get_pca_embedding_raw(id).ok().flatten()?;
-            l2_normalize(&mut vec);
+            if normalize { l2_normalize(&mut vec); }
             Some((*src_idx, vec))
         })
         .collect();
 
     // If blend vector provided, use that instead of per-seed vectors.
-    // L2-normalize to match seed vector normalization.
     let blend_pca: Option<Vec<f32>> = blend_query_vec.as_ref().map(|v| {
         let mut pca: Vec<f32> = v.iter().map(|&x| x as f32).collect();
-        l2_normalize(&mut pca);
+        if normalize { l2_normalize(&mut pca); }
         pca
     });
 
@@ -275,8 +278,8 @@ pub fn query_suggestions(
             // Skip already-played tracks
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
 
-            // L2-normalize candidate PCA vector (matching seed normalization)
-            l2_normalize(&mut pca_vec);
+            // Optionally L2-normalize candidate PCA vector (matching seed normalization)
+            if normalize { l2_normalize(&mut pca_vec); }
 
             // Compute cosine distance to seed(s)
             let dist = if let Some(ref blend) = blend_pca {

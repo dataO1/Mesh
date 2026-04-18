@@ -149,6 +149,8 @@ pub struct CollectionState {
     pub graph_edges: Option<Arc<Vec<GraphEdge>>>,
     /// True while graph edges are being built in background
     pub graph_building: bool,
+    /// Whether to L2-normalize PCA vectors (persists across graph rebuilds)
+    pub graph_normalize_vectors: bool,
     /// Suggestion tracks for graph left panel (populated on seed select)
     pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
     /// Table state for the graph suggestion list
@@ -253,6 +255,7 @@ impl Default for CollectionState {
             graph_state: None,
             graph_edges: None,
             graph_building: false,
+            graph_normalize_vectors: false,
             graph_suggestion_rows: Vec::new(),
             graph_table_state: {
                 let mut ts = mesh_widgets::TrackTableState::new();

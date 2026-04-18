@@ -401,6 +401,8 @@ pub enum Message {
     GraphPanZoom { pan: (f32, f32), zoom: f32 },
     /// Navigate back in seed history (pop breadcrumb)
     GraphSeedBack,
+    /// Toggle L2-normalization of PCA vectors in graph view
+    GraphToggleNormalize(bool),
     /// Message from the graph suggestion track table (selection, sort, etc.)
     GraphTable(mesh_widgets::TrackTableMessage<mesh_core::playlist::NodeId>),
     /// Suggestion query for graph view completed

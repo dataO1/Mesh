@@ -23,10 +23,99 @@ original plan:
 
 ### Remaining improvements
 
-- [ ] Dimensionality reduction (PaCMAP/t-SNE) for initial no-seed library view
-- [ ] Clicking a suggestion in the left panel track table loads it as seed
+- [x] t-SNE for initial no-seed library view (Barnes-Hut via bhtsne)
+- [x] Clicking a suggestion in the left panel track table loads it as seed
+- [x] Persist graph positions across tab switches
 - [ ] Show track waveform preview on hover
-- [ ] Persist graph positions across tab switches (currently rebuilds)
+- [ ] Audio preview on click-and-hold a node
+- [ ] Lasso selection to filter tracks by graph region
+- [ ] Color mode toggle (score / key / genre / intensity)
+
+---
+
+# Set Analysis & DJ Intelligence
+
+Analytics derived from session history (`track_plays`, `played_after` relations)
+and graph exploration breadcrumb trails. Most metrics are computable from existing
+stored data — gaps noted below.
+
+## Data already stored (per track play)
+
+session_id, loaded_at, track_id, track_path, track_name, deck_index,
+load_source ("browser"/"suggestions"), suggestion_score, suggestion_tags_json,
+suggestion_energy_dir, play_started_at, seconds_played, played_with_json,
+hot_cues_used_json, loop_was_active.
+
+## Data gaps (need to capture)
+
+- [ ] **Suggestion rank position**: Which position in the top-30 list the DJ
+  picked. Add `suggestion_rank: Option<u32>` to `TrackPlayRecord`.
+- [ ] **Full suggestion context per load**: Store the top-30 IDs + scores shown
+  at each load event (~1KB). Enables negative example learning (shown but
+  not picked = implicit rejection).
+- [ ] **Persist graph breadcrumb trails**: Currently memory-only in mesh-cue.
+  New DB relation: `graph_trails { session_id, step, track_id, energy_dir }`.
+
+## Statistical dashboard (per session)
+
+Computable from existing data, no ML needed:
+
+- [ ] **Key compatibility rate**: % of transitions with Camelot distance ≤ 1.
+  Parse from `suggestion_tags_json` or compute from track keys.
+- [ ] **Key transition distribution**: Histogram of Camelot distances (0–6).
+  Shows DJ's harmonic mixing style.
+- [ ] **BPM progression**: Plot BPM per track across session. Stddev = genre
+  focus (tight < 5 BPM = single genre, wide > 15 = journey).
+- [ ] **Genre entropy**: Shannon entropy over genre distribution. Low < 1.0 =
+  focused, high > 2.5 = eclectic.
+- [ ] **Energy arc smoothness**: Mean absolute 2nd derivative of arousal curve.
+  Lower = smoother energy flow.
+- [ ] **Selection depth**: Average rank of selected suggestion (needs rank data).
+- [ ] **Suggestion vs browse ratio**: load_source distribution per session.
+
+## Energy arc visualization
+
+- [ ] **Multi-layer timeline**: Canvas widget showing intensity + BPM + key
+  progression stacked. Color strip for key (Camelot colors). Transition
+  quality pips at step boundaries (green/amber/red).
+- [ ] **Chapter detection**: Segment energy curve into monotonic regions.
+  Label: low+rising = warm-up, peak = climax, high+falling = release.
+- [ ] **"Complete my set"**: Given partial trail, suggest tracks for remaining
+  chapters using suggestion engine with appropriate energy_direction.
+
+## Style fingerprinting (novel — no DJ software does this)
+
+Computable from aggregated session history:
+
+- [ ] **Genre loyalty length**: Average consecutive tracks in same genre cluster.
+- [ ] **Key walk smoothness**: Entropy of Camelot distance distribution.
+- [ ] **Energy direction bias**: Average slope of energy curve across sessions.
+- [ ] **Exploration breadth**: Unique graph clusters visited per session.
+- [ ] **Radar chart**: Render style vector as a spider plot (harmonic smoothness,
+  energy arc, genre loyalty, exploration, BPM range, decision confidence).
+
+## Cluster heatmap
+
+- [ ] **Visitation frequency**: Join track_plays with t-SNE positions. Color-code
+  graph nodes by play count (hot = frequently played, cold = never).
+- [ ] **Coverage metric**: "You've explored 34% of your library's stylistic space."
+- [ ] **Underexplored suggestions**: Boost tracks from clusters adjacent to
+  frequently visited clusters but never visited themselves.
+
+## Transition pattern learning (needs data accumulation)
+
+- [ ] **Personalized re-ranker**: Logistic regression over transition features
+  [key_dist, bpm_diff, energy_diff, genre_match] trained on positive/negative
+  examples from suggestion context. Per-DJ model.
+- [ ] **Preference surfacing**: "You prefer adjacent key walks (72%) over
+  same-key (18%). You rarely jump > 4 BPM."
+
+## Collaborative filtering (multi-user, future)
+
+- [ ] **Transition co-occurrence matrix**: Count how many DJs select B after A.
+  Weight by recency. Works with 10-20 active DJs.
+- [ ] **Sequential pattern mining**: Find frequent A→B→C subsequences across DJs.
+- [ ] **Opt-in sharing**: Local-first, share only aggregated transition counts.
 
 ---
 

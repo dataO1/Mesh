@@ -3,7 +3,7 @@
 use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
 use super::state::BrowserTab;
-use iced::widget::{button, column, container, row, rule, slider, text, Canvas, Space};
+use iced::widget::{button, column, container, row, rule, slider, text, toggler, Canvas, Space};
 use iced::{Alignment, Element, Length};
 use mesh_widgets::{playlist_browser_with_drop_highlight, sz, track_table};
 
@@ -171,14 +171,19 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
             // Breadcrumb trail
             let breadcrumbs = view_breadcrumbs(graph_state);
 
-            // Energy slider at top of right panel (with step for smooth dragging)
-            let energy_slider = container(
+            // Controls row: energy slider + normalize toggle
+            let controls = container(
                 row![
                     text("Drop").size(sz(11.0)),
                     slider(0.0..=1.0, graph_state.energy_direction, Message::GraphSliderChanged)
                         .step(0.01)
                         .width(Length::Fill),
                     text("Peak").size(sz(11.0)),
+                    Space::new().width(16.0),
+                    text("Normalize").size(sz(10.0)),
+                    toggler(graph_state.normalize_vectors)
+                        .on_toggle(Message::GraphToggleNormalize)
+                        .size(sz(14.0)),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center)
@@ -216,7 +221,7 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
             });
 
             let right_panel = column![
-                energy_slider,
+                controls,
                 legend,
                 graph_canvas,
             ]

@@ -636,6 +636,7 @@ impl MeshCueApp {
             Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
+            Message::GraphToggleNormalize(enabled) => return self.handle_graph_toggle_normalize(enabled),
             Message::GraphTable(table_msg) => {
                 match table_msg {
                     mesh_widgets::TrackTableMessage::Activate(node_id) => {
