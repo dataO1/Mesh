@@ -5,6 +5,7 @@
 
 pub mod browser;
 pub mod delete;
+pub mod graph;
 pub mod editing;
 pub mod effect_picker;
 pub mod effects_editor;

@@ -418,8 +418,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
 
     // Build suggestion algorithm config from display settings
     let suggestion_config = crate::suggestions::SuggestionConfig::from_display(
-        app.config.display.suggestion_similarity_target,
-        app.config.display.suggestion_similarity_focus,
+        app.config.display.suggestion_blend_mode,
         app.config.display.suggestion_key_filter,
         app.config.display.suggestion_stem_complement,
     );
@@ -434,7 +433,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
             // No pre-split truncation — carry all scored candidates into split_suggestions
             // so each bucket independently picks its best 15 from the full pool.
             // Playlist tracks get a lenient key threshold via preferred_paths.
-            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref(), blend_query_vec)?;
+            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref(), blend_query_vec, false)?;
 
             // Attach per-track playlist memberships via a single reverse-lookup query per source
             for src in &sources {

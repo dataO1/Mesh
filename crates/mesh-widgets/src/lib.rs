@@ -27,6 +27,7 @@
 pub mod button_styles;
 pub mod deck_preset;
 pub mod font;
+pub mod graph_view;
 pub mod keyboard;
 pub mod knob;
 pub mod multiband;
@@ -138,3 +139,6 @@ pub use deck_preset::{
 pub use keyboard::{
     keyboard_view, keyboard_handle, KeyboardState, KeyboardMessage, KeyboardEvent,
 };
+
+// Graph view widget for suggestion network visualization
+pub use graph_view::{GraphViewState, GraphViewMessage, TrackMeta, graph_view};

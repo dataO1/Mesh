@@ -210,6 +210,27 @@ pub enum TrackColumn {
     Duration,
     /// LUFS loudness
     Lufs,
+    // Graph view analysis columns
+    /// Raw PCA-128 cosine distance
+    HnswDist,
+    /// Harmonic compatibility score [0-1]
+    KeyScore,
+    /// Intensity component score [0-1]
+    EnergyMatch,
+    /// Co-play time-decayed weight
+    CoplayCount,
+    /// ML aggression score [0-1]
+    Aggression,
+    /// ML timbre score (0=dark, 1=bright)
+    Timbre,
+    /// ML danceability score [0-1]
+    Danceability,
+    /// Primary genre string
+    Genre,
+    /// Stem balance mini-bar (vocal/drums/bass/other)
+    StemBalance,
+    /// Final composite suggestion score
+    FinalScore,
 }
 
 impl TrackColumn {
@@ -225,6 +246,16 @@ impl TrackColumn {
             Self::Key => "Key",
             Self::Duration => "Duration",
             Self::Lufs => "LUFS",
+            Self::HnswDist => "HNSW",
+            Self::KeyScore => "Key",
+            Self::EnergyMatch => "Energy",
+            Self::CoplayCount => "CoPlay",
+            Self::Aggression => "Aggr",
+            Self::Timbre => "Timbr",
+            Self::Danceability => "Dance",
+            Self::Genre => "Genre",
+            Self::StemBalance => "Stems",
+            Self::FinalScore => "Score",
         }
     }
 
@@ -245,6 +276,16 @@ impl TrackColumn {
             Self::Key => Length::Fixed(50.0),
             Self::Duration => Length::Fixed(70.0),
             Self::Lufs => Length::Fixed(55.0),
+            Self::HnswDist => Length::Fixed(55.0),
+            Self::KeyScore => Length::Fixed(55.0),
+            Self::EnergyMatch => Length::Fixed(55.0),
+            Self::CoplayCount => Length::Fixed(45.0),
+            Self::Aggression => Length::Fixed(55.0),
+            Self::Timbre => Length::Fixed(50.0),
+            Self::Danceability => Length::Fixed(65.0),
+            Self::Genre => Length::Fixed(90.0),
+            Self::StemBalance => Length::Fixed(70.0),
+            Self::FinalScore => Length::Fixed(55.0),
         }
     }
 
@@ -260,6 +301,26 @@ impl TrackColumn {
             TrackColumn::Key,
             TrackColumn::Lufs,
             TrackColumn::Duration,
+        ]
+    }
+
+    /// Get analysis columns for graph view display
+    pub fn graph_analysis() -> &'static [TrackColumn] {
+        &[
+            TrackColumn::Name,
+            TrackColumn::Artist,
+            TrackColumn::Bpm,
+            TrackColumn::Key,
+            TrackColumn::HnswDist,
+            TrackColumn::KeyScore,
+            TrackColumn::EnergyMatch,
+            TrackColumn::CoplayCount,
+            TrackColumn::Aggression,
+            TrackColumn::Timbre,
+            TrackColumn::Danceability,
+            TrackColumn::Genre,
+            TrackColumn::StemBalance,
+            TrackColumn::FinalScore,
         ]
     }
 }
@@ -295,6 +356,17 @@ pub struct TrackRow<Id: Clone> {
     pub is_global_suggestion: bool,
     /// Whether this is a historically proven follow-up (co-play count ≥ threshold) — triggers green tint
     pub is_proven_followup: bool,
+    // Graph view analysis data (None in regular browser)
+    pub hnsw_dist: Option<f32>,
+    pub key_score: Option<f32>,
+    pub energy_match: Option<f32>,
+    pub coplay_count: Option<f32>,
+    pub aggression: Option<f32>,
+    pub timbre: Option<f32>,
+    pub danceability: Option<f32>,
+    pub genre: Option<String>,
+    pub stem_balance: Option<(f32, f32, f32, f32)>, // vocal, drums, bass, other
+    pub final_score: Option<f32>,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -315,6 +387,16 @@ impl<Id: Clone> TrackRow<Id> {
             track_path: None,
             is_global_suggestion: false,
             is_proven_followup: false,
+            hnsw_dist: None,
+            key_score: None,
+            energy_match: None,
+            coplay_count: None,
+            aggression: None,
+            timbre: None,
+            danceability: None,
+            genre: None,
+            stem_balance: None,
+            final_score: None,
         }
     }
 
@@ -472,6 +554,31 @@ pub fn compare_tracks_by_column<Id: Clone>(
             let b_tags: String = b.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>().join(",");
             a_tags.cmp(&b_tags)
         }
+        TrackColumn::HnswDist => compare_opt_f32(a.hnsw_dist, b.hnsw_dist),
+        TrackColumn::KeyScore => compare_opt_f32(a.key_score, b.key_score),
+        TrackColumn::EnergyMatch => compare_opt_f32(a.energy_match, b.energy_match),
+        TrackColumn::CoplayCount => compare_opt_f32(a.coplay_count, b.coplay_count),
+        TrackColumn::Aggression => compare_opt_f32(a.aggression, b.aggression),
+        TrackColumn::Timbre => compare_opt_f32(a.timbre, b.timbre),
+        TrackColumn::Danceability => compare_opt_f32(a.danceability, b.danceability),
+        TrackColumn::Genre => {
+            let a_genre = a.genre.as_deref().unwrap_or("");
+            let b_genre = b.genre.as_deref().unwrap_or("");
+            a_genre.cmp(b_genre)
+        }
+        TrackColumn::StemBalance => Ordering::Equal, // No meaningful sort for stem balance
+        TrackColumn::FinalScore => compare_opt_f32(a.final_score, b.final_score),
+    }
+}
+
+/// Compare two optional f32 values (None sorts to end)
+fn compare_opt_f32(a: Option<f32>, b: Option<f32>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -990,17 +1097,58 @@ where
 
     let is_editing = state.is_editing(&track.id, column);
 
+    // StemBalance renders as four small colored bars — handle before text path
+    if column == TrackColumn::StemBalance {
+        let bars: Element<'a, Message> = if let Some((vocal, drums, bass, other)) = track.stem_balance {
+            let bar = |frac: f32, color: Color| -> Element<'a, Message> {
+                let w = (frac * 60.0).max(1.0);
+                container(text(""))
+                    .width(Length::Fixed(w))
+                    .height(Length::Fixed(10.0))
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(Background::Color(color)),
+                        ..Default::default()
+                    })
+                    .into()
+            };
+            row(vec![
+                bar(vocal, Color::from_rgb8(100, 180, 255)),  // blue - vocal
+                bar(drums, Color::from_rgb8(255, 140, 60)),   // orange - drums
+                bar(bass, Color::from_rgb8(120, 220, 120)),   // green - bass
+                bar(other, Color::from_rgb8(180, 130, 220)),  // purple - other
+            ])
+            .spacing(1)
+            .into()
+        } else {
+            text("-").size(sz(11.0)).into()
+        };
+        return container(bars)
+            .width(state.column_width(column))
+            .clip(true)
+            .into();
+    }
+
     // Get the display value for this cell
     let display_value = match column {
         TrackColumn::Order => track.order.to_string(),
         TrackColumn::Cues => unreachable!(), // handled above
         TrackColumn::Name => track.title.clone(),
         TrackColumn::Tags => unreachable!(), // handled above
+        TrackColumn::StemBalance => unreachable!(), // handled above
         TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Bpm => track.format_bpm(),
         TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Duration => track.format_duration(),
         TrackColumn::Lufs => track.format_lufs(),
+        TrackColumn::HnswDist => track.hnsw_dist.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::KeyScore => track.key_score.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::EnergyMatch => track.energy_match.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::CoplayCount => track.coplay_count.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Aggression => track.aggression.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Timbre => track.timbre.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Danceability => track.danceability.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Genre => track.genre.clone().unwrap_or_else(|| "-".to_string()),
+        TrackColumn::FinalScore => track.final_score.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
     };
 
     if is_editing {

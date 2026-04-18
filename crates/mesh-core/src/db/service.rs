@@ -1090,9 +1090,103 @@ impl DatabaseService {
         Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
     }
 
+    /// Scan all PCA embeddings with track metadata (brute-force graph view scoring).
+    pub fn get_all_pca_with_tracks(&self) -> Result<Vec<(Track, Vec<f32>)>, DbError> {
+        let results = SimilarityQuery::get_all_pca_with_tracks(&self.db)?;
+        Ok(results.into_iter().map(|(row, vec)| (Track::from_row_only(row), vec)).collect())
+    }
+
     /// Scan all 1280-dim EffNet embeddings — input for PCA build.
     pub fn get_all_ml_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
         SimilarityQuery::get_all_ml_embeddings(&self.db)
+    }
+
+    /// Get all track IDs in the database (lightweight, no metadata).
+    pub fn get_all_track_ids(&self) -> Result<Vec<i64>, DbError> {
+        let result = self.db.run_query(
+            "?[id] := *tracks{id} :order id",
+            BTreeMap::new(),
+        )?;
+        Ok(result.rows.iter().filter_map(|row| {
+            row.get(0)?.get_int()
+        }).collect())
+    }
+
+    /// Build the full graph edge set for the suggestion graph view.
+    ///
+    /// For each track, queries the `k` nearest neighbors via HNSW (PCA > ML > 16-dim
+    /// fallback), then deduplicates bidirectional edges and annotates with co-play data.
+    pub fn build_graph_edges(&self, k: usize) -> Result<Vec<crate::suggestions::GraphEdge>, DbError> {
+        use rayon::prelude::*;
+        use std::collections::HashSet;
+
+        let all_ids = self.get_all_track_ids()?;
+        if all_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Parallel HNSW queries — collect raw directed edges
+        let raw_edges: Vec<(i64, i64, f32)> = all_ids
+            .par_iter()
+            .flat_map(|&track_id| {
+                let neighbors = self.find_similar_tracks_pca(track_id, k)
+                    .or_else(|_| self.find_similar_tracks_ml(track_id, k))
+                    .or_else(|_| self.find_similar_tracks(track_id, k))
+                    .unwrap_or_default();
+
+                neighbors.into_iter().filter_map(move |(track, dist)| {
+                    track.id.map(|to_id| (track_id, to_id, dist))
+                }).collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Deduplicate bidirectional edges: keep (min_id, max_id), best distance
+        let mut edge_map: HashMap<(i64, i64), f32> = HashMap::new();
+        for (from, to, dist) in raw_edges {
+            if from == to { continue; }
+            let key = if from < to { (from, to) } else { (to, from) };
+            edge_map.entry(key)
+                .and_modify(|d| { if dist < *d { *d = dist; } })
+                .or_insert(dist);
+        }
+
+        // Build played_after pair data for edge annotation
+        let mut pa_pairs: HashSet<(i64, i64)> = HashSet::new();
+        let mut pa_weights: HashMap<(i64, i64), f32> = HashMap::new();
+        for &track_id in &all_ids {
+            if let Ok(neighbors) = self.get_played_after_neighbors(track_id, 100) {
+                for (to_id, weight) in neighbors {
+                    let key = if track_id < to_id { (track_id, to_id) } else { (to_id, track_id) };
+                    pa_pairs.insert(key);
+                    pa_weights.entry(key)
+                        .and_modify(|w| *w = w.max(weight))
+                        .or_insert(weight);
+                }
+            }
+        }
+
+        // Build final edge list
+        let edges: Vec<crate::suggestions::GraphEdge> = edge_map
+            .into_iter()
+            .map(|((from_id, to_id), hnsw_distance)| {
+                let key = (from_id, to_id);
+                let is_played_after = pa_pairs.contains(&key);
+                let played_after_weight = pa_weights.get(&key).copied().unwrap_or(0.0);
+                crate::suggestions::GraphEdge {
+                    from_id,
+                    to_id,
+                    hnsw_distance,
+                    is_played_after,
+                    played_after_weight,
+                }
+            })
+            .collect();
+
+        log::info!(
+            "[GRAPH] Built {} edges from {} tracks (k={})",
+            edges.len(), all_ids.len(), k
+        );
+        Ok(edges)
     }
 
     // ── Transition graph (played_after) ─────────────────────────────────────

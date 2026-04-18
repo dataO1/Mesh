@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
-use crate::config::{AppFont, FontSize, KeyScoringModel, SuggestionKeyFilter, SuggestionSimilarityFocus, SuggestionSimilarityTarget, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, FontSize, KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, WaveformAbstraction, WaveformLayout};
 use crate::history::SuggestionContext;
 use crate::suggestions::SplitSuggestions;
 use super::collection_browser::CollectionBrowserMessage;
@@ -76,10 +76,8 @@ pub enum SettingsMessage {
     UpdatePrereleaseChannel(bool),
     /// Toggle playlist split in suggestions (15 playlist + 15 global vs 30 any)
     UpdateSuggestionPlaylistSplit(bool),
-    /// Update Goldilocks similarity target (Tight/Balanced/Wide/Open)
-    UpdateSuggestionSimilarityTarget(SuggestionSimilarityTarget),
-    /// Update Goldilocks bell width (Sharp/Normal/Broad)
-    UpdateSuggestionSimilarityFocus(SuggestionSimilarityFocus),
+    /// Update blend mode (Layering/Balanced/Transition)
+    UpdateSuggestionBlendMode(SuggestionBlendMode),
     /// Update harmonic filter strictness (Strict/Relaxed/Off)
     UpdateSuggestionKeyFilter(SuggestionKeyFilter),
     /// Toggle stem complement scoring in suggestions

@@ -10,161 +10,10 @@ use std::path::PathBuf;
 pub use mesh_core::config::{load_config, save_config, LoudnessConfig};
 pub use mesh_widgets::{AppFont, FontSize};
 
-/// Key scoring model for harmonic compatibility
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyScoringModel {
-    /// Camelot wheel distance with hand-tuned transition scores
-    #[default]
-    Camelot,
-    /// Krumhansl-Kessler probe-tone profile correlations
-    Krumhansl,
-}
-
-impl KeyScoringModel {
-    pub const ALL: [KeyScoringModel; 2] = [
-        KeyScoringModel::Camelot,
-        KeyScoringModel::Krumhansl,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            KeyScoringModel::Camelot => "Camelot",
-            KeyScoringModel::Krumhansl => "Krumhansl",
-        }
-    }
-}
-
-/// Goldilocks similarity target — the center of the Gaussian bell in normalized
-/// EffNet cosine-distance space. Controls how "different" the ideal candidate
-/// should sound from the seed at center intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SuggestionSimilarityTarget {
-    /// Very close match: same sub-style, near-identical sound (d≈0.10 — default)
-    #[default]
-    Tight,
-    /// Same subgenre zone, similar but distinct texture (d≈0.20)
-    Balanced,
-    /// Same genre, noticeably different feel (d≈0.35)
-    Wide,
-    /// Genre-adjacent, broad style spread (d≈0.50)
-    Open,
-}
-
-impl SuggestionSimilarityTarget {
-    pub const ALL: [SuggestionSimilarityTarget; 4] = [
-        SuggestionSimilarityTarget::Tight,
-        SuggestionSimilarityTarget::Balanced,
-        SuggestionSimilarityTarget::Wide,
-        SuggestionSimilarityTarget::Open,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            SuggestionSimilarityTarget::Tight    => "Tight",
-            SuggestionSimilarityTarget::Balanced => "Balanced",
-            SuggestionSimilarityTarget::Wide     => "Wide",
-            SuggestionSimilarityTarget::Open     => "Open",
-        }
-    }
-
-    /// Center of the Goldilocks bell curve in normalized EffNet distance.
-    pub fn gold_target(self) -> f32 {
-        match self {
-            SuggestionSimilarityTarget::Tight    => 0.10,
-            SuggestionSimilarityTarget::Balanced => 0.20,
-            SuggestionSimilarityTarget::Wide     => 0.35,
-            SuggestionSimilarityTarget::Open     => 0.50,
-        }
-    }
-}
-
-/// Width of the Goldilocks similarity bell curve (2σ²).
-/// Narrow = tightly rewards tracks right at the target distance.
-/// Broad = gradual preference, forgiving of distance variation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SuggestionSimilarityFocus {
-    /// Very tight bell: strict reward right at target distance (σ≈0.05 — default)
-    #[default]
-    Sharp,
-    /// Tight bell: moderate tolerance around target (σ≈0.10)
-    Normal,
-    /// Broad bell: forgiving, wider scoring band (σ≈0.20)
-    Broad,
-}
-
-impl SuggestionSimilarityFocus {
-    pub const ALL: [SuggestionSimilarityFocus; 3] = [
-        SuggestionSimilarityFocus::Sharp,
-        SuggestionSimilarityFocus::Normal,
-        SuggestionSimilarityFocus::Broad,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            SuggestionSimilarityFocus::Sharp  => "Sharp",
-            SuggestionSimilarityFocus::Normal => "Normal",
-            SuggestionSimilarityFocus::Broad  => "Broad",
-        }
-    }
-
-    /// `GOLD_SIGMA2` = 2σ² used in the Goldilocks Gaussian.
-    pub fn gold_sigma2(self) -> f32 {
-        match self {
-            SuggestionSimilarityFocus::Sharp  => 0.005,
-            SuggestionSimilarityFocus::Normal => 0.02,
-            SuggestionSimilarityFocus::Broad  => 0.08,
-        }
-    }
-}
-
-/// Harmonic filter strictness for smart suggestions.
-///
-/// Controls which key relationships are allowed to appear at all.
-/// Strict mode mirrors the original behaviour; Relaxed and Off progressively
-/// open up atonal/experimental transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SuggestionKeyFilter {
-    /// Only compatible keys (same, adjacent, diagonal, mood shifts).
-    /// Blocks semitone, far-step, and tritone moves. (default)
-    #[default]
-    Strict,
-    /// Also allows semitone and cross-key moves for atonal/mashup mixing.
-    Relaxed,
-    /// No harmonic filter — all keys scored, nothing blocked outright.
-    Off,
-}
-
-impl SuggestionKeyFilter {
-    pub const ALL: [SuggestionKeyFilter; 3] = [
-        SuggestionKeyFilter::Strict,
-        SuggestionKeyFilter::Relaxed,
-        SuggestionKeyFilter::Off,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            SuggestionKeyFilter::Strict  => "Strict",
-            SuggestionKeyFilter::Relaxed => "Relaxed",
-            SuggestionKeyFilter::Off     => "Off",
-        }
-    }
-
-    /// Returns `(harmonic_floor, blended_threshold)`.
-    ///
-    /// `harmonic_floor`: minimum `base_score(TransitionType)` required to enter scoring.
-    /// `blended_threshold`: minimum energy-direction-blended key score.
-    pub fn thresholds(self) -> (f32, f32) {
-        match self {
-            SuggestionKeyFilter::Strict  => (0.45, 0.65),
-            SuggestionKeyFilter::Relaxed => (0.20, 0.45),
-            SuggestionKeyFilter::Off     => (0.00, 0.00),
-        }
-    }
-}
+// Re-export suggestion config enums from mesh-core (shared with mesh-cue)
+pub use mesh_core::suggestions::config::{
+    KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter,
+};
 
 /// Waveform layout orientation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -385,10 +234,8 @@ pub struct DisplayConfig {
     /// Split suggestion results: up to 15 from the selected playlist + up to 15 global.
     /// When false, show 30 results from any playlist (no split).
     pub suggestion_playlist_split: bool,
-    /// Goldilocks similarity target (Tight/Balanced/Wide/Open)
-    pub suggestion_similarity_target: SuggestionSimilarityTarget,
-    /// Goldilocks bell width (Sharp/Normal/Broad)
-    pub suggestion_similarity_focus: SuggestionSimilarityFocus,
+    /// Vector similarity blend mode (Layering/Balanced/Transition)
+    pub suggestion_blend_mode: SuggestionBlendMode,
     /// Harmonic filter strictness (Strict/Relaxed/Off)
     pub suggestion_key_filter: SuggestionKeyFilter,
     /// Enable stem complement scoring in suggestions
@@ -414,8 +261,7 @@ impl Default for DisplayConfig {
             font_size: FontSize::default(), // Small
             persistent_browse: false,           // Auto-hide browser overlay by default
             suggestion_playlist_split: true,     // Split playlist/global results by default
-            suggestion_similarity_target: SuggestionSimilarityTarget::default(), // Tight
-            suggestion_similarity_focus: SuggestionSimilarityFocus::default(),   // Sharp
+            suggestion_blend_mode: SuggestionBlendMode::default(),   // Balanced
             suggestion_key_filter: SuggestionKeyFilter::default(),               // Strict
             suggestion_stem_complement: true,    // On by default (matches previous behaviour)
         }

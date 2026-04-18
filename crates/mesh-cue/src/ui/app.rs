@@ -625,6 +625,20 @@ impl MeshCueApp {
                 self.pca_progress_rx = None;
                 return self.handle_similarity_index_complete(result);
             }
+
+            // Graph View
+            Message::SetBrowserTab(tab) => return self.handle_set_browser_tab(tab),
+            Message::BuildGraphEdges => return self.handle_build_graph_edges(),
+            Message::GraphEdgesReady(edges) => return self.handle_graph_edges_ready(edges),
+            Message::GraphLayoutTick(positions) => return self.handle_graph_layout_tick(positions),
+            Message::GraphSeedSelected(id) => return self.handle_graph_seed_selected(id),
+            Message::GraphNodeHovered(id) => return self.handle_graph_node_hovered(id),
+            Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),
+            Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
+            Message::GraphSeedBack => return self.handle_graph_seed_back(),
+            Message::GraphSuggestionsReady { seed_id, suggestions, positions, queried_energy } => {
+                return self.handle_graph_suggestions_ready(seed_id, suggestions, positions, queried_energy);
+            }
         }
 
         Task::none()

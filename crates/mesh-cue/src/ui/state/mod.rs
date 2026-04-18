@@ -11,7 +11,7 @@ pub mod reanalysis;
 pub mod settings;
 
 // Re-export all types for convenient access
-pub use collection::{BrowserSide, CollectionState, DragState, PendingDragState, DRAG_THRESHOLD};
+pub use collection::{BrowserSide, BrowserTab, CollectionState, DragState, GraphEdge, PendingDragState, DRAG_THRESHOLD};
 pub use export::{ExportPhase, ExportState};
 pub use import::{ImportMode, ImportPhase, ImportState};
 pub use loaded_track::{CueTrackLoadedMsg, LinkedStemLoadedMsg, LoadedTrackState, PresetLoadedMsg, StemsLoadResult};

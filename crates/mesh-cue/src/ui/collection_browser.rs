@@ -1,28 +1,30 @@
-//! Collection browser view with hierarchical playlist navigation
+//! Collection browser view with hierarchical playlist navigation and graph view
 
 use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
-use iced::widget::{button, column, container, row, rule, text, Space};
+use super::state::BrowserTab;
+use iced::widget::{button, column, container, row, rule, scrollable, slider, text, Canvas, Space};
 use iced::{Alignment, Element, Length};
 use mesh_widgets::{playlist_browser_with_drop_highlight, sz};
 
 /// Render the collection view (editor + dual browsers below)
-/// Note: Progress bar moved to main app view (always visible at bottom of screen)
-/// Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
 pub fn view<'a>(
     state: &'a CollectionState,
     _import_state: &'a ImportState,
     stem_link_selection: Option<usize>,
 ) -> Element<'a, Message> {
     let editor = view_editor(state, stem_link_selection);
-    let browser_header = view_browser_header();
-    let browsers = view_browsers(state);
+    let browser_header = view_browser_header(state);
+    let browser_content = match state.active_tab {
+        BrowserTab::List => view_browsers(state),
+        BrowserTab::Graph => view_graph(state),
+    };
 
     column![
         editor,
         rule::horizontal(2),
         browser_header,
-        browsers,
+        browser_content,
     ]
     .spacing(5)
     .width(Length::Fill)
@@ -30,8 +32,33 @@ pub fn view<'a>(
     .into()
 }
 
-/// Header row above the browsers with Import and Export buttons
-fn view_browser_header() -> Element<'static, Message> {
+/// Header row with tab buttons + Import/Export
+fn view_browser_header(state: &CollectionState) -> Element<'_, Message> {
+    let list_btn = {
+        let btn = button(text("List").size(sz(13.0))).padding([3, 10]);
+        if state.active_tab == BrowserTab::List {
+            btn.style(button::primary)
+        } else {
+            btn.on_press(Message::SetBrowserTab(BrowserTab::List))
+                .style(button::secondary)
+        }
+    };
+
+    let graph_btn = {
+        let label = if state.graph_building {
+            "Graph..."
+        } else {
+            "Graph"
+        };
+        let btn = button(text(label).size(sz(13.0))).padding([3, 10]);
+        if state.active_tab == BrowserTab::Graph {
+            btn.style(button::primary)
+        } else {
+            btn.on_press(Message::SetBrowserTab(BrowserTab::Graph))
+                .style(button::secondary)
+        }
+    };
+
     let import_btn = button(text("Import").size(sz(14.0)))
         .on_press(Message::OpenImport)
         .style(button::secondary)
@@ -44,7 +71,8 @@ fn view_browser_header() -> Element<'static, Message> {
 
     container(
         row![
-            text("Playlists").size(sz(16.0)),
+            list_btn,
+            graph_btn,
             Space::new().width(Length::Fill),
             import_btn,
             export_btn,
@@ -79,15 +107,8 @@ fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> E
     }
 }
 
-/// Dual playlist browsers (bottom section)
+/// Dual playlist browsers (bottom section — List tab)
 fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
-    // Use cached tracks from state (updated when folder changes in message handlers)
-    // Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
-
-    // Determine which browser to highlight as drop target:
-    // - Must be actively dragging
-    // - Must be hovering over the browser
-    // - Can't be the source browser (can't drop on itself)
     let (left_is_drop_target, right_is_drop_target) = match (&state.dragging_track, &state.drag_hover_browser) {
         (Some(drag), Some(hover)) => {
             let left_hovering = *hover == BrowserSide::Left && drag.source_browser != BrowserSide::Left;
@@ -123,6 +144,229 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
             .height(Length::Fill),
     ]
     .spacing(0)
-    .height(Length::FillPortion(1))  // Take remaining space proportionally
+    .height(Length::FillPortion(1))
     .into()
+}
+
+/// Graph view (Graph tab) — left panel analysis + right panel graph canvas
+fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
+    match state.graph_state.as_ref() {
+        None => {
+            // Graph not yet built — show loading
+            container(
+                text(if state.graph_building {
+                    "Building suggestion graph..."
+                } else {
+                    "Click Graph tab to build the suggestion graph."
+                })
+                .size(sz(16.0)),
+            )
+            .width(Length::Fill)
+            .height(Length::FillPortion(1))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        }
+        Some(graph_state) => {
+            // Breadcrumb trail
+            let breadcrumbs = view_breadcrumbs(graph_state);
+
+            // Energy slider at top of right panel (with step for smooth dragging)
+            let energy_slider = container(
+                row![
+                    text("Drop").size(sz(11.0)),
+                    slider(0.0..=1.0, graph_state.energy_direction, Message::GraphSliderChanged)
+                        .step(0.01)
+                        .width(Length::Fill),
+                    text("Peak").size(sz(11.0)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .padding([2, 8]),
+            )
+            .width(Length::Fill);
+
+            // Legend
+            let legend = container(
+                row![
+                    text("Nodes = tracks").size(sz(10.0)),
+                    text(" | ").size(sz(10.0)),
+                    text("Edges = composite suggestion score (key + HNSW + energy + co-play)").size(sz(10.0)),
+                    text(" | ").size(sz(10.0)),
+                    text("Green/thick = best match").size(sz(10.0)),
+                    text(" | ").size(sz(10.0)),
+                    text("Red/thin = weakest").size(sz(10.0)),
+                ]
+                .spacing(0)
+                .align_y(Alignment::Center)
+                .padding([2, 8]),
+            )
+            .width(Length::Fill);
+
+            // Graph canvas — map GraphViewMessage to app Message
+            let graph_canvas: Element<'a, mesh_widgets::GraphViewMessage> = Canvas::new(graph_state)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+            let graph_canvas: Element<'a, Message> = graph_canvas.map(|gvm| match gvm {
+                mesh_widgets::GraphViewMessage::SeedSelected(id) => Message::GraphSeedSelected(id),
+                mesh_widgets::GraphViewMessage::NodeHovered(id) => Message::GraphNodeHovered(id),
+                mesh_widgets::GraphViewMessage::SliderChanged(v) => Message::GraphSliderChanged(v),
+                mesh_widgets::GraphViewMessage::PanZoomChanged { pan, zoom } => Message::GraphPanZoom { pan, zoom },
+            });
+
+            let right_panel = column![
+                energy_slider,
+                legend,
+                graph_canvas,
+            ]
+            .spacing(2)
+            .width(Length::FillPortion(2))
+            .height(Length::Fill);
+
+            // Left panel: breadcrumbs + suggestion list
+            let suggestion_content: Element<'a, Message> = if state.graph_suggestion_rows.is_empty() {
+                container(
+                    text("Select a node to see suggestions").size(sz(12.0))
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+            } else {
+                // Build suggestion list with score, title, artist, key, BPM
+                let mut list_col = column![].spacing(1);
+                // Header
+                list_col = list_col.push(
+                    container(
+                        row![
+                            text("#").size(sz(10.0)).width(25.0),
+                            text("Match").size(sz(10.0)).width(45.0),
+                            text("Title").size(sz(10.0)).width(Length::Fill),
+                            text("Artist").size(sz(10.0)).width(100.0),
+                            text("Key").size(sz(10.0)).width(40.0),
+                            text("BPM").size(sz(10.0)).width(45.0),
+                        ]
+                        .spacing(4)
+                        .padding([2, 4]),
+                    )
+                    .style(|_theme: &iced::Theme| container::Style {
+                        background: Some(iced::Background::Color(iced::Color::from_rgb(0.15, 0.15, 0.18))),
+                        ..Default::default()
+                    })
+                );
+
+                for row in &state.graph_suggestion_rows {
+                    // Display as match % (reward score: 1.0 = 100% match)
+                    let score_str = row.final_score
+                        .map(|s| format!("{:.0}%", s * 100.0))
+                        .unwrap_or_else(|| "-".to_string());
+                    let bpm_str = row.bpm
+                        .map(|b| format!("{:.0}", b))
+                        .unwrap_or_else(|| "-".to_string());
+                    let key_str = row.key.as_deref().unwrap_or("-");
+                    let artist_str = row.artist.as_deref().unwrap_or("-");
+
+                    list_col = list_col.push(
+                        container(
+                            row![
+                                text(format!("{}", row.order)).size(sz(10.0)).width(25.0),
+                                text(score_str).size(sz(10.0)).width(45.0),
+                                text(&row.title).size(sz(10.0)).width(Length::Fill),
+                                text(artist_str).size(sz(10.0)).width(100.0),
+                                text(key_str).size(sz(10.0)).width(40.0),
+                                text(bpm_str).size(sz(10.0)).width(45.0),
+                            ]
+                            .spacing(4)
+                            .padding([2, 4]),
+                        )
+                        .style(|_theme: &iced::Theme| container::Style {
+                            background: Some(iced::Background::Color(iced::Color::from_rgb(0.12, 0.12, 0.14))),
+                            ..Default::default()
+                        })
+                    );
+                }
+
+                scrollable(list_col)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            };
+
+            let suggestion_count = state.graph_suggestion_rows.len();
+            let header_text = if suggestion_count > 0 {
+                format!("Suggestions ({})", suggestion_count)
+            } else {
+                "Suggestions".to_string()
+            };
+
+            let left_panel = column![
+                breadcrumbs,
+                text(header_text).size(sz(13.0)),
+                suggestion_content,
+            ]
+            .spacing(4)
+            .padding([0, 4])
+            .width(Length::FillPortion(1))
+            .height(Length::Fill);
+
+            row![
+                left_panel,
+                rule::vertical(2),
+                right_panel,
+            ]
+            .spacing(0)
+            .height(Length::FillPortion(1))
+            .into()
+        }
+    }
+}
+
+/// Breadcrumb trail showing seed navigation history
+fn view_breadcrumbs(graph_state: &mesh_widgets::GraphViewState) -> Element<'_, Message> {
+    if graph_state.seed_stack.is_empty() {
+        return container(text("No seed selected").size(sz(12.0)))
+            .padding([4, 8])
+            .into();
+    }
+
+    let mut crumbs = row![].spacing(4).align_y(Alignment::Center);
+
+    // Back button
+    if graph_state.seed_stack.len() > 1 {
+        crumbs = crumbs.push(
+            button(text("<").size(sz(12.0)))
+                .on_press(Message::GraphSeedBack)
+                .style(button::secondary)
+                .padding([2, 6]),
+        );
+    }
+
+    // Show breadcrumb labels
+    for (i, &seed_id) in graph_state.seed_stack.iter().enumerate() {
+        let label: String = graph_state.track_meta.get(&seed_id)
+            .map(|m| m.title.chars().take(15).collect::<String>())
+            .unwrap_or_else(|| format!("#{}", seed_id));
+
+        if i > 0 {
+            crumbs = crumbs.push(text(" > ").size(sz(11.0)));
+        }
+
+        let is_current = i == graph_state.seed_stack.len() - 1;
+        if is_current {
+            crumbs = crumbs.push(
+                text(label).size(sz(12.0)),
+            );
+        } else {
+            crumbs = crumbs.push(
+                button(text(label).size(sz(11.0)))
+                    .on_press(Message::GraphSeedSelected(seed_id))
+                    .style(button::text)
+                    .padding([1, 4]),
+            );
+        }
+    }
+
+    container(crumbs).padding([4, 8]).into()
 }

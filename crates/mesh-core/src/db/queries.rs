@@ -1165,6 +1165,44 @@ impl SimilarityQuery {
         Ok(vec)
     }
 
+    /// Scan all 128-dim PCA embeddings with track metadata.
+    /// Returns (Track, 128-dim vector) for every track with a PCA embedding.
+    /// Used by the graph view for brute-force all-tracks scoring.
+    pub fn get_all_pca_with_tracks(db: &MeshDb) -> Result<Vec<(TrackRow, Vec<f32>)>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, vec] :=
+                *ml_pca_embeddings{track_id, vec},
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+        "#, BTreeMap::new())?;
+
+        Ok(result.rows.iter().filter_map(|row| {
+            let vec = extract_f32_vec(row.get(17)).ok().flatten()?;
+            if vec.len() != 128 { return None; }
+            let track_row = TrackRow {
+                id: row.get(0)?.get_int()?,
+                path: row.get(1)?.get_str()?.to_string(),
+                folder_path: row.get(2)?.get_str()?.to_string(),
+                title: row.get(3)?.get_str()?.to_string(),
+                original_name: row.get(4)?.get_str().unwrap_or("").to_string(),
+                artist: row.get(5)?.get_str().map(|s| s.to_string()),
+                bpm: row.get(6)?.get_float(),
+                original_bpm: row.get(7)?.get_float(),
+                key: row.get(8)?.get_str().map(|s| s.to_string()),
+                duration_seconds: row.get(9)?.get_float().unwrap_or(0.0),
+                lufs: row.get(10)?.get_float().map(|f| f as f32),
+                integrated_lufs: row.get(11)?.get_float().map(|f| f as f32),
+                drop_marker: row.get(12)?.get_int(),
+                first_beat_sample: row.get(13)?.get_int().unwrap_or(0),
+                file_mtime: row.get(14)?.get_int().unwrap_or(0),
+                file_size: row.get(15)?.get_int().unwrap_or(0),
+                waveform_path: row.get(16)?.get_str().map(|s| s.to_string()),
+            };
+            Some((track_row, vec))
+        }).collect())
+    }
+
     /// Scan all 1280-dim EffNet embeddings — used as input for PCA build.
     /// Returns (track_id, 1280-dim vector) for every track that has been ML-analysed.
     pub fn get_all_ml_embeddings(db: &MeshDb) -> Result<Vec<(i64, Vec<f32>)>, DbError> {

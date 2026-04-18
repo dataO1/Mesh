@@ -16,7 +16,7 @@ use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
+use super::state::{BrowserSide, BrowserTab, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -381,4 +381,33 @@ pub enum Message {
     SimilarityIndexProgress { done: usize, total: usize },
     /// PCA build complete (Ok) or failed (Err)
     SimilarityIndexComplete(Result<(), String>),
+
+    // Graph View (suggestion graph visualization)
+    /// Switch between List and Graph browser tabs
+    SetBrowserTab(BrowserTab),
+    /// Trigger background graph edge precomputation
+    BuildGraphEdges,
+    /// Graph edges built (background task complete)
+    GraphEdgesReady(std::sync::Arc<Vec<mesh_core::suggestions::query::GraphEdge>>),
+    /// Layout iteration tick (positions updated)
+    GraphLayoutTick(Vec<(i64, f32, f32)>),
+    /// Select a node as seed in the graph view
+    GraphSeedSelected(i64),
+    /// Node hover changed
+    GraphNodeHovered(Option<i64>),
+    /// Energy direction slider changed in graph view
+    GraphSliderChanged(f32),
+    /// Pan/zoom changed in graph view
+    GraphPanZoom { pan: (f32, f32), zoom: f32 },
+    /// Navigate back in seed history (pop breadcrumb)
+    GraphSeedBack,
+    /// Suggestion query for graph view completed (includes radial positions)
+    GraphSuggestionsReady {
+        seed_id: i64,
+        suggestions: std::sync::Arc<Vec<mesh_core::suggestions::query::SuggestedTrack>>,
+        /// Radial positions computed from scores (seed at center, distance = score)
+        positions: std::sync::Arc<Vec<(i64, f32, f32)>>,
+        /// Energy direction at query time (for debounce detection)
+        queried_energy: f32,
+    },
 }

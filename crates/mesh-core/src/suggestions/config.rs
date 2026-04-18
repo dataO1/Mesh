@@ -1,0 +1,125 @@
+//! Suggestion algorithm configuration enums.
+//!
+//! These types control the scoring parameters of the smart suggestion engine.
+//! They are serialized to YAML as part of the player's DisplayConfig.
+
+use serde::{Deserialize, Serialize};
+
+/// Key scoring model for harmonic compatibility
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyScoringModel {
+    /// Camelot wheel distance with hand-tuned transition scores
+    #[default]
+    Camelot,
+    /// Krumhansl-Kessler probe-tone profile correlations
+    Krumhansl,
+}
+
+impl KeyScoringModel {
+    pub const ALL: [KeyScoringModel; 2] = [
+        KeyScoringModel::Camelot,
+        KeyScoringModel::Krumhansl,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            KeyScoringModel::Camelot => "Camelot",
+            KeyScoringModel::Krumhansl => "Krumhansl",
+        }
+    }
+}
+
+/// Controls when the vector similarity component flips from rewarding similarity
+/// (layering mode) to rewarding dissimilarity (transition mode) as the intent
+/// slider moves away from center.
+///
+/// The blend formula is: `similarity * (1 - t) + dissimilarity * t`
+/// where `t = (|bias| / crossover).clamp(0, 1)`.
+///
+/// Lower crossover = flips earlier (small slider movement switches to transition mode).
+/// Higher crossover = stays in similarity mode longer (slider must move further).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionBlendMode {
+    /// Similarity dominates until slider is nearly at extreme (crossover at 0.9).
+    /// Best for sets where most mixing is layering with occasional transitions.
+    Layering,
+    /// Balanced crossover at 0.6 — moderate slider movement starts favoring transitions.
+    #[default]
+    Balanced,
+    /// Early crossover at 0.3 — even small slider movement favors dissimilar tracks.
+    /// Best for sets with frequent energy changes and transitions.
+    Transition,
+}
+
+impl SuggestionBlendMode {
+    pub const ALL: [SuggestionBlendMode; 3] = [
+        SuggestionBlendMode::Layering,
+        SuggestionBlendMode::Balanced,
+        SuggestionBlendMode::Transition,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SuggestionBlendMode::Layering   => "Layering",
+            SuggestionBlendMode::Balanced   => "Balanced",
+            SuggestionBlendMode::Transition => "Transition",
+        }
+    }
+
+    /// Crossover threshold: |bias| at which similarity fully transitions to dissimilarity.
+    pub fn crossover(self) -> f32 {
+        match self {
+            SuggestionBlendMode::Layering   => 0.9,
+            SuggestionBlendMode::Balanced   => 0.6,
+            SuggestionBlendMode::Transition => 0.3,
+        }
+    }
+}
+
+/// Harmonic filter strictness for smart suggestions.
+///
+/// Controls which key relationships are allowed to appear at all.
+/// Strict mode mirrors the original behaviour; Relaxed and Off progressively
+/// open up atonal/experimental transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionKeyFilter {
+    /// Only compatible keys (same, adjacent, diagonal, mood shifts).
+    /// Blocks semitone, far-step, and tritone moves. (default)
+    #[default]
+    Strict,
+    /// Also allows semitone and cross-key moves for atonal/mashup mixing.
+    Relaxed,
+    /// No harmonic filter — all keys scored, nothing blocked outright.
+    Off,
+}
+
+impl SuggestionKeyFilter {
+    pub const ALL: [SuggestionKeyFilter; 3] = [
+        SuggestionKeyFilter::Strict,
+        SuggestionKeyFilter::Relaxed,
+        SuggestionKeyFilter::Off,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SuggestionKeyFilter::Strict  => "Strict",
+            SuggestionKeyFilter::Relaxed => "Relaxed",
+            SuggestionKeyFilter::Off     => "Off",
+        }
+    }
+
+    /// Returns `(harmonic_floor, blended_threshold)`.
+    ///
+    /// `harmonic_floor`: minimum `base_score(TransitionType)` required to enter scoring.
+    /// `blended_threshold`: minimum energy-direction-blended key score.
+    pub fn thresholds(self) -> (f32, f32) {
+        match self {
+            SuggestionKeyFilter::Strict  => (0.45, 0.65),
+            SuggestionKeyFilter::Relaxed => (0.20, 0.45),
+            SuggestionKeyFilter::Off     => (0.00, 0.00),
+        }
+    }
+}

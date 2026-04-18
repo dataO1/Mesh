@@ -16,3 +16,4 @@ basedrop = "0.1"
 log = "0.4"
 wgpu = "27"
 bytemuck = { version = "1.14", features = ["derive"] }
+rand = { version = "0.8", features = ["small_rng"] }

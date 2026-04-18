@@ -4,9 +4,10 @@
 //! Database service and playlist storage are owned by the domain layer.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use iced::{Color, Point};
 use mesh_core::playlist::NodeId;
-use mesh_widgets::{PlaylistBrowserState, TrackColumn, TrackRow, TreeNode};
+use mesh_widgets::{GraphViewState, PlaylistBrowserState, TrackColumn, TrackRow, TreeNode};
 use mesh_widgets::track_table::sort_tracks;
 
 use super::loaded_track::LoadedTrackState;
@@ -98,6 +99,17 @@ impl DragState {
     }
 }
 
+/// Browser tab selection (List = dual playlist browsers, Graph = suggestion graph)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BrowserTab {
+    #[default]
+    List,
+    Graph,
+}
+
+/// Re-export GraphEdge from mesh-core for the suggestion graph.
+pub use mesh_core::suggestions::query::GraphEdge;
+
 /// State for the collection view
 ///
 /// This is pure UI state - browser panels, selections, and cached display data.
@@ -129,6 +141,16 @@ pub struct CollectionState {
     pub pending_cell_edit: Option<(NodeId, TrackColumn)>,
     /// Active theme stem colors (for waveform rendering)
     pub stem_colors: [Color; 4],
+    /// Active browser tab
+    pub active_tab: BrowserTab,
+    /// Graph view state (None until first Graph tab open)
+    pub graph_state: Option<GraphViewState>,
+    /// Precomputed graph edges (None until built)
+    pub graph_edges: Option<Arc<Vec<GraphEdge>>>,
+    /// True while graph edges are being built in background
+    pub graph_building: bool,
+    /// Suggestion tracks for graph left panel (populated on seed select)
+    pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
 }
 
 impl std::fmt::Debug for CollectionState {
@@ -225,6 +247,11 @@ impl Default for CollectionState {
             drag_hover_browser: None,
             pending_cell_edit: None,
             stem_colors: mesh_widgets::STEM_COLORS,
+            active_tab: BrowserTab::List,
+            graph_state: None,
+            graph_edges: None,
+            graph_building: false,
+            graph_suggestion_rows: Vec::new(),
         }
     }
 }

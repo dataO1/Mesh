@@ -82,6 +82,7 @@ pub mod music;
 pub mod loader;
 pub mod usb;
 pub mod db;
+pub mod suggestions;
 pub mod services;
 pub mod export;
 pub mod preset_loader;

@@ -113,12 +113,8 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_suggestion_playlist_split = enabled;
             Task::none()
         }
-        UpdateSuggestionSimilarityTarget(target) => {
-            app.settings.draft_suggestion_similarity_target = target;
-            Task::none()
-        }
-        UpdateSuggestionSimilarityFocus(focus) => {
-            app.settings.draft_suggestion_similarity_focus = focus;
+        UpdateSuggestionBlendMode(mode) => {
+            app.settings.draft_suggestion_blend_mode = mode;
             Task::none()
         }
         UpdateSuggestionKeyFilter(filter) => {
@@ -291,8 +287,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
             new_config.display.persistent_browse = app.settings.draft_persistent_browse;
             new_config.display.suggestion_playlist_split = app.settings.draft_suggestion_playlist_split;
-            new_config.display.suggestion_similarity_target = app.settings.draft_suggestion_similarity_target;
-            new_config.display.suggestion_similarity_focus = app.settings.draft_suggestion_similarity_focus;
+            new_config.display.suggestion_blend_mode = app.settings.draft_suggestion_blend_mode;
             new_config.display.suggestion_key_filter = app.settings.draft_suggestion_key_filter;
             new_config.display.suggestion_stem_complement = app.settings.draft_suggestion_stem_complement;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
