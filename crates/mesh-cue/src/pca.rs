@@ -61,7 +61,8 @@ impl PcaProjection {
 ///
 /// # Arguments
 /// - `embeddings`: `(track_id, embedding_vec)` pairs; all vecs must have the same length.
-/// - `n_components`: number of output dimensions (128 recommended).
+/// - `n_components`: number of output dimensions. `None` = auto-detect via 95% explained
+///   variance threshold (adapts to the library's intrinsic dimensionality).
 ///
 /// # Returns
 /// A [`PcaProjection`] ready for use with [`PcaProjection::project`].
@@ -71,7 +72,7 @@ impl PcaProjection {
 /// or if the SVD fails.
 pub fn compute_pca_projection(
     embeddings: &[(i64, Vec<f32>)],
-    n_components: usize,
+    n_components: Option<usize>,
 ) -> Result<PcaProjection, String> {
     if embeddings.is_empty() {
         return Err("No embeddings provided".to_string());
@@ -81,7 +82,6 @@ pub fn compute_pca_projection(
     if dim == 0 {
         return Err("Zero-length embeddings".to_string());
     }
-    let k = n_components.min(dim).min(n);
 
     // Step 1: Column means
     let mut mean = vec![0.0f32; dim];
@@ -101,23 +101,52 @@ pub fn compute_pca_projection(
     });
 
     // Step 3: SVD — the V matrix contains right singular vectors (principal components)
-    // We only need the first k columns (highest variance directions).
-    // This is the expensive step; it runs in spawn_blocking.
     let svd = mat.svd();
     let v = svd.v(); // [dim × min(N, dim)]
+    let s = svd.s_diagonal(); // singular values (descending)
 
-    // Step 4: Extract first k columns of V as f32 principal components
-    let available_k = v.ncols().min(k);
+    // Step 4: Determine number of components
+    let max_k = v.ncols().min(dim).min(n);
+    let k = match n_components {
+        Some(fixed) => fixed.min(max_k),
+        None => {
+            // Auto-detect: keep components until 95% of total variance is explained.
+            // Variance per component = singular_value² / (n - 1).
+            // We only need ratios, so singular_value² suffices.
+            let total_var: f64 = (0..s.nrows()).map(|i| s.read(i).powi(2)).sum();
+            if total_var < 1e-10 {
+                max_k // degenerate case: keep all
+            } else {
+                let threshold = 0.95;
+                let mut cum_var = 0.0;
+                let mut auto_k = max_k;
+                for i in 0..max_k {
+                    cum_var += s.read(i).powi(2);
+                    if cum_var / total_var >= threshold {
+                        auto_k = (i + 1).max(20); // floor at 20 dims
+                        break;
+                    }
+                }
+                auto_k.min(max_k).min(256) // ceiling at 256
+            }
+        }
+    };
+
+    // Step 5: Extract first k columns of V as f32 principal components
     let mut components = vec![0.0f32; k * dim];
-    for ki in 0..available_k {
+    for ki in 0..k {
         for d in 0..dim {
             components[ki * dim + d] = v.read(d, ki) as f32;
         }
     }
 
-    log::debug!(
-        "[PCA] Projection built: n={}, dim={}, k={} (requested {})",
-        n, dim, available_k, n_components
+    // Log explained variance breakdown
+    let total_var: f64 = (0..s.nrows()).map(|i| s.read(i).powi(2)).sum();
+    let kept_var: f64 = (0..k).map(|i| s.read(i).powi(2)).sum();
+    let explained_pct = if total_var > 0.0 { kept_var / total_var * 100.0 } else { 0.0 };
+    log::info!(
+        "[PCA] Projection built: n={}, dim={} → k={} components ({:.1}% variance explained)",
+        n, dim, k, explained_pct
     );
 
     Ok(PcaProjection { mean, components, n_components: k, dim })

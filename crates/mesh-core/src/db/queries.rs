@@ -1179,7 +1179,7 @@ impl SimilarityQuery {
 
         Ok(result.rows.iter().filter_map(|row| {
             let vec = extract_f32_vec(row.get(17)).ok().flatten()?;
-            if vec.len() != 128 { return None; }
+            if vec.is_empty() { return None; }
             let track_row = TrackRow {
                 id: row.get(0)?.get_int()?,
                 path: row.get(1)?.get_str()?.to_string(),

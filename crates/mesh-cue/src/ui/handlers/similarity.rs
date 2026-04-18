@@ -43,10 +43,10 @@ impl MeshCueApp {
                     }
 
                     // Compute PCA projection (CPU-intensive)
-                    let projection = pca::compute_pca_projection(&embeddings, 128)
+                    let projection = pca::compute_pca_projection(&embeddings, None)
                         .map_err(|e| format!("PCA computation failed: {e}"))?;
 
-                    log::info!("[PCA] Projection built. Storing 128-dim vectors...");
+                    log::info!("[PCA] Projection built. Storing {}-dim vectors...", projection.n_components);
 
                     // Store projected vectors with progress updates
                     let mut stored = 0usize;
