@@ -636,8 +636,16 @@ impl MeshCueApp {
             Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
-            Message::GraphTable(_table_msg) => {
-                // Graph suggestion table is read-only — no action needed
+            Message::GraphTable(table_msg) => {
+                // Double-click a suggestion row → seed from that track in the graph
+                if let mesh_widgets::TrackTableMessage::Activate(node_id) = table_msg {
+                    // Parse track_id from NodeId format "graph_{track_id}"
+                    if let Some(id_str) = node_id.0.strip_prefix("graph_") {
+                        if let Ok(track_id) = id_str.parse::<i64>() {
+                            return self.handle_graph_seed_selected(track_id);
+                        }
+                    }
+                }
             }
             Message::GraphSuggestionsReady { seed_id, suggestions, positions, queried_energy } => {
                 return self.handle_graph_suggestions_ready(seed_id, suggestions, positions, queried_energy);

@@ -9,6 +9,7 @@ use iced::Task;
 use mesh_core::suggestions::query::GraphEdge;
 use mesh_widgets::graph_view::{GraphViewState, TrackMeta};
 use mesh_widgets::graph_view::layout;
+use pacmap;
 
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
@@ -85,23 +86,63 @@ impl MeshCueApp {
             }
         }
 
-        // Random initial positions (no seed yet — overview)
-        let positions: HashMap<i64, (f32, f32)> = {
-            use std::f32::consts::PI;
-            let golden = PI * (3.0 - 5.0_f32.sqrt());
-            node_ids.iter().enumerate().map(|(i, &id)| {
-                let r = ((i as f32) / (node_ids.len() as f32)).sqrt() * 0.8;
-                let a = i as f32 * golden;
-                (id, (r * a.cos(), r * a.sin()))
-            }).collect()
-        };
+        // Placeholder positions while PaCMAP runs in background
+        let positions: HashMap<i64, (f32, f32)> = node_ids.iter().enumerate().map(|(i, &id)| {
+            let a = i as f32 * std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+            let r = ((i as f32) / (node_ids.len() as f32)).sqrt() * 0.8;
+            (id, (r * a.cos(), r * a.sin()))
+        }).collect();
 
         let mut state = GraphViewState::new();
         state.positions = positions;
         state.track_meta = track_meta;
-
         self.collection.graph_state = Some(state);
-        Task::none()
+
+        // Kick off PaCMAP 2D projection in background for natural clustering
+        let db = self.domain.db_arc();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+                    if all_pca.len() < 10 {
+                        log::warn!("[GRAPH] Not enough PCA embeddings for PaCMAP ({}) — keeping scatter", all_pca.len());
+                        return Vec::new();
+                    }
+
+                    log::info!("[GRAPH] Running PaCMAP on {} tracks...", all_pca.len());
+                    let n = all_pca.len();
+                    let dim = 128;
+
+                    // Build flat Vec for PaCMAP's ndarray (it uses ndarray 0.15 internally)
+                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
+                    let mut flat_data = vec![0.0f32; n * dim];
+                    for (i, (_, pca_vec)) in all_pca.iter().enumerate() {
+                        for (j, &v) in pca_vec.iter().take(dim).enumerate() {
+                            flat_data[i * dim + j] = v;
+                        }
+                    }
+
+                    // PaCMAP uses its own ndarray version — build Array2 from raw shape+data
+                    let data = ndarray_016::Array2::from_shape_vec((n, dim), flat_data)
+                        .expect("PaCMAP data shape mismatch");
+
+                    // Run PaCMAP to 2D
+                    let config = pacmap::Configuration::default();
+                    let (embedding, _) = pacmap::fit_transform(data.view(), config)
+                        .expect("PaCMAP fit_transform failed");
+
+                    // Extract positions
+                    let positions: Vec<(i64, f32, f32)> = ids.iter().enumerate()
+                        .map(|(i, &id)| (id, embedding[[i, 0]], embedding[[i, 1]]))
+                        .collect();
+                    log::info!("[GRAPH] PaCMAP complete — {} 2D positions", positions.len());
+                    positions
+                })
+                .await
+                .unwrap_or_default()
+            },
+            Message::GraphLayoutTick,
+        )
     }
 
     /// Layout tick — update positions from background task.
@@ -413,6 +454,38 @@ impl MeshCueApp {
         }
 
         state.clear_caches();
+
+        // Auto-zoom: frame seed + suggestion nodes with padding
+        if let Some(seed_id) = current_seed {
+            let mut min_x = f32::MAX;
+            let mut max_x = f32::MIN;
+            let mut min_y = f32::MAX;
+            let mut max_y = f32::MIN;
+
+            // Include seed position
+            if let Some(&(x, y)) = state.positions.get(&seed_id) {
+                min_x = min_x.min(x); max_x = max_x.max(x);
+                min_y = min_y.min(y); max_y = max_y.max(y);
+            }
+            // Include all suggestion positions
+            for &id in &state.suggestion_ids {
+                if let Some(&(x, y)) = state.positions.get(&id) {
+                    min_x = min_x.min(x); max_x = max_x.max(x);
+                    min_y = min_y.min(y); max_y = max_y.max(y);
+                }
+            }
+
+            if min_x < max_x && min_y < max_y {
+                let cx = (min_x + max_x) / 2.0;
+                let cy = (min_y + max_y) / 2.0;
+                let w = (max_x - min_x) * 1.3; // 30% padding
+                let h = (max_y - min_y) * 1.3;
+                let span = w.max(h).max(0.01);
+                // Zoom to fit ~400px viewport
+                state.zoom = 400.0 / span;
+                state.pan = (-cx, -cy);
+            }
+        }
 
         // Build left panel rows (top 30 only) with reason tags and score components
         let mut rows: Vec<TrackRow<NodeId>> = Vec::with_capacity(SUGGESTION_HIGHLIGHT_LIMIT);
