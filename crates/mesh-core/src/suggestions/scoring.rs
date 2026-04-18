@@ -349,8 +349,11 @@ pub fn intensity_reward(cand_intensity: f32, seed_intensity: f32, energy_bias: f
     let bias_abs = energy_bias.abs();
     // Match component: 1.0 when same intensity, 0.0 when maximally different
     let match_reward = 1.0 - (cand_intensity - seed_intensity).abs();
-    // Direction component: 1.0 when moving in the intended direction
-    let dir_reward = (0.5 + (cand_intensity - seed_intensity) * energy_bias).clamp(0.0, 1.0);
+    // Direction component with 2x sensitivity for full [0, 1] range:
+    //   Drop (bias=-1): seed=0.7, cand=0.3 → 100%, cand=0.7 → 50%, cand=0.9 → 10%
+    //   Peak (bias=+1): seed=0.3, cand=0.7 → 100%, cand=0.3 → 50%, cand=0.1 → 10%
+    let delta = cand_intensity - seed_intensity;
+    let dir_reward = (0.5 + delta * energy_bias * 2.0).clamp(0.0, 1.0);
     match_reward * (1.0 - bias_abs) + dir_reward * bias_abs
 }
 
