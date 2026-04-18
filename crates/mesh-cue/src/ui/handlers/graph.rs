@@ -489,35 +489,10 @@ impl MeshCueApp {
 
         state.clear_caches();
 
-        // Auto-zoom: frame seed + suggestion nodes with padding
+        // Center on seed without changing zoom
         if let Some(seed_id) = current_seed {
-            let mut min_x = f32::MAX;
-            let mut max_x = f32::MIN;
-            let mut min_y = f32::MAX;
-            let mut max_y = f32::MIN;
-
-            // Include seed position
             if let Some(&(x, y)) = state.positions.get(&seed_id) {
-                min_x = min_x.min(x); max_x = max_x.max(x);
-                min_y = min_y.min(y); max_y = max_y.max(y);
-            }
-            // Include all suggestion positions
-            for &id in &state.suggestion_ids {
-                if let Some(&(x, y)) = state.positions.get(&id) {
-                    min_x = min_x.min(x); max_x = max_x.max(x);
-                    min_y = min_y.min(y); max_y = max_y.max(y);
-                }
-            }
-
-            if min_x < max_x && min_y < max_y {
-                let cx = (min_x + max_x) / 2.0;
-                let cy = (min_y + max_y) / 2.0;
-                let w = (max_x - min_x) * 1.3; // 30% padding
-                let h = (max_y - min_y) * 1.3;
-                let span = w.max(h).max(0.01);
-                // Zoom to fit ~400px viewport
-                state.zoom = 400.0 / span;
-                state.pan = (-cx, -cy);
+                state.pan = (-x, -y);
             }
         }
 
