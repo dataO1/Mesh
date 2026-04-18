@@ -464,14 +464,17 @@ pub fn query_suggestions(
     // │ Component     │ Weight │ Center (layering)  │ Extremes (transition)│
     // ├───────────────┼────────┼────────────────────┼──────────────────────┤
     // │ Intensity     │ 0.50   │ Same level → high  │ Directional → high  │
+    // │ Key compat.   │ 0.23   │ Compatible → high  │ Energy-aligned→high │
     // │ Vector sim.   │ 0.20   │ Similar → high     │ Dissimilar → high   │
-    // │ Key compat.   │ 0.15   │ Compatible → high  │ Energy-aligned→high │
-    // │ Key direction │ 0.08   │ Neutral (0.5)      │ Aligned → high      │
     // │ Co-play hist. │ 0.07   │ Proven → high      │ Fades to 0          │
     // ├───────────────┼────────┼────────────────────┴──────────────────────┤
     // │ Stem penalty  │ -0.13  │ Clashing vocals/lead SUBTRACT from score │
     // │ (only center) │        │ Complementary = no penalty               │
     // └─────────────────────────────────────────────────────────────────────┘
+    //
+    // Note: key_transition_score() already blends harmonic compatibility with
+    // energy direction based on the slider position, so no separate key_dir
+    // component is needed.
     //
     // Slider semantics:
     //   Center (0.5): Find tracks for LAYERING — similar sound, compatible key,
@@ -485,9 +488,8 @@ pub fn query_suggestions(
 
     let bias_abs = energy_bias.abs();
     let w_intensity   = 0.50;
+    let w_key         = 0.23;
     let w_vector      = 0.20;
-    let w_key         = 0.15;
-    let w_key_dir     = 0.08;
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
@@ -546,13 +548,10 @@ pub fn query_suggestions(
             }
 
             // ── Key reward ──
-            // key_transition_score already returns [0, 1] reward (1 = perfect match).
-            // At center: same/adjacent key → high. At extremes: energy-aligned → high.
+            // key_transition_score already returns [0, 1] reward that blends harmonic
+            // compatibility with energy direction based on slider position.
+            // No separate key_dir component needed — it's already incorporated.
             let key_reward = best_key_score;
-
-            // ── Key direction reward ──
-            // key_direction_penalty returns [0, 1] where 0 = aligned. Invert to reward.
-            let key_dir_reward = 1.0 - key_direction_penalty(best_tt, energy_bias);
 
             // ── Intensity reward ──
             let ml_key = track.id.map(|id| (src_idx, id));
@@ -594,7 +593,6 @@ pub fn query_suggestions(
             // ── Final score: sum of rewards minus stem penalties ──
             let score = (w_vector    * vec_reward
                 + w_key       * key_reward
-                + w_key_dir   * key_dir_reward
                 + w_intensity * int_reward
                 + w_coplay    * coplay_reward
                 - w_vocal_pen * vocal_clash
@@ -621,7 +619,7 @@ pub fn query_suggestions(
                     hnsw_distance: hnsw_dist,
                     hnsw_component: vec_reward,
                     key_score: key_reward,
-                    key_direction: key_dir_reward,
+                    key_direction: key_reward, // same value, key already includes direction
                     intensity_penalty: int_reward, // now a reward despite the field name
                     coplay_score: coplay_reward,
                     vocal_complement: vocal_comp,

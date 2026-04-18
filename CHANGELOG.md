@@ -18,10 +18,14 @@ All notable changes to Mesh are documented in this file.
 
 - **Reward-based suggestion scoring** — The scoring algorithm is rewritten from
   penalty-based (lower = better) to reward-based (higher = better). Each
-  component contributes up to its weight: vector similarity (30%), key
-  compatibility (25%), intensity matching (25%), key direction (10%), co-play
-  history (8%). Stem complement works as a penalty (clashing vocals subtract
-  from score). Score range now spans 0-100% instead of a narrow 44-86% band.
+  component contributes up to its weight: intensity matching (50%), key
+  compatibility (23%), vector similarity (20%), co-play history (7%). Stem
+  complement works as a penalty (clashing vocals subtract from score). Score
+  range now spans 0-100% instead of a narrow 44-86% band. Intensity dominates
+  because energy management is the primary mixing concern. Key scoring includes
+  a 25% harmonic floor to prevent dissonant transitions from outranking
+  compatible ones at extreme slider positions. Tritone energy direction
+  corrected from -0.80 to 0.0 (dissonant, not directional).
 
 - **Brute-force all-tracks scoring** — Suggestion queries now compute exact PCA
   cosine distances for every track in the library instead of relying on HNSW
