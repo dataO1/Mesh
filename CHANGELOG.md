@@ -18,8 +18,8 @@ All notable changes to Mesh are documented in this file.
 
 - **Reward-based suggestion scoring** — The scoring algorithm is rewritten from
   penalty-based (lower = better) to reward-based (higher = better). Each
-  component contributes up to its weight: intensity matching (50%), key
-  compatibility (23%), vector similarity (20%), co-play history (7%). Stem
+  component contributes up to its weight: intensity matching (33%), key
+  compatibility (30%), vector similarity (30%), co-play history (7%). Stem
   complement works as a penalty (clashing vocals subtract from score). Score
   range now spans 0-100% instead of a narrow 44-86% band. Intensity dominates
   because energy management is the primary mixing concern. Key scoring includes
