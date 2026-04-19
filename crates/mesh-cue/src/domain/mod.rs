@@ -785,9 +785,46 @@ impl MeshCueDomain {
 
     /// Get tracks for display in a folder/playlist
     ///
-    /// This returns TrackRow items ready for display in the track table.
+    /// This returns TrackRow items ready for display in the track table,
+    /// with composite intensity from ML analysis when available.
     pub fn get_tracks_for_display(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-        crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id)
+        let mut rows = crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id);
+        self.enrich_with_intensity(&mut rows);
+        rows
+    }
+
+    /// Batch-populate intensity values on TrackRows from ML analysis data.
+    pub fn enrich_with_intensity(&self, rows: &mut [TrackRow<NodeId>]) {
+        // Collect all track paths → resolve to DB IDs
+        let path_to_id: std::collections::HashMap<String, i64> = rows.iter()
+            .filter_map(|r| r.track_path.as_ref())
+            .filter_map(|path| {
+                self.db_service.get_track_by_path(path).ok().flatten()
+                    .and_then(|t| t.id.map(|id| (path.clone(), id)))
+            })
+            .collect();
+
+        if path_to_id.is_empty() { return; }
+
+        let all_ids: Vec<i64> = path_to_id.values().copied().collect();
+        let ml_scores = self.db_service.get_ml_scores_batch(&all_ids).unwrap_or_default();
+        let flatness = self.db_service.batch_get_flatness(&all_ids).unwrap_or_default();
+        let dissonance = self.db_service.batch_get_dissonance(&all_ids).unwrap_or_default();
+
+        for row in rows.iter_mut() {
+            if let Some(path) = &row.track_path {
+                if let Some(&id) = path_to_id.get(path) {
+                    if let Some(ml) = ml_scores.get(&id) {
+                        row.intensity = mesh_core::suggestions::scoring::composite_intensity(
+                            ml.aggression,
+                            flatness.get(&id).copied(),
+                            ml.relaxed,
+                            dissonance.get(&id).copied(),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Create a new playlist with NodeId-based parent

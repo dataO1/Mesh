@@ -94,6 +94,22 @@ All notable changes to Mesh are documented in this file.
   controls color intensity — strong community members render vivid, boundary
   tracks faded, noise tracks gray.
 
+- **Energy arc widget** — A 40px line graph above the playlist browser shows
+  intensity progression and key transition annotations (Same Key, Adjacent,
+  Boost, etc.) colored by Camelot compatibility. Auto-computed from track
+  metadata, no schema changes needed.
+
+- **Set plan export** — The graph view seed history can be exported as a
+  playlist via the "Export" button. Creates an ordered playlist playable in
+  mesh-player. Unlimited history length.
+
+- **Browser-like seed navigation** — Back/forward buttons navigate seed
+  history without losing forward trail. Fading red history line shows
+  navigation path with distance-based opacity.
+
+- **Click-to-preview** — Single-clicking a track in the graph suggestion list
+  loads it in the editor for audio preview.
+
 ### Changed
 
 - **Smart suggestions v3 — PCA-128 similarity index** — A new "Build Similarity

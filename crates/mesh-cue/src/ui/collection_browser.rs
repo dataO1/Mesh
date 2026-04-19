@@ -222,10 +222,11 @@ fn build_energy_arc_inner<Id: Clone>(
         .iter()
         .map(|t| {
             // Normalize BPM to [0, 1] in the 80-200 range
-            let intensity = t
-                .bpm
-                .map(|b| ((b as f32 - 80.0) / 120.0).clamp(0.0, 1.0))
-                .unwrap_or(0.5);
+            // Use ML intensity if available, fall back to BPM-based proxy
+            let intensity = t.intensity
+                .unwrap_or_else(|| {
+                    t.bpm.map(|b| ((b as f32 - 80.0) / 120.0).clamp(0.0, 1.0)).unwrap_or(0.5)
+                });
             ArcPoint {
                 title: t.title.clone(),
                 intensity,

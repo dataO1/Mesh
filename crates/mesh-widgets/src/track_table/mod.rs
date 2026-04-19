@@ -363,6 +363,8 @@ pub struct TrackRow<Id: Clone> {
     pub genre: Option<String>,
     pub stem_balance: Option<(f32, f32, f32, f32)>, // vocal, drums, bass, other
     pub final_score: Option<f32>,
+    /// Composite intensity [0, 1] from ML analysis (aggression + flatness + relaxed + dissonance)
+    pub intensity: Option<f32>,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -393,6 +395,7 @@ impl<Id: Clone> TrackRow<Id> {
             genre: None,
             stem_balance: None,
             final_score: None,
+            intensity: None,
         }
     }
 
