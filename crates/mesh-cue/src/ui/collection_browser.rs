@@ -179,8 +179,13 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                         .step(0.01)
                         .width(Length::Fill),
                     text("Peak").size(sz(11.0)),
-                    Space::new().width(16.0),
-                    text("Normalize").size(sz(10.0)),
+                    Space::new().width(12.0),
+                    text("Clusters").size(sz(10.0)),
+                    slider(1.0..=20.0, graph_state.cluster_sensitivity as f32, |v| Message::GraphClusterSensitivity(v as usize))
+                        .step(1.0)
+                        .width(60.0),
+                    Space::new().width(8.0),
+                    text("Norm").size(sz(10.0)),
                     toggler(graph_state.normalize_vectors)
                         .on_toggle(Message::GraphToggleNormalize)
                         .size(sz(14.0)),

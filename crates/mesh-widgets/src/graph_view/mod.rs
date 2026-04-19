@@ -64,6 +64,8 @@ pub struct GraphViewState {
     pub normalize_vectors: bool,
     /// Number of PCA dimensions used (0 = not yet known)
     pub pca_dims: usize,
+    /// HDBSCAN min_samples sensitivity (lower = more clusters, higher = fewer)
+    pub cluster_sensitivity: usize,
     // Cluster overlays
     /// Cluster assignments from HDBSCAN (track_id → cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
@@ -90,6 +92,7 @@ impl GraphViewState {
             energy_direction: 0.5,
             normalize_vectors: false, // off by default — preserve natural PCA variance
             pca_dims: 0,
+            cluster_sensitivity: 3, // default: sensitive (more clusters)
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
         }

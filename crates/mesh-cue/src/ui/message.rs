@@ -403,6 +403,8 @@ pub enum Message {
     GraphSeedBack,
     /// Toggle L2-normalization of PCA vectors in graph view
     GraphToggleNormalize(bool),
+    /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)
+    GraphClusterSensitivity(usize),
     /// Message from the graph suggestion track table (selection, sort, etc.)
     GraphTable(mesh_widgets::TrackTableMessage<mesh_core::playlist::NodeId>),
     /// Suggestion query for graph view completed

@@ -176,61 +176,84 @@ impl MeshCueApp {
             state.clear_caches();
         }
 
-        // Run HDBSCAN clustering on PCA embeddings for cluster overlays
-        let db = self.domain.db_arc();
-        if let Some(ref mut state) = self.collection.graph_state {
-            if let Ok(all_pca) = db.get_all_pca_with_tracks() {
-                let n = all_pca.len();
-                if n >= 20 {
-                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
-                    let data: Vec<Vec<f64>> = all_pca.iter()
-                        .map(|(_, pca)| pca.iter().map(|&v| v as f64).collect())
-                        .collect();
-
-                    let min_cluster_size = (n / 30).max(8).min(20); // scale with library size
-                    let hp = hdbscan::HdbscanHyperParams::builder()
-                        .min_cluster_size(min_cluster_size)
-                        .build();
-                    let clusterer = hdbscan::Hdbscan::new(&data, hp);
-
-                    match clusterer.cluster() {
-                        Ok(labels) => {
-                            state.clusters.clear();
-                            for (i, &label) in labels.iter().enumerate() {
-                                if i < ids.len() {
-                                    state.clusters.insert(ids[i], label);
-                                }
-                            }
-
-                            // Generate distinct colors for each cluster
-                            let unique_clusters: HashSet<i32> = labels.iter()
-                                .filter(|&&l| l >= 0)
-                                .copied()
-                                .collect();
-                            state.cluster_colors.clear();
-                            let palette = [
-                                Color::from_rgb(0.27, 0.53, 0.80), // blue
-                                Color::from_rgb(0.80, 0.40, 0.27), // orange
-                                Color::from_rgb(0.33, 0.70, 0.40), // green
-                                Color::from_rgb(0.73, 0.33, 0.73), // purple
-                                Color::from_rgb(0.80, 0.73, 0.27), // yellow
-                                Color::from_rgb(0.27, 0.73, 0.73), // teal
-                                Color::from_rgb(0.87, 0.47, 0.53), // pink
-                                Color::from_rgb(0.53, 0.53, 0.80), // lavender
-                            ];
-                            for (i, &cluster_id) in unique_clusters.iter().enumerate() {
-                                state.cluster_colors.insert(cluster_id, palette[i % palette.len()]);
-                            }
-                            log::info!("[GRAPH] HDBSCAN found {} clusters from {} tracks (min_cluster_size={})",
-                                unique_clusters.len(), n, min_cluster_size);
-                        }
-                        Err(e) => log::warn!("[GRAPH] HDBSCAN failed: {:?}", e),
-                    }
-                }
-            }
-        }
+        // Run HDBSCAN on t-SNE 2D positions for cluster detection
+        self.run_hdbscan_clustering();
 
         Task::none()
+    }
+
+    /// Change cluster sensitivity and re-run HDBSCAN immediately.
+    pub fn handle_graph_cluster_sensitivity(&mut self, value: usize) -> Task<Message> {
+        if let Some(ref mut state) = self.collection.graph_state {
+            state.cluster_sensitivity = value.max(1).min(20);
+        }
+        self.run_hdbscan_clustering();
+        Task::none()
+    }
+
+    /// Run HDBSCAN clustering on t-SNE 2D positions.
+    /// Uses t-SNE coordinates (not high-dim PCA) because t-SNE amplifies local
+    /// density differences, matching what the user sees in the graph.
+    fn run_hdbscan_clustering(&mut self) {
+        let state = match self.collection.graph_state.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let n = state.tsne_positions.len();
+        if n < 10 { return; }
+
+        // Build 2D data from t-SNE positions
+        let ids: Vec<i64> = state.tsne_positions.keys().copied().collect();
+        let data: Vec<Vec<f64>> = ids.iter()
+            .filter_map(|id| state.tsne_positions.get(id))
+            .map(|&(x, y)| vec![x as f64, y as f64])
+            .collect();
+
+        let min_samples = state.cluster_sensitivity;
+        let hp = hdbscan::HdbscanHyperParams::builder()
+            .min_cluster_size(5)
+            .min_samples(min_samples)
+            .build();
+        let clusterer = hdbscan::Hdbscan::new(&data, hp);
+
+        match clusterer.cluster() {
+            Ok(labels) => {
+                state.clusters.clear();
+                for (i, &label) in labels.iter().enumerate() {
+                    if i < ids.len() {
+                        state.clusters.insert(ids[i], label);
+                    }
+                }
+
+                let unique_clusters: HashSet<i32> = labels.iter()
+                    .filter(|&&l| l >= 0)
+                    .copied()
+                    .collect();
+                state.cluster_colors.clear();
+                let palette = [
+                    Color::from_rgb(0.27, 0.53, 0.80), // blue
+                    Color::from_rgb(0.80, 0.40, 0.27), // orange
+                    Color::from_rgb(0.33, 0.70, 0.40), // green
+                    Color::from_rgb(0.73, 0.33, 0.73), // purple
+                    Color::from_rgb(0.80, 0.73, 0.27), // yellow
+                    Color::from_rgb(0.27, 0.73, 0.73), // teal
+                    Color::from_rgb(0.87, 0.47, 0.53), // pink
+                    Color::from_rgb(0.53, 0.53, 0.80), // lavender
+                    Color::from_rgb(0.60, 0.40, 0.30), // brown
+                    Color::from_rgb(0.40, 0.75, 0.55), // mint
+                    Color::from_rgb(0.85, 0.55, 0.25), // amber
+                    Color::from_rgb(0.50, 0.30, 0.70), // violet
+                ];
+                for (i, &cluster_id) in unique_clusters.iter().enumerate() {
+                    state.cluster_colors.insert(cluster_id, palette[i % palette.len()]);
+                }
+                state.clear_caches();
+                log::info!("[GRAPH] HDBSCAN: {} clusters (min_samples={}, on 2D t-SNE)",
+                    unique_clusters.len(), min_samples);
+            }
+            Err(e) => log::warn!("[GRAPH] HDBSCAN failed: {:?}", e),
+        }
     }
 
     /// Select a node as seed — push to breadcrumb stack and query all tracks.
