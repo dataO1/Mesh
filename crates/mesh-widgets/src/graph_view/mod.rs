@@ -64,13 +64,14 @@ pub struct GraphViewState {
     pub normalize_vectors: bool,
     /// Number of PCA dimensions used (0 = not yet known)
     pub pca_dims: usize,
-    /// HDBSCAN min_samples sensitivity (lower = more clusters, higher = fewer)
-    pub cluster_sensitivity: usize,
     /// Transition reach index (0=Tight, 1=Medium, 2=Open) for the graph view
     pub transition_reach_index: usize,
-    // Cluster overlays
-    /// Cluster assignments from HDBSCAN (track_id → cluster_id, -1 = noise)
+    // Cluster overlays (multi-scale consensus)
+    /// Cluster assignments (track_id → cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
+    /// Per-track cluster confidence [0.0, 1.0] — how consistently this track
+    /// clusters with its peers across multiple HDBSCAN scales
+    pub cluster_confidence: HashMap<i64, f32>,
     /// Cluster colors (cluster_id → color)
     pub cluster_colors: HashMap<i32, Color>,
 }
@@ -94,7 +95,7 @@ impl GraphViewState {
             energy_direction: 0.5,
             normalize_vectors: false, // off by default — preserve natural PCA variance
             pca_dims: 0,
-            cluster_sensitivity: 3, // default: sensitive (more clusters)
+            cluster_confidence: HashMap::new(),
             transition_reach_index: 1, // default: Medium
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
@@ -352,8 +353,8 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             }
         }
 
-        // ── Layer 3: Unrelated nodes (cluster-colored or dimmed) ────────
-        let dim_alpha = if has_seed { 0.15 } else { 0.5 };
+        // ── Layer 3: Unrelated nodes (cluster-colored with confidence alpha) ──
+        let base_alpha = if has_seed { 0.12 } else { 1.0 };
         for (&id, &pos) in &self.positions {
             if seed_set.contains(&id) || self.suggestion_ids.contains(&id) {
                 continue;
@@ -367,14 +368,16 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                 continue;
             }
 
-            // Color by cluster if available, otherwise dim gray
+            // Color by cluster, alpha by confidence (strong members = vivid, weak = faded)
             let base_color = self.clusters.get(&id)
                 .and_then(|&cid| if cid >= 0 { self.cluster_colors.get(&cid) } else { None })
                 .copied()
                 .unwrap_or(COLOR_NODE_DIM);
+            let confidence = self.cluster_confidence.get(&id).copied().unwrap_or(0.2);
+            let alpha = (confidence * 0.7 + 0.15) * base_alpha; // range ~0.15 to ~0.85
 
             let circle = Path::circle(screen, 3.0);
-            frame.fill(&circle, Color { a: dim_alpha, ..base_color });
+            frame.fill(&circle, Color { a: alpha, ..base_color });
         }
 
         // ── Layer 4: Suggestion nodes (colored by score) ────────────────

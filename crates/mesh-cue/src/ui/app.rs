@@ -637,7 +637,7 @@ impl MeshCueApp {
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
             Message::GraphToggleNormalize(enabled) => return self.handle_graph_toggle_normalize(enabled),
-            Message::GraphClusterSensitivity(value) => return self.handle_graph_cluster_sensitivity(value),
+            Message::GraphClusterSensitivity(_) => {} // deprecated — consensus clustering is auto
             Message::GraphTransitionReach(idx) => return self.handle_graph_transition_reach(idx),
             Message::GraphTable(table_msg) => {
                 match table_msg {
