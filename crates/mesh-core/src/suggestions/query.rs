@@ -25,9 +25,6 @@ pub struct SuggestionConfig {
     pub blended_threshold: f32,
     /// Enable stem complement penalty (clashing vocals/lead reduce score).
     pub stem_complement: bool,
-    /// L2-normalize PCA vectors before cosine distance.
-    /// On = equal component weight. Off = natural PCA variance preserved.
-    pub normalize_vectors: bool,
     /// Target distance for the transition bell curve at extreme slider.
     pub transition_target: f32,
     /// Width (2σ²) of the transition bell curve.
@@ -48,7 +45,6 @@ impl SuggestionConfig {
             harmonic_floor,
             blended_threshold,
             stem_complement,
-            normalize_vectors: false,
             transition_target: transition_reach.target_distance(),
             transition_width: transition_reach.bell_width(),
         }
@@ -233,22 +229,18 @@ pub fn query_suggestions(
     let mut candidates: HashMap<(usize, i64), (Track, f32)> = HashMap::new();
 
     // Build seed PCA vectors (for cosine distance computation)
-    let normalize = suggestion_config.normalize_vectors;
     let seed_pca_vecs: Vec<(usize, Vec<f32>)> = seed_tracks
         .iter()
         .filter_map(|(src_idx, track)| {
             let id = track.id?;
-            let mut vec = sources[*src_idx].db.get_pca_embedding_raw(id).ok().flatten()?;
-            if normalize { l2_normalize(&mut vec); }
+            let vec = sources[*src_idx].db.get_pca_embedding_raw(id).ok().flatten()?;
             Some((*src_idx, vec))
         })
         .collect();
 
     // If blend vector provided, use that instead of per-seed vectors.
     let blend_pca: Option<Vec<f32>> = blend_query_vec.as_ref().map(|v| {
-        let mut pca: Vec<f32> = v.iter().map(|&x| x as f32).collect();
-        if normalize { l2_normalize(&mut pca); }
-        pca
+        v.iter().map(|&x| x as f32).collect()
     });
 
     for (src_idx, source) in sources.iter().enumerate() {
@@ -266,7 +258,7 @@ pub fn query_suggestions(
             source.name, all_pca.len()
         );
 
-        for (mut track, mut pca_vec) in all_pca {
+        for (mut track, pca_vec) in all_pca {
             let track_id = match track.id {
                 Some(id) => id,
                 None => continue,
@@ -285,8 +277,7 @@ pub fn query_suggestions(
             // Skip already-played tracks
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
 
-            // Optionally L2-normalize candidate PCA vector (matching seed normalization)
-            if normalize { l2_normalize(&mut pca_vec); }
+            // No L2-normalization needed — cosine distance already normalizes internally
 
             // Compute cosine distance to seed(s)
             let dist = if let Some(ref blend) = blend_pca {

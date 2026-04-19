@@ -437,7 +437,6 @@ impl MeshCueApp {
 
         // Use Off filter to score ALL tracks (no key filtering)
         // The top 30 will be highlighted as suggestions
-        let normalize = self.collection.graph_normalize_vectors;
         let reach_idx = state.transition_reach_index;
         let reach = SuggestionTransitionReach::ALL[reach_idx.min(2)];
         let config = SuggestionConfig {
@@ -445,7 +444,6 @@ impl MeshCueApp {
             harmonic_floor: 0.0,
             blended_threshold: 0.0,
             stem_complement: false,
-            normalize_vectors: normalize,
             transition_target: reach.target_distance(),
             transition_width: reach.bell_width(),
         };
