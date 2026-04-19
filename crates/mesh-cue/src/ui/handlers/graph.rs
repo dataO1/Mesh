@@ -189,7 +189,7 @@ impl MeshCueApp {
         }
         // Re-query with new transition reach
         let current_seed = self.collection.graph_state.as_ref()
-            .and_then(|s| s.seed_stack.last().copied());
+            .and_then(|s| s.seed_stack.get(s.seed_position).copied());
         match current_seed {
             Some(seed_id) => self.run_graph_suggestion_query(seed_id),
             None => Task::none(),
@@ -363,10 +363,17 @@ impl MeshCueApp {
             None => return Task::none(),
         };
 
-        if state.seed_stack.last() != Some(&track_id) {
+        // Browser-like: truncate forward history, push new seed
+        let current = state.seed_stack.get(state.seed_position).copied();
+        if current != Some(track_id) {
+            // Truncate everything after current position (discard forward history)
+            state.seed_stack.truncate(state.seed_position + if current.is_some() { 1 } else { 0 });
             state.seed_stack.push(track_id);
-            if state.seed_stack.len() > 20 {
+            state.seed_position = state.seed_stack.len() - 1;
+
+            if state.seed_stack.len() > 50 {
                 state.seed_stack.remove(0);
+                state.seed_position = state.seed_position.saturating_sub(1);
             }
         }
 
@@ -425,14 +432,15 @@ impl MeshCueApp {
     }
 
     /// Navigate back in seed history.
+    /// Navigate back in seed history (keep forward history intact).
     pub fn handle_graph_seed_back(&mut self) -> Task<Message> {
         let state = match self.collection.graph_state.as_mut() {
             Some(s) => s,
             None => return Task::none(),
         };
 
-        if state.seed_stack.len() <= 1 {
-            state.seed_stack.clear();
+        if state.seed_position == 0 {
+            // Already at the start — clear selection
             state.suggestion_ids.clear();
             state.suggestion_scores.clear();
             state.suggestion_edges.clear();
@@ -440,9 +448,66 @@ impl MeshCueApp {
             return Task::none();
         }
 
-        state.seed_stack.pop();
-        let prev = *state.seed_stack.last().unwrap();
+        state.seed_position -= 1;
+        let prev = state.seed_stack[state.seed_position];
         self.run_graph_suggestion_query(prev)
+    }
+
+    /// Navigate forward in seed history.
+    pub fn handle_graph_seed_forward(&mut self) -> Task<Message> {
+        let state = match self.collection.graph_state.as_mut() {
+            Some(s) => s,
+            None => return Task::none(),
+        };
+
+        if state.seed_position + 1 >= state.seed_stack.len() {
+            return Task::none(); // no forward history
+        }
+
+        state.seed_position += 1;
+        let next = state.seed_stack[state.seed_position];
+        self.run_graph_suggestion_query(next)
+    }
+
+    /// Export the seed history as a playlist in the DB.
+    pub fn handle_graph_export_playlist(&mut self) -> Task<Message> {
+        let state = match self.collection.graph_state.as_ref() {
+            Some(s) => s,
+            None => return Task::none(),
+        };
+
+        if state.seed_stack.is_empty() {
+            return Task::none();
+        }
+
+        // Collect track IDs in seed order
+        let seed_ids: Vec<i64> = state.seed_stack.clone();
+
+        // Create playlist
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let name = format!("Set Plan {}", timestamp);
+
+        match self.domain.create_playlist(&name, None) {
+            Ok(playlist_id) => {
+                let mut added = 0;
+                for &track_id in &seed_ids {
+                    if self.domain.add_track_to_playlist(playlist_id, track_id).is_ok() {
+                        added += 1;
+                    }
+                }
+                log::info!("[GRAPH] Exported {} tracks as playlist '{}' (id={})", added, name, playlist_id);
+                self.domain.refresh_tree();
+                self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
+                Task::perform(async {}, |_| Message::RefreshPlaylists)
+            }
+            Err(e) => {
+                log::error!("[GRAPH] Failed to create playlist: {}", e);
+                Task::none()
+            }
+        }
     }
 
     /// Node hover changed.
@@ -475,7 +540,7 @@ impl MeshCueApp {
         }
 
         let current_seed = self.collection.graph_state.as_ref()
-            .and_then(|s| s.seed_stack.last().copied());
+            .and_then(|s| s.seed_stack.get(s.seed_position).copied());
 
         match current_seed {
             Some(seed_id) => self.run_graph_suggestion_query(seed_id),

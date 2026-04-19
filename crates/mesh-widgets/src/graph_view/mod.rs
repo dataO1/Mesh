@@ -44,8 +44,11 @@ pub struct GraphViewState {
     pub tsne_positions: HashMap<i64, (f32, f32)>,
     pub pan: (f32, f32),
     pub zoom: f32,
-    // Selection
+    // Selection (browser-like back/forward navigation)
+    /// Full seed history (back + current + forward)
     pub seed_stack: Vec<i64>,
+    /// Current position in seed_stack (0-based). Seeds before this are "back", after are "forward".
+    pub seed_position: usize,
     pub suggestion_ids: HashSet<i64>,
     pub suggestion_scores: HashMap<i64, f32>,
     pub hovered_id: Option<i64>,
@@ -85,6 +88,7 @@ impl GraphViewState {
             pan: (0.0, 0.0),
             zoom: 10.0,
             seed_stack: Vec::new(),
+            seed_position: 0,
             suggestion_ids: HashSet::new(),
             suggestion_scores: HashMap::new(),
             hovered_id: None,
@@ -302,7 +306,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         );
 
         let seed_set: HashSet<i64> = self.seed_stack.iter().copied().collect();
-        let current_seed = self.seed_stack.last().copied();
+        let current_seed = self.seed_stack.get(self.seed_position).copied();
         let has_seed = current_seed.is_some();
 
         // ── Layer 1: Suggestion edges (seed → suggestions, composite score) ──
@@ -330,10 +334,12 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
         }
 
-        // ── Layer 2: Seed history trail (red line between consecutive seeds) ──
+        // ── Layer 2: Seed history trail (fading red line) ──
+        // Lines near the current position are vivid, distant ones fade out
         if self.seed_stack.len() >= 2 {
-            let trail_color = Color::from_rgb(0.85, 0.2, 0.2); // red
-            for window in self.seed_stack.windows(2) {
+            let trail_base = Color::from_rgb(0.85, 0.2, 0.2);
+            let cur = self.seed_position;
+            for (seg_idx, window) in self.seed_stack.windows(2).enumerate() {
                 let (a, b) = (window[0], window[1]);
                 let a_pos = match self.positions.get(&a) {
                     Some(p) => *p,
@@ -343,12 +349,25 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                     Some(p) => *p,
                     None => continue,
                 };
+
+                // Distance from current position (segment covers seg_idx..seg_idx+1)
+                let dist = if seg_idx < cur {
+                    (cur - seg_idx - 1) as f32  // segments before current
+                } else {
+                    (seg_idx - cur) as f32      // segments after current (forward)
+                };
+                // Fade: 0 = full, 1 = slightly faded, 3+ = very faded
+                let alpha = (1.0 - dist * 0.3).clamp(0.08, 0.9);
+                let width = if dist < 1.5 { 2.0 } else { 1.0 };
+
                 let p1 = to_screen(a_pos, self.pan, self.zoom, bounds);
                 let p2 = to_screen(b_pos, self.pan, self.zoom, bounds);
                 let path = Path::line(p1, p2);
                 frame.stroke(
                     &path,
-                    Stroke::default().with_color(trail_color).with_width(2.0),
+                    Stroke::default()
+                        .with_color(Color { a: alpha, ..trail_base })
+                        .with_width(width),
                 );
             }
         }

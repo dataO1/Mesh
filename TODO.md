@@ -718,4 +718,6 @@ like wav2vec or vggish or other? search online, evaluate if we can improve this.
 
 
 
-
+in graph view set preparation selecting a track could visually render a tracks
+overview waveform underneight the previous loaded track waveform, so we can also
+visually compare tracks (if they fit in the time domain as well)

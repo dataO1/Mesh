@@ -399,8 +399,12 @@ pub enum Message {
     GraphSliderChanged(f32),
     /// Pan/zoom changed in graph view
     GraphPanZoom { pan: (f32, f32), zoom: f32 },
-    /// Navigate back in seed history (pop breadcrumb)
+    /// Navigate back in seed history
     GraphSeedBack,
+    /// Navigate forward in seed history
+    GraphSeedForward,
+    /// Export seed history as a playlist
+    GraphExportPlaylist,
     /// Toggle L2-normalization of PCA vectors in graph view
     GraphToggleNormalize(bool),
     /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)

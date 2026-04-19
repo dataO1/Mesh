@@ -636,6 +636,8 @@ impl MeshCueApp {
             Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),
             Message::GraphPanZoom { pan, zoom } => return self.handle_graph_pan_zoom(pan, zoom),
             Message::GraphSeedBack => return self.handle_graph_seed_back(),
+            Message::GraphSeedForward => return self.handle_graph_seed_forward(),
+            Message::GraphExportPlaylist => return self.handle_graph_export_playlist(),
             Message::GraphToggleNormalize(enabled) => return self.handle_graph_toggle_normalize(enabled),
             Message::GraphClusterSensitivity(_) => {} // deprecated — consensus clustering is auto
             Message::GraphTransitionReach(idx) => return self.handle_graph_transition_reach(idx),

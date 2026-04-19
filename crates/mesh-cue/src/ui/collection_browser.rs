@@ -298,28 +298,37 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
     }
 }
 
-/// Breadcrumb trail showing seed navigation history
+/// Seed history header with back/forward navigation and export button.
+/// Shows ±2 tracks around current position in a scrollable row.
 fn view_breadcrumbs(graph_state: &mesh_widgets::GraphViewState) -> Element<'_, Message> {
     if graph_state.seed_stack.is_empty() {
-        return container(text("No seed selected").size(sz(12.0)))
+        return container(text("No seed selected — click a node").size(sz(12.0)))
             .padding([4, 8])
             .into();
     }
 
-    let mut crumbs = row![].spacing(4).align_y(Alignment::Center);
+    let pos = graph_state.seed_position;
+    let len = graph_state.seed_stack.len();
+    let mut header = row![].spacing(4).align_y(Alignment::Center);
 
     // Back button
-    if graph_state.seed_stack.len() > 1 {
-        crumbs = crumbs.push(
-            button(text("<").size(sz(12.0)))
-                .on_press(Message::GraphSeedBack)
-                .style(button::secondary)
-                .padding([2, 6]),
-        );
+    let back_btn = button(text("\u{25C0}").size(sz(11.0))).padding([2, 4]);
+    if pos > 0 {
+        header = header.push(back_btn.on_press(Message::GraphSeedBack).style(button::secondary));
+    } else {
+        header = header.push(back_btn.style(button::secondary));
     }
 
-    // Show breadcrumb labels
-    for (i, &seed_id) in graph_state.seed_stack.iter().enumerate() {
+    // Show window of tracks: ±2 around current position
+    let window_start = pos.saturating_sub(2);
+    let window_end = (pos + 3).min(len); // exclusive
+
+    if window_start > 0 {
+        header = header.push(text("...").size(sz(10.0)));
+    }
+
+    for i in window_start..window_end {
+        let seed_id = graph_state.seed_stack[i];
         let label: String = graph_state.track_meta.get(&seed_id)
             .map(|m| {
                 let display = if let Some(ref artist) = m.artist {
@@ -327,22 +336,29 @@ fn view_breadcrumbs(graph_state: &mesh_widgets::GraphViewState) -> Element<'_, M
                 } else {
                     m.title.clone()
                 };
-                display.chars().take(25).collect::<String>()
+                display.chars().take(20).collect::<String>()
             })
             .unwrap_or_else(|| format!("#{}", seed_id));
 
-        if i > 0 {
-            crumbs = crumbs.push(text(" > ").size(sz(11.0)));
+        if i > window_start {
+            header = header.push(text("\u{2192}").size(sz(10.0))); // →
         }
 
-        let is_current = i == graph_state.seed_stack.len() - 1;
-        if is_current {
-            crumbs = crumbs.push(
-                text(label).size(sz(12.0)),
+        if i == pos {
+            // Current — bold/highlighted
+            header = header.push(
+                container(text(label).size(sz(11.0)))
+                    .padding([2, 4])
+                    .style(|_: &iced::Theme| container::Style {
+                        background: Some(iced::Background::Color(iced::Color::from_rgb(0.25, 0.35, 0.50))),
+                        border: iced::Border { radius: 3.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
             );
         } else {
-            crumbs = crumbs.push(
-                button(text(label).size(sz(11.0)))
+            // Clickable
+            header = header.push(
+                button(text(label).size(sz(10.0)))
                     .on_press(Message::GraphSeedSelected(seed_id))
                     .style(button::text)
                     .padding([1, 4]),
@@ -350,5 +366,29 @@ fn view_breadcrumbs(graph_state: &mesh_widgets::GraphViewState) -> Element<'_, M
         }
     }
 
-    container(crumbs).padding([4, 8]).into()
+    if window_end < len {
+        header = header.push(text("...").size(sz(10.0)));
+    }
+
+    // Forward button
+    let fwd_btn = button(text("\u{25B6}").size(sz(11.0))).padding([2, 4]);
+    if pos + 1 < len {
+        header = header.push(fwd_btn.on_press(Message::GraphSeedForward).style(button::secondary));
+    } else {
+        header = header.push(fwd_btn.style(button::secondary));
+    }
+
+    // Export button
+    header = header.push(Space::new().width(Length::Fill));
+    header = header.push(
+        button(text(format!("Export ({})", len)).size(sz(10.0)))
+            .on_press(Message::GraphExportPlaylist)
+            .style(button::secondary)
+            .padding([2, 8]),
+    );
+
+    // Track count
+    header = header.push(text(format!("{}/{}", pos + 1, len)).size(sz(10.0)));
+
+    container(header).padding([4, 8]).into()
 }
