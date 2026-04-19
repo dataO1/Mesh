@@ -81,6 +81,19 @@ All notable changes to Mesh are documented in this file.
   everything" when the seed is already at max intensity. Coupled to the
   SuggestionBlendMode crossover for consistent behavior.
 
+- **Transition Reach setting** — New setting (Tight / Medium / Open) controls
+  how far transitions reach at extreme slider. Uses a Gaussian bell curve
+  centered at the target distance instead of raw dissimilarity, preventing
+  jarring cross-genre jumps. Tight stays within the genre, Medium bridges to
+  adjacent communities, Open enables bold cross-genre transitions. Controllable
+  from both mesh-player settings and the graph view header.
+
+- **HDBSCAN cluster sensitivity slider** — Real-time slider in the graph header
+  (1-20) controls how many clusters HDBSCAN detects. Lower = more sensitive
+  (more small clusters), higher = fewer large clusters. Clustering now runs
+  on 2D t-SNE positions instead of high-dimensional PCA, matching the visible
+  communities in the graph.
+
 ### Changed
 
 - **Smart suggestions v3 — PCA-128 similarity index** — A new "Build Similarity
