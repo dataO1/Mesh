@@ -4,8 +4,14 @@ use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
 use super::state::BrowserTab;
 use iced::widget::{button, column, container, row, rule, slider, text, toggler, Canvas, Space};
-use iced::{Alignment, Element, Length};
-use mesh_widgets::{playlist_browser_with_drop_highlight, sz, track_table};
+use iced::{Alignment, Color, Element, Length};
+use mesh_core::music::MusicalKey;
+use mesh_core::suggestions::scoring::{base_score, classify_transition, transition_type_label};
+use mesh_widgets::track_table::TrackRow;
+use mesh_widgets::{
+    energy_arc, playlist_browser_with_drop_highlight, sz, track_table,
+    ArcPoint, ArcTransition, EnergyArcState,
+};
 
 /// Render the collection view (editor + dual browsers below)
 pub fn view<'a>(
@@ -134,7 +140,7 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
         right_is_drop_target,
     );
 
-    row![
+    let browsers = row![
         container(left_browser)
             .width(Length::FillPortion(1))
             .height(Length::Fill),
@@ -144,8 +150,123 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
             .height(Length::Fill),
     ]
     .spacing(0)
-    .height(Length::FillPortion(1))
-    .into()
+    .height(Length::FillPortion(1));
+
+    if let Some(ref arc_state) = state.energy_arc {
+        let arc_el: Element<'_, Message> = energy_arc(arc_state);
+
+        column![arc_el, browsers]
+            .spacing(0)
+            .height(Length::FillPortion(1))
+            .into()
+    } else {
+        browsers.into()
+    }
+}
+
+// ── Energy arc helpers ──────────────────────────────────────────────
+
+/// Green for good key transitions.
+const ARC_GREEN: Color = Color {
+    r: 0.18,
+    g: 0.54,
+    b: 0.31,
+    a: 1.0,
+};
+/// Amber for moderate key transitions.
+const ARC_AMBER: Color = Color {
+    r: 0.77,
+    g: 0.60,
+    b: 0.17,
+    a: 1.0,
+};
+/// Red for poor key transitions.
+const ARC_RED: Color = Color {
+    r: 0.65,
+    g: 0.24,
+    b: 0.25,
+    a: 1.0,
+};
+/// Gray for unknown transitions.
+const ARC_UNKNOWN: Color = Color {
+    r: 0.40,
+    g: 0.40,
+    b: 0.40,
+    a: 1.0,
+};
+
+/// Build an `EnergyArcState` from the current track list.
+///
+/// Uses BPM as the intensity proxy (normalized to roughly [0, 1] in the
+/// typical DJ range of 100-200 BPM). Key transitions are computed via
+/// mesh-core's Camelot classification and colored by base compatibility
+/// score (green >= 0.70, amber >= 0.40, red < 0.40).
+///
+/// Returns `None` if fewer than 2 tracks have key data.
+pub fn build_energy_arc<Id: Clone>(
+    tracks: &[TrackRow<Id>],
+    current_index: usize,
+) -> Option<EnergyArcState> {
+    let has_key_data = tracks.iter().filter(|t| t.key.is_some()).count() >= 2;
+    if !has_key_data {
+        return None;
+    }
+    Some(build_energy_arc_inner(tracks, current_index))
+}
+
+fn build_energy_arc_inner<Id: Clone>(
+    tracks: &[TrackRow<Id>],
+    current_index: usize,
+) -> EnergyArcState {
+    let points: Vec<ArcPoint> = tracks
+        .iter()
+        .map(|t| {
+            // Normalize BPM to [0, 1] in the 80-200 range
+            let intensity = t
+                .bpm
+                .map(|b| ((b as f32 - 80.0) / 120.0).clamp(0.0, 1.0))
+                .unwrap_or(0.5);
+            ArcPoint {
+                title: t.title.clone(),
+                intensity,
+                key: t.key.clone(),
+                bpm: t.bpm,
+            }
+        })
+        .collect();
+
+    let transitions: Vec<ArcTransition> = points
+        .windows(2)
+        .map(|w| {
+            let key_a = w[0].key.as_deref().and_then(MusicalKey::parse);
+            let key_b = w[1].key.as_deref().and_then(MusicalKey::parse);
+            match (key_a, key_b) {
+                (Some(a), Some(b)) => {
+                    let tt = classify_transition(&a, &b);
+                    let bs = base_score(tt);
+                    let label = transition_type_label(tt);
+                    let color = if bs >= 0.70 {
+                        ARC_GREEN
+                    } else if bs >= 0.40 {
+                        ARC_AMBER
+                    } else {
+                        ARC_RED
+                    };
+                    ArcTransition { label, color }
+                }
+                _ => ArcTransition {
+                    label: "?",
+                    color: ARC_UNKNOWN,
+                },
+            }
+        })
+        .collect();
+
+    EnergyArcState {
+        points,
+        transitions,
+        current_index,
+    }
 }
 
 /// Graph view (Graph tab) — left panel analysis + right panel graph canvas

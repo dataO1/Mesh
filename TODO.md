@@ -718,6 +718,14 @@ like wav2vec or vggish or other? search online, evaluate if we can improve this.
 
 
 
-in graph view set preparation selecting a track could visually render a tracks
+- in graph view set preparation selecting a track could visually render a tracks
 overview waveform underneight the previous loaded track waveform, so we can also
 visually compare tracks (if they fit in the time domain as well)
+
+- the generated graph should be fully deterministic (its sometimes tilted i
+  think, also the colors are randomly generated? can we generate colors, that
+  correlate with the overall communities intensity value normalized compared to
+  the rest of the library). this way the graph always looks the same/similar
+  even after adding new tracks/communities/playlists.
+- that way we can add the same graph view to mesh-player as a smaller sidewindow
+  next to the file browser list.

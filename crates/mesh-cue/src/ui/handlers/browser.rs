@@ -197,6 +197,11 @@ impl MeshCueApp {
                     self.collection.browser(side).table_state.selected.len()
                 );
             }
+
+            // Rebuild energy arc to update the focused track position
+            if matches!(side, BrowserSide::Left) {
+                self.collection.rebuild_energy_arc();
+            }
         }
 
         // Handle table message and check for edit commits

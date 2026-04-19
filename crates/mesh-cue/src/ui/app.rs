@@ -185,6 +185,7 @@ impl MeshCueApp {
         collection_state.browser_left.set_current_folder(NodeId::tracks());
         // Load tracks via PlaylistStorage path (includes cue counts + tags)
         collection_state.left_tracks = domain.get_tracks_for_display(&NodeId::tracks());
+        collection_state.rebuild_energy_arc();
 
         // Start audio system for preview (lock-free architecture)
         // Domain owns the db_service internally

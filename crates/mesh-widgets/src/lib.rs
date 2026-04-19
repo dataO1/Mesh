@@ -26,6 +26,7 @@
 
 pub mod button_styles;
 pub mod deck_preset;
+pub mod energy_arc;
 pub mod font;
 pub mod graph_view;
 pub mod keyboard;
@@ -142,3 +143,6 @@ pub use keyboard::{
 
 // Graph view widget for suggestion network visualization
 pub use graph_view::{GraphViewState, GraphViewMessage, TrackMeta, graph_view};
+
+// Energy arc widget for playlist intensity + key transition visualization
+pub use energy_arc::{energy_arc, ArcPoint, ArcTransition, EnergyArcState};

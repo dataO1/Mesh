@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use iced::{Color, Point};
 use mesh_core::playlist::NodeId;
-use mesh_widgets::{GraphViewState, PlaylistBrowserState, TrackColumn, TrackRow, TreeNode};
+use mesh_widgets::{
+    EnergyArcState, GraphViewState, PlaylistBrowserState, TrackColumn, TrackRow, TreeNode,
+};
 use mesh_widgets::track_table::sort_tracks;
 
 use super::loaded_track::LoadedTrackState;
@@ -155,6 +157,8 @@ pub struct CollectionState {
     pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
     /// Table state for the graph suggestion list
     pub graph_table_state: mesh_widgets::TrackTableState<NodeId>,
+    /// Cached energy arc state for the left browser (rebuilt when tracks change)
+    pub energy_arc: Option<EnergyArcState>,
 }
 
 impl std::fmt::Debug for CollectionState {
@@ -221,6 +225,25 @@ impl CollectionState {
         let sort_col = state.sort_column;
         let sort_asc = state.sort_ascending;
         sort_tracks(self.tracks_mut(side), sort_col, sort_asc);
+        // Rebuild the energy arc when the left browser tracks change
+        if matches!(side, BrowserSide::Left) {
+            self.rebuild_energy_arc();
+        }
+    }
+
+    /// Rebuild the cached energy arc from the current left browser tracks
+    /// and selected track position.
+    pub fn rebuild_energy_arc(&mut self) {
+        use crate::ui::collection_browser::build_energy_arc;
+        let current_idx = self
+            .browser_left
+            .table_state
+            .selected_ids()
+            .iter()
+            .next()
+            .and_then(|sel_id| self.left_tracks.iter().position(|t| &t.id == sel_id))
+            .unwrap_or(0);
+        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx);
     }
 }
 
@@ -262,6 +285,7 @@ impl Default for CollectionState {
                 ts.display_columns = Some(mesh_widgets::TrackColumn::graph_analysis());
                 ts
             },
+            energy_arc: None,
         }
     }
 }
