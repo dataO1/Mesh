@@ -11,7 +11,7 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{AppFont, FontSize, LOOP_LENGTH_OPTIONS, KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, FontSize, LOOP_LENGTH_OPTIONS, KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, SuggestionTransitionReach, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_widgets::sz;
@@ -345,6 +345,15 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
             .button_width(ButtonWidth::Fixed(90.0)),
 
         SettingsItem::new("", SettingsBehavior::ButtonGroup {
+            options: SuggestionTransitionReach::ALL.iter().map(|t| t.display_name().to_string()).collect(),
+            selected: SuggestionTransitionReach::ALL.iter().position(|&t| t == state.draft_suggestion_transition_reach).unwrap_or(1),
+            on_select: |idx| SettingsMessage::UpdateSuggestionTransitionReach(SuggestionTransitionReach::ALL[idx.min(SuggestionTransitionReach::ALL.len() - 1)]),
+        })
+            .subsection("Transition Reach")
+            .subsection_hint("How far transitions reach at extreme slider — Tight: same genre · Medium: adjacent · Open: cross-genre")
+            .button_width(ButtonWidth::Fixed(72.0)),
+
+        SettingsItem::new("", SettingsBehavior::ButtonGroup {
             options: SuggestionKeyFilter::ALL.iter().map(|f| f.display_name().to_string()).collect(),
             selected: SuggestionKeyFilter::ALL.iter().position(|&f| f == state.draft_suggestion_key_filter).unwrap_or(0),
             on_select: |idx| SettingsMessage::UpdateSuggestionKeyFilter(SuggestionKeyFilter::ALL[idx.min(SuggestionKeyFilter::ALL.len() - 1)]),
@@ -462,6 +471,7 @@ pub struct SettingsState {
     pub draft_persistent_browse: bool,
     pub draft_suggestion_playlist_split: bool,
     pub draft_suggestion_blend_mode: SuggestionBlendMode,
+    pub draft_suggestion_transition_reach: SuggestionTransitionReach,
     pub draft_suggestion_key_filter: SuggestionKeyFilter,
     pub draft_suggestion_stem_complement: bool,
     /// Draft key scoring model for harmonic compatibility
@@ -523,6 +533,7 @@ impl SettingsState {
             draft_persistent_browse: config.display.persistent_browse,
             draft_suggestion_playlist_split: config.display.suggestion_playlist_split,
             draft_suggestion_blend_mode: config.display.suggestion_blend_mode,
+            draft_suggestion_transition_reach: config.display.suggestion_transition_reach,
             draft_suggestion_key_filter: config.display.suggestion_key_filter,
             draft_suggestion_stem_complement: config.display.suggestion_stem_complement,
             draft_key_scoring_model: config.display.key_scoring_model,
@@ -561,6 +572,7 @@ impl SettingsState {
             persistent_browse: self.draft_persistent_browse,
             suggestion_playlist_split: self.draft_suggestion_playlist_split,
             suggestion_blend_mode: self.draft_suggestion_blend_mode,
+            suggestion_transition_reach: self.draft_suggestion_transition_reach,
             suggestion_key_filter: self.draft_suggestion_key_filter,
             suggestion_stem_complement: self.draft_suggestion_stem_complement,
             key_scoring_model: self.draft_key_scoring_model,
@@ -590,6 +602,7 @@ impl SettingsState {
             || self.draft_persistent_browse != snap.persistent_browse
             || self.draft_suggestion_playlist_split != snap.suggestion_playlist_split
             || self.draft_suggestion_blend_mode != snap.suggestion_blend_mode
+            || self.draft_suggestion_transition_reach != snap.suggestion_transition_reach
             || self.draft_suggestion_key_filter != snap.suggestion_key_filter
             || self.draft_suggestion_stem_complement != snap.suggestion_stem_complement
             || self.draft_key_scoring_model != snap.key_scoring_model
@@ -627,6 +640,7 @@ struct SettingsSnapshot {
     persistent_browse: bool,
     suggestion_playlist_split: bool,
     suggestion_blend_mode: SuggestionBlendMode,
+    suggestion_transition_reach: SuggestionTransitionReach,
     suggestion_key_filter: SuggestionKeyFilter,
     suggestion_stem_complement: bool,
     key_scoring_model: KeyScoringModel,

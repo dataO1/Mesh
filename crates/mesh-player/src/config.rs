@@ -12,7 +12,7 @@ pub use mesh_widgets::{AppFont, FontSize};
 
 // Re-export suggestion config enums from mesh-core (shared with mesh-cue)
 pub use mesh_core::suggestions::config::{
-    KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter,
+    KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, SuggestionTransitionReach,
 };
 
 /// Waveform layout orientation
@@ -238,6 +238,8 @@ pub struct DisplayConfig {
     pub suggestion_blend_mode: SuggestionBlendMode,
     /// Harmonic filter strictness (Strict/Relaxed/Off)
     pub suggestion_key_filter: SuggestionKeyFilter,
+    /// Transition reach at extreme slider (Tight/Medium/Open)
+    pub suggestion_transition_reach: SuggestionTransitionReach,
     /// Enable stem complement scoring in suggestions
     pub suggestion_stem_complement: bool,
 }
@@ -262,6 +264,7 @@ impl Default for DisplayConfig {
             persistent_browse: false,           // Auto-hide browser overlay by default
             suggestion_playlist_split: true,     // Split playlist/global results by default
             suggestion_blend_mode: SuggestionBlendMode::default(),   // Balanced
+            suggestion_transition_reach: SuggestionTransitionReach::default(), // Medium
             suggestion_key_filter: SuggestionKeyFilter::default(),               // Strict
             suggestion_stem_complement: true,    // On by default (matches previous behaviour)
         }

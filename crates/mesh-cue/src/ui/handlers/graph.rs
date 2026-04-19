@@ -391,6 +391,8 @@ impl MeshCueApp {
             blended_threshold: 0.0,
             stem_complement: false,
             normalize_vectors: normalize,
+            transition_target: SuggestionTransitionReach::Medium.target_distance(),
+            transition_width: SuggestionTransitionReach::Medium.bell_width(),
         };
 
         let sources = vec![DbSource {

@@ -78,6 +78,60 @@ impl SuggestionBlendMode {
     }
 }
 
+/// Controls how far from the seed the vector similarity component reaches
+/// at extreme slider positions (transitions). Instead of rewarding the MOST
+/// dissimilar tracks (which produces jarring genre jumps), a bell curve
+/// targets tracks at a specific distance — "adjacent community" territory.
+///
+/// - Tight: target 0.25 — transitions stay close, same genre but different style
+/// - Medium: target 0.40 — adjacent community, slight genre bridge
+/// - Open: target 0.60 — cross-genre, bold transitions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionTransitionReach {
+    /// Stay close: transitions within the same genre cluster (target distance 0.25)
+    Tight,
+    /// Adjacent community: bridge to neighboring styles (target distance 0.40)
+    #[default]
+    Medium,
+    /// Cross-genre: bold transitions to different genres (target distance 0.60)
+    Open,
+}
+
+impl SuggestionTransitionReach {
+    pub const ALL: [SuggestionTransitionReach; 3] = [
+        SuggestionTransitionReach::Tight,
+        SuggestionTransitionReach::Medium,
+        SuggestionTransitionReach::Open,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SuggestionTransitionReach::Tight  => "Tight",
+            SuggestionTransitionReach::Medium => "Medium",
+            SuggestionTransitionReach::Open   => "Open",
+        }
+    }
+
+    /// Target normalized distance for the transition bell curve.
+    pub fn target_distance(self) -> f32 {
+        match self {
+            SuggestionTransitionReach::Tight  => 0.25,
+            SuggestionTransitionReach::Medium => 0.40,
+            SuggestionTransitionReach::Open   => 0.60,
+        }
+    }
+
+    /// Width (2σ²) of the bell curve around the target distance.
+    pub fn bell_width(self) -> f32 {
+        match self {
+            SuggestionTransitionReach::Tight  => 0.08,
+            SuggestionTransitionReach::Medium => 0.12,
+            SuggestionTransitionReach::Open   => 0.18,
+        }
+    }
+}
+
 /// Harmonic filter strictness for smart suggestions.
 ///
 /// Controls which key relationships are allowed to appear at all.

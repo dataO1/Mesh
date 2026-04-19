@@ -215,7 +215,7 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                     text(if clusters_info.is_empty() { "" } else { " | " }).size(sz(10.0)),
                     text(clusters_info).size(sz(10.0)),
                     text(" | ").size(sz(10.0)),
-                    text("Green = best match | Red = weakest").size(sz(10.0)),
+                    text("Drop \u{2190} Intent \u{2192} Peak | Clusters: sensitivity | Norm: vector normalization").size(sz(10.0)),
                 ]
                 .spacing(0)
                 .align_y(Alignment::Center)

@@ -421,6 +421,7 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
         app.config.display.suggestion_blend_mode,
         app.config.display.suggestion_key_filter,
         app.config.display.suggestion_stem_complement,
+        app.config.display.suggestion_transition_reach,
     );
 
     // Snapshot current playlist context for the split logic

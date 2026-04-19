@@ -28,6 +28,10 @@ pub struct SuggestionConfig {
     /// L2-normalize PCA vectors before cosine distance.
     /// On = equal component weight. Off = natural PCA variance preserved.
     pub normalize_vectors: bool,
+    /// Target distance for the transition bell curve at extreme slider.
+    pub transition_target: f32,
+    /// Width (2σ²) of the transition bell curve.
+    pub transition_width: f32,
 }
 
 impl SuggestionConfig {
@@ -36,6 +40,7 @@ impl SuggestionConfig {
         blend_mode: super::config::SuggestionBlendMode,
         key_filter: super::config::SuggestionKeyFilter,
         stem_complement: bool,
+        transition_reach: super::config::SuggestionTransitionReach,
     ) -> Self {
         let (harmonic_floor, blended_threshold) = key_filter.thresholds();
         Self {
@@ -43,7 +48,9 @@ impl SuggestionConfig {
             harmonic_floor,
             blended_threshold,
             stem_complement,
-            normalize_vectors: false, // preserve natural PCA variance by default
+            normalize_vectors: false,
+            transition_target: transition_reach.target_distance(),
+            transition_width: transition_reach.bell_width(),
         }
     }
 }
@@ -616,16 +623,18 @@ pub fn query_suggestions(
 
             // ── Vector similarity reward ──
             // Center: similarity → high reward (1 - normalized_distance).
-            // Extremes: dissimilarity → high reward (normalized_distance).
-            // The blend_crossover controls how far the slider must move before
-            // similarity fully transitions to dissimilarity:
+            // Extremes: bell curve centered at transition_target — rewards tracks
+            //   at moderate distance (adjacent community), not maximally dissimilar.
+            //   This avoids jarring cross-map jumps while still encouraging variety.
             //   t = (|bias| / crossover).clamp(0, 1)
-            //   vec_reward = similarity * (1-t) + dissimilarity * t
+            //   vec_reward = similarity * (1-t) + bell(dist, target) * t
             let norm_dist = hnsw_dist / max_hnsw_dist;
             let similarity = 1.0 - norm_dist;
-            let dissimilarity = norm_dist;
+            let target = suggestion_config.transition_target;
+            let width = suggestion_config.transition_width;
+            let transition_bell = (-(norm_dist - target).powi(2) / width).exp();
             let blend_t = (bias_abs / suggestion_config.blend_crossover).clamp(0.0, 1.0);
-            let vec_reward = similarity * (1.0 - blend_t) + dissimilarity * blend_t;
+            let vec_reward = similarity * (1.0 - blend_t) + transition_bell * blend_t;
 
             // ── Co-play reward ──
             // Proven follow-ups get a boost. No history = 0 reward (not a penalty).

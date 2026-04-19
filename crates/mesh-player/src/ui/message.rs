@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
-use crate::config::{AppFont, FontSize, KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, FontSize, KeyScoringModel, SuggestionBlendMode, SuggestionKeyFilter, SuggestionTransitionReach, WaveformAbstraction, WaveformLayout};
 use crate::history::SuggestionContext;
 use crate::suggestions::SplitSuggestions;
 use super::collection_browser::CollectionBrowserMessage;
@@ -78,6 +78,8 @@ pub enum SettingsMessage {
     UpdateSuggestionPlaylistSplit(bool),
     /// Update blend mode (Layering/Balanced/Transition)
     UpdateSuggestionBlendMode(SuggestionBlendMode),
+    /// Update transition reach (Tight/Medium/Open)
+    UpdateSuggestionTransitionReach(SuggestionTransitionReach),
     /// Update harmonic filter strictness (Strict/Relaxed/Off)
     UpdateSuggestionKeyFilter(SuggestionKeyFilter),
     /// Toggle stem complement scoring in suggestions
