@@ -220,9 +220,12 @@ impl MeshCueApp {
         let scales = [1usize, 2, 4, 6, 9, 13, 18];
         let mut all_labels: Vec<Vec<i32>> = Vec::new();
 
+        // min_cluster_size scales with library: ~2% of tracks, floor 8, ceiling 30
+        let min_cluster_size = (n / 50).max(8).min(30);
+
         for &min_samples in &scales {
             let hp = hdbscan::HdbscanHyperParams::builder()
-                .min_cluster_size(5)
+                .min_cluster_size(min_cluster_size)
                 .min_samples(min_samples)
                 .build();
             let clusterer = hdbscan::Hdbscan::new(&data, hp);
@@ -290,7 +293,7 @@ impl MeshCueApp {
         let mut cluster_id_map: HashMap<usize, i32> = HashMap::new();
         let mut next_id = 0i32;
         for (&root, &size) in &component_sizes {
-            if size >= 3 { // minimum 3 tracks to be a community
+            if size >= min_cluster_size { // match HDBSCAN's minimum
                 cluster_id_map.insert(root, next_id);
                 next_id += 1;
             }
@@ -349,8 +352,8 @@ impl MeshCueApp {
         }
 
         state.clear_caches();
-        log::info!("[GRAPH] Consensus clustering: {} communities from {} runs (threshold={}%, {} tracks)",
-            num_clusters, num_runs, (threshold as f32 / num_runs as f32 * 100.0) as u32, n);
+        log::info!("[GRAPH] Consensus clustering: {} communities from {} runs (min_cluster_size={}, threshold={}%, {} tracks)",
+            num_clusters, num_runs, min_cluster_size, (threshold as f32 / num_runs as f32 * 100.0) as u32, n);
     }
 
     /// Select a node as seed — push to breadcrumb stack and query all tracks.
