@@ -66,6 +66,8 @@ pub struct GraphViewState {
     pub pca_dims: usize,
     /// HDBSCAN min_samples sensitivity (lower = more clusters, higher = fewer)
     pub cluster_sensitivity: usize,
+    /// Transition reach index (0=Tight, 1=Medium, 2=Open) for the graph view
+    pub transition_reach_index: usize,
     // Cluster overlays
     /// Cluster assignments from HDBSCAN (track_id → cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
@@ -93,6 +95,7 @@ impl GraphViewState {
             normalize_vectors: false, // off by default — preserve natural PCA variance
             pca_dims: 0,
             cluster_sensitivity: 3, // default: sensitive (more clusters)
+            transition_reach_index: 1, // default: Medium
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
         }

@@ -822,6 +822,10 @@ fn l2_normalize(v: &mut Vec<f32>) {
 
 /// Cosine distance between two vectors: 1 - cosine_similarity.
 /// Returns 0.0 for identical vectors, 2.0 for opposite vectors.
+pub fn cosine_distance_pub(a: &[f32], b: &[f32]) -> f32 {
+    cosine_distance(a, b)
+}
+
 fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;

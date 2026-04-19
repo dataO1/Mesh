@@ -405,6 +405,8 @@ pub enum Message {
     GraphToggleNormalize(bool),
     /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)
     GraphClusterSensitivity(usize),
+    /// Change transition reach in graph view (0=Tight, 1=Medium, 2=Open)
+    GraphTransitionReach(usize),
     /// Message from the graph suggestion track table (selection, sort, etc.)
     GraphTable(mesh_widgets::TrackTableMessage<mesh_core::playlist::NodeId>),
     /// Suggestion query for graph view completed

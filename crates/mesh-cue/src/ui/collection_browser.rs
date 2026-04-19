@@ -185,6 +185,17 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                         .step(1.0)
                         .width(60.0),
                     Space::new().width(8.0),
+                    text("Reach").size(sz(10.0)),
+                    {
+                        let idx = graph_state.transition_reach_index;
+                        let labels = ["Tight", "Med", "Open"];
+                        let label = labels[idx.min(2)];
+                        button(text(label).size(sz(10.0)))
+                            .on_press(Message::GraphTransitionReach((idx + 1) % 3))
+                            .style(button::secondary)
+                            .padding([2, 6])
+                    },
+                    Space::new().width(8.0),
                     text("Norm").size(sz(10.0)),
                     toggler(graph_state.normalize_vectors)
                         .on_toggle(Message::GraphToggleNormalize)

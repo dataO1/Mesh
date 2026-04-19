@@ -182,6 +182,20 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Change transition reach and re-query suggestions.
+    pub fn handle_graph_transition_reach(&mut self, idx: usize) -> Task<Message> {
+        if let Some(ref mut state) = self.collection.graph_state {
+            state.transition_reach_index = idx.min(2);
+        }
+        // Re-query with new transition reach
+        let current_seed = self.collection.graph_state.as_ref()
+            .and_then(|s| s.seed_stack.last().copied());
+        match current_seed {
+            Some(seed_id) => self.run_graph_suggestion_query(seed_id),
+            None => Task::none(),
+        }
+    }
+
     /// Change cluster sensitivity and re-run HDBSCAN immediately.
     pub fn handle_graph_cluster_sensitivity(&mut self, value: usize) -> Task<Message> {
         if let Some(ref mut state) = self.collection.graph_state {
@@ -273,15 +287,54 @@ impl MeshCueApp {
         self.run_graph_suggestion_query(track_id)
     }
 
-    /// Toggle L2-normalization — rebuilds t-SNE and re-queries suggestions.
+    /// Toggle L2-normalization — logs comparison stats then rebuilds.
     pub fn handle_graph_toggle_normalize(&mut self, enabled: bool) -> Task<Message> {
-        let normalize = enabled;
-        // Force full rebuild: clear graph state, re-trigger edge build + t-SNE
+        log::info!("[GRAPH] Vector normalization toggled: {} → {}", !enabled, enabled);
+
+        // Log distance distribution comparison for both modes
+        let db = self.domain.db_arc();
+        if let Ok(all_pca) = db.get_all_pca_with_tracks() {
+            if let Some(first) = all_pca.first() {
+                let seed = &first.1;
+                let mut raw_dists = Vec::new();
+                let mut norm_dists = Vec::new();
+
+                for (_, pca) in all_pca.iter().skip(1).take(100) {
+                    // Raw cosine distance
+                    raw_dists.push(mesh_core::suggestions::query::cosine_distance_pub(seed, pca));
+
+                    // Normalized cosine distance
+                    let mut s = seed.clone();
+                    let mut c = pca.clone();
+                    let sn = s.iter().map(|x| x*x).sum::<f32>().sqrt();
+                    let cn = c.iter().map(|x| x*x).sum::<f32>().sqrt();
+                    if sn > 1e-10 { s.iter_mut().for_each(|x| *x /= sn); }
+                    if cn > 1e-10 { c.iter_mut().for_each(|x| *x /= cn); }
+                    norm_dists.push(mesh_core::suggestions::query::cosine_distance_pub(&s, &c));
+                }
+
+                if !raw_dists.is_empty() {
+                    raw_dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    norm_dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let n = raw_dists.len();
+                    let raw_mean = raw_dists.iter().sum::<f32>() / n as f32;
+                    let norm_mean = norm_dists.iter().sum::<f32>() / n as f32;
+                    let raw_std = (raw_dists.iter().map(|d| (d - raw_mean).powi(2)).sum::<f32>() / n as f32).sqrt();
+                    let norm_std = (norm_dists.iter().map(|d| (d - norm_mean).powi(2)).sum::<f32>() / n as f32).sqrt();
+                    log::info!("[GRAPH NORM] Raw distances:  mean={:.4} std={:.4} range=[{:.4}, {:.4}]",
+                        raw_mean, raw_std, raw_dists[0], raw_dists[n-1]);
+                    log::info!("[GRAPH NORM] Normalized:     mean={:.4} std={:.4} range=[{:.4}, {:.4}]",
+                        norm_mean, norm_std, norm_dists[0], norm_dists[n-1]);
+                    log::info!("[GRAPH NORM] Spread ratio (std): {:.2}x (>1 = normalization helps, <1 = hurts)",
+                        norm_std / raw_std.max(0.0001));
+                }
+            }
+        }
+
         self.collection.graph_state = None;
         self.collection.graph_edges = None;
         self.collection.graph_suggestion_rows.clear();
-        // Store the flag so handle_graph_edges_ready picks it up
-        self.collection.graph_normalize_vectors = normalize;
+        self.collection.graph_normalize_vectors = enabled;
         self.handle_build_graph_edges()
     }
 
@@ -385,14 +438,16 @@ impl MeshCueApp {
         // Use Off filter to score ALL tracks (no key filtering)
         // The top 30 will be highlighted as suggestions
         let normalize = self.collection.graph_normalize_vectors;
+        let reach_idx = state.transition_reach_index;
+        let reach = SuggestionTransitionReach::ALL[reach_idx.min(2)];
         let config = SuggestionConfig {
             blend_crossover: SuggestionBlendMode::Balanced.crossover(),
             harmonic_floor: 0.0,
             blended_threshold: 0.0,
             stem_complement: false,
             normalize_vectors: normalize,
-            transition_target: SuggestionTransitionReach::Medium.target_distance(),
-            transition_width: SuggestionTransitionReach::Medium.bell_width(),
+            transition_target: reach.target_distance(),
+            transition_width: reach.bell_width(),
         };
 
         let sources = vec![DbSource {
