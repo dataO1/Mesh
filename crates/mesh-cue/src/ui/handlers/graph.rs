@@ -220,8 +220,8 @@ impl MeshCueApp {
         let scales = [1usize, 2, 4, 6, 9, 13, 18];
         let mut all_labels: Vec<Vec<i32>> = Vec::new();
 
-        // min_cluster_size scales with library: ~2% of tracks, floor 8, ceiling 30
-        let min_cluster_size = (n / 50).max(8).min(30);
+        // min_cluster_size scales with library: ~1% of tracks, floor 5, ceiling 20
+        let min_cluster_size = (n / 100).max(5).min(20);
 
         for &min_samples in &scales {
             let hp = hdbscan::HdbscanHyperParams::builder()
