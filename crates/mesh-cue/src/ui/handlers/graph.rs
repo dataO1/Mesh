@@ -370,11 +370,6 @@ impl MeshCueApp {
             state.seed_stack.truncate(state.seed_position + if current.is_some() { 1 } else { 0 });
             state.seed_stack.push(track_id);
             state.seed_position = state.seed_stack.len() - 1;
-
-            if state.seed_stack.len() > 50 {
-                state.seed_stack.remove(0);
-                state.seed_position = state.seed_position.saturating_sub(1);
-            }
         }
 
         self.run_graph_suggestion_query(track_id)

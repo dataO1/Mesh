@@ -644,7 +644,7 @@ impl MeshCueApp {
             Message::GraphTable(table_msg) => {
                 match table_msg {
                     mesh_widgets::TrackTableMessage::Activate(node_id) => {
-                        // Double-click a suggestion row → seed from that track in the graph
+                        // Double-click: seed from that track in the graph
                         if let Some(id_str) = node_id.0.strip_prefix("graph_") {
                             if let Ok(track_id) = id_str.parse::<i64>() {
                                 return self.handle_graph_seed_selected(track_id);
@@ -652,10 +652,16 @@ impl MeshCueApp {
                         }
                     }
                     mesh_widgets::TrackTableMessage::Select(node_id) => {
-                        // Single click: highlight the node in the graph
+                        // Single click: highlight node + load track for preview
                         if let Some(id_str) = node_id.0.strip_prefix("graph_") {
                             if let Ok(track_id) = id_str.parse::<i64>() {
-                                return self.handle_graph_node_hovered(Some(track_id));
+                                let _ = self.handle_graph_node_hovered(Some(track_id));
+                                // Load the track in the editor for preview
+                                if let Ok(Some(track)) = self.domain.db_arc().get_track(track_id) {
+                                    return Task::perform(async {}, move |_| {
+                                        Message::LoadTrackByPath(track.path.clone())
+                                    });
+                                }
                             }
                         }
                     }
