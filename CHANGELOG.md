@@ -88,11 +88,11 @@ All notable changes to Mesh are documented in this file.
   adjacent communities, Open enables bold cross-genre transitions. Controllable
   from both mesh-player settings and the graph view header.
 
-- **HDBSCAN cluster sensitivity slider** — Real-time slider in the graph header
-  (1-20) controls how many clusters HDBSCAN detects. Lower = more sensitive
-  (more small clusters), higher = fewer large clusters. Clustering now runs
-  on 2D t-SNE positions instead of high-dimensional PCA, matching the visible
-  communities in the graph.
+- **Multi-scale consensus clustering** — Replaces the manual HDBSCAN sensitivity
+  slider. Runs HDBSCAN at 7 different scales and keeps only communities that
+  persist across 70%+ of runs. No parameter tuning needed. Per-track confidence
+  controls color intensity — strong community members render vivid, boundary
+  tracks faded, noise tracks gray.
 
 ### Changed
 
