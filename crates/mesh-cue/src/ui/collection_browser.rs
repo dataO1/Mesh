@@ -166,35 +166,6 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
 
 // ── Energy arc helpers ──────────────────────────────────────────────
 
-/// Green for good key transitions.
-const ARC_GREEN: Color = Color {
-    r: 0.18,
-    g: 0.54,
-    b: 0.31,
-    a: 1.0,
-};
-/// Amber for moderate key transitions.
-const ARC_AMBER: Color = Color {
-    r: 0.77,
-    g: 0.60,
-    b: 0.17,
-    a: 1.0,
-};
-/// Red for poor key transitions.
-const ARC_RED: Color = Color {
-    r: 0.65,
-    g: 0.24,
-    b: 0.25,
-    a: 1.0,
-};
-/// Gray for unknown transitions.
-const ARC_UNKNOWN: Color = Color {
-    r: 0.40,
-    g: 0.40,
-    b: 0.40,
-    a: 1.0,
-};
-
 /// Build an `EnergyArcState` from the current track list.
 ///
 /// Uses BPM as the intensity proxy (normalized to roughly [0, 1] in the
@@ -207,24 +178,34 @@ const ARC_UNKNOWN: Color = Color {
 ///
 /// `consecutive_similarities`: optional cosine distances between consecutive
 /// track PCA embeddings (len = tracks.len() - 1). Pass empty slice if unavailable.
+/// Theme-derived colors for arc transitions.
+#[derive(Clone)]
+pub struct ArcThemeColors {
+    pub good: Color,    // compatible transitions (success)
+    pub moderate: Color, // moderate transitions (warning)
+    pub poor: Color,    // poor transitions (danger)
+    pub unknown: Color, // no key data
+    pub stems: [Color; 4],
+}
+
 pub fn build_energy_arc<Id: Clone>(
     tracks: &[TrackRow<Id>],
     current_index: usize,
     consecutive_similarities: &[f32],
-    stem_colors: [iced::Color; 4],
+    theme_colors: ArcThemeColors,
 ) -> Option<EnergyArcState> {
     let has_key_data = tracks.iter().filter(|t| t.key.is_some()).count() >= 2;
     if !has_key_data {
         return None;
     }
-    Some(build_energy_arc_inner(tracks, current_index, consecutive_similarities, stem_colors))
+    Some(build_energy_arc_inner(tracks, current_index, consecutive_similarities, theme_colors))
 }
 
 fn build_energy_arc_inner<Id: Clone>(
     tracks: &[TrackRow<Id>],
     current_index: usize,
     consecutive_similarities: &[f32],
-    stem_colors: [iced::Color; 4],
+    theme_colors: ArcThemeColors,
 ) -> EnergyArcState {
     let points: Vec<ArcPoint> = tracks
         .iter()
@@ -254,17 +235,17 @@ fn build_energy_arc_inner<Id: Clone>(
                     let bs = base_score(tt);
                     let label = transition_type_label(tt);
                     let color = if bs >= 0.70 {
-                        ARC_GREEN
+                        theme_colors.good
                     } else if bs >= 0.40 {
-                        ARC_AMBER
+                        theme_colors.moderate
                     } else {
-                        ARC_RED
+                        theme_colors.poor
                     };
                     ArcTransition { label, color, similarity_distance: sim_dist }
                 }
                 _ => ArcTransition {
                     label: "?",
-                    color: ARC_UNKNOWN,
+                    color: theme_colors.unknown,
                     similarity_distance: sim_dist,
                 },
             }
@@ -275,7 +256,7 @@ fn build_energy_arc_inner<Id: Clone>(
         points,
         transitions,
         current_index,
-        stem_colors,
+        stem_colors: theme_colors.stems,
     }
 }
 

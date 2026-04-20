@@ -150,10 +150,22 @@ impl<M> canvas::Program<M> for EnergyArcState {
             2.0 + avg_dissim.clamp(0.0, 1.0) * 10.0
         }).collect();
 
-        // ── Distance-based alpha (fade distant tracks) ────────────────
+        // ── Focus-based alpha: current + next are vivid, past fades, far future fades ──
+        // The DJ's focus is "what transition do I need to play next?"
         let alpha_for = |i: usize| -> f32 {
-            let dist = (i as isize - center as isize).unsigned_abs() as f32;
-            (1.0 - dist * 0.03).clamp(0.15, 1.0)
+            let ii = i as isize;
+            let cc = center as isize;
+            if ii == cc || ii == cc + 1 {
+                1.0 // current + next: full focus
+            } else if ii < cc {
+                // Past: fade gradually
+                let steps_back = (cc - ii) as f32;
+                (1.0 - steps_back * 0.12).clamp(0.08, 0.6)
+            } else {
+                // Future beyond next: fade quickly
+                let steps_ahead = (ii - cc - 1) as f32;
+                (0.6 - steps_ahead * 0.15).clamp(0.08, 0.6)
+            }
         };
 
         // ── Layer 1: Ribbon fill (segment by segment) ─────────────────

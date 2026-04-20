@@ -180,6 +180,13 @@ impl MeshCueApp {
         collection_state.browser_right.table_state.tag_category_colors = Some(tag_cats);
         collection_state.browser_right.table_state.name_column_width = Some(iced::Length::Fixed(150.0));
         collection_state.stem_colors = active_theme.stems;
+        collection_state.arc_theme_colors = crate::ui::collection_browser::ArcThemeColors {
+            good: active_theme.ui.success,
+            moderate: active_theme.ui.warning,
+            poor: active_theme.ui.danger,
+            unknown: iced::Color::from_rgb(0.35, 0.35, 0.35),
+            stems: active_theme.stems,
+        };
 
         // Set left browser to show tracks (collection) by default
         collection_state.browser_left.set_current_folder(NodeId::tracks());

@@ -143,6 +143,8 @@ pub struct CollectionState {
     pub pending_cell_edit: Option<(NodeId, TrackColumn)>,
     /// Active theme stem colors (for waveform rendering)
     pub stem_colors: [Color; 4],
+    /// Theme-derived colors for energy arc transitions
+    pub arc_theme_colors: crate::ui::collection_browser::ArcThemeColors,
     /// Active browser tab
     pub active_tab: BrowserTab,
     /// Graph view state (None until first Graph tab open)
@@ -245,7 +247,7 @@ impl CollectionState {
             .next()
             .and_then(|sel_id| self.left_tracks.iter().position(|t| &t.id == sel_id))
             .unwrap_or(0);
-        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx, &self.consecutive_similarities, self.stem_colors);
+        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx, &self.consecutive_similarities, self.arc_theme_colors.clone());
     }
 }
 
@@ -286,6 +288,13 @@ impl Default for CollectionState {
                 let mut ts = mesh_widgets::TrackTableState::new();
                 ts.display_columns = Some(mesh_widgets::TrackColumn::graph_analysis());
                 ts
+            },
+            arc_theme_colors: crate::ui::collection_browser::ArcThemeColors {
+                good: Color::from_rgb(0.18, 0.54, 0.31),
+                moderate: Color::from_rgb(0.77, 0.60, 0.17),
+                poor: Color::from_rgb(0.65, 0.24, 0.25),
+                unknown: Color::from_rgb(0.40, 0.40, 0.40),
+                stems: mesh_widgets::STEM_COLORS,
             },
             consecutive_similarities: Vec::new(),
             energy_arc: None,
