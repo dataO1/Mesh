@@ -105,6 +105,23 @@ All notable changes to Mesh are documented in this file.
   from full theme colors to grayscale. Ribbon shape always visible (50% floor),
   inner line fades faster than outer tube. Adapts to the active color theme.
 
+- **Similarity graph in mesh-player** — The t-SNE library graph from
+  mesh-cue's Graph tab now appears in mesh-player as a compact panel to
+  the right of the track list. Shows cluster-colored nodes for the entire
+  library. When suggestions are active, the current seed and top-30
+  matches are highlighted with score-colored edges. Computes in the
+  background on app startup — the graph is ready by the time you browse.
+
+- **Energy arc + graph combined canvas** — The energy arc ribbon and
+  similarity graph share a single canvas panel on the right side of the
+  collection browser. The ribbon sits at the top (55px), the graph fills
+  the remaining space below with auto-fit zoom.
+
+- **Browser Analytics toggle** — New setting in Settings > Display >
+  Browser: "Browser Analytics" (default on). When disabled, the
+  side panel is hidden and the track list takes full width — useful on
+  smaller screens or when the analytics are not needed.
+
 - **Energy arc in mesh-player** — The same ribbon widget now appears in
   mesh-player's collection browser with real ML intensity data. Batch
   intensity enrichment avoids per-track DB queries. Filename-fallback
@@ -162,6 +179,17 @@ All notable changes to Mesh are documented in this file.
   roughly 12+ past transitions at half-life) are highlighted with a green row
   tint in the suggestion panel. The graph is built via "Analyse Library" or
   programmatically; it is separate from HNSW and uses point lookups only.
+
+- **Graph preloads on startup (mesh-cue)** — The t-SNE graph and cluster
+  detection now start building in the background as soon as the app launches
+  instead of waiting until the Graph tab is first opened. The graph is
+  immediately ready when you switch to the Graph tab.
+
+- **Graph and tag colors follow active theme** — The suggestion graph in
+  both apps uses theme-derived stem colors for score coloring (Vocals stem
+  for good matches, Bass stem for moderate, red for poor) and the theme
+  accent color for seed node highlighting. Colors update when switching
+  themes.
 
 - **Suggestion tag pills show raw musical facts** — Reason tag pills now
   describe the actual musical relationship between seed and candidate, not how
