@@ -163,12 +163,17 @@ All notable changes to Mesh are documented in this file.
   tint in the suggestion panel. The graph is built via "Analyse Library" or
   programmatically; it is separate from HNSW and uses point lookups only.
 
-- **Suggestion tag pill colors match energy arc ribbon** — Key transition pills
-  now use the inherent harmonic quality of the transition type (via `base_score`)
-  instead of the composite key reward value. Same Key and Adjacent are always
-  green, Diagonal/Mood/Energy are amber, Semitone/Far/Tritone are always red —
-  matching the color encoding in the energy arc ribbon. Other pills (Vector,
-  Energy, Vocals, Lead) still use their reward value for coloring.
+- **Suggestion tag pills show raw musical facts** — Reason tag pills now
+  describe the actual musical relationship between seed and candidate, not how
+  well they scored against the current intent. Key pill shows the transition
+  name ("Same Key", "Cool", "Tritone", etc.) colored by inherent harmonic
+  quality — green for compatible, amber for moderate, red for difficult —
+  matching the energy arc ribbon. Similarity pill is always "Similarity",
+  colored by raw cosine distance to seed (green = similar, red = dissimilar).
+  Energy pill is always "Energy", colored by relative intensity shift (green =
+  more energy, red = less). Vocals and Lead pills unchanged (green =
+  complementary stems, red = clashing). Directional arrows removed from all
+  tags for cleaner presentation.
 
 - **Stable track IDs across collection moves** — Track identifiers are now
   derived from the file's path relative to the collection root instead of an
