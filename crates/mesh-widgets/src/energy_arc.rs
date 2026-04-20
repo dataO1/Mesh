@@ -156,19 +156,22 @@ impl<M> canvas::Program<M> for EnergyArcState {
             .collect();
 
         // ── Focus-based alpha: current + next vivid, aggressive fade elsewhere ──
-        // outer_alpha = ribbon fill (fades slower, provides context)
-        // inner_alpha = center line + dots (fades faster, focuses attention)
+        // outer_alpha = ribbon fill (always visible, minimum floor for shape context)
+        // inner_alpha = center line + dots (fades aggressively, focuses attention)
+        // Past fades faster than future — highlights upcoming transitions.
         let outer_alpha = |i: usize| -> f32 {
             let ii = i as isize;
             let cc = center as isize;
             if ii == cc || ii == cc + 1 {
                 1.0
             } else if ii < cc {
+                // Past: fade fast but keep visible ribbon shape
                 let steps_back = (cc - ii) as f32;
-                (0.7 - steps_back * 0.15).clamp(0.05, 0.5)
+                (0.6 - steps_back * 0.12).clamp(0.15, 0.5)
             } else {
+                // Future: fade slower — these are what the DJ needs to see
                 let steps_ahead = (ii - cc - 1) as f32;
-                (0.5 - steps_ahead * 0.18).clamp(0.05, 0.5)
+                (0.7 - steps_ahead * 0.08).clamp(0.15, 0.7)
             }
         };
         let inner_alpha = |i: usize| -> f32 {
@@ -177,11 +180,13 @@ impl<M> canvas::Program<M> for EnergyArcState {
             if ii == cc || ii == cc + 1 {
                 1.0
             } else if ii < cc {
+                // Past inner: disappear quickly
                 let steps_back = (cc - ii) as f32;
-                (0.6 - steps_back * 0.2).clamp(0.0, 0.4)
+                (0.4 - steps_back * 0.25).clamp(0.0, 0.3)
             } else {
+                // Future inner: fade but stay readable longer
                 let steps_ahead = (ii - cc - 1) as f32;
-                (0.35 - steps_ahead * 0.2).clamp(0.0, 0.35)
+                (0.5 - steps_ahead * 0.15).clamp(0.0, 0.5)
             }
         };
 
