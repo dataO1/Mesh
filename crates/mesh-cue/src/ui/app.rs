@@ -185,6 +185,9 @@ impl MeshCueApp {
         collection_state.browser_left.set_current_folder(NodeId::tracks());
         // Load tracks via PlaylistStorage path (includes cue counts + tags)
         collection_state.left_tracks = domain.get_tracks_for_display(&NodeId::tracks());
+        let paths: Vec<Option<String>> = collection_state.left_tracks.iter()
+            .map(|t| t.track_path.clone()).collect();
+        collection_state.consecutive_similarities = domain.compute_consecutive_similarities(&paths);
         collection_state.rebuild_energy_arc();
 
         // Start audio system for preview (lock-free architecture)
@@ -318,6 +321,11 @@ impl MeshCueApp {
                 if let Some(folder) = self.collection.browser_left.current_folder.clone() {
                     let tracks = self.domain.get_tracks_for_display(&folder);
                     self.collection.refresh_tracks(BrowserSide::Left, tracks);
+                    // Compute PCA similarities for energy arc (single batch query)
+                    let paths: Vec<Option<String>> = self.collection.left_tracks.iter()
+                        .map(|t| t.track_path.clone()).collect();
+                    self.collection.consecutive_similarities = self.domain.compute_consecutive_similarities(&paths);
+                    self.collection.rebuild_energy_arc();
                 }
                 if let Some(folder) = self.collection.browser_right.current_folder.clone() {
                     let tracks = self.domain.get_tracks_for_display(&folder);

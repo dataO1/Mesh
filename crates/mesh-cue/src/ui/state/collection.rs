@@ -157,6 +157,8 @@ pub struct CollectionState {
     pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
     /// Table state for the graph suggestion list
     pub graph_table_state: mesh_widgets::TrackTableState<NodeId>,
+    /// PCA cosine distances between consecutive left browser tracks (for energy arc)
+    pub consecutive_similarities: Vec<f32>,
     /// Cached energy arc state for the left browser (rebuilt when tracks change)
     pub energy_arc: Option<EnergyArcState>,
 }
@@ -243,7 +245,7 @@ impl CollectionState {
             .next()
             .and_then(|sel_id| self.left_tracks.iter().position(|t| &t.id == sel_id))
             .unwrap_or(0);
-        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx);
+        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx, &self.consecutive_similarities);
     }
 }
 
@@ -285,6 +287,7 @@ impl Default for CollectionState {
                 ts.display_columns = Some(mesh_widgets::TrackColumn::graph_analysis());
                 ts
             },
+            consecutive_similarities: Vec::new(),
             energy_arc: None,
         }
     }

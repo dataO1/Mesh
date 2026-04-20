@@ -25,6 +25,9 @@ pub struct ArcPoint {
 pub struct ArcTransition {
     pub label: &'static str,
     pub color: Color,
+    /// Cosine distance between consecutive PCA embeddings [0, ~1.5].
+    /// 0 = identical sound, higher = more different.
+    pub similarity_distance: f32,
 }
 
 /// State for the energy arc display.
@@ -74,16 +77,56 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let usable_h = (bounds.height - 2.0 * V_PAD).max(1.0);
         let center = self.current_index.min(n - 1);
 
-        // Min-max normalize intensity for full vertical range
-        let min_i = self.points.iter().map(|p| p.intensity).fold(f32::MAX, f32::min);
-        let max_i = self.points.iter().map(|p| p.intensity).fold(f32::MIN, f32::max);
-        let range = (max_i - min_i).max(0.001);
+        // Compute perceived energy: cumulative signal combining intensity,
+        // key transition direction, and vector dissimilarity.
+        let mut perceived = vec![0.0f32; n];
+        perceived[0] = self.points[0].intensity;
+        for i in 1..n {
+            let intensity_delta = self.points[i].intensity - self.points[i - 1].intensity;
 
-        // Compute screen positions for ALL points
+            if i - 1 < self.transitions.len() {
+                let tr = &self.transitions[i - 1];
+                // Key direction from transition color heuristic:
+                // green (high base_score) = compatible = small direction
+                // We use the label to infer direction
+                let key_dir = match tr.label {
+                    "Same Key" => 0.0,
+                    "Adjacent" => 0.15, // could be up or down, approximate
+                    "Diagonal" => 0.10,
+                    "Boost" => 0.35,
+                    "Cool" => -0.35,
+                    "Mood Lift" => 0.25,
+                    "Darken" => -0.25,
+                    "Semitone" => 0.20,
+                    "Far" | "Cross" => 0.0,
+                    "Tritone" => 0.0,
+                    _ => 0.0,
+                };
+
+                // Dissimilarity amplifies the change
+                let dissim = tr.similarity_distance;
+                let amplifier = 0.5 + dissim;
+
+                let direction = intensity_delta * 0.5 + key_dir * 0.3;
+                // Exponential decay to prevent drift: blend toward raw intensity
+                perceived[i] = perceived[i - 1] * 0.8
+                    + self.points[i].intensity * 0.2
+                    + direction * amplifier * 0.25;
+            } else {
+                perceived[i] = self.points[i].intensity;
+            }
+        }
+
+        // Min-max normalize perceived energy for full vertical range
+        let min_p = perceived.iter().fold(f32::MAX, |a, &b| a.min(b));
+        let max_p = perceived.iter().fold(f32::MIN, |a, &b| a.max(b));
+        let range = (max_p - min_p).max(0.001);
+
+        // Compute screen positions
         let positions: Vec<Point> = (0..n)
             .map(|i| {
                 let x = H_PAD + (i as f32 / (n - 1) as f32) * usable_w;
-                let norm = (self.points[i].intensity - min_i) / range;
+                let norm = (perceived[i] - min_p) / range;
                 let y = V_PAD + (1.0 - norm) * usable_h;
                 Point::new(x, y)
             })

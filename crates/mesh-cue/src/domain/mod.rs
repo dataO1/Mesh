@@ -792,6 +792,31 @@ impl MeshCueDomain {
         crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id)
     }
 
+    /// Compute cosine distances between consecutive tracks' PCA embeddings.
+    /// Returns a Vec of length `paths.len() - 1`.
+    pub fn compute_consecutive_similarities(&self, paths: &[Option<String>]) -> Vec<f32> {
+        if paths.len() < 2 { return Vec::new(); }
+
+        // Batch-load all PCA embeddings in one query
+        let all_pca = self.db_service.get_all_pca_with_tracks().unwrap_or_default();
+        let pca_by_path: std::collections::HashMap<String, &Vec<f32>> = all_pca.iter()
+            .map(|(t, v)| (t.path.to_string_lossy().to_string(), v))
+            .collect();
+
+        paths.windows(2)
+            .map(|w| {
+                let a = w[0].as_ref().and_then(|p| pca_by_path.get(p));
+                let b = w[1].as_ref().and_then(|p| pca_by_path.get(p));
+                match (a, b) {
+                    (Some(va), Some(vb)) => {
+                        mesh_core::suggestions::query::cosine_distance_pub(va, vb)
+                    }
+                    _ => 0.3, // fallback: moderate distance
+                }
+            })
+            .collect()
+    }
+
     /// Batch-populate intensity values on TrackRows from ML analysis data.
     pub fn enrich_with_intensity(&self, rows: &mut [TrackRow<NodeId>]) {
         // Collect all track paths → resolve to DB IDs

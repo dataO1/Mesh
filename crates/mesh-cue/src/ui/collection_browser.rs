@@ -203,20 +203,26 @@ const ARC_UNKNOWN: Color = Color {
 /// score (green >= 0.70, amber >= 0.40, red < 0.40).
 ///
 /// Returns `None` if fewer than 2 tracks have key data.
+/// Build an `EnergyArcState` from the current track list.
+///
+/// `consecutive_similarities`: optional cosine distances between consecutive
+/// track PCA embeddings (len = tracks.len() - 1). Pass empty slice if unavailable.
 pub fn build_energy_arc<Id: Clone>(
     tracks: &[TrackRow<Id>],
     current_index: usize,
+    consecutive_similarities: &[f32],
 ) -> Option<EnergyArcState> {
     let has_key_data = tracks.iter().filter(|t| t.key.is_some()).count() >= 2;
     if !has_key_data {
         return None;
     }
-    Some(build_energy_arc_inner(tracks, current_index))
+    Some(build_energy_arc_inner(tracks, current_index, consecutive_similarities))
 }
 
 fn build_energy_arc_inner<Id: Clone>(
     tracks: &[TrackRow<Id>],
     current_index: usize,
+    consecutive_similarities: &[f32],
 ) -> EnergyArcState {
     let points: Vec<ArcPoint> = tracks
         .iter()
@@ -238,7 +244,9 @@ fn build_energy_arc_inner<Id: Clone>(
 
     let transitions: Vec<ArcTransition> = points
         .windows(2)
-        .map(|w| {
+        .enumerate()
+        .map(|(idx, w)| {
+            let sim_dist = consecutive_similarities.get(idx).copied().unwrap_or(0.3);
             let key_a = w[0].key.as_deref().and_then(MusicalKey::parse);
             let key_b = w[1].key.as_deref().and_then(MusicalKey::parse);
             match (key_a, key_b) {
@@ -253,11 +261,12 @@ fn build_energy_arc_inner<Id: Clone>(
                     } else {
                         ARC_RED
                     };
-                    ArcTransition { label, color }
+                    ArcTransition { label, color, similarity_distance: sim_dist }
                 }
                 _ => ArcTransition {
                     label: "?",
                     color: ARC_UNKNOWN,
+                    similarity_distance: sim_dist,
                 },
             }
         })
