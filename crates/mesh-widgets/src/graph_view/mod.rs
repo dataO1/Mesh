@@ -634,6 +634,32 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     // Offset all points by bounds origin (no frame.translate — avoids coordinate bugs)
     let ox = bounds.x;
     let oy = bounds.y;
+
+    // Diagnostic: log transform params and sample positions once
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    let count = LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 5 && has_seed {
+        log::debug!("[GRAPH DRAW] bounds=({},{} {}x{}), zoom={:.3}, pan=({:.3},{:.3}), ox={}, oy={}, positions={}, suggestions={}, edges={}",
+            bounds.x, bounds.y, bounds.width, bounds.height, zoom, pan.0, pan.1, ox, oy,
+            state.positions.len(), state.suggestion_ids.len(), state.suggestion_edges.len());
+        // Log seed position
+        if let Some(seed_id) = current_seed {
+            if let Some(&pos) = state.positions.get(&seed_id) {
+                let s = to_screen(pos, pan, zoom, graph_bounds);
+                log::debug!("[GRAPH DRAW] seed id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
+                    seed_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
+            }
+        }
+        // Log first suggestion position
+        if let Some(&sugg_id) = state.suggestion_ids.iter().next() {
+            if let Some(&pos) = state.positions.get(&sugg_id) {
+                let s = to_screen(pos, pan, zoom, graph_bounds);
+                log::debug!("[GRAPH DRAW] sugg id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
+                    sugg_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
+            }
+        }
+    }
     let pt = |pos: (f32, f32)| -> Point {
         let s = to_screen(pos, pan, zoom, graph_bounds);
         Point::new(s.x + ox, s.y + oy)
