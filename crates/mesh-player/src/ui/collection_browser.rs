@@ -1178,14 +1178,29 @@ impl CollectionBrowserState {
     /// Compute PCA cosine distances between consecutive tracks.
     fn compute_similarities(&mut self) {
         let all_pca = self.db_service.get_all_pca_with_tracks().unwrap_or_default();
-        let pca_by_path: HashMap<String, Vec<f32>> = all_pca.into_iter()
-            .map(|(t, v)| (t.path.to_string_lossy().to_string(), v))
-            .collect();
+        // Index by both full path and filename for matching (DB stores absolute,
+        // playlist storage may return relative paths)
+        let mut pca_by_path: HashMap<String, Vec<f32>> = HashMap::new();
+        for (t, v) in all_pca {
+            let full = t.path.to_string_lossy().to_string();
+            if let Some(fname) = t.path.file_name() {
+                pca_by_path.insert(fname.to_string_lossy().to_string(), v.clone());
+            }
+            pca_by_path.insert(full, v);
+        }
+
+        let lookup = |path: &str| -> Option<&Vec<f32>> {
+            pca_by_path.get(path).or_else(|| {
+                // Try filename only
+                std::path::Path::new(path).file_name()
+                    .and_then(|f| pca_by_path.get(&f.to_string_lossy().to_string()))
+            })
+        };
 
         self.consecutive_similarities = self.tracks.windows(2)
             .map(|w| {
-                let a = w[0].track_path.as_ref().and_then(|p| pca_by_path.get(p));
-                let b = w[1].track_path.as_ref().and_then(|p| pca_by_path.get(p));
+                let a = w[0].track_path.as_deref().and_then(|p| lookup(p));
+                let b = w[1].track_path.as_deref().and_then(|p| lookup(p));
                 match (a, b) {
                     (Some(va), Some(vb)) => mesh_core::suggestions::query::cosine_distance_pub(va, vb),
                     _ => 0.3,
@@ -1196,14 +1211,26 @@ impl CollectionBrowserState {
 
     /// Batch-populate intensity on tracks from ML analysis, then rebuild arc.
     fn enrich_and_rebuild(&mut self) {
-        // Build path→ID map from one batch query
+        // Build path→ID map (by both full path and filename for matching)
         let all_tracks = self.db_service.get_all_tracks().unwrap_or_default();
-        let path_to_id: HashMap<String, i64> = all_tracks.iter()
-            .filter_map(|t| t.id.map(|id| (t.path.to_string_lossy().to_string(), id)))
-            .collect();
+        let mut path_to_id: HashMap<String, i64> = HashMap::new();
+        for t in &all_tracks {
+            if let Some(id) = t.id {
+                path_to_id.insert(t.path.to_string_lossy().to_string(), id);
+                if let Some(fname) = t.path.file_name() {
+                    path_to_id.insert(fname.to_string_lossy().to_string(), id);
+                }
+            }
+        }
 
+        let resolve_id = |p: &str| -> Option<i64> {
+            path_to_id.get(p).copied().or_else(|| {
+                std::path::Path::new(p).file_name()
+                    .and_then(|f| path_to_id.get(&f.to_string_lossy().to_string()).copied())
+            })
+        };
         let row_ids: Vec<i64> = self.tracks.iter()
-            .filter_map(|r| r.track_path.as_ref().and_then(|p| path_to_id.get(p)).copied())
+            .filter_map(|r| r.track_path.as_deref().and_then(|p| resolve_id(p)))
             .collect();
 
         if !row_ids.is_empty() {
@@ -1213,7 +1240,7 @@ impl CollectionBrowserState {
 
             for row in &mut self.tracks {
                 if let Some(path) = &row.track_path {
-                    if let Some(&id) = path_to_id.get(path) {
+                    if let Some(id) = resolve_id(path) {
                         if let Some(ml) = ml_scores.get(&id) {
                             row.intensity = mesh_core::suggestions::scoring::composite_intensity(
                                 ml.aggression,
