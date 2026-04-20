@@ -78,9 +78,8 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let text_color = palette.background.base.text;
         let accent = palette.primary.base.color;
 
-        // Slightly lighter background than app bg
-        let ribbon_bg = Color { r: bg.r + 0.03, g: bg.g + 0.03, b: bg.b + 0.03, a: 0.7 };
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), ribbon_bg);
+        // Match the app background exactly so faded tracks are still visible against it
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), bg);
 
         let n = self.points.len();
         if n < 2 {
