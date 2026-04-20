@@ -162,17 +162,21 @@ impl<M> canvas::Program<M> for EnergyArcState {
         // color_mix: 1.0 = full transition color, 0.0 = fully gray.
         // Only the next 2-3 transitions keep their color; everything else goes gray.
         let gray = Color::from_rgb(0.35, 0.35, 0.38);
+        // Color fading: symmetric around current track.
+        // Segments touching the current track (prev→current AND current→next) are vivid.
         let color_mix = |i: usize| -> f32 {
             let ii = i as isize;
             let cc = center as isize;
-            if ii == cc || ii == cc + 1 {
+            // Segment i connects track i and track i+1.
+            // Segments adjacent to current: i == cc (current→next) or i == cc-1 (prev→current)
+            if ii == cc || ii == cc - 1 {
                 1.0
-            } else if ii == cc + 2 {
-                0.6
-            } else if ii == cc - 1 || ii == cc + 3 {
-                0.2
+            } else if ii == cc + 1 || ii == cc - 2 {
+                0.5
+            } else if ii == cc + 2 || ii == cc - 3 {
+                0.15
             } else {
-                0.0 // fully gray
+                0.0
             }
         };
         let mix_color = |base: Color, i: usize| -> Color {
@@ -263,46 +267,25 @@ impl<M> canvas::Program<M> for EnergyArcState {
             frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
         }
 
-        // ── Layer 3: Track dots (fade faster than ribbon) ─────────────
+        // ── Layer 3: Track dots — only current track gets accent dot ──
         for i in 0..n {
             let x = x_for(i);
             let y = y_for(norm[i]);
             let a = inner_alpha(i);
 
             if i == center {
+                // Current track: accent dot with glow — the only prominent dot
                 let glow = Path::circle(Point::new(x, y), 6.0);
                 frame.fill(&glow, Color { a: 0.25, ..accent });
                 let dot = Path::circle(Point::new(x, y), 4.0);
                 frame.fill(&dot, accent);
-            } else if i == center + 1 {
-                // Next track: slightly smaller but still vivid
-                let dot = Path::circle(Point::new(x, y), 3.5);
-                frame.fill(&dot, Color { a: 0.9, ..accent });
             } else if a > 0.02 {
                 let dot = Path::circle(Point::new(x, y), 1.5);
-                frame.fill(&dot, Color { a: a * 0.6, ..text_color });
+                frame.fill(&dot, Color { a: a * 0.5, ..text_color });
             }
         }
 
-        // ── Layer 4: Transition label (current→next only) ─────────────
-        if center < self.transitions.len() {
-            let tr = &self.transitions[center];
-            let mid_x = (x_for(center) + x_for(center + 1)) / 2.0;
-            let y0 = y_for(norm[center]);
-            let y1 = y_for(norm[center + 1]);
-            let label_y = y0.min(y1) - half_widths[center].max(half_widths[center + 1]) - 2.0;
-
-            let label = canvas::Text {
-                content: tr.label.to_string(),
-                position: Point::new(mid_x, label_y),
-                color: tr.color,
-                size: 9.0.into(),
-                align_x: iced::alignment::Horizontal::Center.into(),
-                align_y: iced::alignment::Vertical::Bottom.into(),
-                ..canvas::Text::default()
-            };
-            frame.fill_text(label);
-        }
+        // No text labels — transition quality is encoded in segment color
 
         vec![frame.into_geometry()]
     }
