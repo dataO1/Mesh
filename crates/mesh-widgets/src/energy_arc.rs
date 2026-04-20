@@ -155,29 +155,21 @@ impl<M> canvas::Program<M> for EnergyArcState {
             })
             .collect();
 
-        // ── Focus-based alpha: current + next vivid, aggressive fade elsewhere ──
-        // outer_alpha = ribbon fill (always visible, minimum floor for shape context)
-        // inner_alpha = center line + dots (fades aggressively, focuses attention)
-        // Past fades faster than future — highlights upcoming transitions.
-        // color_mix: 1.0 = full transition color, 0.0 = fully gray.
-        // Only the next 2-3 transitions keep their color; everything else goes gray.
+        // ── Focus centered on INCOMING transition ──────────────────────
+        // The selected track is what you're mixing IN. The "hot" segment is
+        // cc-1 (prev→current) — the transition you need to execute.
+        // Segment i connects track[i] → track[i+1].
+        // Focus point = segment cc-1 (incoming to selected track).
         let gray = Color::from_rgb(0.35, 0.35, 0.38);
-        // Color fading: symmetric around current track.
-        // Segments touching the current track (prev→current AND current→next) are vivid.
+        let focus = center as isize - 1; // incoming segment index
+
+        // Color: full color near focus, fades to gray with distance
         let color_mix = |i: usize| -> f32 {
-            let ii = i as isize;
-            let cc = center as isize;
-            // Segment i connects track i and track i+1.
-            // Segments adjacent to current: i == cc (current→next) or i == cc-1 (prev→current)
-            if ii == cc || ii == cc - 1 {
-                1.0
-            } else if ii == cc + 1 || ii == cc - 2 {
-                0.5
-            } else if ii == cc + 2 || ii == cc - 3 {
-                0.15
-            } else {
-                0.0
-            }
+            let dist = (i as isize - focus).unsigned_abs() as f32;
+            if dist < 0.5 { 1.0 }
+            else if dist < 1.5 { 0.5 }
+            else if dist < 2.5 { 0.15 }
+            else { 0.0 }
         };
         let mix_color = |base: Color, i: usize| -> Color {
             let t = color_mix(i);
@@ -189,33 +181,15 @@ impl<M> canvas::Program<M> for EnergyArcState {
             }
         };
 
-        // outer_alpha = ribbon fill (always visible, floor 0.5)
-        // inner_alpha = center line + dots (fades aggressively)
+        // Outer alpha (ribbon fill): always visible, floor 0.5
         let outer_alpha = |i: usize| -> f32 {
-            let ii = i as isize;
-            let cc = center as isize;
-            if ii == cc || ii == cc + 1 {
-                1.0
-            } else if ii < cc {
-                let steps_back = (cc - ii) as f32;
-                (0.8 - steps_back * 0.1).clamp(0.5, 0.7)
-            } else {
-                let steps_ahead = (ii - cc - 1) as f32;
-                (0.8 - steps_ahead * 0.06).clamp(0.5, 0.8)
-            }
+            let dist = (i as isize - focus).unsigned_abs() as f32;
+            (1.0 - dist * 0.08).clamp(0.5, 1.0)
         };
+        // Inner alpha (center line + dots): fades aggressively from focus
         let inner_alpha = |i: usize| -> f32 {
-            let ii = i as isize;
-            let cc = center as isize;
-            if ii == cc || ii == cc + 1 {
-                1.0
-            } else if ii < cc {
-                let steps_back = (cc - ii) as f32;
-                (0.4 - steps_back * 0.3).clamp(0.0, 0.3)
-            } else {
-                let steps_ahead = (ii - cc - 1) as f32;
-                (0.6 - steps_ahead * 0.15).clamp(0.0, 0.5)
-            }
+            let dist = (i as isize - focus).unsigned_abs() as f32;
+            (1.0 - dist * 0.25).clamp(0.0, 1.0)
         };
 
         // ── Layer 1: Ribbon fill (segment by segment) ─────────────────
