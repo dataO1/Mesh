@@ -95,12 +95,12 @@ All notable changes to Mesh are documented in this file.
   tracks faded, noise tracks gray.
 
 - **Energy arc ribbon** — A flowing ribbon above the playlist browser encodes
-  three dimensions of set flow: center Y = perceived energy (intensity + key
-  direction + vector similarity), ribbon width = spectral dissimilarity (wider =
-  bigger transition jump), color = key transition quality. Shows the energy
-  story of a set at a glance — narrow green ribbons for smooth layering, wide
-  red pulses for bold transitions. Uses the active color theme (stem colors,
-  accent, background) — no hardcoded colors. Auto-computed from track metadata.
+  three dimensions of set flow: center Y = ML intensity/aggression (with key
+  direction and similarity as modifiers), ribbon width = spectral dissimilarity
+  (wider = bigger transition jump), color = key transition quality. Uses real
+  ML composite intensity from EffNet analysis (aggression + flatness + relaxed
+  + dissonance) — no BPM proxy. Adapts to the active color theme. Seed history
+  tracks are filtered from suggestion lists to avoid duplicates.
 
 - **Set plan export** — The graph view seed history can be exported as a
   playlist via the "Export" button. Creates an ordered playlist playable in
