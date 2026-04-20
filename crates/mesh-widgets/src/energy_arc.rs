@@ -92,31 +92,32 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let center = self.current_index.min(n - 1);
 
         // ── Compute perceived energy ──────────────────────────────────
+        // Base = raw intensity (aggression). Key direction and similarity
+        // modify the perceived level additively — no decay/smoothing.
         let mut perceived = vec![0.0f32; n];
         perceived[0] = self.points[0].intensity;
         for i in 1..n {
-            let intensity_delta = self.points[i].intensity - self.points[i - 1].intensity;
+            let base = self.points[i].intensity;
+
             if i - 1 < self.transitions.len() {
                 let tr = &self.transitions[i - 1];
                 let key_dir = match tr.label {
                     "Same Key" => 0.0,
-                    "Adjacent" => 0.15,
-                    "Diagonal" => 0.10,
-                    "Boost" => 0.35,
-                    "Cool" => -0.35,
-                    "Mood Lift" => 0.25,
-                    "Darken" => -0.25,
-                    "Semitone" => 0.20,
+                    "Adjacent" => 0.12,
+                    "Diagonal" => 0.08,
+                    "Boost" => 0.25,
+                    "Cool" => -0.25,
+                    "Mood Lift" => 0.18,
+                    "Darken" => -0.18,
+                    "Semitone" => 0.15,
                     _ => 0.0,
                 };
+                // Dissimilarity amplifies the key direction effect
                 let dissim = tr.similarity_distance;
                 let amplifier = 0.5 + dissim;
-                let direction = intensity_delta * 0.5 + key_dir * 0.3;
-                perceived[i] = perceived[i - 1] * 0.8
-                    + self.points[i].intensity * 0.2
-                    + direction * amplifier * 0.25;
+                perceived[i] = base + key_dir * amplifier * 0.3;
             } else {
-                perceived[i] = self.points[i].intensity;
+                perceived[i] = base;
             }
         }
 

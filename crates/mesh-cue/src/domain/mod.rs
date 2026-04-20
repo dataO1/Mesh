@@ -783,13 +783,11 @@ impl MeshCueDomain {
         self.playlist_storage.get_children(id)
     }
 
-    /// Get tracks for display in a folder/playlist
-    ///
-    /// This returns TrackRow items ready for display in the track table.
-    /// Intensity is NOT computed here (too slow for UI thread) — use
-    /// `enrich_with_intensity()` in a background task if needed.
+    /// Get tracks for display in a folder/playlist, with ML intensity populated.
     pub fn get_tracks_for_display(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-        crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id)
+        let mut rows = crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id);
+        self.enrich_with_intensity(&mut rows);
+        rows
     }
 
     /// Compute cosine distances between consecutive tracks' PCA embeddings.
@@ -818,19 +816,23 @@ impl MeshCueDomain {
     }
 
     /// Batch-populate intensity values on TrackRows from ML analysis data.
+    /// Uses a single batch query to resolve all paths to IDs (no N+1 queries).
     pub fn enrich_with_intensity(&self, rows: &mut [TrackRow<NodeId>]) {
-        // Collect all track paths → resolve to DB IDs
-        let path_to_id: std::collections::HashMap<String, i64> = rows.iter()
-            .filter_map(|r| r.track_path.as_ref())
-            .filter_map(|path| {
-                self.db_service.get_track_by_path(path).ok().flatten()
-                    .and_then(|t| t.id.map(|id| (path.clone(), id)))
-            })
+        // Build path→ID map from all tracks in one query
+        let all_tracks = self.db_service.get_all_tracks().unwrap_or_default();
+        let path_to_id: std::collections::HashMap<String, i64> = all_tracks.iter()
+            .filter_map(|t| t.id.map(|id| (t.path.to_string_lossy().to_string(), id)))
             .collect();
 
         if path_to_id.is_empty() { return; }
 
-        let all_ids: Vec<i64> = path_to_id.values().copied().collect();
+        // Only fetch ML data for tracks that exist in our rows
+        let row_ids: Vec<i64> = rows.iter()
+            .filter_map(|r| r.track_path.as_ref().and_then(|p| path_to_id.get(p)).copied())
+            .collect();
+        if row_ids.is_empty() { return; }
+
+        let all_ids = row_ids;
         let ml_scores = self.db_service.get_ml_scores_batch(&all_ids).unwrap_or_default();
         let flatness = self.db_service.batch_get_flatness(&all_ids).unwrap_or_default();
         let dissonance = self.db_service.batch_get_dissonance(&all_ids).unwrap_or_default();
