@@ -358,17 +358,15 @@ impl CollectionBrowserState {
                                     if let Some(folder) = self.browser.current_folder.clone() {
                                         // Check if this is a USB folder
                                         if folder.0.starts_with("usb:") {
-                                            // Load tracks from USB storage
                                             let t = self.get_usb_tracks_for_folder(&folder);
                                             self.tracks = t;
                                             self.active_usb_idx = self.find_usb_idx_for_folder(&folder);
-                                            self.rebuild_energy_arc();
+                                            self.enrich_and_rebuild();
                                         } else {
-                                            // Local storage
                                             if let Some(ref storage) = self.storage {
                                                 let t = get_tracks_for_folder(storage.as_ref(), &folder);
                                                 self.tracks = t;
-                                                self.rebuild_energy_arc();
+                                                self.enrich_and_rebuild();
                                             }
                                             self.active_usb_idx = None;
                                         }
@@ -649,6 +647,7 @@ impl CollectionBrowserState {
             self.active_usb_idx = None;
             log::debug!("load_tracks_for_folder: no storage available");
         }
+        self.enrich_and_rebuild();
 
         // Select first track if any
         self.scroll_index = None;
