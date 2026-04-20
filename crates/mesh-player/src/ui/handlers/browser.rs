@@ -240,14 +240,19 @@ pub fn handle_suggestions_ready(
             let db = app.collection_browser.db_service_arc();
             let seed_ids: Vec<i64> = seed_paths_for_graph.iter()
                 .filter_map(|p| {
-                    db.get_track_by_path(p)
-                        .ok()
-                        .flatten()
-                        .and_then(|t| t.id)
+                    let track = db.get_track_by_path(p).ok().flatten();
+                    let id = track.as_ref().and_then(|t| t.id);
+                    log::debug!("[GRAPH] Seed path={} → id={:?}", p, id);
+                    id
                 })
                 .collect();
 
             if let Some(ref mut graph) = app.collection_browser.canvas_state.graph {
+                // Log whether seed IDs have positions in the graph
+                for &sid in &seed_ids {
+                    let has_pos = graph.positions.contains_key(&sid);
+                    log::debug!("[GRAPH] Seed id={} has_position={}", sid, has_pos);
+                }
                 graph.suggestion_ids.clear();
                 graph.suggestion_scores.clear();
                 graph.suggestion_edges.clear();
@@ -280,6 +285,9 @@ pub fn handle_suggestions_ready(
                     }
                 }
 
+                let matched = graph.suggestion_ids.iter().filter(|id| graph.positions.contains_key(id)).count();
+                log::info!("[GRAPH] Highlighting: {} seeds, {} suggestions ({} with positions), {} edges",
+                    seed_ids.len(), graph.suggestion_ids.len(), matched, graph.suggestion_edges.len());
                 graph.clear_caches();
             }
         }
