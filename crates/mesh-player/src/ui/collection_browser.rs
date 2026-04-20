@@ -371,7 +371,9 @@ impl CollectionBrowserState {
                                             self.active_usb_idx = None;
                                         }
                                     }
-                                    // Clear track selection when folder changes
+                                    // Clear suggestions and track selection when folder changes
+                                    self.suggestions_enabled = false;
+                                    self.clear_suggestions();
                                     self.scroll_index = None;
                                     self.selected_track_path = None;
                                 }
@@ -633,6 +635,8 @@ impl CollectionBrowserState {
     /// Load tracks for a folder (handles both local and USB)
     fn load_tracks_for_folder(&mut self, folder_id: &NodeId) {
         log::debug!("load_tracks_for_folder: {:?}", folder_id);
+        self.suggestions_enabled = false;
+        self.clear_suggestions();
 
         if folder_id.0.starts_with("usb:") {
             self.tracks = self.get_usb_tracks_for_folder(folder_id);
