@@ -655,10 +655,11 @@ pub fn query_suggestions(
 
             let is_proven_followup = coplay >= 0.3;
 
+            let energy_delta = cand_norm_intensity - avg_seed_intensity;
             let mut reason_tags = generate_reason_tags(
-                best_tt, key_reward,
-                vec_reward, bias_abs,
-                int_reward, w_intensity,
+                best_tt,
+                similarity,
+                energy_delta,
                 vocal_comp, other_comp,
                 w_vocal_pen, w_other_pen,
             );

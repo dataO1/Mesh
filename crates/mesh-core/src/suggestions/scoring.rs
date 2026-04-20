@@ -486,11 +486,10 @@ pub fn penalty_color(penalty: f32) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 pub fn generate_reason_tags(
     transition_type: TransitionType,
-    _key_reward: f32,
-    vector_reward: f32,
-    bias_abs: f32,
-    intensity_reward: f32,
-    w_intensity: f32,
+    // Raw cosine similarity [0, 1] — higher = more similar to seed
+    raw_similarity: f32,
+    // Energy delta: candidate_intensity - seed_intensity, positive = more energy
+    energy_delta: f32,
     // Stem complement scores (0=clashing, 0.5=neutral, 1=complementary)
     vocal_comp: f32,
     other_comp: f32,
@@ -499,37 +498,26 @@ pub fn generate_reason_tags(
 ) -> Vec<(String, Option<String>)> {
     let mut tags: Vec<(String, Option<String>, f32)> = Vec::with_capacity(8);
 
-    // --- Key tag (always included, always first) ---
-    let key_dir = match transition_type {
-        TransitionType::SameKey => "\u{2501}",  // ━
-        TransitionType::AdjacentUp | TransitionType::EnergyBoost
-        | TransitionType::MoodLift | TransitionType::DiagonalUp
-        | TransitionType::SemitoneUp => "\u{25B2}",  // ▲
-        TransitionType::AdjacentDown | TransitionType::EnergyCool
-        | TransitionType::MoodDarken | TransitionType::DiagonalDown
-        | TransitionType::SemitoneDown => "\u{25BC}",  // ▼
-        TransitionType::Tritone => "\u{25BC}",
-        TransitionType::FarStep(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
-        TransitionType::FarCross(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
-    };
+    // --- Key tag (always first): transition type name, colored by harmonic quality ---
     let key_label = transition_type_label(transition_type);
     let key_color = transition_color(transition_type);
-    tags.push((format!("{} {}", key_dir, key_label), Some(key_color.to_string()), f32::MAX));
+    tags.push((key_label.to_string(), Some(key_color.to_string()), f32::MAX));
 
     let min_weight = 0.03;
 
-    // Vector similarity/diversity tag
-    let vector_label = if bias_abs < 0.3 { "Similar" } else if bias_abs > 0.7 { "Variety" } else { "Spectral" };
-    let vector_impact = 0.30 * (vector_reward - 0.5).abs();
-    tags.push((vector_label.to_string(), Some(reward_color(vector_reward).to_string()), vector_impact));
+    // --- Similarity tag: raw cosine similarity relative to seed ---
+    // Green = very similar, amber = moderate, red = dissimilar
+    let sim_color = reward_color(raw_similarity);
+    tags.push(("Similarity".to_string(), Some(sim_color.to_string()), raw_similarity.abs()));
 
-    if w_intensity >= min_weight {
-        let arrow = if intensity_reward > 0.6 { "▲" } else if intensity_reward < 0.4 { "▼" } else { "━" };
-        let impact = w_intensity * (intensity_reward - 0.5).abs();
-        tags.push((format!("{} Energy", arrow), Some(reward_color(intensity_reward).to_string()), impact));
-    }
+    // --- Energy tag: relative energy shift from seed ---
+    // Green = more energy, amber = roughly same, red = less energy
+    let energy_color = if energy_delta > 0.15 { "#2d8a4e" }       // green — energy goes up
+        else if energy_delta > -0.15 { "#c49a2a" }                // amber — roughly same
+        else { "#a63d40" };                                       // red — energy drops
+    tags.push(("Energy".to_string(), Some(energy_color.to_string()), energy_delta.abs()));
 
-    // Stem complement tags: complementary → green, clashing → red
+    // --- Stem complement tags: complementary → green, clashing → red ---
     if w_vocal_compl >= min_weight {
         if vocal_comp > 0.65 || vocal_comp < 0.35 {
             let color = if vocal_comp > 0.65 { "#2d8a4e" } else { "#a63d40" };
