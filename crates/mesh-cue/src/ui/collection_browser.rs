@@ -234,7 +234,7 @@ fn build_energy_arc_inner<Id: Clone>(
                     let tt = classify_transition(&a, &b);
                     let bs = base_score(tt);
                     let label = transition_type_label(tt);
-                    let color = if bs >= 0.70 {
+                    let color = if bs >= 0.80 {
                         theme_colors.good
                     } else if bs >= 0.40 {
                         theme_colors.moderate
