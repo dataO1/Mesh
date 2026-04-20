@@ -50,15 +50,6 @@ pub fn energy_arc<M: 'static>(state: &EnergyArcState) -> Element<'_, M> {
         .into()
 }
 
-/// Blend two colors by factor t (0 = a, 1 = b).
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-}
 
 impl<M> canvas::Program<M> for EnergyArcState {
     type State = ();
@@ -75,7 +66,7 @@ impl<M> canvas::Program<M> for EnergyArcState {
 
         let palette = theme.extended_palette();
         let bg = palette.background.base.color;
-        let text_color = palette.background.base.text;
+        let _text_color = palette.background.base.text;
         let accent = palette.primary.base.color;
 
         // Match the app background exactly so faded tracks are still visible against it
@@ -178,17 +169,6 @@ impl<M> canvas::Program<M> for EnergyArcState {
             }
         };
 
-        // Outer alpha (ribbon fill): always visible, floor 0.5
-        let outer_alpha = |i: usize| -> f32 {
-            let dist = (i as isize - focus).unsigned_abs() as f32;
-            (1.0 - dist * 0.08).clamp(0.5, 1.0)
-        };
-        // Inner alpha (center line + dots): fades aggressively from focus
-        let inner_alpha = |i: usize| -> f32 {
-            let dist = (i as isize - focus).unsigned_abs() as f32;
-            (1.0 - dist * 0.25).clamp(0.0, 1.0)
-        };
-
         // ── Layer 1: Ribbon fill (segment by segment) ─────────────────
         for i in 0..n - 1 {
             let x0 = x_for(i);
@@ -197,13 +177,11 @@ impl<M> canvas::Program<M> for EnergyArcState {
             let y1 = y_for(norm[i + 1]);
             let hw0 = half_widths[i];
             let hw1 = half_widths[i + 1];
-            let a = outer_alpha(i).min(outer_alpha(i + 1));
-
             let seg_color = if i < self.transitions.len() {
                 let tc = mix_color(self.transitions[i].color, i);
-                Color { a: a * 0.35, ..tc }
+                Color { a: 0.35, ..tc }
             } else {
-                Color { a: a * 0.2, ..gray }
+                Color { a: 0.2, ..gray }
             };
 
             // Draw filled quad: top-left, top-right, bottom-right, bottom-left
@@ -216,47 +194,23 @@ impl<M> canvas::Program<M> for EnergyArcState {
             frame.fill(&path.build(), seg_color);
         }
 
-        // ── Layer 2: Center line (fades faster than ribbon) ────────────
-        for i in 0..n - 1 {
-            let x0 = x_for(i);
-            let x1 = x_for(i + 1);
-            let y0 = y_for(norm[i]);
-            let y1 = y_for(norm[i + 1]);
-            let a = inner_alpha(i).min(inner_alpha(i + 1));
-
-            if a < 0.01 { continue; }
-
-            let line_color = if i < self.transitions.len() {
-                let tc = mix_color(self.transitions[i].color, i);
-                Color { a: a * 0.9, ..tc }
-            } else {
-                Color { a: a * 0.5, ..gray }
-            };
-
-            let width = if i == center || i + 1 == center { 2.0 } else { 1.0 };
-            let path = Path::line(Point::new(x0, y0), Point::new(x1, y1));
-            frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
-        }
-
-        // ── Layer 3: Track dots — only current track gets accent dot ──
-        for i in 0..n {
-            let x = x_for(i);
-            let y = y_for(norm[i]);
-            let a = inner_alpha(i);
-
-            if i == center {
-                // Current track: accent dot with glow — the only prominent dot
-                let glow = Path::circle(Point::new(x, y), 6.0);
-                frame.fill(&glow, Color { a: 0.25, ..accent });
-                let dot = Path::circle(Point::new(x, y), 4.0);
-                frame.fill(&dot, accent);
-            } else if a > 0.02 {
-                let dot = Path::circle(Point::new(x, y), 1.5);
-                frame.fill(&dot, Color { a: a * 0.5, ..text_color });
+        // ── Layer 2: Vertical marker at selected track ────────────────
+        {
+            let x = x_for(center);
+            let marker_color = Color { a: 0.5, ..accent };
+            // Dotted vertical line spanning full height
+            let dot_spacing = 4.0;
+            let mut y_pos = 0.0f32;
+            while y_pos < bounds.height {
+                let seg_end = (y_pos + 2.0).min(bounds.height);
+                let path = Path::line(
+                    Point::new(x, y_pos),
+                    Point::new(x, seg_end),
+                );
+                frame.stroke(&path, Stroke::default().with_color(marker_color).with_width(1.0));
+                y_pos += dot_spacing;
             }
         }
-
-        // No text labels — transition quality is encoded in segment color
 
         vec![frame.into_geometry()]
     }
