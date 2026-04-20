@@ -1,11 +1,11 @@
-//! Energy arc widget — shows intensity progression and key transitions
-//! across a playlist as a line graph rendered on a Canvas.
+//! Energy arc ribbon widget — visualizes set energy flow as a flowing ribbon.
 //!
-//! Shows ALL tracks in the playlist. Intensity is min-max normalized so the
-//! lowest track maps to the bottom and the highest to the top (full vertical
-//! range). The current/selected track is highlighted with a larger dot;
-//! distant tracks fade slightly. Key transitions are shown as colored line
-//! segments (green = compatible, amber = moderate, red = poor).
+//! Three dimensions encoded:
+//! - **Center Y position**: perceived energy (intensity + key direction + similarity)
+//! - **Ribbon width**: vector dissimilarity (wider = bigger spectral jump)
+//! - **Ribbon color**: key transition quality (theme-derived gradient)
+//!
+//! Uses the application's color theme — no hardcoded colors.
 
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::Canvas;
@@ -26,7 +26,6 @@ pub struct ArcTransition {
     pub label: &'static str,
     pub color: Color,
     /// Cosine distance between consecutive PCA embeddings [0, ~1.5].
-    /// 0 = identical sound, higher = more different.
     pub similarity_distance: f32,
 }
 
@@ -35,16 +34,13 @@ pub struct EnergyArcState {
     pub points: Vec<ArcPoint>,
     pub transitions: Vec<ArcTransition>,
     pub current_index: usize,
+    /// Theme stem colors [Vocals, Drums, Bass, Other] for ribbon coloring
+    pub stem_colors: [Color; 4],
 }
 
-const ARC_HEIGHT: f32 = 50.0;
-const V_PAD: f32 = 10.0;
+const ARC_HEIGHT: f32 = 55.0;
+const V_PAD: f32 = 8.0;
 const H_PAD: f32 = 12.0;
-
-const LINE_COLOR: Color = Color { r: 0.55, g: 0.55, b: 0.60, a: 0.6 };
-const DOT_COLOR: Color = Color { r: 0.70, g: 0.70, b: 0.75, a: 0.9 };
-const CURRENT_COLOR: Color = Color { r: 0.90, g: 0.90, b: 0.95, a: 1.0 };
-const BG_COLOR: Color = Color { r: 0.08, g: 0.08, b: 0.10, a: 0.55 };
 
 /// Create an energy arc element.
 pub fn energy_arc<M: 'static>(state: &EnergyArcState) -> Element<'_, M> {
@@ -54,6 +50,16 @@ pub fn energy_arc<M: 'static>(state: &EnergyArcState) -> Element<'_, M> {
         .into()
 }
 
+/// Blend two colors by factor t (0 = a, 1 = b).
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
 impl<M> canvas::Program<M> for EnergyArcState {
     type State = ();
 
@@ -61,12 +67,20 @@ impl<M> canvas::Program<M> for EnergyArcState {
         &self,
         _interaction: &(),
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), BG_COLOR);
+
+        let palette = theme.extended_palette();
+        let bg = palette.background.base.color;
+        let text_color = palette.background.base.text;
+        let accent = palette.primary.base.color;
+
+        // Slightly lighter background than app bg
+        let ribbon_bg = Color { r: bg.r + 0.03, g: bg.g + 0.03, b: bg.b + 0.03, a: 0.7 };
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), ribbon_bg);
 
         let n = self.points.len();
         if n < 2 {
@@ -77,38 +91,27 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let usable_h = (bounds.height - 2.0 * V_PAD).max(1.0);
         let center = self.current_index.min(n - 1);
 
-        // Compute perceived energy: cumulative signal combining intensity,
-        // key transition direction, and vector dissimilarity.
+        // ── Compute perceived energy ──────────────────────────────────
         let mut perceived = vec![0.0f32; n];
         perceived[0] = self.points[0].intensity;
         for i in 1..n {
             let intensity_delta = self.points[i].intensity - self.points[i - 1].intensity;
-
             if i - 1 < self.transitions.len() {
                 let tr = &self.transitions[i - 1];
-                // Key direction from transition color heuristic:
-                // green (high base_score) = compatible = small direction
-                // We use the label to infer direction
                 let key_dir = match tr.label {
                     "Same Key" => 0.0,
-                    "Adjacent" => 0.15, // could be up or down, approximate
+                    "Adjacent" => 0.15,
                     "Diagonal" => 0.10,
                     "Boost" => 0.35,
                     "Cool" => -0.35,
                     "Mood Lift" => 0.25,
                     "Darken" => -0.25,
                     "Semitone" => 0.20,
-                    "Far" | "Cross" => 0.0,
-                    "Tritone" => 0.0,
                     _ => 0.0,
                 };
-
-                // Dissimilarity amplifies the change
                 let dissim = tr.similarity_distance;
                 let amplifier = 0.5 + dissim;
-
                 let direction = intensity_delta * 0.5 + key_dir * 0.3;
-                // Exponential decay to prevent drift: blend toward raw intensity
                 perceived[i] = perceived[i - 1] * 0.8
                     + self.points[i].intensity * 0.2
                     + direction * amplifier * 0.25;
@@ -117,80 +120,125 @@ impl<M> canvas::Program<M> for EnergyArcState {
             }
         }
 
-        // Min-max normalize perceived energy for full vertical range
+        // Min-max normalize
         let min_p = perceived.iter().fold(f32::MAX, |a, &b| a.min(b));
         let max_p = perceived.iter().fold(f32::MIN, |a, &b| a.max(b));
         let range = (max_p - min_p).max(0.001);
+        let norm: Vec<f32> = perceived.iter().map(|&p| (p - min_p) / range).collect();
 
-        // Compute screen positions
-        let positions: Vec<Point> = (0..n)
-            .map(|i| {
-                let x = H_PAD + (i as f32 / (n - 1) as f32) * usable_w;
-                let norm = (perceived[i] - min_p) / range;
-                let y = V_PAD + (1.0 - norm) * usable_h;
-                Point::new(x, y)
-            })
-            .collect();
-
-        // Alpha based on distance from current (fade far tracks)
-        let alpha_for = |i: usize| -> f32 {
-            let dist = (i as isize - center as isize).unsigned_abs() as f32;
-            (1.0 - dist * 0.04).clamp(0.15, 1.0)
+        // X positions for each track
+        let x_for = |i: usize| -> f32 {
+            H_PAD + (i as f32 / (n - 1) as f32) * usable_w
+        };
+        // Y from normalized energy (0 at bottom, 1 at top)
+        let y_for = |n_val: f32| -> f32 {
+            V_PAD + (1.0 - n_val) * usable_h
         };
 
-        // Layer 1: Transition-colored line segments
+        // ── Ribbon half-widths from similarity ────────────────────────
+        let half_widths: Vec<f32> = (0..n).map(|i| {
+            // Width from average of adjacent transition distances
+            let left = if i > 0 && i - 1 < self.transitions.len() {
+                self.transitions[i - 1].similarity_distance
+            } else { 0.2 };
+            let right = if i < self.transitions.len() {
+                self.transitions[i].similarity_distance
+            } else { 0.2 };
+            let avg_dissim = (left + right) / 2.0;
+            // Map to visual width: min 2px, max 12px
+            2.0 + avg_dissim.clamp(0.0, 1.0) * 10.0
+        }).collect();
+
+        // ── Distance-based alpha (fade distant tracks) ────────────────
+        let alpha_for = |i: usize| -> f32 {
+            let dist = (i as isize - center as isize).unsigned_abs() as f32;
+            (1.0 - dist * 0.03).clamp(0.15, 1.0)
+        };
+
+        // ── Layer 1: Ribbon fill (segment by segment) ─────────────────
+        // Each segment is a filled quadrilateral between two track positions
         for i in 0..n - 1 {
+            let x0 = x_for(i);
+            let x1 = x_for(i + 1);
+            let y0 = y_for(norm[i]);
+            let y1 = y_for(norm[i + 1]);
+            let hw0 = half_widths[i];
+            let hw1 = half_widths[i + 1];
             let a = alpha_for(i).min(alpha_for(i + 1));
 
-            // Color the segment by transition quality (if available)
+            // Color from transition quality (use stem colors as gradient)
             let seg_color = if i < self.transitions.len() {
                 let tc = self.transitions[i].color;
-                Color { a: a * 0.8, ..tc }
+                Color { a: a * 0.35, ..tc }
             } else {
-                Color { a: a * LINE_COLOR.a, ..LINE_COLOR }
+                Color { a: a * 0.2, ..self.stem_colors[3] }
             };
 
-            let width = if i == center || i + 1 == center { 2.5 } else { 1.5 };
-            let path = Path::line(positions[i], positions[i + 1]);
-            frame.stroke(&path, Stroke::default().with_color(seg_color).with_width(width));
+            // Draw filled quad: top-left, top-right, bottom-right, bottom-left
+            let mut path = canvas::path::Builder::new();
+            path.move_to(Point::new(x0, y0 - hw0));
+            path.line_to(Point::new(x1, y1 - hw1));
+            path.line_to(Point::new(x1, y1 + hw1));
+            path.line_to(Point::new(x0, y0 + hw0));
+            path.close();
+            frame.fill(&path.build(), seg_color);
         }
 
-        // Layer 2: Dots (all tracks)
-        for (i, pos) in positions.iter().enumerate() {
-            let is_current = i == center;
+        // ── Layer 2: Center line (crisp, on top of ribbon fill) ───────
+        for i in 0..n - 1 {
+            let x0 = x_for(i);
+            let x1 = x_for(i + 1);
+            let y0 = y_for(norm[i]);
+            let y1 = y_for(norm[i + 1]);
+            let a = alpha_for(i).min(alpha_for(i + 1));
+
+            let line_color = if i < self.transitions.len() {
+                let tc = self.transitions[i].color;
+                Color { a: a * 0.9, ..tc }
+            } else {
+                Color { a: a * 0.5, ..text_color }
+            };
+
+            let width = if i == center || i + 1 == center { 2.0 } else { 1.2 };
+            let path = Path::line(Point::new(x0, y0), Point::new(x1, y1));
+            frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
+        }
+
+        // ── Layer 3: Track dots ───────────────────────────────────────
+        for i in 0..n {
+            let x = x_for(i);
+            let y = y_for(norm[i]);
             let a = alpha_for(i);
 
-            if is_current {
-                // Current: large white dot
-                let dot = Path::circle(*pos, 5.0);
-                frame.fill(&dot, CURRENT_COLOR);
+            if i == center {
+                // Current track: accent dot with glow
+                let glow = Path::circle(Point::new(x, y), 6.0);
+                frame.fill(&glow, Color { a: 0.25, ..accent });
+                let dot = Path::circle(Point::new(x, y), 4.0);
+                frame.fill(&dot, accent);
             } else {
-                let r = 2.5;
-                let dot = Path::circle(*pos, r);
-                frame.fill(&dot, Color { a, ..DOT_COLOR });
+                let dot_color = Color { a: a * 0.7, ..text_color };
+                let dot = Path::circle(Point::new(x, y), 2.0);
+                frame.fill(&dot, dot_color);
             }
         }
 
-        // Layer 3: Transition labels near current position only (±2)
-        for i in center.saturating_sub(2)..=(center + 1).min(n.saturating_sub(2)) {
+        // ── Layer 4: Transition labels near current (±1 only) ─────────
+        for i in center.saturating_sub(1)..=(center).min(n.saturating_sub(2)) {
             if i >= self.transitions.len() { break; }
             let tr = &self.transitions[i];
-            let mid_x = (positions[i].x + positions[i + 1].x) / 2.0;
-            // Place label above or below the line depending on direction
-            let going_up = positions[i + 1].y < positions[i].y;
-            let label_y = if going_up {
-                (positions[i].y.min(positions[i + 1].y)) - 3.0
-            } else {
-                (positions[i].y.max(positions[i + 1].y)) + 10.0
-            };
+            let mid_x = (x_for(i) + x_for(i + 1)) / 2.0;
+            let y0 = y_for(norm[i]);
+            let y1 = y_for(norm[i + 1]);
+            let label_y = y0.min(y1) - half_widths[i].max(half_widths[i + 1]) - 2.0;
 
             let label = canvas::Text {
                 content: tr.label.to_string(),
                 position: Point::new(mid_x, label_y),
-                color: tr.color,
-                size: 9.0.into(),
+                color: Color { a: 0.85, ..tr.color },
+                size: 8.5.into(),
                 align_x: iced::alignment::Horizontal::Center.into(),
-                align_y: iced::alignment::Vertical::Center.into(),
+                align_y: iced::alignment::Vertical::Bottom.into(),
                 ..canvas::Text::default()
             };
             frame.fill_text(label);

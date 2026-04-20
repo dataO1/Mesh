@@ -245,7 +245,7 @@ impl CollectionState {
             .next()
             .and_then(|sel_id| self.left_tracks.iter().position(|t| &t.id == sel_id))
             .unwrap_or(0);
-        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx, &self.consecutive_similarities);
+        self.energy_arc = build_energy_arc(&self.left_tracks, current_idx, &self.consecutive_similarities, self.stem_colors);
     }
 }
 
