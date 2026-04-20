@@ -411,6 +411,8 @@ impl CollectionBrowserState {
                                 self.scroll_index = active.iter().position(|t| &t.id == track_id);
                                 // Update selected track path for load buttons
                                 self.selected_track_path = self.get_track_path(track_id);
+                                // Update energy arc focus
+                                self.rebuild_energy_arc();
                             }
                             TrackTableMessage::Activate(track_id) => {
                                 // Double-click loads to Deck 1
@@ -423,6 +425,7 @@ impl CollectionBrowserState {
                                 self.browser.table_state.select(track_id.clone());
                                 let active = self.active_track_list();
                                 self.scroll_index = active.iter().position(|t| &t.id == track_id);
+                                self.rebuild_energy_arc();
                                 self.selected_track_path = self.get_track_path(track_id);
                             }
                             // Ignore all edit, drop, and context menu operations (mesh-player is read-only)
