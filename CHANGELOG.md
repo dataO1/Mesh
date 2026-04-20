@@ -94,10 +94,13 @@ All notable changes to Mesh are documented in this file.
   controls color intensity — strong community members render vivid, boundary
   tracks faded, noise tracks gray.
 
-- **Energy arc widget** — A 40px line graph above the playlist browser shows
-  intensity progression and key transition annotations (Same Key, Adjacent,
-  Boost, etc.) colored by Camelot compatibility. Auto-computed from track
-  metadata, no schema changes needed.
+- **Energy arc widget** — A line graph above the playlist browser shows
+  intensity progression across all tracks. Line segments are colored by key
+  transition quality (green = compatible, amber = moderate, red = poor).
+  Min-max normalized so the full vertical range is used regardless of absolute
+  intensity values. Current track highlighted with a large dot; distant tracks
+  fade. Transition labels shown near the selected track. Auto-computed from
+  track metadata, no schema changes needed.
 
 - **Set plan export** — The graph view seed history can be exported as a
   playlist via the "Export" button. Creates an ordered playlist playable in
