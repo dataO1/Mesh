@@ -136,40 +136,57 @@ impl<M> canvas::Program<M> for EnergyArcState {
             V_PAD + (1.0 - n_val) * usable_h
         };
 
-        // ── Ribbon half-widths from similarity ────────────────────────
-        let half_widths: Vec<f32> = (0..n).map(|i| {
-            // Width from average of adjacent transition distances
+        // ── Ribbon half-widths from similarity (min-max normalized) ───
+        let raw_widths: Vec<f32> = (0..n).map(|i| {
             let left = if i > 0 && i - 1 < self.transitions.len() {
                 self.transitions[i - 1].similarity_distance
-            } else { 0.2 };
+            } else { 0.0 };
             let right = if i < self.transitions.len() {
                 self.transitions[i].similarity_distance
-            } else { 0.2 };
-            let avg_dissim = (left + right) / 2.0;
-            // Map to visual width: min 2px, max 12px
-            2.0 + avg_dissim.clamp(0.0, 1.0) * 10.0
+            } else { 0.0 };
+            (left + right) / 2.0
         }).collect();
+        let w_min = raw_widths.iter().fold(f32::MAX, |a, &b| a.min(b));
+        let w_max = raw_widths.iter().fold(f32::MIN, |a, &b| a.max(b));
+        let w_range = (w_max - w_min).max(0.001);
+        let half_widths: Vec<f32> = raw_widths.iter()
+            .map(|&w| {
+                let norm_w = (w - w_min) / w_range; // [0, 1]
+                2.0 + norm_w * 14.0 // 2px min, 16px max
+            })
+            .collect();
 
-        // ── Focus-based alpha: current + next are vivid, past fades, far future fades ──
-        // The DJ's focus is "what transition do I need to play next?"
-        let alpha_for = |i: usize| -> f32 {
+        // ── Focus-based alpha: current + next vivid, aggressive fade elsewhere ──
+        // outer_alpha = ribbon fill (fades slower, provides context)
+        // inner_alpha = center line + dots (fades faster, focuses attention)
+        let outer_alpha = |i: usize| -> f32 {
             let ii = i as isize;
             let cc = center as isize;
             if ii == cc || ii == cc + 1 {
-                1.0 // current + next: full focus
+                1.0
             } else if ii < cc {
-                // Past: fade gradually
                 let steps_back = (cc - ii) as f32;
-                (1.0 - steps_back * 0.12).clamp(0.08, 0.6)
+                (0.7 - steps_back * 0.15).clamp(0.05, 0.5)
             } else {
-                // Future beyond next: fade quickly
                 let steps_ahead = (ii - cc - 1) as f32;
-                (0.6 - steps_ahead * 0.15).clamp(0.08, 0.6)
+                (0.5 - steps_ahead * 0.18).clamp(0.05, 0.5)
+            }
+        };
+        let inner_alpha = |i: usize| -> f32 {
+            let ii = i as isize;
+            let cc = center as isize;
+            if ii == cc || ii == cc + 1 {
+                1.0
+            } else if ii < cc {
+                let steps_back = (cc - ii) as f32;
+                (0.6 - steps_back * 0.2).clamp(0.0, 0.4)
+            } else {
+                let steps_ahead = (ii - cc - 1) as f32;
+                (0.35 - steps_ahead * 0.2).clamp(0.0, 0.35)
             }
         };
 
         // ── Layer 1: Ribbon fill (segment by segment) ─────────────────
-        // Each segment is a filled quadrilateral between two track positions
         for i in 0..n - 1 {
             let x0 = x_for(i);
             let x1 = x_for(i + 1);
@@ -177,14 +194,13 @@ impl<M> canvas::Program<M> for EnergyArcState {
             let y1 = y_for(norm[i + 1]);
             let hw0 = half_widths[i];
             let hw1 = half_widths[i + 1];
-            let a = alpha_for(i).min(alpha_for(i + 1));
+            let a = outer_alpha(i).min(outer_alpha(i + 1));
 
-            // Color from transition quality (use stem colors as gradient)
             let seg_color = if i < self.transitions.len() {
                 let tc = self.transitions[i].color;
-                Color { a: a * 0.35, ..tc }
+                Color { a: a * 0.3, ..tc }
             } else {
-                Color { a: a * 0.2, ..self.stem_colors[3] }
+                Color { a: a * 0.15, ..self.stem_colors[3] }
             };
 
             // Draw filled quad: top-left, top-right, bottom-right, bottom-left
@@ -197,13 +213,15 @@ impl<M> canvas::Program<M> for EnergyArcState {
             frame.fill(&path.build(), seg_color);
         }
 
-        // ── Layer 2: Center line (crisp, on top of ribbon fill) ───────
+        // ── Layer 2: Center line (fades faster than ribbon) ────────────
         for i in 0..n - 1 {
             let x0 = x_for(i);
             let x1 = x_for(i + 1);
             let y0 = y_for(norm[i]);
             let y1 = y_for(norm[i + 1]);
-            let a = alpha_for(i).min(alpha_for(i + 1));
+            let a = inner_alpha(i).min(inner_alpha(i + 1));
+
+            if a < 0.01 { continue; }
 
             let line_color = if i < self.transitions.len() {
                 let tc = self.transitions[i].color;
@@ -212,44 +230,45 @@ impl<M> canvas::Program<M> for EnergyArcState {
                 Color { a: a * 0.5, ..text_color }
             };
 
-            let width = if i == center || i + 1 == center { 2.0 } else { 1.2 };
+            let width = if i == center || i + 1 == center { 2.0 } else { 1.0 };
             let path = Path::line(Point::new(x0, y0), Point::new(x1, y1));
             frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
         }
 
-        // ── Layer 3: Track dots ───────────────────────────────────────
+        // ── Layer 3: Track dots (fade faster than ribbon) ─────────────
         for i in 0..n {
             let x = x_for(i);
             let y = y_for(norm[i]);
-            let a = alpha_for(i);
+            let a = inner_alpha(i);
 
             if i == center {
-                // Current track: accent dot with glow
                 let glow = Path::circle(Point::new(x, y), 6.0);
                 frame.fill(&glow, Color { a: 0.25, ..accent });
                 let dot = Path::circle(Point::new(x, y), 4.0);
                 frame.fill(&dot, accent);
-            } else {
-                let dot_color = Color { a: a * 0.7, ..text_color };
-                let dot = Path::circle(Point::new(x, y), 2.0);
-                frame.fill(&dot, dot_color);
+            } else if i == center + 1 {
+                // Next track: slightly smaller but still vivid
+                let dot = Path::circle(Point::new(x, y), 3.5);
+                frame.fill(&dot, Color { a: 0.9, ..accent });
+            } else if a > 0.02 {
+                let dot = Path::circle(Point::new(x, y), 1.5);
+                frame.fill(&dot, Color { a: a * 0.6, ..text_color });
             }
         }
 
-        // ── Layer 4: Transition labels near current (±1 only) ─────────
-        for i in center.saturating_sub(1)..=(center).min(n.saturating_sub(2)) {
-            if i >= self.transitions.len() { break; }
-            let tr = &self.transitions[i];
-            let mid_x = (x_for(i) + x_for(i + 1)) / 2.0;
-            let y0 = y_for(norm[i]);
-            let y1 = y_for(norm[i + 1]);
-            let label_y = y0.min(y1) - half_widths[i].max(half_widths[i + 1]) - 2.0;
+        // ── Layer 4: Transition label (current→next only) ─────────────
+        if center < self.transitions.len() {
+            let tr = &self.transitions[center];
+            let mid_x = (x_for(center) + x_for(center + 1)) / 2.0;
+            let y0 = y_for(norm[center]);
+            let y1 = y_for(norm[center + 1]);
+            let label_y = y0.min(y1) - half_widths[center].max(half_widths[center + 1]) - 2.0;
 
             let label = canvas::Text {
                 content: tr.label.to_string(),
                 position: Point::new(mid_x, label_y),
-                color: Color { a: 0.85, ..tr.color },
-                size: 8.5.into(),
+                color: tr.color,
+                size: 9.0.into(),
                 align_x: iced::alignment::Horizontal::Center.into(),
                 align_y: iced::alignment::Vertical::Bottom.into(),
                 ..canvas::Text::default()
