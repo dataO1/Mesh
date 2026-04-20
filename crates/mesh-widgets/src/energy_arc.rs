@@ -154,10 +154,14 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let gray = Color::from_rgb(0.35, 0.35, 0.38);
         let focus = center as isize - 1; // incoming segment index
 
-        // Color: smooth Gaussian falloff from focus — tighter for quick fade
+        // Color: smooth Gaussian falloff — past fades to gray faster than future
         let color_mix = |i: usize| -> f32 {
-            let dist = (i as isize - focus).unsigned_abs() as f32;
-            (-dist * dist * 0.5).exp() // Gaussian: σ² ≈ 1.0 segments
+            let signed_dist = i as isize - focus;
+            let dist = signed_dist.unsigned_abs() as f32;
+            // Past (negative): tighter σ² = 0.7 (fades in ~1-2 segments)
+            // Future (positive): wider σ² = 1.5 (stays colored ~2-3 segments)
+            let sigma2 = if signed_dist < 0 { 0.7 } else { 1.5 };
+            (-dist * dist / (2.0 * sigma2)).exp()
         };
         let mix_color = |base: Color, i: usize| -> Color {
             let t = color_mix(i);
