@@ -299,6 +299,19 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Graph suggestion edges not showing (mesh-player)** — Seed track ID
+  resolution used title matching which never matched filenames. Now uses
+  direct DB path lookup so suggestion edges render correctly from the
+  playing track to its scored matches.
+
+- **Graph zoomed out too far** — t-SNE outlier positions stretched the
+  auto-fit bounding box. Now uses 2nd/98th percentile bounds, trimming
+  extreme outliers for a tighter fit.
+
+- **Graph background mismatched app theme** — The graph used a hardcoded
+  dark background. Now reads the active theme's background color via
+  `theme.extended_palette()` in both mesh-cue and mesh-player.
+
 - **Energy arc not updating shape on playlist switch (mesh-player)** —
   Switching playlists while suggestions were active left `suggestions_enabled`
   set, causing the energy arc to render stale suggestion data instead of the
