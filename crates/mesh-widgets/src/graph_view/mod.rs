@@ -318,8 +318,8 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         let seed_accent = self.accent_color.unwrap_or(COLOR_SEED_ACCENT);
         let stems = self.stem_colors;
 
-        // ── Layer 1: Suggestion edges (seed → suggestions, composite score) ──
-        // Only shown when a seed is selected — these ARE the graph's edges
+        // ── Layer 1: Suggestion edges (gray, score-weighted width) ──
+        let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
         for &(from, to, score) in &self.suggestion_edges {
             let from_pos = match self.positions.get(&from) {
                 Some(p) => *p,
@@ -333,14 +333,11 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             let p1 = to_screen(from_pos, self.pan, self.zoom, bounds);
             let p2 = to_screen(to_pos, self.pan, self.zoom, bounds);
 
-            // Color by composite score: higher = better = greener/thicker
-            let edge_color = themed_score_color(score, stems);
-            let opacity = score.clamp(0.2, 0.9);
-            let width = 0.5 + score * 2.0;
-            let line_color = Color { a: opacity, ..edge_color };
+            let opacity = score.clamp(0.15, 0.6);
+            let width = 0.5 + score * 1.5;
 
             let path = Path::line(p1, p2);
-            frame.stroke(&path, Stroke::default().with_color(line_color).with_width(width));
+            frame.stroke(&path, Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
         }
 
         // ── Layer 2: Seed history trail (fading red line) ──
@@ -634,81 +631,80 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     let seed_accent = state.accent_color.unwrap_or(COLOR_SEED_ACCENT);
     let stems = state.stem_colors;
 
-    // We need to translate all drawing by bounds.x, bounds.y
-    frame.with_save(|frame| {
-        frame.translate(iced::Vector::new(bounds.x, bounds.y));
+    // Offset all points by bounds origin (no frame.translate — avoids coordinate bugs)
+    let ox = bounds.x;
+    let oy = bounds.y;
+    let pt = |pos: (f32, f32)| -> Point {
+        let s = to_screen(pos, pan, zoom, graph_bounds);
+        Point::new(s.x + ox, s.y + oy)
+    };
 
-        // ── Layer 1: Suggestion edges ──
-        for &(from, to, score) in &state.suggestion_edges {
-            let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
-            let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
-            let p1 = to_screen(from_pos, pan, zoom, graph_bounds);
-            let p2 = to_screen(to_pos, pan, zoom, graph_bounds);
-            let edge_color = themed_score_color(score, stems);
-            let opacity = score.clamp(0.2, 0.9);
-            let width = 0.5 + score * 2.0;
-            let path = Path::line(p1, p2);
-            frame.stroke(&path, Stroke::default().with_color(Color { a: opacity, ..edge_color }).with_width(width));
-        }
+    // ── Layer 1: Suggestion edges (gray, score-weighted width) ──
+    let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
+    for &(from, to, score) in &state.suggestion_edges {
+        let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
+        let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
+        let p1 = pt(from_pos);
+        let p2 = pt(to_pos);
+        let opacity = score.clamp(0.15, 0.6);
+        let width = 0.5 + score * 1.5;
+        frame.stroke(&Path::line(p1, p2), Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
+    }
 
-        // ── Layer 2: Seed history trail ──
-        if state.seed_stack.len() >= 2 {
-            let trail_base = Color::from_rgb(0.85, 0.2, 0.2);
-            let cur = state.seed_position;
-            for (seg_idx, window) in state.seed_stack.windows(2).enumerate() {
-                let (a, b) = (window[0], window[1]);
-                let a_pos = match state.positions.get(&a) { Some(p) => *p, None => continue };
-                let b_pos = match state.positions.get(&b) { Some(p) => *p, None => continue };
-                let dist = if seg_idx < cur { (cur - seg_idx - 1) as f32 } else { (seg_idx - cur) as f32 };
-                let alpha = (1.0 - dist * 0.3).clamp(0.08, 0.9);
-                let width = if dist < 1.5 { 2.0 } else { 1.0 };
-                let p1 = to_screen(a_pos, pan, zoom, graph_bounds);
-                let p2 = to_screen(b_pos, pan, zoom, graph_bounds);
-                frame.stroke(&Path::line(p1, p2), Stroke::default().with_color(Color { a: alpha, ..trail_base }).with_width(width));
-            }
+    // ── Layer 2: Seed history trail ──
+    if state.seed_stack.len() >= 2 {
+        let trail_base = Color::from_rgb(0.85, 0.2, 0.2);
+        let cur = state.seed_position;
+        for (seg_idx, window) in state.seed_stack.windows(2).enumerate() {
+            let (a, b) = (window[0], window[1]);
+            let a_pos = match state.positions.get(&a) { Some(p) => *p, None => continue };
+            let b_pos = match state.positions.get(&b) { Some(p) => *p, None => continue };
+            let dist = if seg_idx < cur { (cur - seg_idx - 1) as f32 } else { (seg_idx - cur) as f32 };
+            let alpha = (1.0 - dist * 0.3).clamp(0.08, 0.9);
+            let width = if dist < 1.5 { 2.0 } else { 1.0 };
+            frame.stroke(&Path::line(pt(a_pos), pt(b_pos)), Stroke::default().with_color(Color { a: alpha, ..trail_base }).with_width(width));
         }
+    }
 
-        // ── Layer 3: Unrelated nodes ──
-        let base_alpha = if has_seed { 0.12 } else { 1.0 };
-        for (&id, &pos) in &state.positions {
-            if seed_set.contains(&id) || state.suggestion_ids.contains(&id) { continue; }
-            let screen = to_screen(pos, pan, zoom, graph_bounds);
-            if screen.x < -5.0 || screen.y < -5.0 || screen.x > bounds.width + 5.0 || screen.y > bounds.height + 5.0 { continue; }
-            let base_color = state.clusters.get(&id)
-                .and_then(|&cid| if cid >= 0 { state.cluster_colors.get(&cid) } else { None })
-                .copied()
-                .unwrap_or(COLOR_NODE_DIM);
-            let confidence = state.cluster_confidence.get(&id).copied().unwrap_or(0.2);
-            let alpha = (confidence * 0.7 + 0.15) * base_alpha;
-            frame.fill(&Path::circle(screen, 2.5), Color { a: alpha, ..base_color });
-        }
+    // ── Layer 3: Unrelated nodes ──
+    let base_alpha = if has_seed { 0.12 } else { 1.0 };
+    for (&id, &pos) in &state.positions {
+        if seed_set.contains(&id) || state.suggestion_ids.contains(&id) { continue; }
+        let screen = pt(pos);
+        if screen.x < ox - 5.0 || screen.y < oy - 5.0 || screen.x > ox + bounds.width + 5.0 || screen.y > oy + bounds.height + 5.0 { continue; }
+        let base_color = state.clusters.get(&id)
+            .and_then(|&cid| if cid >= 0 { state.cluster_colors.get(&cid) } else { None })
+            .copied()
+            .unwrap_or(COLOR_NODE_DIM);
+        let confidence = state.cluster_confidence.get(&id).copied().unwrap_or(0.2);
+        let alpha = (confidence * 0.7 + 0.15) * base_alpha;
+        frame.fill(&Path::circle(screen, 2.5), Color { a: alpha, ..base_color });
+    }
 
-        // ── Layer 4: Suggestion nodes ──
-        for &id in &state.suggestion_ids {
-            if seed_set.contains(&id) { continue; }
-            let pos = match state.positions.get(&id) { Some(p) => *p, None => continue };
-            let screen = to_screen(pos, pan, zoom, graph_bounds);
-            let score = state.suggestion_scores.get(&id).copied().unwrap_or(1.0);
-            frame.fill(&Path::circle(screen, 4.0), themed_score_color(score, stems));
-        }
+    // ── Layer 4: Suggestion nodes ──
+    for &id in &state.suggestion_ids {
+        if seed_set.contains(&id) { continue; }
+        let pos = match state.positions.get(&id) { Some(p) => *p, None => continue };
+        let score = state.suggestion_scores.get(&id).copied().unwrap_or(1.0);
+        frame.fill(&Path::circle(pt(pos), 4.0), themed_score_color(score, stems));
+    }
 
-        // ── Layer 5: Breadcrumb seeds ──
-        for &id in &state.seed_stack {
-            if Some(id) == current_seed { continue; }
-            if let Some(&pos) = state.positions.get(&id) {
-                let screen = to_screen(pos, pan, zoom, graph_bounds);
-                frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..seed_accent }).with_width(1.5));
-                frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..seed_accent });
-            }
+    // ── Layer 5: Breadcrumb seeds ──
+    for &id in &state.seed_stack {
+        if Some(id) == current_seed { continue; }
+        if let Some(&pos) = state.positions.get(&id) {
+            let screen = pt(pos);
+            frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..seed_accent }).with_width(1.5));
+            frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..seed_accent });
         }
+    }
 
-        // ── Layer 6: Current seed ──
-        if let Some(seed_id) = current_seed {
-            if let Some(&pos) = state.positions.get(&seed_id) {
-                let screen = to_screen(pos, pan, zoom, graph_bounds);
-                frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(seed_accent).with_width(2.0));
-                frame.fill(&Path::circle(screen, 5.0), seed_accent);
-            }
+    // ── Layer 6: Current seed ──
+    if let Some(seed_id) = current_seed {
+        if let Some(&pos) = state.positions.get(&seed_id) {
+            let screen = pt(pos);
+            frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(seed_accent).with_width(2.0));
+            frame.fill(&Path::circle(screen, 5.0), seed_accent);
         }
-    });
+    }
 }
