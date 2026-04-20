@@ -242,6 +242,8 @@ pub struct DisplayConfig {
     pub suggestion_transition_reach: SuggestionTransitionReach,
     /// Enable stem complement scoring in suggestions
     pub suggestion_stem_complement: bool,
+    /// Show browser analytics panel (energy arc ribbon + similarity graph)
+    pub show_browser_analytics: bool,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -267,6 +269,7 @@ impl Default for DisplayConfig {
             suggestion_transition_reach: SuggestionTransitionReach::default(), // Medium
             suggestion_key_filter: SuggestionKeyFilter::default(),               // Strict
             suggestion_stem_complement: true,    // On by default (matches previous behaviour)
+            show_browser_analytics: true,         // Show energy arc + graph by default
         }
     }
 }

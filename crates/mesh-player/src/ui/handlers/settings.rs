@@ -113,6 +113,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_suggestion_playlist_split = enabled;
             Task::none()
         }
+        UpdateShowBrowserAnalytics(enabled) => {
+            app.settings.draft_show_browser_analytics = enabled;
+            Task::none()
+        }
         UpdateSuggestionBlendMode(mode) => {
             app.settings.draft_suggestion_blend_mode = mode;
             Task::none()
@@ -295,6 +299,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.suggestion_transition_reach = app.settings.draft_suggestion_transition_reach;
             new_config.display.suggestion_key_filter = app.settings.draft_suggestion_key_filter;
             new_config.display.suggestion_stem_complement = app.settings.draft_suggestion_stem_complement;
+            new_config.display.show_browser_analytics = app.settings.draft_show_browser_analytics;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
             new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;
@@ -365,6 +370,9 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.collection_browser.set_show_local_collection(
                 app.settings.draft_show_local_collection
             );
+
+            // Apply browser analytics toggle immediately
+            app.collection_browser.show_analytics = app.settings.draft_show_browser_analytics;
 
             // Send settings to audio engine via domain
             app.domain.set_phase_sync(app.settings.draft_phase_sync);

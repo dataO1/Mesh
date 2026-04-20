@@ -360,6 +360,7 @@ impl MeshApp {
                 cb.arc_success = active.ui.success;
                 cb.arc_warning = active.ui.warning;
                 cb.arc_danger = active.ui.danger;
+                cb.show_analytics = config.display.show_browser_analytics;
                 cb
             },
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
@@ -738,6 +739,8 @@ impl MeshApp {
                     .map(|(id, [r, g, b])| (id, Color::from_rgb(r, g, b)))
                     .collect();
                 state.track_meta = data.track_meta;
+                state.stem_colors = Some(self.collection_browser.arc_stem_colors);
+                state.accent_color = Some(self.collection_browser.arc_success);
                 self.collection_browser.canvas_state.graph = Some(state);
                 self.collection_browser.graph_building = false;
                 log::info!("[GRAPH] Graph data ready — {} nodes",

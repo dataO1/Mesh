@@ -76,6 +76,8 @@ pub enum SettingsMessage {
     UpdatePrereleaseChannel(bool),
     /// Toggle playlist split in suggestions (15 playlist + 15 global vs 30 any)
     UpdateSuggestionPlaylistSplit(bool),
+    /// Toggle browser analytics panel (energy arc + similarity graph)
+    UpdateShowBrowserAnalytics(bool),
     /// Update blend mode (Layering/Balanced/Transition)
     UpdateSuggestionBlendMode(SuggestionBlendMode),
     /// Update transition reach (Tight/Medium/Open)

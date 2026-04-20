@@ -328,6 +328,12 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
         })
             .hint("Keep browser visible while browse mode is active (disable idle timeout)"),
 
+        SettingsItem::new("Browser Analytics", SettingsBehavior::Toggle {
+            value: state.draft_show_browser_analytics,
+            on_toggle: |v| SettingsMessage::UpdateShowBrowserAnalytics(v),
+        })
+            .hint("Show energy arc ribbon and similarity graph alongside the track list"),
+
         SettingsItem::new("Playlist Split", SettingsBehavior::Toggle {
             value: state.draft_suggestion_playlist_split,
             on_toggle: |v| SettingsMessage::UpdateSuggestionPlaylistSplit(v),
@@ -469,6 +475,7 @@ pub struct SettingsState {
     pub draft_show_local_collection: bool,
     /// Draft persistent browse (keep browser overlay visible while browse mode active)
     pub draft_persistent_browse: bool,
+    pub draft_show_browser_analytics: bool,
     pub draft_suggestion_playlist_split: bool,
     pub draft_suggestion_blend_mode: SuggestionBlendMode,
     pub draft_suggestion_transition_reach: SuggestionTransitionReach,
@@ -531,6 +538,7 @@ impl SettingsState {
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
             draft_persistent_browse: config.display.persistent_browse,
+            draft_show_browser_analytics: config.display.show_browser_analytics,
             draft_suggestion_playlist_split: config.display.suggestion_playlist_split,
             draft_suggestion_blend_mode: config.display.suggestion_blend_mode,
             draft_suggestion_transition_reach: config.display.suggestion_transition_reach,
@@ -570,6 +578,7 @@ impl SettingsState {
             target_lufs_index: self.draft_target_lufs_index,
             show_local_collection: self.draft_show_local_collection,
             persistent_browse: self.draft_persistent_browse,
+            show_browser_analytics: self.draft_show_browser_analytics,
             suggestion_playlist_split: self.draft_suggestion_playlist_split,
             suggestion_blend_mode: self.draft_suggestion_blend_mode,
             suggestion_transition_reach: self.draft_suggestion_transition_reach,
@@ -600,6 +609,7 @@ impl SettingsState {
             || self.draft_target_lufs_index != snap.target_lufs_index
             || self.draft_show_local_collection != snap.show_local_collection
             || self.draft_persistent_browse != snap.persistent_browse
+            || self.draft_show_browser_analytics != snap.show_browser_analytics
             || self.draft_suggestion_playlist_split != snap.suggestion_playlist_split
             || self.draft_suggestion_blend_mode != snap.suggestion_blend_mode
             || self.draft_suggestion_transition_reach != snap.suggestion_transition_reach
@@ -638,6 +648,7 @@ struct SettingsSnapshot {
     target_lufs_index: usize,
     show_local_collection: bool,
     persistent_browse: bool,
+    show_browser_analytics: bool,
     suggestion_playlist_split: bool,
     suggestion_blend_mode: SuggestionBlendMode,
     suggestion_transition_reach: SuggestionTransitionReach,

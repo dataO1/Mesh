@@ -233,6 +233,57 @@ pub fn handle_suggestions_ready(
             log::info!("Suggestions ready: {} playlist + {} global",
                 split.playlist_suggestions.len(), split.global_suggestions.len());
             app.collection_browser.apply_suggestion_results(tracks, paths, contexts);
+
+            // Update graph highlighting with suggestion data
+            let seed_paths_for_graph = active_seed_paths(app);
+            if let Some(ref mut graph) = app.collection_browser.canvas_state.graph {
+                graph.suggestion_ids.clear();
+                graph.suggestion_scores.clear();
+                graph.suggestion_edges.clear();
+
+                // Resolve seed track ID(s) from active seed paths
+                let seed_ids: Vec<i64> = seed_paths_for_graph.iter()
+                    .filter_map(|p| {
+                        std::path::Path::new(p).file_name()
+                            .and_then(|f| {
+                                graph.track_meta.values()
+                                    .find(|m| m.title == f.to_string_lossy().as_ref()
+                                        || p.ends_with(&m.title))
+                                    .map(|m| m.id)
+                            })
+                    })
+                    .collect();
+
+                // Collect top-30 suggestion IDs and scores
+                let all_suggestions: Vec<&SuggestedTrack> = split.playlist_suggestions.iter()
+                    .chain(split.global_suggestions.iter())
+                    .collect();
+
+                for s in all_suggestions.iter().take(30) {
+                    if let Some(id) = s.track.id {
+                        graph.suggestion_ids.insert(id);
+                        graph.suggestion_scores.insert(id, s.score);
+                        // Build edges from each seed to this suggestion
+                        for &seed_id in &seed_ids {
+                            graph.suggestion_edges.push((seed_id, id, s.score));
+                        }
+                    }
+                }
+
+                // Update seed stack
+                if !seed_ids.is_empty() {
+                    let current = graph.seed_stack.get(graph.seed_position).copied();
+                    if current != seed_ids.first().copied() {
+                        if let Some(&new_seed) = seed_ids.first() {
+                            graph.seed_stack.truncate(graph.seed_position + if current.is_some() { 1 } else { 0 });
+                            graph.seed_stack.push(new_seed);
+                            graph.seed_position = graph.seed_stack.len() - 1;
+                        }
+                    }
+                }
+
+                graph.clear_caches();
+            }
         }
         Err(e) => {
             log::warn!("Suggestion query failed: {}", e);

@@ -370,6 +370,7 @@ fn main() -> iced::Result {
             let graph_task = Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
+                        mesh_core::rt::pin_to_big_cores();
                         use mesh_core::graph_compute;
                         use mesh_widgets::graph_view::TrackMeta;
 

@@ -79,6 +79,11 @@ pub struct GraphViewState {
     pub cluster_confidence: HashMap<i64, f32>,
     /// Cluster colors (cluster_id → color)
     pub cluster_colors: HashMap<i32, Color>,
+    /// Theme-derived stem colors [Vocals, Drums, Bass, Other] for score coloring.
+    /// If set, score_best uses stems[0] (Vocals) and score_worst uses arc danger.
+    pub stem_colors: Option<[Color; 4]>,
+    /// Theme-derived accent color for seed highlighting
+    pub accent_color: Option<Color>,
 }
 
 impl GraphViewState {
@@ -106,6 +111,8 @@ impl GraphViewState {
             status_message: None,
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
+            stem_colors: None,
+            accent_color: None,
         }
     }
 
@@ -557,8 +564,36 @@ pub fn graph_view<'a, Message: 'a>(
 /// a single Canvas widget with the energy arc ribbon.
 /// `bounds` is the sub-region within the frame where the graph should render.
 /// Auto-fits zoom to show all nodes within the bounds.
+/// Score color using theme stem colors when available.
+fn themed_score_color(score: f32, stem_colors: Option<[Color; 4]>) -> Color {
+    match stem_colors {
+        Some(stems) => {
+            // Vocals stem = good, Bass stem = moderate, hardcoded red = poor
+            let t = (1.0 - score).clamp(0.0, 1.0);
+            if t < 0.5 {
+                // Good → moderate (vocals → bass stem)
+                let s = t * 2.0;
+                Color::from_rgb(
+                    stems[0].r + (stems[2].r - stems[0].r) * s,
+                    stems[0].g + (stems[2].g - stems[0].g) * s,
+                    stems[0].b + (stems[2].b - stems[0].b) * s,
+                )
+            } else {
+                // Moderate → poor (bass stem → red)
+                let s = (t - 0.5) * 2.0;
+                Color::from_rgb(
+                    stems[2].r + (COLOR_SCORE_WORST.r - stems[2].r) * s,
+                    stems[2].g + (COLOR_SCORE_WORST.g - stems[2].g) * s,
+                    stems[2].b + (COLOR_SCORE_WORST.b - stems[2].b) * s,
+                )
+            }
+        }
+        None => score_color(score),
+    }
+}
+
 pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bounds: Rectangle) {
-    // Background
+    // Background from theme or fallback
     frame.fill_rectangle(
         Point::new(bounds.x, bounds.y),
         bounds.size(),
@@ -596,6 +631,8 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     let seed_set: HashSet<i64> = state.seed_stack.iter().copied().collect();
     let current_seed = state.seed_stack.get(state.seed_position).copied();
     let has_seed = current_seed.is_some();
+    let seed_accent = state.accent_color.unwrap_or(COLOR_SEED_ACCENT);
+    let stems = state.stem_colors;
 
     // We need to translate all drawing by bounds.x, bounds.y
     frame.with_save(|frame| {
@@ -607,7 +644,7 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
             let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
             let p1 = to_screen(from_pos, pan, zoom, graph_bounds);
             let p2 = to_screen(to_pos, pan, zoom, graph_bounds);
-            let edge_color = score_color(score);
+            let edge_color = themed_score_color(score, stems);
             let opacity = score.clamp(0.2, 0.9);
             let width = 0.5 + score * 2.0;
             let path = Path::line(p1, p2);
@@ -652,7 +689,7 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
             let pos = match state.positions.get(&id) { Some(p) => *p, None => continue };
             let screen = to_screen(pos, pan, zoom, graph_bounds);
             let score = state.suggestion_scores.get(&id).copied().unwrap_or(1.0);
-            frame.fill(&Path::circle(screen, 4.0), score_color(score));
+            frame.fill(&Path::circle(screen, 4.0), themed_score_color(score, stems));
         }
 
         // ── Layer 5: Breadcrumb seeds ──
@@ -660,8 +697,8 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
             if Some(id) == current_seed { continue; }
             if let Some(&pos) = state.positions.get(&id) {
                 let screen = to_screen(pos, pan, zoom, graph_bounds);
-                frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..COLOR_SEED_ACCENT }).with_width(1.5));
-                frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..COLOR_SEED_ACCENT });
+                frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..seed_accent }).with_width(1.5));
+                frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..seed_accent });
             }
         }
 
@@ -669,8 +706,8 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         if let Some(seed_id) = current_seed {
             if let Some(&pos) = state.positions.get(&seed_id) {
                 let screen = to_screen(pos, pan, zoom, graph_bounds);
-                frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(COLOR_SEED_ACCENT).with_width(2.0));
-                frame.fill(&Path::circle(screen, 5.0), COLOR_SEED_ACCENT);
+                frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(seed_accent).with_width(2.0));
+                frame.fill(&Path::circle(screen, 5.0), seed_accent);
             }
         }
     });

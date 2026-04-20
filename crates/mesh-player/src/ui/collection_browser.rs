@@ -79,6 +79,8 @@ pub struct CollectionBrowserState {
     pub arc_danger: Color,
     /// Whether graph data is currently being computed
     pub graph_building: bool,
+    /// Whether to show the analytics panel (energy arc + graph)
+    pub show_analytics: bool,
     /// Combined canvas state: energy arc ribbon + graph view (single Canvas widget).
     /// This is the single source of truth for both visualizations.
     pub canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState,
@@ -173,6 +175,7 @@ impl CollectionBrowserState {
             arc_warning: Color::from_rgb(0.77, 0.60, 0.17),
             arc_danger: Color::from_rgb(0.65, 0.24, 0.25),
             graph_building: false,
+            show_analytics: true,
             canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState {
                 energy_arc: None,
                 graph: None,
@@ -799,21 +802,19 @@ impl CollectionBrowserState {
             .padding([6, 10])
             .width(Length::Fill);
 
-        // Combined canvas: energy arc ribbon + graph view (single Canvas widget)
-        let side_canvas: Element<'_, CollectionBrowserMessage> =
-            mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
-
-        let main_row = row![
-            container(browser_element).width(Length::FillPortion(3)),
-            container(side_canvas).width(Length::FillPortion(1)),
-        ]
-        .spacing(0)
-        .height(Length::Fill);
-
-        column![load_bar, main_row]
+        if self.show_analytics {
+            let side_canvas: Element<'_, CollectionBrowserMessage> =
+                mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
+            let main_row = row![
+                container(browser_element).width(Length::FillPortion(3)),
+                container(side_canvas).width(Length::FillPortion(1)),
+            ]
             .spacing(0)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+            column![load_bar, main_row].spacing(0).height(Length::Fill).into()
+        } else {
+            column![load_bar, browser_element].spacing(0).height(Length::Fill).into()
+        }
     }
 
     /// Compact view without load buttons (for performance mode)
@@ -840,20 +841,19 @@ impl CollectionBrowserState {
             .padding([4, 8])
             .width(Length::Fill);
 
-        let side_canvas: Element<'_, CollectionBrowserMessage> =
-            mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
-
-        let main_row = row![
-            container(browser_element).width(Length::FillPortion(3)),
-            container(side_canvas).width(Length::FillPortion(1)),
-        ]
-        .spacing(0)
-        .height(Length::Fill);
-
-        column![header, main_row]
+        if self.show_analytics {
+            let side_canvas: Element<'_, CollectionBrowserMessage> =
+                mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
+            let main_row = row![
+                container(browser_element).width(Length::FillPortion(3)),
+                container(side_canvas).width(Length::FillPortion(1)),
+            ]
             .spacing(0)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+            column![header, main_row].spacing(0).height(Length::Fill).into()
+        } else {
+            column![header, browser_element].spacing(0).height(Length::Fill).into()
+        }
     }
 
     /// Build the "SUGGEST" toggle button
@@ -1187,6 +1187,13 @@ impl CollectionBrowserState {
         self.suggestion_context_cache.clear();
         self.suggestion_loading = false;
         self.scroll_index = None;
+        // Clear graph highlighting
+        if let Some(ref mut graph) = self.canvas_state.graph {
+            graph.suggestion_ids.clear();
+            graph.suggestion_scores.clear();
+            graph.suggestion_edges.clear();
+            graph.clear_caches();
+        }
     }
 
     /// Get the last active seed paths (for change detection in tick)
