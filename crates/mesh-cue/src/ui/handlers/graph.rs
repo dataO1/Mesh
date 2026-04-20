@@ -725,30 +725,40 @@ impl MeshCueApp {
             state.positions.insert(id, (x, y));
         }
 
-        // Update highlights: top N are suggestions, rest are unrelated
+        // Update highlights: top N are suggestions, filtering out tracks already in seed history
         state.suggestion_ids.clear();
         state.suggestion_scores.clear();
         state.suggestion_edges.clear();
 
-        // ALL scored tracks get their score stored (for positioning)
-        // but only top SUGGESTION_HIGHLIGHT_LIMIT get highlighted
-        for (i, suggestion) in suggestions.iter().enumerate() {
+        let seed_set: HashSet<i64> = state.seed_stack.iter().copied().collect();
+        let mut highlighted = 0usize;
+
+        for suggestion in suggestions.iter() {
             if let Some(id) = suggestion.track.id {
                 state.suggestion_scores.insert(id, suggestion.score);
-                if i < SUGGESTION_HIGHLIGHT_LIMIT {
+                // Skip tracks already in seed history for highlights + edges
+                if !seed_set.contains(&id) && highlighted < SUGGESTION_HIGHLIGHT_LIMIT {
                     state.suggestion_ids.insert(id);
                     if let Some(seed_id) = current_seed {
                         state.suggestion_edges.push((seed_id, id, suggestion.score));
                     }
+                    highlighted += 1;
                 }
             }
         }
 
         state.clear_caches();
 
-        // Build left panel rows (top 30 only) with reason tags and score components
+        // Build left panel rows (top 30, excluding seed history)
         let mut rows: Vec<TrackRow<NodeId>> = Vec::with_capacity(SUGGESTION_HIGHLIGHT_LIMIT);
-        for (i, s) in suggestions.iter().take(SUGGESTION_HIGHLIGHT_LIMIT).enumerate() {
+        let mut row_count = 0usize;
+        for s in suggestions.iter() {
+            if row_count >= SUGGESTION_HIGHLIGHT_LIMIT { break; }
+            let _id = match s.track.id {
+                Some(id) if !seed_set.contains(&id) => id,
+                _ => continue,
+            };
+            let i = row_count;
             let node_id = NodeId(format!("graph_{}", s.track.id.unwrap_or(i as i64)));
             let mut row = TrackRow::new(node_id, &s.track.title, (i + 1) as i32);
             row.artist = s.track.artist.clone();
@@ -775,6 +785,7 @@ impl MeshCueApp {
             }
 
             rows.push(row);
+            row_count += 1;
         }
         self.collection.graph_suggestion_rows = rows;
 
