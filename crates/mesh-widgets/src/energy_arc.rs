@@ -159,19 +159,45 @@ impl<M> canvas::Program<M> for EnergyArcState {
         // outer_alpha = ribbon fill (always visible, minimum floor for shape context)
         // inner_alpha = center line + dots (fades aggressively, focuses attention)
         // Past fades faster than future — highlights upcoming transitions.
+        // color_mix: 1.0 = full transition color, 0.0 = fully gray.
+        // Only the next 2-3 transitions keep their color; everything else goes gray.
+        let gray = Color::from_rgb(0.35, 0.35, 0.38);
+        let color_mix = |i: usize| -> f32 {
+            let ii = i as isize;
+            let cc = center as isize;
+            if ii == cc || ii == cc + 1 {
+                1.0
+            } else if ii == cc + 2 {
+                0.6
+            } else if ii == cc - 1 || ii == cc + 3 {
+                0.2
+            } else {
+                0.0 // fully gray
+            }
+        };
+        let mix_color = |base: Color, i: usize| -> Color {
+            let t = color_mix(i);
+            Color {
+                r: gray.r + (base.r - gray.r) * t,
+                g: gray.g + (base.g - gray.g) * t,
+                b: gray.b + (base.b - gray.b) * t,
+                a: base.a,
+            }
+        };
+
+        // outer_alpha = ribbon fill (always visible, floor 0.5)
+        // inner_alpha = center line + dots (fades aggressively)
         let outer_alpha = |i: usize| -> f32 {
             let ii = i as isize;
             let cc = center as isize;
             if ii == cc || ii == cc + 1 {
                 1.0
             } else if ii < cc {
-                // Past: fade fast but keep visible ribbon shape
                 let steps_back = (cc - ii) as f32;
-                (0.6 - steps_back * 0.12).clamp(0.15, 0.5)
+                (0.8 - steps_back * 0.1).clamp(0.5, 0.7)
             } else {
-                // Future: fade slower — these are what the DJ needs to see
                 let steps_ahead = (ii - cc - 1) as f32;
-                (0.7 - steps_ahead * 0.08).clamp(0.15, 0.7)
+                (0.8 - steps_ahead * 0.06).clamp(0.5, 0.8)
             }
         };
         let inner_alpha = |i: usize| -> f32 {
@@ -180,13 +206,11 @@ impl<M> canvas::Program<M> for EnergyArcState {
             if ii == cc || ii == cc + 1 {
                 1.0
             } else if ii < cc {
-                // Past inner: disappear quickly
                 let steps_back = (cc - ii) as f32;
-                (0.4 - steps_back * 0.25).clamp(0.0, 0.3)
+                (0.4 - steps_back * 0.3).clamp(0.0, 0.3)
             } else {
-                // Future inner: fade but stay readable longer
                 let steps_ahead = (ii - cc - 1) as f32;
-                (0.5 - steps_ahead * 0.15).clamp(0.0, 0.5)
+                (0.6 - steps_ahead * 0.15).clamp(0.0, 0.5)
             }
         };
 
@@ -201,10 +225,10 @@ impl<M> canvas::Program<M> for EnergyArcState {
             let a = outer_alpha(i).min(outer_alpha(i + 1));
 
             let seg_color = if i < self.transitions.len() {
-                let tc = self.transitions[i].color;
-                Color { a: a * 0.3, ..tc }
+                let tc = mix_color(self.transitions[i].color, i);
+                Color { a: a * 0.35, ..tc }
             } else {
-                Color { a: a * 0.15, ..self.stem_colors[3] }
+                Color { a: a * 0.2, ..gray }
             };
 
             // Draw filled quad: top-left, top-right, bottom-right, bottom-left
@@ -228,10 +252,10 @@ impl<M> canvas::Program<M> for EnergyArcState {
             if a < 0.01 { continue; }
 
             let line_color = if i < self.transitions.len() {
-                let tc = self.transitions[i].color;
+                let tc = mix_color(self.transitions[i].color, i);
                 Color { a: a * 0.9, ..tc }
             } else {
-                Color { a: a * 0.5, ..text_color }
+                Color { a: a * 0.5, ..gray }
             };
 
             let width = if i == center || i + 1 == center { 2.0 } else { 1.0 };
