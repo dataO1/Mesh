@@ -94,13 +94,13 @@ All notable changes to Mesh are documented in this file.
   controls color intensity — strong community members render vivid, boundary
   tracks faded, noise tracks gray.
 
-- **Energy arc widget** — A line graph above the playlist browser shows
-  intensity progression across all tracks. Line segments are colored by key
-  transition quality (green = compatible, amber = moderate, red = poor).
-  Min-max normalized so the full vertical range is used regardless of absolute
-  intensity values. Current track highlighted with a large dot; distant tracks
-  fade. Transition labels shown near the selected track. Auto-computed from
-  track metadata, no schema changes needed.
+- **Energy arc ribbon** — A flowing ribbon above the playlist browser encodes
+  three dimensions of set flow: center Y = perceived energy (intensity + key
+  direction + vector similarity), ribbon width = spectral dissimilarity (wider =
+  bigger transition jump), color = key transition quality. Shows the energy
+  story of a set at a glance — narrow green ribbons for smooth layering, wide
+  red pulses for bold transitions. Uses the active color theme (stem colors,
+  accent, background) — no hardcoded colors. Auto-computed from track metadata.
 
 - **Set plan export** — The graph view seed history can be exported as a
   playlist via the "Export" button. Creates an ordered playlist playable in
