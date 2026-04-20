@@ -1175,6 +1175,25 @@ impl CollectionBrowserState {
             false
         }
     }
+    /// Compute PCA cosine distances between consecutive tracks.
+    fn compute_similarities(&mut self) {
+        let all_pca = self.db_service.get_all_pca_with_tracks().unwrap_or_default();
+        let pca_by_path: HashMap<String, Vec<f32>> = all_pca.into_iter()
+            .map(|(t, v)| (t.path.to_string_lossy().to_string(), v))
+            .collect();
+
+        self.consecutive_similarities = self.tracks.windows(2)
+            .map(|w| {
+                let a = w[0].track_path.as_ref().and_then(|p| pca_by_path.get(p));
+                let b = w[1].track_path.as_ref().and_then(|p| pca_by_path.get(p));
+                match (a, b) {
+                    (Some(va), Some(vb)) => mesh_core::suggestions::query::cosine_distance_pub(va, vb),
+                    _ => 0.3,
+                }
+            })
+            .collect();
+    }
+
     /// Batch-populate intensity on tracks from ML analysis, then rebuild arc.
     fn enrich_and_rebuild(&mut self) {
         // Build path→ID map from one batch query
@@ -1208,6 +1227,7 @@ impl CollectionBrowserState {
             }
         }
 
+        self.compute_similarities();
         self.rebuild_energy_arc();
     }
 
