@@ -451,7 +451,7 @@ impl CollectionBrowserState {
                 if let Some(ref storage) = self.storage {
                     self.tree_nodes = build_tree_nodes(storage.as_ref());
                     if let Some(ref folder) = self.browser.current_folder {
-                        { let t = get_tracks_for_folder(storage.as_ref(), folder); self.tracks = t; self.rebuild_energy_arc(); }
+                        { let t = get_tracks_for_folder(storage.as_ref(), folder); self.tracks = t; self.enrich_and_rebuild(); }
                         self.scroll_index = None;
                     }
                 }
@@ -1172,9 +1172,39 @@ impl CollectionBrowserState {
             false
         }
     }
-    /// Set tracks and rebuild energy arc.
-    fn set_tracks(&mut self, tracks: Vec<TrackRow<NodeId>>) {
-        self.tracks = tracks;
+    /// Batch-populate intensity on tracks from ML analysis, then rebuild arc.
+    fn enrich_and_rebuild(&mut self) {
+        // Build path→ID map from one batch query
+        let all_tracks = self.db_service.get_all_tracks().unwrap_or_default();
+        let path_to_id: HashMap<String, i64> = all_tracks.iter()
+            .filter_map(|t| t.id.map(|id| (t.path.to_string_lossy().to_string(), id)))
+            .collect();
+
+        let row_ids: Vec<i64> = self.tracks.iter()
+            .filter_map(|r| r.track_path.as_ref().and_then(|p| path_to_id.get(p)).copied())
+            .collect();
+
+        if !row_ids.is_empty() {
+            let ml_scores = self.db_service.get_ml_scores_batch(&row_ids).unwrap_or_default();
+            let flatness = self.db_service.batch_get_flatness(&row_ids).unwrap_or_default();
+            let dissonance = self.db_service.batch_get_dissonance(&row_ids).unwrap_or_default();
+
+            for row in &mut self.tracks {
+                if let Some(path) = &row.track_path {
+                    if let Some(&id) = path_to_id.get(path) {
+                        if let Some(ml) = ml_scores.get(&id) {
+                            row.intensity = mesh_core::suggestions::scoring::composite_intensity(
+                                ml.aggression,
+                                flatness.get(&id).copied(),
+                                ml.relaxed,
+                                dissonance.get(&id).copied(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         self.rebuild_energy_arc();
     }
 
