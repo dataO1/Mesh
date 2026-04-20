@@ -69,6 +69,8 @@ pub struct GraphViewState {
     pub pca_dims: usize,
     /// Transition reach index (0=Tight, 1=Medium, 2=Open) for the graph view
     pub transition_reach_index: usize,
+    /// Status message (e.g., "Exported 12 tracks as Set Plan")
+    pub status_message: Option<String>,
     // Cluster overlays (multi-scale consensus)
     /// Cluster assignments (track_id → cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
@@ -101,6 +103,7 @@ impl GraphViewState {
             pca_dims: 0,
             cluster_confidence: HashMap::new(),
             transition_reach_index: 1, // default: Medium
+            status_message: None,
             clusters: HashMap::new(),
             cluster_colors: HashMap::new(),
         }

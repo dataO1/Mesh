@@ -363,6 +363,9 @@ impl MeshCueApp {
             None => return Task::none(),
         };
 
+        // Clear any status message on new navigation
+        state.status_message = None;
+
         // Browser-like: truncate forward history, push new seed
         let current = state.seed_stack.get(state.seed_position).copied();
         if current != Some(track_id) {
@@ -494,12 +497,18 @@ impl MeshCueApp {
                     }
                 }
                 log::info!("[GRAPH] Exported {} tracks as playlist '{}' (id={})", added, name, playlist_id);
+                if let Some(ref mut state) = self.collection.graph_state {
+                    state.status_message = Some(format!("Exported {} tracks as \"{}\"", added, name));
+                }
                 self.domain.refresh_tree();
                 self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
                 Task::perform(async {}, |_| Message::RefreshPlaylists)
             }
             Err(e) => {
                 log::error!("[GRAPH] Failed to create playlist: {}", e);
+                if let Some(ref mut state) = self.collection.graph_state {
+                    state.status_message = Some(format!("Export failed: {}", e));
+                }
                 Task::none()
             }
         }

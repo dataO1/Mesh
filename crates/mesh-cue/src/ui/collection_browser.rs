@@ -347,6 +347,11 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                 let n_clusters = graph_state.cluster_colors.len();
                 if n_clusters > 0 { format!("{} clusters", n_clusters) } else { String::new() }
             };
+            let status_or_help = if let Some(ref msg) = graph_state.status_message {
+                text(msg.clone()).size(sz(10.0))
+            } else {
+                text("Drop \u{2190} Intent \u{2192} Peak | Reach: transition distance | Norm: t-SNE mode").size(sz(10.0))
+            };
             let legend = container(
                 row![
                     text(dims_info).size(sz(10.0)),
@@ -355,7 +360,7 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                     text(if clusters_info.is_empty() { "" } else { " | " }).size(sz(10.0)),
                     text(clusters_info).size(sz(10.0)),
                     text(" | ").size(sz(10.0)),
-                    text("Drop \u{2190} Intent \u{2192} Peak | Clusters: sensitivity | Norm: vector normalization").size(sz(10.0)),
+                    status_or_help,
                 ]
                 .spacing(0)
                 .align_y(Alignment::Center)
