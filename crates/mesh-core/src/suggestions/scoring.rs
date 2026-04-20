@@ -453,20 +453,28 @@ pub fn transition_type_label(tt: TransitionType) -> &'static str {
     }
 }
 
-/// Color a tag by reward quality: high reward = green (good), low = red (bad).
+// Suggestion tag color markers — sentinel hex values remapped to theme stem
+// colors by resolve_tag_color() on the UI side.
+// Good → Vocals stem, Moderate → Bass stem, Poor → theme danger (passthrough).
+pub const TAG_COLOR_GOOD: &str = "#00AA01";
+pub const TAG_COLOR_MODERATE: &str = "#00AA02";
+pub const TAG_COLOR_SOURCE: &str = "#00AA03";
+pub const TAG_COLOR_POOR: &str = "#a63d40";
+
+/// Color a tag by reward quality: high reward = good, low = poor.
 pub fn reward_color(reward: f32) -> &'static str {
-    if reward >= 0.7 { "#2d8a4e" }         // green = strong match
-    else if reward >= 0.4 { "#c49a2a" }    // amber = moderate
-    else { "#a63d40" }                      // red = weak/opposing
+    if reward >= 0.7 { TAG_COLOR_GOOD }
+    else if reward >= 0.4 { TAG_COLOR_MODERATE }
+    else { TAG_COLOR_POOR }
 }
 
 /// Color a key transition tag by its inherent harmonic quality (base_score).
 /// Uses the same thresholds as the energy arc ribbon for visual consistency.
 pub fn transition_color(tt: TransitionType) -> &'static str {
     let bs = base_score(tt);
-    if bs >= 0.80 { "#2d8a4e" }      // green — compatible (same key, adjacent, diagonal)
-    else if bs >= 0.40 { "#c49a2a" } // amber — moderate (energy boost/cool, mood lift/darken)
-    else { "#a63d40" }               // red — difficult (semitone, far, tritone)
+    if bs >= 0.80 { TAG_COLOR_GOOD }
+    else if bs >= 0.40 { TAG_COLOR_MODERATE }
+    else { TAG_COLOR_POOR }
 }
 
 /// Color a tag by penalty quality (legacy, for reason tags that still use penalty framing).
@@ -511,23 +519,23 @@ pub fn generate_reason_tags(
     tags.push(("Similarity".to_string(), Some(sim_color.to_string()), raw_similarity.abs()));
 
     // --- Energy tag: relative energy shift from seed ---
-    // Green = more energy, amber = roughly same, red = less energy
-    let energy_color = if energy_delta > 0.15 { "#2d8a4e" }       // green — energy goes up
-        else if energy_delta > -0.15 { "#c49a2a" }                // amber — roughly same
-        else { "#a63d40" };                                       // red — energy drops
+    // Good = more energy, moderate = roughly same, poor = less energy
+    let energy_color = if energy_delta > 0.15 { TAG_COLOR_GOOD }
+        else if energy_delta > -0.15 { TAG_COLOR_MODERATE }
+        else { TAG_COLOR_POOR };
     tags.push(("Energy".to_string(), Some(energy_color.to_string()), energy_delta.abs()));
 
-    // --- Stem complement tags: complementary → green, clashing → red ---
+    // --- Stem complement tags: complementary → good, clashing → poor ---
     if w_vocal_compl >= min_weight {
         if vocal_comp > 0.65 || vocal_comp < 0.35 {
-            let color = if vocal_comp > 0.65 { "#2d8a4e" } else { "#a63d40" };
+            let color = if vocal_comp > 0.65 { TAG_COLOR_GOOD } else { TAG_COLOR_POOR };
             let impact = w_vocal_compl * (vocal_comp - 0.5).abs();
             tags.push(("Vocals".to_string(), Some(color.to_string()), impact));
         }
     }
     if w_other_compl >= min_weight {
         if other_comp > 0.65 || other_comp < 0.35 {
-            let color = if other_comp > 0.65 { "#2d8a4e" } else { "#a63d40" };
+            let color = if other_comp > 0.65 { TAG_COLOR_GOOD } else { TAG_COLOR_POOR };
             let impact = w_other_compl * (other_comp - 0.5).abs();
             tags.push(("Lead".to_string(), Some(color.to_string()), impact));
         }

@@ -78,15 +78,19 @@ fn resolve_tag_color(tag_color: Option<Color>, category_colors: Option<[Color; 4
     let g = (color.g * 255.0).round() as u8;
     let b = (color.b * 255.0).round() as u8;
     match (r, g, b) {
-        // Genre blues → cats[0]
+        // Genre blues → cats[0] (Drums stem)
         (37, 99, 235) | (59, 130, 246) | (96, 165, 250) => cats[0],
-        // Characteristic teal → cats[1]
+        // Characteristic teal → cats[1] (Vocals stem)
         (13, 148, 136) => cats[1],
-        // Mood purple → cats[2]
+        // Mood purple → cats[2] (Other stem)
         (139, 92, 246) => cats[2],
-        // Vocal green / binary mood pink → cats[3]
+        // Vocal green / binary mood pink → cats[3] (Bass stem)
         (45, 138, 78) | (236, 72, 153) => cats[3],
-        // Score-based suggestion colors + custom — keep as-is
+        // Suggestion tag sentinels: good → Vocals, moderate → Bass, source → Drums
+        (0, 170, 1) => cats[1],  // TAG_COLOR_GOOD → Vocals stem
+        (0, 170, 2) => cats[3],  // TAG_COLOR_MODERATE → Bass stem
+        (0, 170, 3) => cats[0],  // TAG_COLOR_SOURCE → Drums stem
+        // Score-based suggestion poor (#a63d40) + custom — keep as-is
         _ => color,
     }
 }
