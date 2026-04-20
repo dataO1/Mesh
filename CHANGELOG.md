@@ -105,6 +105,10 @@ All notable changes to Mesh are documented in this file.
   from full theme colors to grayscale. Ribbon shape always visible (50% floor),
   inner line fades faster than outer tube. Adapts to the active color theme.
 
+- **Energy arc in mesh-player** — The same ribbon widget now appears in
+  mesh-player's collection browser with real ML intensity data. Both apps
+  show identical visualizations for any playlist.
+
 - **Set plan export** — The graph view seed history can be exported as a
   playlist via the "Export" button. Creates an ordered playlist playable in
   mesh-player. Unlimited history length.
