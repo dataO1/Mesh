@@ -246,10 +246,11 @@ impl MeshCueApp {
             pca_progress_rx: None,
         };
 
-        // Initial collection scan and playlist refresh
+        // Initial collection scan, playlist refresh, and background graph build
         let cmd = Task::batch([
             Task::perform(async {}, |_| Message::RefreshCollection),
             Task::perform(async {}, |_| Message::RefreshPlaylists),
+            Task::perform(async {}, |_| Message::BuildGraphEdges),
         ]);
 
         (app, cmd)

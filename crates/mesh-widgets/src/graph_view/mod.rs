@@ -318,6 +318,8 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         let seed_set: HashSet<i64> = self.seed_stack.iter().copied().collect();
         let current_seed = self.seed_stack.get(self.seed_position).copied();
         let has_seed = current_seed.is_some();
+        let seed_accent = self.accent_color.unwrap_or(COLOR_SEED_ACCENT);
+        let stems = self.stem_colors;
 
         // ── Layer 1: Suggestion edges (seed → suggestions, composite score) ──
         // Only shown when a seed is selected — these ARE the graph's edges
@@ -335,7 +337,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             let p2 = to_screen(to_pos, self.pan, self.zoom, bounds);
 
             // Color by composite score: higher = better = greener/thicker
-            let edge_color = score_color(score);
+            let edge_color = themed_score_color(score, stems);
             let opacity = score.clamp(0.2, 0.9);
             let width = 0.5 + score * 2.0;
             let line_color = Color { a: opacity, ..edge_color };
@@ -420,7 +422,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             };
             let screen = to_screen(pos, self.pan, self.zoom, bounds);
             let score = self.suggestion_scores.get(&id).copied().unwrap_or(1.0);
-            let color = score_color(score);
+            let color = themed_score_color(score, stems);
             let circle = Path::circle(screen, 5.0);
             frame.fill(&circle, color);
         }
@@ -436,11 +438,11 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                 frame.stroke(
                     &ring,
                     Stroke::default()
-                        .with_color(Color { a: 0.6, ..COLOR_SEED_ACCENT })
+                        .with_color(Color { a: 0.6, ..seed_accent })
                         .with_width(1.5),
                 );
                 let dot = Path::circle(screen, 5.0);
-                frame.fill(&dot, Color { a: 0.6, ..COLOR_SEED_ACCENT });
+                frame.fill(&dot, Color { a: 0.6, ..seed_accent });
             }
         }
 
@@ -451,10 +453,10 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                 let ring = Path::circle(screen, 9.0);
                 frame.stroke(
                     &ring,
-                    Stroke::default().with_color(COLOR_SEED_ACCENT).with_width(2.0),
+                    Stroke::default().with_color(seed_accent).with_width(2.0),
                 );
                 let dot = Path::circle(screen, 7.0);
-                frame.fill(&dot, COLOR_SEED_ACCENT);
+                frame.fill(&dot, seed_accent);
             }
         }
 

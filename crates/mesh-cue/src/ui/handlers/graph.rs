@@ -41,6 +41,7 @@ impl MeshCueApp {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
+                    mesh_core::rt::pin_to_big_cores();
                     log::info!("[GRAPH] Building graph edges (k=15)...");
                     let edges = db.build_graph_edges(15)
                         .map_err(|e| format!("Graph edge build failed: {e}"))?;
@@ -95,6 +96,8 @@ impl MeshCueApp {
         state.positions = positions;
         state.track_meta = track_meta;
         state.normalize_vectors = self.collection.graph_normalize_vectors;
+        state.stem_colors = Some(self.collection.stem_colors);
+        state.accent_color = Some(self.collection.stem_colors[0]); // Vocals stem as accent
         // Detect PCA dimensionality from any stored embedding
         if let Some(first_id) = node_ids.first() {
             if let Ok(Some(pca)) = db.get_pca_embedding_raw(*first_id) {
@@ -110,6 +113,7 @@ impl MeshCueApp {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
+                    mesh_core::rt::pin_to_big_cores();
                     let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
                     let pca_data: Vec<(i64, Vec<f32>)> = all_pca.into_iter()
                         .filter_map(|(t, v)| Some((t.id?, v)))
