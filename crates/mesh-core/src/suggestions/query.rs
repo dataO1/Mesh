@@ -666,7 +666,7 @@ pub fn query_suggestions(
 
             if multi_source {
                 let source_name = source_names.get(&src_idx).copied().unwrap_or("?");
-                reason_tags.insert(0, (source_name.to_string(), Some(TAG_COLOR_SOURCE.to_string())));
+                reason_tags.insert(0, (source_name.to_string(), Some("#808080".to_string())));
             }
 
             let component_scores = if emit_components {

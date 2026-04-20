@@ -248,7 +248,7 @@ fn prepend_playlist_pills(s: &SuggestedTrack) -> Vec<(String, Option<String>)> {
     let mut tags = s.reason_tags.clone();
     // Insert playlist pills at the front (in order)
     for (i, name) in s.playlists.iter().enumerate() {
-        tags.insert(i, (name.clone(), Some("#1d4ed8".to_string())));
+        tags.insert(i, (name.clone(), Some(mesh_core::suggestions::scoring::TAG_COLOR_SOURCE.to_string())));
     }
     tags
 }
