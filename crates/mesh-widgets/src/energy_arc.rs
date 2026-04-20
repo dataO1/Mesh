@@ -154,10 +154,10 @@ impl<M> canvas::Program<M> for EnergyArcState {
         let gray = Color::from_rgb(0.35, 0.35, 0.38);
         let focus = center as isize - 1; // incoming segment index
 
-        // Color: smooth Gaussian falloff from focus — no hard edges
+        // Color: smooth Gaussian falloff from focus — tighter for quick fade
         let color_mix = |i: usize| -> f32 {
             let dist = (i as isize - focus).unsigned_abs() as f32;
-            (-dist * dist * 0.3).exp() // Gaussian: σ² ≈ 1.7 segments
+            (-dist * dist * 0.5).exp() // Gaussian: σ² ≈ 1.0 segments
         };
         let mix_color = |base: Color, i: usize| -> Color {
             let t = color_mix(i);
@@ -197,19 +197,12 @@ impl<M> canvas::Program<M> for EnergyArcState {
         // ── Layer 2: Vertical marker at selected track ────────────────
         {
             let x = x_for(center);
-            let marker_color = Color { a: 0.5, ..accent };
-            // Dotted vertical line spanning full height
-            let dot_spacing = 4.0;
-            let mut y_pos = 0.0f32;
-            while y_pos < bounds.height {
-                let seg_end = (y_pos + 2.0).min(bounds.height);
-                let path = Path::line(
-                    Point::new(x, y_pos),
-                    Point::new(x, seg_end),
-                );
-                frame.stroke(&path, Stroke::default().with_color(marker_color).with_width(1.0));
-                y_pos += dot_spacing;
-            }
+            let marker_color = Color { a: 0.7, ..accent };
+            let path = Path::line(
+                Point::new(x, 0.0),
+                Point::new(x, bounds.height),
+            );
+            frame.stroke(&path, Stroke::default().with_color(marker_color).with_width(2.0));
         }
 
         vec![frame.into_geometry()]
