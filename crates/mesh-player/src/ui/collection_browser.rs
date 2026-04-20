@@ -16,8 +16,12 @@ use iced::{Alignment, Background, Color, Element, Length};
 use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
+use mesh_core::music::MusicalKey;
+use mesh_core::suggestions::scoring::{base_score, classify_transition, transition_type_label};
 use mesh_widgets::{
-    parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz, PlaylistBrowserMessage, PlaylistBrowserState,
+    energy_arc, parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz,
+    ArcPoint, ArcTransition, EnergyArcState,
+    PlaylistBrowserMessage, PlaylistBrowserState,
     TrackRow, TrackTableMessage, TrackTag, TreeIcon, TreeMessage, TreeNode,
 };
 use std::collections::{HashMap, HashSet};
@@ -66,6 +70,15 @@ pub struct CollectionBrowserState {
     suggestion_context_cache: HashMap<String, SuggestionContext>,
     /// Tracks played this session (absolute paths) — used to dim already-played rows
     played_this_session: HashSet<String>,
+    /// Cached energy arc state for the track list
+    pub energy_arc: Option<mesh_widgets::EnergyArcState>,
+    /// PCA cosine distances between consecutive tracks
+    consecutive_similarities: Vec<f32>,
+    /// Theme colors for the energy arc
+    pub arc_stem_colors: [Color; 4],
+    pub arc_success: Color,
+    pub arc_warning: Color,
+    pub arc_danger: Color,
 }
 
 /// Messages from the collection browser
@@ -151,6 +164,12 @@ impl CollectionBrowserState {
             scroll_index: None,
             suggestion_context_cache: HashMap::new(),
             played_this_session: HashSet::new(),
+            energy_arc: None,
+            consecutive_similarities: Vec::new(),
+            arc_stem_colors: mesh_widgets::STEM_COLORS,
+            arc_success: Color::from_rgb(0.18, 0.54, 0.31),
+            arc_warning: Color::from_rgb(0.77, 0.60, 0.17),
+            arc_danger: Color::from_rgb(0.65, 0.24, 0.25),
         }
     }
 
@@ -336,16 +355,20 @@ impl CollectionBrowserState {
                             TreeMessage::Toggle(_) | TreeMessage::Select(_) => {
                                 let folder_changed = self.browser.handle_tree_message(tree_msg);
                                 if folder_changed {
-                                    if let Some(ref folder) = self.browser.current_folder {
+                                    if let Some(folder) = self.browser.current_folder.clone() {
                                         // Check if this is a USB folder
                                         if folder.0.starts_with("usb:") {
                                             // Load tracks from USB storage
-                                            self.tracks = self.get_usb_tracks_for_folder(folder);
-                                            self.active_usb_idx = self.find_usb_idx_for_folder(folder);
+                                            let t = self.get_usb_tracks_for_folder(&folder);
+                                            self.tracks = t;
+                                            self.active_usb_idx = self.find_usb_idx_for_folder(&folder);
+                                            self.rebuild_energy_arc();
                                         } else {
                                             // Local storage
                                             if let Some(ref storage) = self.storage {
-                                                self.tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                                                let t = get_tracks_for_folder(storage.as_ref(), &folder);
+                                                self.tracks = t;
+                                                self.rebuild_energy_arc();
                                             }
                                             self.active_usb_idx = None;
                                         }
@@ -428,7 +451,7 @@ impl CollectionBrowserState {
                 if let Some(ref storage) = self.storage {
                     self.tree_nodes = build_tree_nodes(storage.as_ref());
                     if let Some(ref folder) = self.browser.current_folder {
-                        self.tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                        { let t = get_tracks_for_folder(storage.as_ref(), folder); self.tracks = t; self.rebuild_energy_arc(); }
                         self.scroll_index = None;
                     }
                 }
@@ -763,10 +786,18 @@ impl CollectionBrowserState {
             .padding([6, 10])
             .width(Length::Fill);
 
-        column![load_bar, browser_element]
-            .spacing(0)
-            .height(Length::Fill)
-            .into()
+        if let Some(ref arc_state) = self.energy_arc {
+            let arc_el: Element<'_, CollectionBrowserMessage> = energy_arc(arc_state);
+            column![load_bar, arc_el, browser_element]
+                .spacing(0)
+                .height(Length::Fill)
+                .into()
+        } else {
+            column![load_bar, browser_element]
+                .spacing(0)
+                .height(Length::Fill)
+                .into()
+        }
     }
 
     /// Compact view without load buttons (for performance mode)
@@ -1140,6 +1171,69 @@ impl CollectionBrowserState {
         } else {
             false
         }
+    }
+    /// Set tracks and rebuild energy arc.
+    fn set_tracks(&mut self, tracks: Vec<TrackRow<NodeId>>) {
+        self.tracks = tracks;
+        self.rebuild_energy_arc();
+    }
+
+    /// Rebuild energy arc from the active track list.
+    pub fn rebuild_energy_arc(&mut self) {
+        let display_tracks = self.active_track_list();
+        if display_tracks.len() < 2 {
+            self.energy_arc = None;
+            return;
+        }
+
+        let has_key_data = display_tracks.iter().filter(|t| t.key.is_some()).count() >= 2;
+        if !has_key_data {
+            self.energy_arc = None;
+            return;
+        }
+
+        let current_idx = self.browser.table_state
+            .selected.iter().next()
+            .and_then(|sel_id| display_tracks.iter().position(|t| &t.id == sel_id))
+            .unwrap_or(0);
+
+        let points: Vec<ArcPoint> = display_tracks.iter().map(|t| {
+            ArcPoint {
+                title: t.title.clone(),
+                intensity: t.intensity.unwrap_or(0.5),
+                key: t.key.clone(),
+                bpm: t.bpm,
+            }
+        }).collect();
+
+        let transitions: Vec<ArcTransition> = points.windows(2).enumerate().map(|(idx, w)| {
+            let sim_dist = self.consecutive_similarities.get(idx).copied().unwrap_or(0.3);
+            let key_a = w[0].key.as_deref().and_then(MusicalKey::parse);
+            let key_b = w[1].key.as_deref().and_then(MusicalKey::parse);
+            match (key_a, key_b) {
+                (Some(a), Some(b)) => {
+                    let tt = classify_transition(&a, &b);
+                    let bs = base_score(tt);
+                    let label = transition_type_label(tt);
+                    let color = if bs >= 0.80 { self.arc_success }
+                               else if bs >= 0.40 { self.arc_warning }
+                               else { self.arc_danger };
+                    ArcTransition { label, color, similarity_distance: sim_dist }
+                }
+                _ => ArcTransition {
+                    label: "?",
+                    color: Color::from_rgb(0.35, 0.35, 0.35),
+                    similarity_distance: sim_dist,
+                },
+            }
+        }).collect();
+
+        self.energy_arc = Some(EnergyArcState {
+            points,
+            transitions,
+            current_index: current_idx,
+            stem_colors: self.arc_stem_colors,
+        });
     }
 }
 
