@@ -722,6 +722,28 @@ impl MeshApp {
                 self.resource_monitor.refresh();
                 Task::none()
             }
+            Message::GraphDataReady(data) => {
+                use mesh_widgets::graph_view::GraphViewState;
+                // Arc::try_unwrap may fail if cloned — just deref in that case
+                let data = match Arc::try_unwrap(data) {
+                    Ok(d) => d,
+                    Err(arc) => return Task::none(), // shouldn't happen
+                };
+                let mut state = GraphViewState::new();
+                state.positions = data.positions.clone();
+                state.tsne_positions = data.positions;
+                state.clusters = data.clusters;
+                state.cluster_confidence = data.confidence;
+                state.cluster_colors = data.colors.into_iter()
+                    .map(|(id, [r, g, b])| (id, Color::from_rgb(r, g, b)))
+                    .collect();
+                state.track_meta = data.track_meta;
+                self.collection_browser.canvas_state.graph = Some(state);
+                self.collection_browser.graph_building = false;
+                log::info!("[GRAPH] Graph data ready — {} nodes",
+                    self.collection_browser.canvas_state.graph.as_ref().map(|s| s.positions.len()).unwrap_or(0));
+                Task::none()
+            }
         }
     }
 

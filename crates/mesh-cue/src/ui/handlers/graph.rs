@@ -106,58 +106,16 @@ impl MeshCueApp {
         let normalize = self.collection.graph_normalize_vectors;
 
         // Run Barnes-Hut t-SNE on PCA-128 embeddings for 2D library view.
-        // t-SNE produces tight local clusters where spectrally similar tracks
-        // group together — ideal for seeing genre/style communities.
         let db = self.domain.db_arc();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    if all_pca.len() < 10 {
-                        log::warn!("[GRAPH] Not enough PCA embeddings for t-SNE ({})", all_pca.len());
-                        return Vec::new();
-                    }
-
-                    let n = all_pca.len();
-                    log::info!("[GRAPH] Running Barnes-Hut t-SNE on {} tracks (128-dim → 2D)...", n);
-
-                    let ids: Vec<i64> = all_pca.iter().filter_map(|(t, _)| t.id).collect();
-
-                    // Optionally L2-normalize PCA vectors for t-SNE input
-                    let mut owned_vecs: Vec<Vec<f32>> = if normalize {
-                        all_pca.iter().map(|(_, pca)| {
-                            let mut v = pca.clone();
-                            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-                            if norm > 1e-10 { for x in v.iter_mut() { *x /= norm; } }
-                            v
-                        }).collect()
-                    } else {
-                        all_pca.iter().map(|(_, pca)| pca.clone()).collect()
-                    };
-                    let samples: Vec<&[f32]> = owned_vecs.iter().map(|v| v.as_slice()).collect();
-
-                    // Perplexity scales with dataset size (rule of thumb: sqrt(n)/2)
-                    let perplexity = ((n as f32).sqrt() / 2.0).clamp(5.0, 50.0);
-
-                    let mut tsne = bhtsne::tSNE::new(&samples);
-                    tsne.embedding_dim(2)
-                        .perplexity(perplexity)
-                        .epochs(750)
-                        .barnes_hut(0.5, |a: &&[f32], b: &&[f32]| {
-                            a.iter().zip(b.iter())
-                                .map(|(x, y)| (x - y).powi(2))
-                                .sum::<f32>()
-                                .sqrt()
-                        });
-
-                    let embedding = tsne.embedding();
-                    // embedding is flat [x0, y0, x1, y1, ...] for 2D
-                    let positions: Vec<(i64, f32, f32)> = ids.iter().enumerate()
-                        .map(|(i, &id)| (id, embedding[i * 2], embedding[i * 2 + 1]))
+                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.into_iter()
+                        .filter_map(|(t, v)| Some((t.id?, v)))
                         .collect();
-
-                    log::info!("[GRAPH] t-SNE complete — {} 2D positions", positions.len());
-                    positions
+                    let positions = mesh_core::graph_compute::compute_tsne_layout(&pca_data, normalize);
+                    positions.into_iter().map(|(id, (x, y))| (id, x, y)).collect()
                 })
                 .await
                 .unwrap_or_default()
@@ -197,163 +155,20 @@ impl MeshCueApp {
     }
 
     /// Multi-scale consensus clustering on t-SNE 2D positions.
-    /// Runs HDBSCAN at 7 different min_samples values and builds a co-occurrence
-    /// matrix. Tracks that consistently cluster together are robust communities.
-    /// Confidence = fraction of runs where the track was in the same cluster.
     fn run_consensus_clustering(&mut self) {
         let state = match self.collection.graph_state.as_mut() {
             Some(s) => s,
             None => return,
         };
 
-        let n = state.tsne_positions.len();
-        if n < 10 { return; }
+        let result = mesh_core::graph_compute::run_consensus_clustering(&state.tsne_positions);
 
-        let ids: Vec<i64> = state.tsne_positions.keys().copied().collect();
-        let id_to_idx: HashMap<i64, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let data: Vec<Vec<f64>> = ids.iter()
-            .filter_map(|id| state.tsne_positions.get(id))
-            .map(|&(x, y)| vec![x as f64, y as f64])
+        state.clusters = result.clusters;
+        state.cluster_confidence = result.confidence;
+        state.cluster_colors = result.colors.into_iter()
+            .map(|(id, [r, g, b])| (id, Color::from_rgb(r, g, b)))
             .collect();
-
-        // Run HDBSCAN at multiple scales
-        let scales = [1usize, 2, 4, 6, 9, 13, 18];
-        let mut all_labels: Vec<Vec<i32>> = Vec::new();
-
-        // min_cluster_size scales with library: ~1% of tracks, floor 5, ceiling 20
-        let min_cluster_size = (n / 100).max(5).min(20);
-
-        for &min_samples in &scales {
-            let hp = hdbscan::HdbscanHyperParams::builder()
-                .min_cluster_size(min_cluster_size)
-                .min_samples(min_samples)
-                .build();
-            let clusterer = hdbscan::Hdbscan::new(&data, hp);
-            match clusterer.cluster() {
-                Ok(labels) => all_labels.push(labels),
-                Err(_) => continue,
-            }
-        }
-
-        if all_labels.is_empty() { return; }
-        let num_runs = all_labels.len();
-
-        // Build co-occurrence matrix: count how often each pair shares a cluster
-        // Use a flat upper-triangle array for efficiency
-        let mut cooccurrence = vec![0u8; n * n];
-        for labels in &all_labels {
-            // Group indices by cluster (skip noise = -1)
-            let mut cluster_members: HashMap<i32, Vec<usize>> = HashMap::new();
-            for (i, &label) in labels.iter().enumerate() {
-                if label >= 0 {
-                    cluster_members.entry(label).or_default().push(i);
-                }
-            }
-            // For each cluster, mark all pairs as co-occurring
-            for members in cluster_members.values() {
-                for &a in members {
-                    for &b in members {
-                        if a < b {
-                            cooccurrence[a * n + b] += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Threshold at 70% and find connected components (union-find)
-        let threshold = (num_runs as f32 * 0.7).ceil() as u8;
-        let mut parent: Vec<usize> = (0..n).collect();
-
-        fn find(parent: &mut Vec<usize>, x: usize) -> usize {
-            let mut r = x;
-            while parent[r] != r { r = parent[r]; }
-            let mut c = x;
-            while parent[c] != r { let next = parent[c]; parent[c] = r; c = next; }
-            r
-        }
-
-        for a in 0..n {
-            for b in (a + 1)..n {
-                if cooccurrence[a * n + b] >= threshold {
-                    let ra = find(&mut parent, a);
-                    let rb = find(&mut parent, b);
-                    if ra != rb { parent[ra] = rb; }
-                }
-            }
-        }
-
-        // Assign cluster IDs from connected components (skip singletons)
-        let mut component_sizes: HashMap<usize, usize> = HashMap::new();
-        for i in 0..n {
-            let root = find(&mut parent, i);
-            *component_sizes.entry(root).or_default() += 1;
-        }
-
-        let mut cluster_id_map: HashMap<usize, i32> = HashMap::new();
-        let mut next_id = 0i32;
-        for (&root, &size) in &component_sizes {
-            if size >= min_cluster_size { // match HDBSCAN's minimum
-                cluster_id_map.insert(root, next_id);
-                next_id += 1;
-            }
-        }
-
-        // Compute per-track confidence: max co-occurrence fraction with same-cluster peers
-        state.clusters.clear();
-        state.cluster_confidence.clear();
-        for i in 0..n {
-            let root = find(&mut parent, i);
-            let cluster_id = cluster_id_map.get(&root).copied().unwrap_or(-1);
-            state.clusters.insert(ids[i], cluster_id);
-
-            // Confidence = average co-occurrence with same-cluster members
-            if cluster_id >= 0 {
-                let mut total_cooc = 0u32;
-                let mut count = 0u32;
-                for j in 0..n {
-                    if i == j { continue; }
-                    if find(&mut parent, j) == root {
-                        let cooc = if i < j { cooccurrence[i * n + j] } else { cooccurrence[j * n + i] };
-                        total_cooc += cooc as u32;
-                        count += 1;
-                    }
-                }
-                let confidence = if count > 0 {
-                    total_cooc as f32 / (count as f32 * num_runs as f32)
-                } else {
-                    0.0
-                };
-                state.cluster_confidence.insert(ids[i], confidence);
-            } else {
-                state.cluster_confidence.insert(ids[i], 0.0);
-            }
-        }
-
-        // Assign colors
-        let num_clusters = cluster_id_map.len();
-        state.cluster_colors.clear();
-        let palette = [
-            Color::from_rgb(0.27, 0.53, 0.80),
-            Color::from_rgb(0.80, 0.40, 0.27),
-            Color::from_rgb(0.33, 0.70, 0.40),
-            Color::from_rgb(0.73, 0.33, 0.73),
-            Color::from_rgb(0.80, 0.73, 0.27),
-            Color::from_rgb(0.27, 0.73, 0.73),
-            Color::from_rgb(0.87, 0.47, 0.53),
-            Color::from_rgb(0.53, 0.53, 0.80),
-            Color::from_rgb(0.60, 0.40, 0.30),
-            Color::from_rgb(0.40, 0.75, 0.55),
-            Color::from_rgb(0.85, 0.55, 0.25),
-            Color::from_rgb(0.50, 0.30, 0.70),
-        ];
-        for (&_root, &cid) in &cluster_id_map {
-            state.cluster_colors.insert(cid, palette[cid as usize % palette.len()]);
-        }
-
         state.clear_caches();
-        log::info!("[GRAPH] Consensus clustering: {} communities from {} runs (min_cluster_size={}, threshold={}%, {} tracks)",
-            num_clusters, num_runs, min_cluster_size, (threshold as f32 / num_runs as f32 * 100.0) as u32, n);
     }
 
     /// Select a node as seed — push to breadcrumb stack and query all tracks.

@@ -126,7 +126,7 @@ impl Default for GraphViewState {
 // Coordinate transforms
 // ════════════════════════════════════════════════════════════════════════════
 
-fn to_screen(pos: (f32, f32), pan: (f32, f32), zoom: f32, bounds: Rectangle) -> Point {
+pub fn to_screen(pos: (f32, f32), pan: (f32, f32), zoom: f32, bounds: Rectangle) -> Point {
     Point {
         x: bounds.width * 0.5 + (pos.0 + pan.0) * zoom,
         y: bounds.height * 0.5 + (pos.1 + pan.1) * zoom,
@@ -145,15 +145,15 @@ fn from_screen(screen: Point, pan: (f32, f32), zoom: f32, bounds: Rectangle) -> 
 // ════════════════════════════════════════════════════════════════════════════
 
 // Edge colors removed — edges now use score_color() from the suggestion algorithm
-const COLOR_NODE_DIM: Color = Color::from_rgb(0.227, 0.227, 0.227);          // #3a3a3a
-const COLOR_SEED_ACCENT: Color = Color::from_rgb(0.290, 0.498, 0.647);       // #4a7fa5
-const COLOR_SCORE_BEST: Color = Color::from_rgb(0.176, 0.541, 0.306);        // #2d8a4e
-const COLOR_SCORE_WORST: Color = Color::from_rgb(0.651, 0.239, 0.251);       // #a63d40
-const COLOR_BACKGROUND: Color = Color::from_rgb(0.08, 0.08, 0.08);
+pub const COLOR_NODE_DIM: Color = Color::from_rgb(0.227, 0.227, 0.227);          // #3a3a3a
+pub const COLOR_SEED_ACCENT: Color = Color::from_rgb(0.290, 0.498, 0.647);       // #4a7fa5
+pub const COLOR_SCORE_BEST: Color = Color::from_rgb(0.176, 0.541, 0.306);        // #2d8a4e
+pub const COLOR_SCORE_WORST: Color = Color::from_rgb(0.651, 0.239, 0.251);       // #a63d40
+pub const COLOR_BACKGROUND: Color = Color::from_rgb(0.08, 0.08, 0.08);
 
 /// Linearly interpolate between best (green) and worst (red) based on score.
 /// Score is 0..1 where HIGHER = better match (reward-based scoring).
-fn score_color(score: f32) -> Color {
+pub fn score_color(score: f32) -> Color {
     let t = (1.0 - score).clamp(0.0, 1.0); // invert: high score → low t → green
     Color::from_rgb(
         COLOR_SCORE_BEST.r + (COLOR_SCORE_WORST.r - COLOR_SCORE_BEST.r) * t,
@@ -549,4 +549,129 @@ pub fn graph_view<'a, Message: 'a>(
         .height(Length::Fill)
         .into();
     canvas.map(on_message)
+}
+
+/// Draw the graph into an existing frame (read-only, no interaction).
+///
+/// Used by the combined browser canvas in mesh-player where the graph shares
+/// a single Canvas widget with the energy arc ribbon.
+/// `bounds` is the sub-region within the frame where the graph should render.
+/// Auto-fits zoom to show all nodes within the bounds.
+pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bounds: Rectangle) {
+    // Background
+    frame.fill_rectangle(
+        Point::new(bounds.x, bounds.y),
+        bounds.size(),
+        COLOR_BACKGROUND,
+    );
+
+    if state.positions.is_empty() {
+        return;
+    }
+
+    // Auto-fit: compute bounding box of all positions, then derive zoom + pan
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(x, y) in state.positions.values() {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    let data_w = (max_x - min_x).max(0.001);
+    let data_h = (max_y - min_y).max(0.001);
+    let margin = 8.0;
+    let usable_w = (bounds.width - margin * 2.0).max(1.0);
+    let usable_h = (bounds.height - margin * 2.0).max(1.0);
+    let zoom = (usable_w / data_w).min(usable_h / data_h);
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    let pan = (-center_x, -center_y);
+
+    // Offset bounds for to_screen: graph draws relative to its sub-region
+    let graph_bounds = Rectangle {
+        x: 0.0, y: 0.0,
+        width: bounds.width, height: bounds.height,
+    };
+
+    let seed_set: HashSet<i64> = state.seed_stack.iter().copied().collect();
+    let current_seed = state.seed_stack.get(state.seed_position).copied();
+    let has_seed = current_seed.is_some();
+
+    // We need to translate all drawing by bounds.x, bounds.y
+    frame.with_save(|frame| {
+        frame.translate(iced::Vector::new(bounds.x, bounds.y));
+
+        // ── Layer 1: Suggestion edges ──
+        for &(from, to, score) in &state.suggestion_edges {
+            let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
+            let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
+            let p1 = to_screen(from_pos, pan, zoom, graph_bounds);
+            let p2 = to_screen(to_pos, pan, zoom, graph_bounds);
+            let edge_color = score_color(score);
+            let opacity = score.clamp(0.2, 0.9);
+            let width = 0.5 + score * 2.0;
+            let path = Path::line(p1, p2);
+            frame.stroke(&path, Stroke::default().with_color(Color { a: opacity, ..edge_color }).with_width(width));
+        }
+
+        // ── Layer 2: Seed history trail ──
+        if state.seed_stack.len() >= 2 {
+            let trail_base = Color::from_rgb(0.85, 0.2, 0.2);
+            let cur = state.seed_position;
+            for (seg_idx, window) in state.seed_stack.windows(2).enumerate() {
+                let (a, b) = (window[0], window[1]);
+                let a_pos = match state.positions.get(&a) { Some(p) => *p, None => continue };
+                let b_pos = match state.positions.get(&b) { Some(p) => *p, None => continue };
+                let dist = if seg_idx < cur { (cur - seg_idx - 1) as f32 } else { (seg_idx - cur) as f32 };
+                let alpha = (1.0 - dist * 0.3).clamp(0.08, 0.9);
+                let width = if dist < 1.5 { 2.0 } else { 1.0 };
+                let p1 = to_screen(a_pos, pan, zoom, graph_bounds);
+                let p2 = to_screen(b_pos, pan, zoom, graph_bounds);
+                frame.stroke(&Path::line(p1, p2), Stroke::default().with_color(Color { a: alpha, ..trail_base }).with_width(width));
+            }
+        }
+
+        // ── Layer 3: Unrelated nodes ──
+        let base_alpha = if has_seed { 0.12 } else { 1.0 };
+        for (&id, &pos) in &state.positions {
+            if seed_set.contains(&id) || state.suggestion_ids.contains(&id) { continue; }
+            let screen = to_screen(pos, pan, zoom, graph_bounds);
+            if screen.x < -5.0 || screen.y < -5.0 || screen.x > bounds.width + 5.0 || screen.y > bounds.height + 5.0 { continue; }
+            let base_color = state.clusters.get(&id)
+                .and_then(|&cid| if cid >= 0 { state.cluster_colors.get(&cid) } else { None })
+                .copied()
+                .unwrap_or(COLOR_NODE_DIM);
+            let confidence = state.cluster_confidence.get(&id).copied().unwrap_or(0.2);
+            let alpha = (confidence * 0.7 + 0.15) * base_alpha;
+            frame.fill(&Path::circle(screen, 2.5), Color { a: alpha, ..base_color });
+        }
+
+        // ── Layer 4: Suggestion nodes ──
+        for &id in &state.suggestion_ids {
+            if seed_set.contains(&id) { continue; }
+            let pos = match state.positions.get(&id) { Some(p) => *p, None => continue };
+            let screen = to_screen(pos, pan, zoom, graph_bounds);
+            let score = state.suggestion_scores.get(&id).copied().unwrap_or(1.0);
+            frame.fill(&Path::circle(screen, 4.0), score_color(score));
+        }
+
+        // ── Layer 5: Breadcrumb seeds ──
+        for &id in &state.seed_stack {
+            if Some(id) == current_seed { continue; }
+            if let Some(&pos) = state.positions.get(&id) {
+                let screen = to_screen(pos, pan, zoom, graph_bounds);
+                frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..COLOR_SEED_ACCENT }).with_width(1.5));
+                frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..COLOR_SEED_ACCENT });
+            }
+        }
+
+        // ── Layer 6: Current seed ──
+        if let Some(seed_id) = current_seed {
+            if let Some(&pos) = state.positions.get(&seed_id) {
+                let screen = to_screen(pos, pan, zoom, graph_bounds);
+                frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(COLOR_SEED_ACCENT).with_width(2.0));
+                frame.fill(&Path::circle(screen, 5.0), COLOR_SEED_ACCENT);
+            }
+        }
+    });
 }

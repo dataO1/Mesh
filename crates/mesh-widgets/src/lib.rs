@@ -24,6 +24,7 @@
 //! - `waveform_player_shader`: 4-deck GPU shader waveforms (mesh-player)
 //! - `waveform_shader_combined`: Single-deck GPU shader zoomed + overview (mesh-cue)
 
+pub mod browser_canvas;
 pub mod button_styles;
 pub mod deck_preset;
 pub mod energy_arc;

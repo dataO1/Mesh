@@ -19,7 +19,7 @@ use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_core::music::MusicalKey;
 use mesh_core::suggestions::scoring::{base_score, classify_transition, transition_type_label};
 use mesh_widgets::{
-    energy_arc, parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz,
+    parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz,
     ArcPoint, ArcTransition, EnergyArcState,
     PlaylistBrowserMessage, PlaylistBrowserState,
     TrackRow, TrackTableMessage, TrackTag, TreeIcon, TreeMessage, TreeNode,
@@ -70,8 +70,6 @@ pub struct CollectionBrowserState {
     suggestion_context_cache: HashMap<String, SuggestionContext>,
     /// Tracks played this session (absolute paths) — used to dim already-played rows
     played_this_session: HashSet<String>,
-    /// Cached energy arc state for the track list
-    pub energy_arc: Option<mesh_widgets::EnergyArcState>,
     /// PCA cosine distances between consecutive tracks
     consecutive_similarities: Vec<f32>,
     /// Theme colors for the energy arc
@@ -79,6 +77,11 @@ pub struct CollectionBrowserState {
     pub arc_success: Color,
     pub arc_warning: Color,
     pub arc_danger: Color,
+    /// Whether graph data is currently being computed
+    pub graph_building: bool,
+    /// Combined canvas state: energy arc ribbon + graph view (single Canvas widget).
+    /// This is the single source of truth for both visualizations.
+    pub canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState,
 }
 
 /// Messages from the collection browser
@@ -164,12 +167,16 @@ impl CollectionBrowserState {
             scroll_index: None,
             suggestion_context_cache: HashMap::new(),
             played_this_session: HashSet::new(),
-            energy_arc: None,
             consecutive_similarities: Vec::new(),
             arc_stem_colors: mesh_widgets::STEM_COLORS,
             arc_success: Color::from_rgb(0.18, 0.54, 0.31),
             arc_warning: Color::from_rgb(0.77, 0.60, 0.17),
             arc_danger: Color::from_rgb(0.65, 0.24, 0.25),
+            graph_building: false,
+            canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState {
+                energy_arc: None,
+                graph: None,
+            },
         }
     }
 
@@ -792,18 +799,21 @@ impl CollectionBrowserState {
             .padding([6, 10])
             .width(Length::Fill);
 
-        if let Some(ref arc_state) = self.energy_arc {
-            let arc_el: Element<'_, CollectionBrowserMessage> = energy_arc(arc_state);
-            column![load_bar, arc_el, browser_element]
-                .spacing(0)
-                .height(Length::Fill)
-                .into()
-        } else {
-            column![load_bar, browser_element]
-                .spacing(0)
-                .height(Length::Fill)
-                .into()
-        }
+        // Combined canvas: energy arc ribbon + graph view (single Canvas widget)
+        let side_canvas: Element<'_, CollectionBrowserMessage> =
+            mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
+
+        let main_row = row![
+            container(browser_element).width(Length::FillPortion(3)),
+            container(side_canvas).width(Length::FillPortion(1)),
+        ]
+        .spacing(0)
+        .height(Length::Fill);
+
+        column![load_bar, main_row]
+            .spacing(0)
+            .height(Length::Fill)
+            .into()
     }
 
     /// Compact view without load buttons (for performance mode)
@@ -830,7 +840,17 @@ impl CollectionBrowserState {
             .padding([4, 8])
             .width(Length::Fill);
 
-        column![header, browser_element]
+        let side_canvas: Element<'_, CollectionBrowserMessage> =
+            mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
+
+        let main_row = row![
+            container(browser_element).width(Length::FillPortion(3)),
+            container(side_canvas).width(Length::FillPortion(1)),
+        ]
+        .spacing(0)
+        .height(Length::Fill);
+
+        column![header, main_row]
             .spacing(0)
             .height(Length::Fill)
             .into()
@@ -1064,6 +1084,11 @@ impl CollectionBrowserState {
         Some((idx, collection_path))
     }
 
+    /// Get a clone of the database service Arc (for background tasks)
+    pub fn db_service_arc(&self) -> Arc<DatabaseService> {
+        self.db_service.clone()
+    }
+
     /// Check if currently browsing USB storage
     pub fn is_browsing_usb(&self) -> bool {
         self.active_usb_idx.is_some()
@@ -1265,13 +1290,13 @@ impl CollectionBrowserState {
     pub fn rebuild_energy_arc(&mut self) {
         let display_tracks = self.active_track_list();
         if display_tracks.len() < 2 {
-            self.energy_arc = None;
+            self.canvas_state.energy_arc = None;
             return;
         }
 
         let has_key_data = display_tracks.iter().filter(|t| t.key.is_some()).count() >= 2;
         if !has_key_data {
-            self.energy_arc = None;
+            self.canvas_state.energy_arc = None;
             return;
         }
 
@@ -1311,7 +1336,7 @@ impl CollectionBrowserState {
             }
         }).collect();
 
-        self.energy_arc = Some(EnergyArcState {
+        self.canvas_state.energy_arc = Some(EnergyArcState {
             points,
             transitions,
             current_index: current_idx,

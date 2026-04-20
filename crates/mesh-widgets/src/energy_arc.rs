@@ -38,9 +38,9 @@ pub struct EnergyArcState {
     pub stem_colors: [Color; 4],
 }
 
-const ARC_HEIGHT: f32 = 55.0;
-const V_PAD: f32 = 8.0;
-const H_PAD: f32 = 12.0;
+pub const ARC_HEIGHT: f32 = 55.0;
+pub const V_PAD: f32 = 8.0;
+pub const H_PAD: f32 = 12.0;
 
 /// Create an energy arc element.
 pub fn energy_arc<M: 'static>(state: &EnergyArcState) -> Element<'_, M> {

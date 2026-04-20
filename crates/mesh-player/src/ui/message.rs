@@ -183,4 +183,17 @@ pub enum Message {
 
     /// Periodic resource stats refresh (CPU%, GPU%, RAM)
     RefreshResourceStats,
+
+    /// Background t-SNE + clustering completed — graph data ready for display
+    GraphDataReady(Arc<GraphData>),
+}
+
+/// Graph layout data computed in the background at startup.
+#[derive(Debug)]
+pub struct GraphData {
+    pub positions: std::collections::HashMap<i64, (f32, f32)>,
+    pub clusters: std::collections::HashMap<i64, i32>,
+    pub confidence: std::collections::HashMap<i64, f32>,
+    pub colors: std::collections::HashMap<i32, [f32; 3]>,
+    pub track_meta: std::collections::HashMap<i64, mesh_widgets::graph_view::TrackMeta>,
 }

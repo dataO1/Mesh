@@ -4204,6 +4204,7 @@ version = "0.9.13-rc.1"
 dependencies = [
  "anyhow",
  "basedrop",
+ "bhtsne",
  "bytemuck",
  "chrono",
  "clack-extensions",
@@ -4212,6 +4213,7 @@ dependencies = [
  "cpal",
  "crossbeam",
  "dirs",
+ "hdbscan",
  "hound",
  "jack",
  "libc",
