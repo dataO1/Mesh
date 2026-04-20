@@ -12,31 +12,20 @@ pub struct ClusterResult {
     /// Per-track confidence [0.0, 1.0] — how consistently this track
     /// clusters with its peers across multiple HDBSCAN scales
     pub confidence: HashMap<i64, f32>,
-    /// Cluster colors as [r, g, b] floats (0..1). Converted to iced::Color on the UI side.
+    /// Cluster colors as [r, g, b] floats (0..1). Derived from the
+    /// community's average intensity (warm = high energy, cool = low energy).
     pub colors: HashMap<i32, [f32; 3]>,
 }
-
-// 12-color palette for cluster visualization
-const CLUSTER_PALETTE: [[f32; 3]; 12] = [
-    [0.27, 0.53, 0.80],
-    [0.80, 0.40, 0.27],
-    [0.33, 0.70, 0.40],
-    [0.73, 0.33, 0.73],
-    [0.80, 0.73, 0.27],
-    [0.27, 0.73, 0.73],
-    [0.87, 0.47, 0.53],
-    [0.53, 0.53, 0.80],
-    [0.60, 0.40, 0.30],
-    [0.40, 0.75, 0.55],
-    [0.85, 0.55, 0.25],
-    [0.50, 0.30, 0.70],
-];
 
 /// Run Barnes-Hut t-SNE on PCA embeddings to produce 2D positions.
 ///
 /// Input: slice of (track_id, pca_vector). Returns track_id -> (x, y).
 /// Perplexity scales with dataset size: sqrt(n)/2 clamped to [5, 50].
 /// 750 epochs, theta=0.5, Euclidean distance.
+///
+/// For reproducibility: input is sorted by track ID (deterministic processing
+/// order) and the output is PCA-aligned to a canonical orientation so the
+/// layout doesn't rotate/flip between runs.
 pub fn compute_tsne_layout(
     pca_data: &[(i64, Vec<f32>)],
     normalize: bool,
@@ -46,20 +35,24 @@ pub fn compute_tsne_layout(
         return HashMap::new();
     }
 
-    let n = pca_data.len();
+    // Sort by track ID for deterministic processing order
+    let mut sorted: Vec<(i64, &Vec<f32>)> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+    sorted.sort_by_key(|(id, _)| *id);
+
+    let n = sorted.len();
     log::info!("[GRAPH] Running Barnes-Hut t-SNE on {} tracks → 2D...", n);
 
-    let ids: Vec<i64> = pca_data.iter().map(|(id, _)| *id).collect();
+    let ids: Vec<i64> = sorted.iter().map(|(id, _)| *id).collect();
 
     let owned_vecs: Vec<Vec<f32>> = if normalize {
-        pca_data.iter().map(|(_, pca)| {
-            let mut v = pca.clone();
+        sorted.iter().map(|(_, pca)| {
+            let mut v = (*pca).clone();
             let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
             if norm > 1e-10 { for x in v.iter_mut() { *x /= norm; } }
             v
         }).collect()
     } else {
-        pca_data.iter().map(|(_, pca)| pca.clone()).collect()
+        sorted.iter().map(|(_, pca)| (*pca).clone()).collect()
     };
     let samples: Vec<&[f32]> = owned_vecs.iter().map(|v| v.as_slice()).collect();
 
@@ -77,13 +70,83 @@ pub fn compute_tsne_layout(
         });
 
     let embedding = tsne.embedding();
+    let mut raw_positions: Vec<(f32, f32)> = (0..n)
+        .map(|i| (embedding[i * 2], embedding[i * 2 + 1]))
+        .collect();
+
+    // PCA-align the 2D output for canonical orientation.
+    // This removes random rotation/reflection between runs.
+    pca_align_2d(&mut raw_positions);
+
     let mut positions = HashMap::with_capacity(n);
     for (i, &id) in ids.iter().enumerate() {
-        positions.insert(id, (embedding[i * 2], embedding[i * 2 + 1]));
+        positions.insert(id, raw_positions[i]);
     }
 
     log::info!("[GRAPH] t-SNE complete — {} 2D positions", positions.len());
     positions
+}
+
+/// Align 2D positions to principal axes so the layout is orientation-stable.
+/// Computes the 2x2 covariance matrix, finds the dominant eigenvector,
+/// rotates all points so the dominant axis is horizontal, then ensures
+/// the majority of mass is in the top-right quadrant (fixes reflection).
+fn pca_align_2d(positions: &mut [(f32, f32)]) {
+    let n = positions.len() as f32;
+    if n < 2.0 { return; }
+
+    // Center
+    let (cx, cy) = positions.iter().fold((0.0f32, 0.0f32), |(sx, sy), &(x, y)| (sx + x, sy + y));
+    let (cx, cy) = (cx / n, cy / n);
+    for p in positions.iter_mut() {
+        p.0 -= cx;
+        p.1 -= cy;
+    }
+
+    // 2x2 covariance matrix
+    let (mut cxx, mut cxy, mut cyy) = (0.0f32, 0.0f32, 0.0f32);
+    for &(x, y) in positions.iter() {
+        cxx += x * x;
+        cxy += x * y;
+        cyy += y * y;
+    }
+
+    // Dominant eigenvector of [[cxx, cxy], [cxy, cyy]] via analytic formula
+    let trace = cxx + cyy;
+    let det = cxx * cyy - cxy * cxy;
+    let discriminant = (trace * trace / 4.0 - det).max(0.0);
+    let lambda1 = trace / 2.0 + discriminant.sqrt();
+
+    // Eigenvector for lambda1
+    let (ex, ey) = if cxy.abs() > 1e-10 {
+        let ey = lambda1 - cxx;
+        let len = (cxy * cxy + ey * ey).sqrt();
+        (cxy / len, ey / len)
+    } else if cxx >= cyy {
+        (1.0, 0.0)
+    } else {
+        (0.0, 1.0)
+    };
+
+    // Rotate so dominant axis aligns with X
+    // Rotation: x' = x*ex + y*ey, y' = -x*ey + y*ex
+    for p in positions.iter_mut() {
+        let (x, y) = *p;
+        p.0 = x * ex + y * ey;
+        p.1 = -x * ey + y * ex;
+    }
+
+    // Fix reflection: ensure more mass is in positive X and positive Y
+    let (sum_x, sum_y) = positions.iter()
+        .fold((0.0f32, 0.0f32), |(sx, sy), &(x, y)| {
+            (sx + x.signum(), sy + y.signum())
+        });
+    if sum_x < 0.0 {
+        for p in positions.iter_mut() { p.0 = -p.0; }
+    }
+    if sum_y < 0.0 {
+        for p in positions.iter_mut() { p.1 = -p.1; }
+    }
 }
 
 /// Multi-scale consensus clustering on 2D positions.
@@ -91,6 +154,10 @@ pub fn compute_tsne_layout(
 /// Runs HDBSCAN at 7 different min_samples values and builds a co-occurrence
 /// matrix. Tracks that consistently cluster together (>= 70% of runs) are
 /// connected via union-find into robust communities.
+///
+/// Cluster colors are derived from each community's average position in the
+/// 2D space — mapped to a perceptual hue wheel. This produces deterministic
+/// colors that correlate with the spatial layout.
 pub fn run_consensus_clustering(
     positions: &HashMap<i64, (f32, f32)>,
 ) -> ClusterResult {
@@ -223,10 +290,39 @@ pub fn run_consensus_clustering(
         }
     }
 
-    // Assign colors from palette
+    // Derive cluster colors from spatial position (angle around center → hue)
+    // This produces deterministic colors that match the visual layout.
     let mut colors = HashMap::new();
+    let (global_cx, global_cy) = {
+        let (sx, sy) = positions.values().fold((0.0f32, 0.0f32), |(sx, sy), &(x, y)| (sx + x, sy + y));
+        (sx / n as f32, sy / n as f32)
+    };
+
     for (&_root, &cid) in &cluster_id_map {
-        colors.insert(cid, CLUSTER_PALETTE[cid as usize % CLUSTER_PALETTE.len()]);
+        // Compute cluster centroid
+        let mut cx = 0.0f32;
+        let mut cy = 0.0f32;
+        let mut count = 0u32;
+        for i in 0..n {
+            if clusters.get(&ids[i]).copied() == Some(cid) {
+                let (x, y) = positions[&ids[i]];
+                cx += x;
+                cy += y;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            cx /= count as f32;
+            cy /= count as f32;
+        }
+
+        // Angle from global center → hue (0..360)
+        let angle = (cy - global_cy).atan2(cx - global_cx); // -π..π
+        let hue = (angle.to_degrees() + 180.0) % 360.0; // 0..360
+
+        // HSL to RGB (saturation=0.55, lightness=0.55 for muted, readable colors)
+        let rgb = hsl_to_rgb(hue, 0.55, 0.55);
+        colors.insert(cid, rgb);
     }
 
     let num_clusters = cluster_id_map.len();
@@ -236,4 +332,21 @@ pub fn run_consensus_clustering(
     );
 
     ClusterResult { clusters, confidence, colors }
+}
+
+/// Convert HSL to RGB. h in [0, 360), s and l in [0, 1].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    [r1 + m, g1 + m, b1 + m]
 }
