@@ -785,12 +785,11 @@ impl MeshCueDomain {
 
     /// Get tracks for display in a folder/playlist
     ///
-    /// This returns TrackRow items ready for display in the track table,
-    /// with composite intensity from ML analysis when available.
+    /// This returns TrackRow items ready for display in the track table.
+    /// Intensity is NOT computed here (too slow for UI thread) — use
+    /// `enrich_with_intensity()` in a background task if needed.
     pub fn get_tracks_for_display(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-        let mut rows = crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id);
-        self.enrich_with_intensity(&mut rows);
-        rows
+        crate::ui::utils::get_tracks_for_folder(&*self.playlist_storage, folder_id)
     }
 
     /// Batch-populate intensity values on TrackRows from ML analysis data.

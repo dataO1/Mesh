@@ -1,0 +1,15 @@
+i like the idea of the energy arc. can we make this a horizontal line in the
+header of the file browser for playlists, that similarly to the header/red lines
+in graph view shows the current track energy in the middle, up to 2 tracks left
+and right as a line graph. scrolling with the currently running track(s). the
+key transitions should be annotated on the lines (same key, adjacent etc), so
+the dj knows which transition type he intended in his preplanned set. the rest
+of the metadata we can store, but no need to visualize yet. what would change in
+the schema? design the changes in the code, such that we have full compatability
+with playlists, that dont have this data, so theres no migration needed, but for
+new playlists, this data is automatically filled and shown (both in player and
+cue).
+also in graph view, clicking a track in the list should load it in mesh-cue, for
+preview, so the user can make a decision whether the track actually fits. 
+
+
