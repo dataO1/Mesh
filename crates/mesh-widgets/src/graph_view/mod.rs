@@ -302,18 +302,15 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         &self,
         _state: &GraphInteraction,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
 
-        // Background
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            COLOR_BACKGROUND,
-        );
+        // Background from theme
+        let bg = theme.extended_palette().background.base.color;
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), bg);
 
         let seed_set: HashSet<i64> = self.seed_stack.iter().copied().collect();
         let current_seed = self.seed_stack.get(self.seed_position).copied();
@@ -594,29 +591,30 @@ fn themed_score_color(score: f32, stem_colors: Option<[Color; 4]>) -> Color {
     }
 }
 
-pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bounds: Rectangle) {
+pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bounds: Rectangle, bg_color: Option<Color>) {
     // Background from theme or fallback
     frame.fill_rectangle(
         Point::new(bounds.x, bounds.y),
         bounds.size(),
-        COLOR_BACKGROUND,
+        bg_color.unwrap_or(COLOR_BACKGROUND),
     );
 
     if state.positions.is_empty() {
         return;
     }
 
-    // Auto-fit: compute bounding box of all positions, then derive zoom + pan
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for &(x, y) in state.positions.values() {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
+    // Auto-fit: use 2nd/98th percentile bounds to trim t-SNE outliers
+    let mut xs: Vec<f32> = state.positions.values().map(|p| p.0).collect();
+    let mut ys: Vec<f32> = state.positions.values().map(|p| p.1).collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let lo = (xs.len() as f32 * 0.02) as usize;
+    let hi = ((xs.len() as f32 * 0.98) as usize).max(lo + 1).min(xs.len() - 1);
+    let min_x = xs[lo]; let max_x = xs[hi];
+    let min_y = ys[lo]; let max_y = ys[hi];
     let data_w = (max_x - min_x).max(0.001);
     let data_h = (max_y - min_y).max(0.001);
-    let margin = 8.0;
+    let margin = 6.0;
     let usable_w = (bounds.width - margin * 2.0).max(1.0);
     let usable_h = (bounds.height - margin * 2.0).max(1.0);
     let zoom = (usable_w / data_w).min(usable_h / data_h);

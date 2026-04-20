@@ -42,20 +42,20 @@ impl<M: 'static> canvas::Program<M> for BrowserCanvasState {
         }
 
         // ── Below: Graph view ─────────────────────────────────────────────
+        let palette = theme.extended_palette();
+        let app_bg = palette.background.base.color;
+        let graph_bounds = Rectangle {
+            x: 0.0, y: arc_h,
+            width: bounds.width,
+            height: (bounds.height - arc_h).max(0.0),
+        };
         if let Some(graph) = &self.graph {
-            let graph_bounds = Rectangle {
-                x: 0.0, y: arc_h,
-                width: bounds.width,
-                height: (bounds.height - arc_h).max(0.0),
-            };
-            draw_graph_readonly(graph, &mut frame, graph_bounds);
+            draw_graph_readonly(graph, &mut frame, graph_bounds, Some(app_bg));
         } else {
-            // No graph data yet — just fill with dark background
-            let bg = crate::graph_view::COLOR_BACKGROUND;
             frame.fill_rectangle(
                 Point::new(0.0, arc_h),
                 Size::new(bounds.width, (bounds.height - arc_h).max(0.0)),
-                bg,
+                app_bg,
             );
         }
 
