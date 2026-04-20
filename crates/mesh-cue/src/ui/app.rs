@@ -646,8 +646,7 @@ impl MeshCueApp {
             // Graph View
             Message::SetBrowserTab(tab) => return self.handle_set_browser_tab(tab),
             Message::BuildGraphEdges => return self.handle_build_graph_edges(),
-            Message::GraphEdgesReady(edges) => return self.handle_graph_edges_ready(edges),
-            Message::GraphLayoutTick(positions) => return self.handle_graph_layout_tick(positions),
+            Message::GraphEdgesReady(data) => return self.handle_graph_edges_ready(data),
             Message::GraphSeedSelected(id) => return self.handle_graph_seed_selected(id),
             Message::GraphNodeHovered(id) => return self.handle_graph_node_hovered(id),
             Message::GraphSliderChanged(value) => return self.handle_graph_slider_changed(value),

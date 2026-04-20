@@ -8,8 +8,35 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use iced::Color;
 use iced::Task;
-use mesh_core::suggestions::query::GraphEdge;
 use mesh_widgets::graph_view::{GraphViewState, TrackMeta};
+
+/// Result of the combined background graph build (t-SNE + clustering + metadata).
+#[derive(Debug)]
+pub struct GraphBuildResult {
+    pub positions: HashMap<i64, (f32, f32)>,
+    pub track_meta: HashMap<i64, TrackMeta>,
+    pub pca_dims: usize,
+    pub cluster_result: mesh_core::graph_compute::ClusterResult,
+    pub normalize: bool,
+    pub stem_colors: [Color; 4],
+}
+
+impl GraphBuildResult {
+    pub fn empty() -> Self {
+        Self {
+            positions: HashMap::new(),
+            track_meta: HashMap::new(),
+            pca_dims: 0,
+            cluster_result: mesh_core::graph_compute::ClusterResult {
+                clusters: HashMap::new(),
+                confidence: HashMap::new(),
+                colors: HashMap::new(),
+            },
+            normalize: false,
+            stem_colors: [Color::WHITE; 4],
+        }
+    }
+}
 
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
@@ -30,7 +57,8 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Kick off background: load track metadata and build initial graph state.
+    /// Kick off background graph build: t-SNE layout + metadata in one task.
+    /// Skips the old edge build step (edges were unused — suggestions use brute-force).
     pub fn handle_build_graph_edges(&mut self) -> Task<Message> {
         if self.collection.graph_building {
             return Task::none();
@@ -38,109 +66,89 @@ impl MeshCueApp {
         self.collection.graph_building = true;
 
         let db = self.domain.db_arc();
+        let normalize = self.collection.graph_normalize_vectors;
+        let stem_colors = self.collection.stem_colors;
+
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     mesh_core::rt::pin_to_big_cores();
-                    log::info!("[GRAPH] Building graph edges (k=15)...");
-                    let edges = db.build_graph_edges(15)
-                        .map_err(|e| format!("Graph edge build failed: {e}"))?;
-                    log::info!("[GRAPH] Built {} edges", edges.len());
-                    Ok::<_, String>(Arc::new(edges))
+
+                    // Load PCA embeddings + track metadata in one pass
+                    let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
+                        .filter_map(|(t, v)| Some((t.id?, v.clone())))
+                        .collect();
+
+                    // Build track metadata
+                    let track_meta: HashMap<i64, TrackMeta> = all_pca.iter()
+                        .filter_map(|(t, _)| {
+                            let id = t.id?;
+                            Some((id, TrackMeta {
+                                id,
+                                title: t.title.clone(),
+                                artist: t.artist.clone(),
+                                key: t.key.clone(),
+                                bpm: t.bpm,
+                            }))
+                        })
+                        .collect();
+
+                    // Detect PCA dimensionality
+                    let pca_dims = pca_data.first().map(|(_, v)| v.len()).unwrap_or(0);
+
+                    // Run t-SNE
+                    let positions = mesh_core::graph_compute::compute_tsne_layout(&pca_data, normalize);
+
+                    // Run consensus clustering
+                    let cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);
+
+                    (positions, track_meta, pca_dims, cluster_result, normalize, stem_colors)
                 })
                 .await
-                .map_err(|e| format!("Task panicked: {e}"))?
+                .ok()
             },
             |result| match result {
-                Ok(edges) => Message::GraphEdgesReady(edges),
-                Err(e) => {
-                    log::error!("[GRAPH] Edge build failed: {}", e);
-                    Message::GraphEdgesReady(Arc::new(Vec::new()))
+                Some((positions, track_meta, pca_dims, cluster_result, normalize, stem_colors)) => {
+                    Message::GraphEdgesReady(Arc::new(GraphBuildResult {
+                        positions, track_meta, pca_dims, cluster_result, normalize, stem_colors,
+                    }))
+                }
+                None => {
+                    log::error!("[GRAPH] Background graph build panicked");
+                    Message::GraphEdgesReady(Arc::new(GraphBuildResult::empty()))
                 }
             },
         )
     }
 
-    /// Graph edges built — create GraphViewState with metadata.
-    /// No layout yet — nodes are positioned when a seed is selected.
-    pub fn handle_graph_edges_ready(&mut self, edges: Arc<Vec<GraphEdge>>) -> Task<Message> {
+    /// Graph build complete — create GraphViewState with final t-SNE positions + clusters.
+    pub fn handle_graph_edges_ready(&mut self, data: Arc<GraphBuildResult>) -> Task<Message> {
         self.collection.graph_building = false;
-        self.collection.graph_edges = Some(edges);
 
-        let db = self.domain.db_arc();
-        let all_tracks = db.get_all_tracks().unwrap_or_default();
-
-        let mut track_meta = HashMap::new();
-        let mut node_ids = Vec::new();
-        for track in &all_tracks {
-            if let Some(id) = track.id {
-                node_ids.push(id);
-                track_meta.insert(id, TrackMeta {
-                    id,
-                    title: track.title.clone(),
-                    artist: track.artist.clone(),
-                    key: track.key.clone(),
-                    bpm: track.bpm,
-                });
-            }
+        if data.positions.is_empty() {
+            log::warn!("[GRAPH] No positions — PCA embeddings may not be built yet");
+            return Task::none();
         }
-
-        // Placeholder positions while PaCMAP runs in background
-        let positions: HashMap<i64, (f32, f32)> = node_ids.iter().enumerate().map(|(i, &id)| {
-            let a = i as f32 * std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
-            let r = ((i as f32) / (node_ids.len() as f32)).sqrt() * 0.8;
-            (id, (r * a.cos(), r * a.sin()))
-        }).collect();
 
         let mut state = GraphViewState::new();
-        state.positions = positions;
-        state.track_meta = track_meta;
-        state.normalize_vectors = self.collection.graph_normalize_vectors;
-        state.stem_colors = Some(self.collection.stem_colors);
-        state.accent_color = Some(self.collection.stem_colors[0]); // Vocals stem as accent
-        // Detect PCA dimensionality from any stored embedding
-        if let Some(first_id) = node_ids.first() {
-            if let Ok(Some(pca)) = db.get_pca_embedding_raw(*first_id) {
-                state.pca_dims = pca.len();
-            }
-        }
+        state.positions = data.positions.clone();
+        state.tsne_positions = data.positions.clone();
+        state.track_meta = data.track_meta.clone();
+        state.normalize_vectors = data.normalize;
+        state.pca_dims = data.pca_dims;
+        state.stem_colors = Some(data.stem_colors);
+        state.accent_color = Some(data.stem_colors[0]);
+        state.clusters = data.cluster_result.clusters.clone();
+        state.cluster_confidence = data.cluster_result.confidence.clone();
+        state.cluster_colors = data.cluster_result.colors.iter()
+            .map(|(&id, &[r, g, b])| (id, Color::from_rgb(r, g, b)))
+            .collect();
+
         self.collection.graph_state = Some(state);
-
-        let normalize = self.collection.graph_normalize_vectors;
-
-        // Run Barnes-Hut t-SNE on PCA-128 embeddings for 2D library view.
-        let db = self.domain.db_arc();
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    mesh_core::rt::pin_to_big_cores();
-                    let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.into_iter()
-                        .filter_map(|(t, v)| Some((t.id?, v)))
-                        .collect();
-                    let positions = mesh_core::graph_compute::compute_tsne_layout(&pca_data, normalize);
-                    positions.into_iter().map(|(id, (x, y))| (id, x, y)).collect()
-                })
-                .await
-                .unwrap_or_default()
-            },
-            Message::GraphLayoutTick,
-        )
-    }
-
-    /// Layout tick — update positions from background task.
-    pub fn handle_graph_layout_tick(&mut self, positions: Vec<(i64, f32, f32)>) -> Task<Message> {
-        if let Some(ref mut state) = self.collection.graph_state {
-            for &(id, x, y) in &positions {
-                state.positions.insert(id, (x, y));
-                state.tsne_positions.insert(id, (x, y));
-            }
-            state.clear_caches();
-        }
-
-        // Multi-scale consensus clustering on t-SNE 2D positions
-        self.run_consensus_clustering();
-
+        log::info!("[GRAPH] Graph ready — {} nodes, {} clusters",
+            data.positions.len(),
+            data.cluster_result.colors.len());
         Task::none()
     }
 
@@ -156,23 +164,6 @@ impl MeshCueApp {
             Some(seed_id) => self.run_graph_suggestion_query(seed_id),
             None => Task::none(),
         }
-    }
-
-    /// Multi-scale consensus clustering on t-SNE 2D positions.
-    fn run_consensus_clustering(&mut self) {
-        let state = match self.collection.graph_state.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-
-        let result = mesh_core::graph_compute::run_consensus_clustering(&state.tsne_positions);
-
-        state.clusters = result.clusters;
-        state.cluster_confidence = result.confidence;
-        state.cluster_colors = result.colors.into_iter()
-            .map(|(id, [r, g, b])| (id, Color::from_rgb(r, g, b)))
-            .collect();
-        state.clear_caches();
     }
 
     /// Select a node as seed — push to breadcrumb stack and query all tracks.

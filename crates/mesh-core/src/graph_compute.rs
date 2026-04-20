@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 /// Result of consensus clustering.
+#[derive(Debug)]
 pub struct ClusterResult {
     /// Cluster assignments (track_id -> cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,

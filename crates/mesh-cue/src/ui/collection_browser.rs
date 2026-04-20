@@ -267,9 +267,9 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
             // Graph not yet built — show loading
             container(
                 text(if state.graph_building {
-                    "Building suggestion graph..."
+                    "Computing library graph layout..."
                 } else {
-                    "Click Graph tab to build the suggestion graph."
+                    "No PCA embeddings found. Build the similarity index first."
                 })
                 .size(sz(16.0)),
             )

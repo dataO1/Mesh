@@ -387,10 +387,8 @@ pub enum Message {
     SetBrowserTab(BrowserTab),
     /// Trigger background graph edge precomputation
     BuildGraphEdges,
-    /// Graph edges built (background task complete)
-    GraphEdgesReady(std::sync::Arc<Vec<mesh_core::suggestions::query::GraphEdge>>),
-    /// Layout iteration tick (positions updated)
-    GraphLayoutTick(Vec<(i64, f32, f32)>),
+    /// Graph build complete (t-SNE + clustering + metadata)
+    GraphEdgesReady(std::sync::Arc<super::handlers::graph::GraphBuildResult>),
     /// Select a node as seed in the graph view
     GraphSeedSelected(i64),
     /// Node hover changed
