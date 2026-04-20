@@ -460,6 +460,15 @@ pub fn reward_color(reward: f32) -> &'static str {
     else { "#a63d40" }                      // red = weak/opposing
 }
 
+/// Color a key transition tag by its inherent harmonic quality (base_score).
+/// Uses the same thresholds as the energy arc ribbon for visual consistency.
+pub fn transition_color(tt: TransitionType) -> &'static str {
+    let bs = base_score(tt);
+    if bs >= 0.80 { "#2d8a4e" }      // green — compatible (same key, adjacent, diagonal)
+    else if bs >= 0.40 { "#c49a2a" } // amber — moderate (energy boost/cool, mood lift/darken)
+    else { "#a63d40" }               // red — difficult (semitone, far, tritone)
+}
+
 /// Color a tag by penalty quality (legacy, for reason tags that still use penalty framing).
 pub fn penalty_color(penalty: f32) -> &'static str {
     reward_color(1.0 - penalty)
@@ -477,7 +486,7 @@ pub fn penalty_color(penalty: f32) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 pub fn generate_reason_tags(
     transition_type: TransitionType,
-    key_reward: f32,
+    _key_reward: f32,
     vector_reward: f32,
     bias_abs: f32,
     intensity_reward: f32,
@@ -504,7 +513,7 @@ pub fn generate_reason_tags(
         TransitionType::FarCross(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
     };
     let key_label = transition_type_label(transition_type);
-    let key_color = reward_color(key_reward);
+    let key_color = transition_color(transition_type);
     tags.push((format!("{} {}", key_dir, key_label), Some(key_color.to_string()), f32::MAX));
 
     let min_weight = 0.03;

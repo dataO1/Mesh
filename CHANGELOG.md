@@ -106,7 +106,9 @@ All notable changes to Mesh are documented in this file.
   inner line fades faster than outer tube. Adapts to the active color theme.
 
 - **Energy arc in mesh-player** — The same ribbon widget now appears in
-  mesh-player's collection browser with real ML intensity data. Both apps
+  mesh-player's collection browser with real ML intensity data. Batch
+  intensity enrichment avoids per-track DB queries. Filename-fallback
+  path matching handles relative/absolute path differences. Both apps
   show identical visualizations for any playlist.
 
 - **Set plan export** — The graph view seed history can be exported as a
@@ -160,6 +162,13 @@ All notable changes to Mesh are documented in this file.
   roughly 12+ past transitions at half-life) are highlighted with a green row
   tint in the suggestion panel. The graph is built via "Analyse Library" or
   programmatically; it is separate from HNSW and uses point lookups only.
+
+- **Suggestion tag pill colors match energy arc ribbon** — Key transition pills
+  now use the inherent harmonic quality of the transition type (via `base_score`)
+  instead of the composite key reward value. Same Key and Adjacent are always
+  green, Diagonal/Mood/Energy are amber, Semitone/Far/Tritone are always red —
+  matching the color encoding in the energy arc ribbon. Other pills (Vector,
+  Energy, Vocals, Lead) still use their reward value for coloring.
 
 - **Stable track IDs across collection moves** — Track identifiers are now
   derived from the file's path relative to the collection root instead of an
