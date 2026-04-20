@@ -167,13 +167,13 @@ All notable changes to Mesh are documented in this file.
   describe the actual musical relationship between seed and candidate, not how
   well they scored against the current intent. Key pill shows the transition
   name ("Same Key", "Cool", "Tritone", etc.) colored by inherent harmonic
-  quality — green for compatible, amber for moderate, red for difficult —
-  matching the energy arc ribbon. Similarity pill is always "Similarity",
-  colored by raw cosine distance to seed (green = similar, red = dissimilar).
-  Energy pill is always "Energy", colored by relative intensity shift (green =
-  more energy, red = less). Vocals and Lead pills unchanged (green =
-  complementary stems, red = clashing). Directional arrows removed from all
-  tags for cleaner presentation.
+  quality — matching the energy arc ribbon. Similarity pill is always
+  "Similarity", colored by raw cosine distance to seed. Energy pill is always
+  "Energy", colored by relative intensity shift. Vocals and Lead pills
+  unchanged (complementary vs clashing). Directional arrows removed from all
+  tags for cleaner presentation. All tag colors use theme stem colors (good →
+  Vocals stem, moderate → Bass stem, playlist source → Drums stem, poor →
+  warning red) so they adapt when switching color themes.
 
 - **Stable track IDs across collection moves** — Track identifiers are now
   derived from the file's path relative to the collection root instead of an
@@ -270,6 +270,12 @@ All notable changes to Mesh are documented in this file.
   than 1.0, providing a more gradual and musical transition.
 
 ### Fixed
+
+- **Energy arc not updating shape on playlist switch (mesh-player)** —
+  Switching playlists while suggestions were active left `suggestions_enabled`
+  set, causing the energy arc to render stale suggestion data instead of the
+  newly loaded playlist tracks. Folder and playlist changes now clear
+  suggestion state before rebuilding.
 
 - **"Re-analyse Metadata" on entire collection now works** — Right-clicking
   the Collection root and choosing "Re-analyse Metadata" would silently find
