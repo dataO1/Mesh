@@ -108,9 +108,13 @@ All notable changes to Mesh are documented in this file.
 - **Similarity graph in mesh-player** — The t-SNE library graph from
   mesh-cue's Graph tab now appears in mesh-player as a compact panel to
   the right of the track list. Shows cluster-colored nodes for the entire
-  library. When suggestions are active, the current seed and top-30
-  matches are highlighted with score-colored edges. Computes in the
-  background on app startup — the graph is ready by the time you browse.
+  library with pixel-snapped rendering for crisp dots. When suggestions
+  are active, suggestion nodes render slightly larger and brighter.
+  Selecting a track in the suggestion list highlights its node in the
+  graph with a ring and draws a single edge from the seed, showing where
+  the track "lives" in the library's spectral space. Scrolling through
+  the list moves the highlight. Computes in the background on app
+  startup — the graph is ready by the time you browse.
 
 - **Energy arc + graph combined canvas** — The energy arc ribbon and
   similarity graph share a single canvas panel on the right side of the
@@ -189,7 +193,16 @@ All notable changes to Mesh are documented in this file.
   both apps uses theme-derived stem colors for score coloring (Vocals stem
   for good matches, Bass stem for moderate, red for poor) and the theme
   accent color for seed node highlighting. Colors update when switching
-  themes.
+  themes. Cluster colors are derived from each community's spatial
+  position in the t-SNE layout (angle → hue wheel), so they're
+  deterministic and correlate with visual placement.
+
+- **Deterministic graph layout** — t-SNE input is sorted by track ID and
+  the 2D output is PCA-aligned to canonical axes (dominant variance
+  horizontal, majority of mass in positive quadrants). The graph looks
+  very similar across restarts even though t-SNE has random initialization.
+  Adding new tracks shifts the layout incrementally rather than
+  rearranging everything.
 
 - **Suggestion tag pills show raw musical facts** — Reason tag pills now
   describe the actual musical relationship between seed and candidate, not how
