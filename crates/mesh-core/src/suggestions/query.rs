@@ -343,47 +343,33 @@ pub fn query_suggestions(
         return Ok(Vec::new());
     }
 
-    // Genre-normalize vector distances: z-score within genre groups
-    // so DnB tracks don't monopolize suggestions due to tighter clustering.
+    // Percentile-rank normalize vector distances: each track's distance is replaced
+    // by its rank position / N, giving uniform [0, 1] spread regardless of the raw
+    // distance distribution. This replaces the old genre z-score + pool-max pipeline
+    // which compressed the discriminative range.
     {
-        // Batch-fetch genre for all candidates
-        let mut genre_by_cand: HashMap<(usize, i64), String> = HashMap::new();
-        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
-        for &(src_idx, track_id) in candidates.keys() {
-            ids_by_source.entry(src_idx).or_default().push(track_id);
-        }
-        for (src_idx, ids) in &ids_by_source {
-            if let Ok(scores) = sources[*src_idx].db.get_ml_scores_batch(ids) {
-                for (id, ml) in scores {
-                    let genre = ml.top_genre.unwrap_or_else(|| "Unknown".to_string());
-                    genre_by_cand.insert((*src_idx, id), genre);
-                }
+        let mut dist_ranking: Vec<((usize, i64), f32)> = candidates.iter()
+            .map(|(&key, (_, dist))| (key, *dist))
+            .collect();
+        dist_ranking.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = dist_ranking.len().max(1) as f32;
+        for (rank, &(key, _raw)) in dist_ranking.iter().enumerate() {
+            if let Some((_, dist)) = candidates.get_mut(&key) {
+                *dist = rank as f32 / (n - 1.0).max(1.0); // [0, 1] percentile rank
             }
         }
-
-        // Group distances by genre
-        let mut genre_dists: HashMap<&str, Vec<((usize, i64), f32)>> = HashMap::new();
-        for (&key, (_, dist)) in &candidates {
-            let genre = genre_by_cand.get(&key).map(|s| s.as_str()).unwrap_or("Unknown");
-            genre_dists.entry(genre).or_default().push((key, *dist));
+        // Log raw distance distribution for debugging
+        if !dist_ranking.is_empty() {
+            let raw_dists: Vec<f32> = dist_ranking.iter().map(|(_, d)| *d).collect();
+            let n_raw = raw_dists.len();
+            let p25 = raw_dists[n_raw / 4];
+            let median = raw_dists[n_raw / 2];
+            let p75 = raw_dists[n_raw * 3 / 4];
+            eprintln!("[SUGGESTIONS] Raw distance distribution: min={:.4} p25={:.4} median={:.4} p75={:.4} max={:.4} (n={})",
+                raw_dists[0], p25, median, p75, raw_dists[n_raw - 1], n_raw);
         }
-
-        // Z-score normalize within each genre (same pattern as normalize_intensity_by_genre)
-        for (_genre, tracks) in &genre_dists {
-            if tracks.len() < 3 { continue; } // too few for stats
-            let mean = tracks.iter().map(|t| t.1).sum::<f32>() / tracks.len() as f32;
-            let variance = tracks.iter().map(|t| (t.1 - mean).powi(2)).sum::<f32>() / tracks.len() as f32;
-            let std = variance.sqrt().max(0.001);
-            for &(key, raw) in tracks {
-                let z = (raw - mean) / std;
-                // Map z-score to [0, max_dist] range: center at mean, ±1.5 std maps to [0, 2*mean]
-                let normalized = (mean + z * mean / 1.5).max(0.0);
-                if let Some((_, dist)) = candidates.get_mut(&key) {
-                    *dist = normalized;
-                }
-            }
-        }
-        log::debug!("[SUGGESTIONS] Genre-normalized {} candidate vector distances", candidates.len());
+        log::debug!("[SUGGESTIONS] Percentile-rank normalized {} candidate distances", candidates.len());
     }
 
     // Co-play boost: fetch historically proven follow-up tracks for all seeds.
@@ -558,10 +544,8 @@ pub fn query_suggestions(
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
     let w_other_pen = if suggestion_config.stem_complement { 0.05 * (1.0 - bias_abs) } else { 0.0 };
 
-    let max_hnsw_dist = candidates.values()
-        .map(|(_, d)| *d)
-        .fold(0.0_f32, f32::max)
-        .max(1e-6);
+    // Distances are already percentile-rank normalized to [0, 1]
+    // No pool-max normalization needed
 
     let source_names: HashMap<usize, &str> = sources.iter().enumerate()
         .map(|(i, s)| (i, s.name.as_str()))
@@ -624,13 +608,10 @@ pub fn query_suggestions(
             let int_reward = intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover);
 
             // ── Vector similarity reward ──
-            // Center: similarity → high reward (1 - normalized_distance).
-            // Extremes: bell curve centered at transition_target — rewards tracks
-            //   at moderate distance (adjacent community), not maximally dissimilar.
-            //   This avoids jarring cross-map jumps while still encouraging variety.
-            //   t = (|bias| / crossover).clamp(0, 1)
-            //   vec_reward = similarity * (1-t) + bell(dist, target) * t
-            let norm_dist = hnsw_dist / max_hnsw_dist;
+            // hnsw_dist is already percentile-rank normalized [0, 1]
+            // Center: similarity → high reward (1 - percentile_rank).
+            // Extremes: bell curve centered at transition_target.
+            let norm_dist = hnsw_dist; // already [0, 1] from percentile rank
             let similarity = 1.0 - norm_dist;
             let target = suggestion_config.transition_target;
             let width = suggestion_config.transition_width;
