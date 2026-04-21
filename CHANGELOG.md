@@ -41,7 +41,54 @@ All notable changes to Mesh are documented in this file.
 - **Set plan export** — Build a set by navigating seeds in the graph view,
   then export the seed history as a playlist playable in mesh-player.
 
+- **UMAP graph layout** — Alternative to t-SNE for the similarity graph,
+  selectable via a button in the mesh-cue graph view header. UMAP preserves
+  both local and global structure — similar communities appear close
+  together. Toggle between t-SNE and UMAP to compare.
+
+- **Weight tuner** — Three sliders (S/K/I) in mesh-cue's graph view let you
+  tune the balance between Similarity, Key, and Intensity in the suggestion
+  scoring formula. Weights auto-normalize to sum 1.0. Re-queries instantly.
+
+- **Key filter toggle (mesh-cue)** — "Key" button in the graph view cycles
+  Strict / Relaxed / Off for harmonic filtering during graph suggestions.
+
+- **Match score column** — The suggestion list shows match percentage
+  (e.g., "78%") instead of rank number. Tells you how confident the
+  algorithm is in each suggestion.
+
+- **Dynamic result count** — Suggestions are filtered to tracks above 45%
+  match score instead of a fixed 30-track limit. Unusual seeds show fewer
+  results; well-connected seeds show more.
+
 ### Changed
+
+- **Intensity scoring v2** — Complete redesign of the intensity/aggression
+  system. Individual audio components (spectral flux, flatness, dissonance,
+  crest factor, energy variance, harmonic complexity, spectral rolloff) are
+  stored per track and combined at query time with tunable weights. Replaces
+  the old binary ML classifiers (mood_aggressive/mood_relaxed) which couldn't
+  distinguish sub-styles within a genre. Multi-frame analysis (20 frames
+  across the track) replaces single-midpoint-frame measurements. Re-analyse
+  ML with tags ticked to populate the new values.
+
+- **Percentile-rank normalization** — Vector similarity and intensity scores
+  use percentile-rank normalization instead of pool-max + genre z-score.
+  Guarantees uniform [0, 1] spread regardless of how narrow the raw distance
+  distribution is. Fixes "everything scores 88-91%" compression.
+
+- **Deviation-rank transition scoring** — At extreme slider positions, the
+  vector component uses percentile-rank of deviation from target distance
+  instead of a Gaussian bell curve. Every track gets a unique score — no
+  flat zone near the peak where 160 tracks all scored 96-100%.
+
+- **Dynamic community thresholds** — Tight/Medium/Open reach thresholds
+  adapt to the library's actual cluster structure. Computed from percentile
+  ranks of intra- and inter-community distances after t-SNE clustering.
+
+- **Multi-source graph** — The similarity graph merges tracks from local
+  collection and all mounted USB sticks. Deduplicates by artist-title.
+  Rebuilds automatically on USB plug/unplug.
 
 - **Smart suggestions v3** — PCA-128 similarity index with dynamic
   dimensionality (auto-detects optimal components via 95% variance
