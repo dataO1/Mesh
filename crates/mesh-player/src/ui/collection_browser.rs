@@ -600,10 +600,8 @@ impl CollectionBrowserState {
                 self.canvas_state.show_weight_tuner = self.show_weight_tuner;
                 None
             }
-            CollectionBrowserMessage::WeightsChanged(weights) => {
-                self.suggestion_weights = weights;
-                self.canvas_state.weights = weights;
-                eprintln!("[WEIGHTS] similarity={:.2}, key={:.2}, intensity={:.2}", weights[0], weights[1], weights[2]);
+            CollectionBrowserMessage::WeightsChanged(_) => {
+                // Handled at app level (triggers suggestion re-query)
                 None
             }
         }

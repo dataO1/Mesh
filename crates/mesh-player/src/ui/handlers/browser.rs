@@ -45,6 +45,17 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             }
             return Task::none();
         }
+        CollectionBrowserMessage::WeightsChanged(weights) => {
+            app.collection_browser.suggestion_weights = *weights;
+            app.collection_browser.canvas_state.weights = *weights;
+            eprintln!("[WEIGHTS] similarity={:.2}, key={:.2}, intensity={:.2}", weights[0], weights[1], weights[2]);
+            // Re-query with new weights
+            if app.collection_browser.is_suggestions_enabled() && !active_seed_paths(app).is_empty() {
+                app.collection_browser.set_suggestion_loading(true);
+                return trigger_suggestion_query(app);
+            }
+            return Task::none();
+        }
         CollectionBrowserMessage::SetEnergyDirection(value) => {
             // Auto-enable suggestions when energy direction is adjusted
             if !app.collection_browser.is_suggestions_enabled() {
