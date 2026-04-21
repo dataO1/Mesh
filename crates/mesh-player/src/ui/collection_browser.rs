@@ -504,6 +504,7 @@ impl CollectionBrowserState {
                     self.browser.table_state.select(track.id.clone());
                     self.selected_track_path = self.get_track_path(&track.id);
                     self.update_graph_hover(&track.id.clone());
+                    self.rebuild_energy_arc();
                 }
                 None
             }
