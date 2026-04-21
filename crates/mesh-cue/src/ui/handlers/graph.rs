@@ -414,6 +414,7 @@ impl MeshCueApp {
             stem_complement: false,
             transition_target: reach.target_distance(self.collection.community_thresholds.as_ref()),
             transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),
+            custom_weights: None,
         };
 
         let sources = vec![DbSource {

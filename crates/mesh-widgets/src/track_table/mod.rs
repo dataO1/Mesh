@@ -1142,7 +1142,14 @@ where
 
     // Get the display value for this cell
     let display_value = match column {
-        TrackColumn::Order => track.order.to_string(),
+        TrackColumn::Order => {
+            // Show match score % if available, otherwise order #
+            if let Some(score) = track.final_score {
+                format!("{}%", (score * 100.0).round() as u32)
+            } else {
+                track.order.to_string()
+            }
+        }
         TrackColumn::Cues => unreachable!(), // handled above
         TrackColumn::Name => track.title.clone(),
         TrackColumn::Tags => unreachable!(), // handled above

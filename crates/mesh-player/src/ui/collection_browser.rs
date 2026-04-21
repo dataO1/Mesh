@@ -83,6 +83,10 @@ pub struct CollectionBrowserState {
     pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Whether to show the analytics panel (energy arc + graph)
     pub show_analytics: bool,
+    /// Whether to show the weight tuner triangle in the analytics panel
+    pub show_weight_tuner: bool,
+    /// Custom suggestion weights [similarity, key, intensity] (sum to 1.0)
+    pub suggestion_weights: [f32; 3],
     /// Combined canvas state: energy arc ribbon + graph view (single Canvas widget).
     /// This is the single source of truth for both visualizations.
     pub canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState,
@@ -115,6 +119,10 @@ pub enum CollectionBrowserMessage {
     OpenSearch,
     /// Clear the current search query
     ClearSearch,
+    /// Suggestion weight changed from weight tuner sliders [similarity, key, intensity]
+    WeightsChanged([f32; 3]),
+    /// Toggle the weight tuner row visibility
+    ToggleWeightTuner,
 }
 
 impl CollectionBrowserState {
@@ -179,9 +187,13 @@ impl CollectionBrowserState {
             graph_building: false,
             community_thresholds: None,
             show_analytics: true,
+            show_weight_tuner: false,
+            suggestion_weights: [0.30, 0.30, 0.33], // similarity, key, intensity
             canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState {
                 energy_arc: None,
                 graph: None,
+                show_weight_tuner: false,
+                weights: [0.30, 0.30, 0.33],
             },
         }
     }
@@ -583,6 +595,17 @@ impl CollectionBrowserState {
                 }
                 None
             }
+            CollectionBrowserMessage::ToggleWeightTuner => {
+                self.show_weight_tuner = !self.show_weight_tuner;
+                self.canvas_state.show_weight_tuner = self.show_weight_tuner;
+                None
+            }
+            CollectionBrowserMessage::WeightsChanged(weights) => {
+                self.suggestion_weights = weights;
+                self.canvas_state.weights = weights;
+                eprintln!("[WEIGHTS] similarity={:.2}, key={:.2}, intensity={:.2}", weights[0], weights[1], weights[2]);
+                None
+            }
         }
     }
 
@@ -806,9 +829,46 @@ impl CollectionBrowserState {
             header_row = header_row.push(Space::new().width(4));
         }
         header_row = header_row.push(suggest_btn);
-        let load_bar = container(header_row)
-            .padding([6, 10])
-            .width(Length::Fill);
+        if self.suggestions_enabled {
+            let tuner_label = if self.show_weight_tuner { "W \u{25CF}" } else { "W" };
+            header_row = header_row.push(
+                button(text(tuner_label).size(sz(10.0)))
+                    .on_press(CollectionBrowserMessage::ToggleWeightTuner)
+                    .padding([4, 8])
+            );
+        }
+
+        // Weight tuner row (when enabled via settings)
+        let load_bar: Element<'_, CollectionBrowserMessage> = if self.show_weight_tuner && self.suggestions_enabled {
+            let [ws, wk, wi] = self.suggestion_weights;
+            let weight_row = row![
+                text(format!("S:{:.0}", ws * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, ws, move |v| {
+                    let total = v + wk + wi;
+                    if total > 0.0 { CollectionBrowserMessage::WeightsChanged([v/total, wk/total, wi/total]) }
+                    else { CollectionBrowserMessage::WeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(60),
+                text(format!("K:{:.0}", wk * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, wk, move |v| {
+                    let total = ws + v + wi;
+                    if total > 0.0 { CollectionBrowserMessage::WeightsChanged([ws/total, v/total, wi/total]) }
+                    else { CollectionBrowserMessage::WeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(60),
+                text(format!("I:{:.0}", wi * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, wi, move |v| {
+                    let total = ws + wk + v;
+                    if total > 0.0 { CollectionBrowserMessage::WeightsChanged([ws/total, wk/total, v/total]) }
+                    else { CollectionBrowserMessage::WeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(60),
+            ].spacing(4).align_y(Alignment::Center);
+
+            column![
+                container(header_row).padding([6, 10]).width(Length::Fill),
+                container(weight_row).padding([2, 10]).width(Length::Fill),
+            ].spacing(0).into()
+        } else {
+            container(header_row).padding([6, 10]).width(Length::Fill).into()
+        };
 
         if self.show_analytics {
             let side_canvas: Element<'_, CollectionBrowserMessage> =

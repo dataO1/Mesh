@@ -29,6 +29,8 @@ pub struct SuggestionConfig {
     pub transition_target: f32,
     /// Width (2σ²) of the transition bell curve.
     pub transition_width: f32,
+    /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.30, 0.30, 0.33).
+    pub custom_weights: Option<[f32; 3]>,
 }
 
 impl SuggestionConfig {
@@ -48,6 +50,7 @@ impl SuggestionConfig {
             stem_complement,
             transition_target: transition_reach.target_distance(community_thresholds),
             transition_width: transition_reach.bell_width(community_thresholds),
+            custom_weights: None,
         }
     }
 }
@@ -546,9 +549,10 @@ pub fn query_suggestions(
     // Sort: DESCENDING (higher score = better match).
 
     let bias_abs = energy_bias.abs();
-    let w_intensity   = 0.30;
-    let w_key         = 0.30;
-    let w_vector      = 0.25;
+    let (w_vector, w_key, w_intensity) = match suggestion_config.custom_weights {
+        Some([ws, wk, wi]) => (ws, wk, wi),
+        None => (0.25, 0.30, 0.30),
+    };
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };

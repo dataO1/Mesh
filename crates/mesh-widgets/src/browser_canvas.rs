@@ -15,6 +15,10 @@ use crate::graph_view::{GraphViewState, draw_graph_readonly};
 pub struct BrowserCanvasState {
     pub energy_arc: Option<EnergyArcState>,
     pub graph: Option<GraphViewState>,
+    /// Whether to show the weight tuner triangle (visual display)
+    pub show_weight_tuner: bool,
+    /// Current weights [similarity, key, intensity] — sum to 1.0
+    pub weights: [f32; 3],
 }
 
 impl<M: 'static> canvas::Program<M> for BrowserCanvasState {
@@ -49,14 +53,30 @@ impl<M: 'static> canvas::Program<M> for BrowserCanvasState {
             width: bounds.width,
             height: (bounds.height - arc_h).max(0.0),
         };
-        if let Some(graph) = &self.graph {
-            draw_graph_readonly(graph, &mut frame, graph_bounds, Some(app_bg));
+        if self.show_weight_tuner {
+            // Split: left = graph, right = triangle
+            let tri_w = 80.0_f32.min(bounds.width * 0.3);
+            let graph_w = bounds.width - tri_w;
+
+            let graph_sub = Rectangle { x: 0.0, y: arc_h, width: graph_w, height: graph_bounds.height };
+            if let Some(graph) = &self.graph {
+                draw_graph_readonly(graph, &mut frame, graph_sub, Some(app_bg));
+            } else {
+                frame.fill_rectangle(Point::new(0.0, arc_h), Size::new(graph_w, graph_bounds.height), app_bg);
+            }
+
+            let tri_bounds = Rectangle { x: graph_w, y: arc_h, width: tri_w, height: graph_bounds.height };
+            draw_weight_triangle(&mut frame, tri_bounds, self.weights, app_bg);
         } else {
-            frame.fill_rectangle(
-                Point::new(0.0, arc_h),
-                Size::new(bounds.width, (bounds.height - arc_h).max(0.0)),
-                app_bg,
-            );
+            if let Some(graph) = &self.graph {
+                draw_graph_readonly(graph, &mut frame, graph_bounds, Some(app_bg));
+            } else {
+                frame.fill_rectangle(
+                    Point::new(0.0, arc_h),
+                    Size::new(bounds.width, graph_bounds.height),
+                    app_bg,
+                );
+            }
         }
 
         vec![frame.into_geometry()]
@@ -182,4 +202,76 @@ fn draw_energy_arc_into(
         &Path::line(Point::new(x, bounds.y), Point::new(x, bounds.y + bounds.height)),
         canvas::Stroke::default().with_color(marker_color).with_width(2.0),
     );
+}
+
+// ── Weight triangle (barycentric coordinate picker) ──────────────────────
+
+fn draw_weight_triangle(
+    frame: &mut canvas::Frame,
+    bounds: Rectangle,
+    weights: [f32; 3], // [similarity, key, intensity]
+    bg: Color,
+) {
+    use iced::widget::canvas::{Stroke, Text};
+
+    frame.fill_rectangle(Point::new(bounds.x, bounds.y), bounds.size(), bg);
+
+    let margin = 12.0;
+    let usable = (bounds.width - margin * 2.0).min(bounds.height - margin * 2.0 - 20.0).max(20.0);
+    let cx = bounds.x + bounds.width / 2.0;
+    let top_y = bounds.y + margin + 12.0; // leave room for top label
+
+    // Equilateral triangle vertices (top = similarity, bottom-left = key, bottom-right = intensity)
+    let h = usable * 0.866; // sqrt(3)/2
+    let top = Point::new(cx, top_y);
+    let bl = Point::new(cx - usable / 2.0, top_y + h);
+    let br = Point::new(cx + usable / 2.0, top_y + h);
+
+    // Draw triangle outline
+    let tri_color = Color::from_rgb(0.4, 0.4, 0.42);
+    let mut path = canvas::path::Builder::new();
+    path.move_to(top);
+    path.line_to(bl);
+    path.line_to(br);
+    path.close();
+    frame.stroke(&path.build(), Stroke::default().with_color(tri_color).with_width(1.0));
+
+    // Labels
+    let label_color = Color::from_rgb(0.6, 0.6, 0.62);
+    let sz = 9.0;
+    frame.fill_text(Text {
+        content: "Sim".to_string(),
+        position: Point::new(top.x - 8.0, top.y - 12.0),
+        color: label_color, size: sz.into(), ..Text::default()
+    });
+    frame.fill_text(Text {
+        content: "Key".to_string(),
+        position: Point::new(bl.x - 4.0, bl.y + 3.0),
+        color: label_color, size: sz.into(), ..Text::default()
+    });
+    frame.fill_text(Text {
+        content: "Int".to_string(),
+        position: Point::new(br.x - 8.0, br.y + 3.0),
+        color: label_color, size: sz.into(), ..Text::default()
+    });
+
+    // Dot at current weight position (barycentric → cartesian)
+    let [w_sim, w_key, w_int] = weights;
+    let dot_x = w_sim * top.x + w_key * bl.x + w_int * br.x;
+    let dot_y = w_sim * top.y + w_key * bl.y + w_int * br.y;
+
+    let dot_color = Color::from_rgb(0.9, 0.75, 0.2);
+    frame.fill(&Path::circle(Point::new(dot_x, dot_y), 5.0), dot_color);
+    frame.stroke(
+        &Path::circle(Point::new(dot_x, dot_y), 5.0),
+        Stroke::default().with_color(Color::WHITE).with_width(1.5),
+    );
+
+    // Weight values text
+    let vals = format!("S:{:.0} K:{:.0} I:{:.0}", w_sim * 100.0, w_key * 100.0, w_int * 100.0);
+    frame.fill_text(Text {
+        content: vals,
+        position: Point::new(bounds.x + 4.0, bounds.y + bounds.height - 14.0),
+        color: label_color, size: sz.into(), ..Text::default()
+    });
 }

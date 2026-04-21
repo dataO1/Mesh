@@ -332,6 +332,7 @@ fn suggestion_to_row(
         row = row.with_tags(tags);
     }
 
+    row.final_score = Some(s.score);
     if is_global { row = row.with_global_suggestion(true); }
     if s.is_proven_followup { row = row.with_proven_followup(true); }
 
@@ -467,13 +468,18 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
 
     // Build suggestion algorithm config from display settings + dynamic community thresholds
     let community_thresholds = app.collection_browser.community_thresholds.clone();
-    let suggestion_config = crate::suggestions::SuggestionConfig::from_display(
+    let mut suggestion_config = crate::suggestions::SuggestionConfig::from_display(
         app.config.display.suggestion_blend_mode,
         app.config.display.suggestion_key_filter,
         app.config.display.suggestion_stem_complement,
         app.config.display.suggestion_transition_reach,
         community_thresholds.as_ref(),
     );
+    // Apply custom weights from the triangle picker (if not default)
+    let w = app.collection_browser.suggestion_weights;
+    if (w[0] - 0.30).abs() > 0.01 || (w[1] - 0.30).abs() > 0.01 || (w[2] - 0.33).abs() > 0.01 {
+        suggestion_config.custom_weights = Some(w);
+    }
 
     // Snapshot current playlist context for the split logic
     let playlist_paths = app.collection_browser.playlist_track_paths().map(|(p, _)| p);
@@ -522,25 +528,26 @@ fn split_suggestions(
     all: Vec<SuggestedTrack>,
     playlist_paths: Option<&HashSet<String>>,
 ) -> (Vec<SuggestedTrack>, Vec<SuggestedTrack>) {
-    const PLAYLIST_CAP: usize = 15;
-    const TOTAL: usize = 30;
+    const SCORE_THRESHOLD: f32 = 0.45; // only show tracks above 45% match
+    const MAX_TOTAL: usize = 50;       // hard cap to avoid UI overflow
+
+    // Filter by score threshold
+    let filtered: Vec<SuggestedTrack> = all.into_iter()
+        .filter(|s| s.score >= SCORE_THRESHOLD)
+        .take(MAX_TOTAL)
+        .collect();
 
     let Some(paths) = playlist_paths else {
-        let mut global = all;
-        global.truncate(TOTAL);
-        return (vec![], global);
+        return (vec![], filtered);
     };
 
-    let (mut playlist, mut global): (Vec<_>, Vec<_>) = all
+    let (playlist, global): (Vec<_>, Vec<_>) = filtered
         .into_iter()
         .partition(|s| {
             let p = s.track.path.to_string_lossy();
             paths.contains(p.as_ref())
         });
 
-    playlist.truncate(PLAYLIST_CAP);
-    let global_cap = TOTAL.saturating_sub(playlist.len());
-    global.truncate(global_cap);
     (playlist, global)
 }
 
