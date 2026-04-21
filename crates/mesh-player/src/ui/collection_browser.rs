@@ -1311,20 +1311,13 @@ impl CollectionBrowserState {
             .collect();
 
         if !row_ids.is_empty() {
-            let ml_scores = db.get_ml_scores_batch(&row_ids).unwrap_or_default();
-            let flatness = db.batch_get_flatness(&row_ids).unwrap_or_default();
-            let dissonance = db.batch_get_dissonance(&row_ids).unwrap_or_default();
+            let intensity_map = db.batch_get_intensity_components(&row_ids).unwrap_or_default();
 
             for row in &mut self.tracks {
                 if let Some(path) = &row.track_path {
                     if let Some(id) = resolve_id(path) {
-                        if let Some(ml) = ml_scores.get(&id) {
-                            row.intensity = mesh_core::suggestions::scoring::composite_intensity(
-                                ml.aggression,
-                                flatness.get(&id).copied(),
-                                ml.relaxed,
-                                dissonance.get(&id).copied(),
-                            );
+                        if let Some(ic) = intensity_map.get(&id) {
+                            row.intensity = Some(mesh_core::suggestions::scoring::composite_intensity_v2(ic));
                         }
                     }
                 }

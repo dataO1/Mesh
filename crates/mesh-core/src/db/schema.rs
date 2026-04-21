@@ -5,7 +5,8 @@
 //!
 //! - Core relations: tracks, playlists, cue_points, saved_loops
 //! - Graph edges: similar_to, played_after, harmonic_match
-//! - Vector index: tracks:audio_features (HNSW)
+//! - ML embeddings: 1280-dim EffNet + PCA-reduced for similarity search
+//! - Intensity components: multi-frame audio analysis for scoring
 
 use cozo::DbInstance;
 use serde::{Deserialize, Serialize};
@@ -227,110 +228,6 @@ pub struct HarmonicMatch {
 }
 
 // ============================================================================
-// Audio Feature Vector
-// ============================================================================
-
-/// Audio features extracted from a track (16 dimensions)
-///
-/// Used for vector similarity search to find musically similar tracks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioFeatures {
-    // Rhythm (4 dims)
-    /// BPM normalized to [0,1] range: (bpm - 60) / 140
-    pub bpm_normalized: f32,
-    /// Confidence of BPM detection
-    pub bpm_confidence: f32,
-    /// Beat strength / percussiveness
-    pub beat_strength: f32,
-    /// Rhythm regularity (how consistent the beat is)
-    pub rhythm_regularity: f32,
-
-    // Harmony (4 dims)
-    /// Key encoded as cos(key * 2π / 12) for circular similarity
-    pub key_x: f32,
-    /// Key encoded as sin(key * 2π / 12) for circular similarity
-    pub key_y: f32,
-    /// Mode: 0.0 = minor, 1.0 = major
-    pub mode: f32,
-    /// Harmonic complexity / chord variety
-    pub harmonic_complexity: f32,
-
-    // Energy (4 dims)
-    /// LUFS normalized to [0,1] range
-    pub lufs_normalized: f32,
-    /// Dynamic range (compression level)
-    pub dynamic_range: f32,
-    /// Mean RMS energy
-    pub energy_mean: f32,
-    /// Energy variance (how much energy changes)
-    pub energy_variance: f32,
-
-    // Timbre (4 dims)
-    /// Spectral centroid (brightness)
-    pub spectral_centroid: f32,
-    /// Spectral bandwidth (frequency spread)
-    pub spectral_bandwidth: f32,
-    /// Spectral rolloff (high frequency content)
-    pub spectral_rolloff: f32,
-    /// MFCC flatness (noisiness vs tonality)
-    pub mfcc_flatness: f32,
-    /// Psychoacoustic dissonance from spectral peak roughness (0.0 = consonant, 1.0 = dissonant).
-    /// Computed via SpectralPeaks + Dissonance algorithms; None for tracks not yet re-analysed.
-    /// Stored in the separate `track_dissonance` relation, NOT included in the HNSW vector.
-    pub dissonance: Option<f32>,
-}
-
-impl AudioFeatures {
-    /// Convert to a 16-dimensional vector for HNSW indexing
-    pub fn to_vector(&self) -> Vec<f64> {
-        vec![
-            self.bpm_normalized as f64,
-            self.bpm_confidence as f64,
-            self.beat_strength as f64,
-            self.rhythm_regularity as f64,
-            self.key_x as f64,
-            self.key_y as f64,
-            self.mode as f64,
-            self.harmonic_complexity as f64,
-            self.lufs_normalized as f64,
-            self.dynamic_range as f64,
-            self.energy_mean as f64,
-            self.energy_variance as f64,
-            self.spectral_centroid as f64,
-            self.spectral_bandwidth as f64,
-            self.spectral_rolloff as f64,
-            self.mfcc_flatness as f64,
-        ]
-    }
-
-    /// Create from a 16-dimensional vector
-    pub fn from_vector(v: &[f64]) -> Option<Self> {
-        if v.len() != 16 {
-            return None;
-        }
-        Some(Self {
-            bpm_normalized: v[0] as f32,
-            bpm_confidence: v[1] as f32,
-            beat_strength: v[2] as f32,
-            rhythm_regularity: v[3] as f32,
-            key_x: v[4] as f32,
-            key_y: v[5] as f32,
-            mode: v[6] as f32,
-            harmonic_complexity: v[7] as f32,
-            lufs_normalized: v[8] as f32,
-            dynamic_range: v[9] as f32,
-            energy_mean: v[10] as f32,
-            energy_variance: v[11] as f32,
-            spectral_centroid: v[12] as f32,
-            spectral_bandwidth: v[13] as f32,
-            spectral_rolloff: v[14] as f32,
-            mfcc_flatness: v[15] as f32,
-            dissonance: None,
-        })
-    }
-}
-
-// ============================================================================
 // ML Analysis Data
 // ============================================================================
 
@@ -453,12 +350,6 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     create_track_tags_relation(db)?;
     create_ml_analysis_relation(db)?;
 
-    // HNSW index (::hnsw create is NOT idempotent — must guard)
-    if !existing.contains("audio_features") {
-        log::debug!("Creating 'audio_features' HNSW index");
-        create_audio_features_index(db)?;
-    }
-
     // EffNet 1280-dim embedding relation + HNSW index
     create_ml_embeddings_relation(db)?;
     if !existing.contains("ml_embeddings") {
@@ -468,9 +359,6 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
 
     // Stem energy density relation (vocal + other)
     create_stem_energy_relation(db)?;
-
-    // Psychoacoustic dissonance relation (additive — safe on old DBs)
-    create_track_dissonance_relation(db)?;
 
     // Intensity components for composite scoring (v2 — multi-frame averaged)
     create_intensity_components_relation(db)?;
@@ -932,61 +820,6 @@ fn count_relation(db: &DbInstance, relation: &str) -> Result<usize, DbError> {
     Ok(count)
 }
 
-fn create_audio_features_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Create relation for audio feature vectors
-    // CozoDB uses <F32; 16> for a 16-dimensional F32 vector type
-    run_schema(db, r#"
-        {:create audio_features {
-            track_id: Int =>
-            vec: <F32; 16>
-        }}
-    "#)
-}
-
-fn create_audio_features_index(db: &DbInstance) -> Result<(), DbError> {
-    // First ensure the relation exists
-    create_audio_features_relation(db)?;
-
-    // HNSW vector index for audio features
-    // dim=16 for our audio feature vector
-    // m=16 connections per node (default)
-    // ef_construction=200 for good recall during index building
-    let result = db.run_script(
-        r#"
-        ::hnsw create audio_features:similarity_index {
-            dim: 16,
-            m: 16,
-            ef_construction: 200,
-            dtype: F32,
-            fields: [vec],
-            distance: Cosine,
-            extend_candidates: true,
-            keep_pruned_connections: false
-        }
-        "#,
-        Default::default(),
-        cozo::ScriptMutability::Mutable,
-    );
-
-    // Ignore "already exists" errors - this is expected behavior
-    match result {
-        Ok(_) => {
-            log::info!("HNSW index created successfully");
-            Ok(())
-        }
-        Err(e) => {
-            let err_str = e.to_string();
-            // Index already exists is fine
-            if err_str.contains("already exists") {
-                log::debug!("HNSW index already exists");
-                Ok(())
-            } else {
-                Err(DbError::Schema(err_str))
-            }
-        }
-    }
-}
-
 fn create_ml_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
     // EffNet 1280-dim embedding vector — populated during ML import / re-analyse
     run_schema(db, r#"
@@ -1052,18 +885,6 @@ fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
     "#)
 }
 
-fn create_track_dissonance_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Psychoacoustic dissonance score per track (SpectralPeaks + Plomp-Levelt curves).
-    // Additive — tracks without this computed get None in scoring and use neutral default.
-    // Point-lookup only — no HNSW needed.
-    run_schema(db, r#"
-        {:create track_dissonance {
-            track_id: Int =>
-            dissonance: Float
-        }}
-    "#)
-}
-
 fn create_intensity_components_relation(db: &DbInstance) -> Result<(), DbError> {
     // Per-track intensity component values for composite scoring.
     // All values are raw [0, 1] scalars, multi-frame averaged where applicable.
@@ -1111,71 +932,9 @@ fn create_ml_pca_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
     "#)
 }
 
-// Legacy: HNSW index creation removed — brute-force PCA is now the default.
-// The typed <F32; 128> relation and its HNSW index are auto-migrated on startup.
-#[allow(dead_code)]
-fn create_ml_pca_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
-    match db.run_script(
-        r#"
-        ::hnsw create ml_pca_embeddings:similarity_index {
-            dim: 128,
-            m: 32,
-            ef_construction: 200,
-            dtype: F32,
-            fields: [vec],
-            distance: Cosine,
-            extend_candidates: true,
-            keep_pruned_connections: false
-        }
-        "#,
-        Default::default(),
-        cozo::ScriptMutability::Mutable,
-    ) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let err_str = e.to_string();
-            if err_str.contains("already exists") {
-                log::debug!("PCA embeddings HNSW index already exists");
-                Ok(())
-            } else {
-                Err(DbError::Schema(err_str))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_audio_features_vector_roundtrip() {
-        let features = AudioFeatures {
-            bpm_normalized: 0.5,
-            bpm_confidence: 0.9,
-            beat_strength: 0.7,
-            rhythm_regularity: 0.8,
-            key_x: 0.5,
-            key_y: 0.866,
-            mode: 1.0,
-            harmonic_complexity: 0.3,
-            lufs_normalized: 0.6,
-            dynamic_range: 0.4,
-            energy_mean: 0.7,
-            energy_variance: 0.2,
-            spectral_centroid: 0.5,
-            spectral_bandwidth: 0.4,
-            spectral_rolloff: 0.6,
-            mfcc_flatness: 0.3,
-            dissonance: None,
-        };
-
-        let vec = features.to_vector();
-        assert_eq!(vec.len(), 16);
-
-        let reconstructed = AudioFeatures::from_vector(&vec).unwrap();
-        assert!((reconstructed.bpm_normalized - 0.5).abs() < 0.001);
-    }
 
     #[test]
     fn test_harmonic_match_type() {

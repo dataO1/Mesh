@@ -49,8 +49,6 @@ const N_BANDS: usize = 96;
 pub struct MlAnalyzer {
     effnet: Session,
     mood: Session,
-    /// 5 binary mood classifiers: (model_type, session)
-    binary_moods: Vec<(MlModelType, Session)>,
     /// Voice/Instrumental classifier (2-class softmax on EffNet embeddings)
     voice: Option<Session>,
     /// Audio characteristic classifiers (optional, skip gracefully)
@@ -151,28 +149,6 @@ impl MlAnalyzer {
             .and_then(|b| b.commit_from_file(&mood_path))
             .map_err(|e| format!("Failed to load mood model: {}", e))?;
 
-        // Load binary mood classifiers (skip missing with warning)
-        let mut binary_moods = Vec::new();
-        for &model_type in MlModelType::binary_mood_models() {
-            let path = model_dir.join(model_type.filename());
-            if path.exists() {
-                match Session::builder()
-                    .and_then(|b| b.with_intra_threads(1))
-                    .and_then(|b| b.commit_from_file(&path))
-                {
-                    Ok(session) => {
-                        log::info!("Loaded binary mood model: {}", model_type.display_name());
-                        binary_moods.push((model_type, session));
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to load {}: {}", model_type.display_name(), e);
-                    }
-                }
-            } else {
-                log::warn!("Binary mood model not found, skipping: {}", model_type.display_name());
-            }
-        }
-
         // Load voice/instrumental classifier (skip with warning if missing)
         let voice = load_optional_session(model_dir, MlModelType::VoiceInstrumental);
 
@@ -188,7 +164,6 @@ impl MlAnalyzer {
         Ok(Self {
             effnet,
             mood,
-            binary_moods,
             voice,
             timbre,
             tonal_atonal,
@@ -240,15 +215,6 @@ impl MlAnalyzer {
         // Run Jamendo mood classification head on averaged embedding
         let mood_themes = Some(self.run_mood(&avg_embedding)?);
 
-        // Run binary mood classifiers on averaged embedding
-        let binary_moods = match self.run_binary_moods(&avg_embedding) {
-            Ok(moods) => Some(moods),
-            Err(e) => {
-                log::warn!("Binary mood inference failed: {}", e);
-                None
-            }
-        };
-
         // Voice detection from EffNet embedding (replaces RMS-based detection)
         let vocal_presence = run_binary_head(&mut self.voice, &avg_embedding, 1, "Voice")
             .unwrap_or(0.0);
@@ -272,7 +238,7 @@ impl MlAnalyzer {
                 top_genre,
                 genre_scores,
                 mood_themes,
-                binary_moods,
+                binary_moods: None,
                 danceability,
                 approachability,
                 reverb,
@@ -394,44 +360,6 @@ impl MlAnalyzer {
         Ok(scored)
     }
 
-    /// Run binary mood classifiers on embedding.
-    ///
-    /// Each classifier outputs a 2-class softmax. We extract the probability
-    /// of the positive class (index varies per model) and return all 5
-    /// probabilities. Thresholding is applied at tag generation time.
-    fn run_binary_moods(&mut self, embedding: &[f32]) -> Result<Vec<(String, f32)>, String> {
-        let mut results = Vec::new();
-
-        for (model_type, session) in &mut self.binary_moods {
-            let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec())
-                .map_err(|e| format!("Binary mood input shape error: {}", e))?;
-
-            let input_tensor = Tensor::from_array(input)
-                .map_err(|e| format!("Binary mood tensor error: {}", e))?;
-
-            let outputs = session.run(
-                ort::inputs!["embeddings" => input_tensor]
-            ).map_err(|e| format!("{} inference error: {}", model_type.display_name(), e))?;
-
-            let (_, first_value) = outputs.iter().next()
-                .ok_or_else(|| format!("{} produced no output", model_type.display_name()))?;
-
-            let (_shape, probs_data) = first_value.try_extract_tensor::<f32>()
-                .map_err(|e| format!("{} output extraction error: {}", model_type.display_name(), e))?;
-
-            let probs: Vec<f32> = probs_data.iter().copied().collect();
-
-            if let Some(pos_idx) = model_type.positive_class_index() {
-                let positive_prob = probs.get(pos_idx).copied().unwrap_or(0.0);
-                if let Some(label) = model_type.mood_label() {
-                    log::debug!("Binary mood {}: {:.3}", label, positive_prob);
-                    results.push((label.to_string(), positive_prob));
-                }
-            }
-        }
-
-        Ok(results)
-    }
 }
 
 // ============================================================================

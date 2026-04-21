@@ -4,7 +4,7 @@
 //! communication in the message-driven architecture. Commands are request-reply
 //! patterns using oneshot channels, while events are broadcast to all subscribers.
 
-use crate::db::{Track, Playlist, AudioFeatures};
+use crate::db::{Track, Playlist};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -94,13 +94,6 @@ pub enum QueryCommand {
     /// Delete a track
     DeleteTrack {
         track_id: i64,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-
-    /// Update audio features for a track
-    UpdateAudioFeatures {
-        track_id: i64,
-        features: AudioFeatures,
         reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
 
@@ -292,7 +285,6 @@ pub enum AppEvent {
     /// Audio analysis completed
     AnalysisComplete {
         track_id: i64,
-        features: AudioFeatures,
     },
 
     /// Audio analysis failed

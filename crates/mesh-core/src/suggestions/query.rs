@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::db::{DatabaseService, MlScores, Track};
+use crate::db::{DatabaseService, Track};
 use crate::music::MusicalKey;
 use super::config::KeyScoringModel;
 use super::scoring::*;
@@ -168,10 +168,9 @@ pub fn query_suggestions(
         return query_opener_suggestions(sources, energy_direction, total_limit, played_paths);
     }
 
-    // Diagnostic: log audio features count per source
+    // Diagnostic: log track count per source
     for (idx, source) in sources.iter().enumerate() {
-        let features = source.db.count_audio_features().unwrap_or(0);
-        log::debug!("[SUGGESTIONS] Source {} ({}): audio_features={}", idx, source.name, features);
+        log::debug!("[SUGGESTIONS] Source {} ({})", idx, source.name);
     }
 
     // Step 1: Resolve seed paths to tracks across all database sources.
@@ -402,29 +401,7 @@ pub fn query_suggestions(
     // Energy direction bias: -1.0 (drop) through 0.0 (maintain) to +1.0 (peak)
     let energy_bias = (energy_direction - 0.5) * 2.0;
 
-    // Step 4b: Batch-fetch ML scores from each source DB
-    let ml_scores: HashMap<(usize, i64), MlScores> = {
-        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
-        for &(src_idx, track_id) in candidates.keys() {
-            ids_by_source.entry(src_idx).or_default().push(track_id);
-        }
-        for &(src_idx, ref track) in &seed_tracks {
-            if let Some(id) = track.id {
-                ids_by_source.entry(src_idx).or_default().push(id);
-            }
-        }
-        let mut merged = HashMap::new();
-        for (src_idx, ids) in &ids_by_source {
-            if let Ok(scores) = sources[*src_idx].db.get_ml_scores_batch(ids) {
-                for (id, score) in scores {
-                    merged.insert((*src_idx, id), score);
-                }
-            }
-        }
-        merged
-    };
-
-    // Step 4c: Stem energy — seed densities + batch candidate prefetch
+    // Step 4b: Stem energy — seed densities + batch candidate prefetch
     let seed_stem: (f32, f32, f32, f32) = seed_tracks
         .iter()
         .find_map(|(idx, t)| {
@@ -450,46 +427,7 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: Batch-fetch flatness and dissonance for all candidates
-    let flatness_map: HashMap<(usize, i64), f32> = {
-        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
-        for &(src_idx, track_id) in candidates.keys() {
-            ids_by_source.entry(src_idx).or_default().push(track_id);
-        }
-        for (src_idx, t) in &seed_tracks {
-            if let Some(id) = t.id {
-                ids_by_source.entry(*src_idx).or_default().push(id);
-            }
-        }
-        let mut merged = HashMap::new();
-        for (src_idx, ids) in &ids_by_source {
-            if let Ok(m) = sources[*src_idx].db.batch_get_flatness(ids) {
-                for (id, f) in m { merged.insert((*src_idx, id), f); }
-            }
-        }
-        merged
-    };
-
-    let dissonance_map: HashMap<(usize, i64), f32> = {
-        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
-        for &(src_idx, track_id) in candidates.keys() {
-            ids_by_source.entry(src_idx).or_default().push(track_id);
-        }
-        for (src_idx, t) in &seed_tracks {
-            if let Some(id) = t.id {
-                ids_by_source.entry(*src_idx).or_default().push(id);
-            }
-        }
-        let mut merged = HashMap::new();
-        for (src_idx, ids) in &ids_by_source {
-            if let Ok(m) = sources[*src_idx].db.batch_get_dissonance(ids) {
-                for (id, d) in m { merged.insert((*src_idx, id), d); }
-            }
-        }
-        merged
-    };
-
-    // Step 4e: Compute composite intensity from individual components (v2).
+    // Step 4d: Compute composite intensity from individual components (v2).
     // Fetch intensity components and compute composite at query time.
     let mut intensity_map: HashMap<(usize, i64), f32> = HashMap::new();
     for (src_idx, source) in sources.iter().enumerate() {
@@ -506,25 +444,7 @@ pub fn query_suggestions(
             }
         }
 
-        // Fallback: for tracks without v2 components, use legacy composite_intensity
-        let missing: Vec<i64> = all_ids.iter()
-            .filter(|id| !intensity_map.contains_key(&(src_idx, **id)))
-            .copied()
-            .collect();
-        if !missing.is_empty() {
-            if let Ok(scores) = source.db.get_ml_scores_batch(&missing) {
-                let flatness_fb = source.db.batch_get_flatness(&missing).unwrap_or_default();
-                let dissonance_fb = source.db.batch_get_dissonance(&missing).unwrap_or_default();
-                for (id, ml) in &scores {
-                    if let Some(val) = composite_intensity(
-                        ml.aggression, flatness_fb.get(id).copied(),
-                        ml.relaxed, dissonance_fb.get(id).copied(),
-                    ) {
-                        intensity_map.insert((src_idx, *id), val);
-                    }
-                }
-            }
-        }
+        // Tracks without v2 components get default 0.5 (neutral) via unwrap_or in scoring
     }
 
     let avg_seed_intensity = {
@@ -760,8 +680,7 @@ fn query_opener_suggestions(
 
         let ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
         let stem_map     = source.db.batch_get_stem_energy(&ids).unwrap_or_default();
-        let ml_map       = source.db.get_ml_scores_batch(&ids).unwrap_or_default();
-        let flatness_map = source.db.batch_get_flatness(&ids).unwrap_or_default();
+        let intensity_map = source.db.batch_get_intensity_components(&ids).unwrap_or_default();
 
         for track in &tracks {
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
@@ -779,12 +698,9 @@ fn query_opener_suggestions(
                 .copied()
                 .unwrap_or((0.2, 0.3, 0.25, 0.25));
 
-            let ml       = ml_map.get(&id);
-            let flatness = flatness_map.get(&id).copied();
-            let relaxed  = ml.and_then(|m| m.relaxed);
-            let intensity = composite_intensity(
-                ml.and_then(|m| m.aggression), flatness, relaxed, None,
-            ).unwrap_or(0.5);
+            let intensity = intensity_map.get(&id)
+                .map(composite_intensity_v2)
+                .unwrap_or(0.5);
 
             let long_intro     = (intro_bars / 64.0).min(1.0);
             let other_interest = gauss(other, 0.25, 0.12);

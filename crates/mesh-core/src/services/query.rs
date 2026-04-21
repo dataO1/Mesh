@@ -118,7 +118,7 @@ impl QueryService {
             }
 
             QueryCommand::FindSimilar { track_id, limit, reply } => {
-                let result = self.service.find_similar_tracks(track_id, limit)
+                let result = self.service.find_similar_tracks_ml(track_id, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
@@ -172,20 +172,6 @@ impl QueryService {
 
                 if result.is_ok() {
                     let _ = self.event_tx.send(AppEvent::TrackRemoved(track_id));
-                }
-
-                let _ = reply.send(result);
-            }
-
-            QueryCommand::UpdateAudioFeatures { track_id, features, reply } => {
-                let result = SimilarityQuery::upsert_features(self.service.db(), track_id, &features)
-                    .map_err(|e| e.to_string());
-
-                if result.is_ok() {
-                    let _ = self.event_tx.send(AppEvent::AnalysisComplete {
-                        track_id,
-                        features,
-                    });
                 }
 
                 let _ = reply.send(result);

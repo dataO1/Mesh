@@ -484,6 +484,7 @@ fn reanalyze_metadata_track(
     // Step 3: ML features (Tags) — ort is thread-safe, no subprocess needed
     if options.tags {
         if let Some(ml_arc) = ml_analyzer {
+            // Load audio ONCE at native rate — used for ML mel spectrogram + stem energy RMS
             let reader = AudioFileReader::open(path)
                 .with_context(|| format!("Failed to open file: {:?}", path))?;
             let stems = reader
@@ -491,6 +492,7 @@ fn reanalyze_metadata_track(
                 .with_context(|| format!("Failed to read stems from: {:?}", path))?;
             let mono_mix = create_mono_mix(&stems);
 
+            // ML analysis on native-rate mono mix
             let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
                 &mono_mix, SAMPLE_RATE as f32,
             ).map_err(|e| anyhow::anyhow!("Mel spectrogram failed: {}", e))?;
@@ -503,8 +505,8 @@ fn reanalyze_metadata_track(
             };
 
             log::info!(
-                "reanalyze_metadata_track: ML genre={:?}, arousal={:?}, vocal={:.3}",
-                ml_result.data.top_genre, ml_result.data.arousal, ml_result.data.vocal_presence
+                "reanalyze_metadata_track: ML genre={:?}, vocal={:.3}",
+                ml_result.data.top_genre, ml_result.data.vocal_presence
             );
 
             if let Err(e) = db.store_ml_analysis(track_id, &ml_result.data) {
@@ -520,45 +522,24 @@ fn reanalyze_metadata_track(
                 }
             }
 
-            // Persist stem energy densities — load stem FLAC for RMS ratios
-            let stems_for_energy = AudioFileReader::open(path)
-                .and_then(|r| r.read_all_stems());
-            match stems_for_energy {
-                Ok(ref s) => {
-                    let (vocal, drums, bass, other) = crate::batch_import::compute_stem_energy_ratios(s);
-                    if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {
-                        log::warn!("reanalyze_metadata_track: Failed to store stem energy: {:?}", e);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("reanalyze_metadata_track: Could not load stems for energy ratios: {:?}", e);
-                }
+            // Stem energy densities — reuse already-loaded stems (no extra file open)
+            let (vocal, drums, bass, other) = crate::batch_import::compute_stem_energy_ratios(&stems);
+            if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {
+                log::warn!("reanalyze_metadata_track: Failed to store stem energy: {:?}", e);
             }
 
-            // Compute psychoacoustic dissonance via Essentia subprocess (needs 44100 Hz audio).
-            // This is a separate load from the ML audio above (which is at native rate for ort).
+            // Intensity components — load ONCE at 44100 Hz for Essentia features
             const ESSENTIA_RATE_FEAT: u32 = 44100;
             match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(ESSENTIA_RATE_FEAT)) {
                 Ok(feat_stems) => {
                     let mono_44 = create_mono_mix(&feat_stems);
-                    // Compute multi-frame intensity components BEFORE subprocess
-                    // (subprocess moves mono_44, so we compute on a reference first)
+                    // Compute multi-frame intensity components (pure Rust, no subprocess)
                     let intensity_components = crate::features::compute_intensity_components(&mono_44, ESSENTIA_RATE_FEAT as f32);
 
                     match crate::features::extract_audio_features_in_subprocess(mono_44) {
                         Ok(features) => {
-                            if let Some(d) = features.dissonance {
-                                if let Err(e) = db.store_dissonance(track_id, d) {
-                                    log::warn!("reanalyze_metadata_track: Failed to store dissonance: {:?}", e);
-                                }
-                            }
-                            // Also refresh the 16-dim HNSW vector while we have fresh features
-                            if let Err(e) = db.store_audio_features(track_id, &features) {
-                                log::warn!("reanalyze_metadata_track: Failed to store audio features: {:?}", e);
-                            }
-                            // Store multi-frame intensity components
-                            // Merge: use existing full-track centroid + energy_variance from features,
-                            // keep multi-frame values for flux, flatness, dissonance, etc.
+                            // Merge: full-track centroid + energy_variance from Essentia,
+                            // multi-frame values for flux, flatness, dissonance, etc. from pure Rust
                             let mut ic = intensity_components;
                             ic.spectral_centroid = features.spectral_centroid;
                             ic.energy_variance = features.energy_variance;
@@ -567,7 +548,7 @@ fn reanalyze_metadata_track(
                             }
                         }
                         Err(e) => {
-                            log::warn!("reanalyze_metadata_track: Feature extraction failed (dissonance skipped): {:?}", e);
+                            log::warn!("reanalyze_metadata_track: Feature extraction failed: {:?}", e);
                         }
                     }
                 }

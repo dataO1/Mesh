@@ -2,7 +2,7 @@
 //!
 //! This module provides typed query APIs that generate CozoScript internally.
 
-use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
+use super::schema::{TrackRow, Playlist, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
 use cozo::{DataValue, NamedRows, Vector};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -748,57 +748,6 @@ fn extract_f32_vec(val: Option<&DataValue>) -> Result<Option<Vec<f32>>, DbError>
 }
 
 impl SimilarityQuery {
-    /// Find similar tracks using HNSW vector search
-    ///
-    /// Uses the audio_features relation with HNSW index for fast approximate
-    /// nearest neighbor search based on the 16-dimensional audio feature vector.
-    pub fn find_similar(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<(TrackRow, f32)>, DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-        let k = (limit + 1) as i64; // +1 to account for self-exclusion
-        params.insert("k".to_string(), DataValue::from(k));
-        // ef (search beam width) must be >= k for good recall
-        params.insert("ef".to_string(), DataValue::from(k.max(50)));
-
-        // First get the embedding for the query track, then search using HNSW
-        let result = db.run_query(r#"
-            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
-                *audio_features{track_id: $track_id, vec: query_vec},
-                ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
-                track_id != $track_id,
-                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
-            :order dist
-        "#, params)?;
-
-        Ok(rows_to_tracks_with_distance(&result))
-    }
-
-    /// Find similar tracks by raw feature vector (for cross-database search).
-    ///
-    /// Unlike `find_similar()` which looks up the vector from the same DB,
-    /// this accepts an external vector — enabling seeds from one database
-    /// to search another database's HNSW index.
-    pub fn find_similar_by_vector(db: &MeshDb, query_vec: &[f64], limit: usize) -> Result<Vec<(TrackRow, f32)>, DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("query_vec".to_string(), DataValue::List(query_vec.iter().map(|&v| DataValue::from(v)).collect()));
-        let k = limit as i64;
-        params.insert("k".to_string(), DataValue::from(k));
-        params.insert("ef".to_string(), DataValue::from(k.max(50)));
-
-        let result = db.run_query(r#"
-            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
-                ~audio_features:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
-                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
-            :order dist
-        "#, params)?;
-
-        Ok(rows_to_tracks_with_distance(&result))
-    }
-
     /// Find harmonically compatible tracks
     pub fn find_harmonic_compatible(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
@@ -815,50 +764,6 @@ impl SimilarityQuery {
         "#, params)?;
 
         Ok(rows_to_tracks(&result))
-    }
-
-    /// Insert or update audio features for a track
-    ///
-    /// The feature vector is stored in the audio_features relation and automatically
-    /// indexed by the HNSW similarity_index for fast nearest neighbor queries.
-    pub fn upsert_features(db: &MeshDb, track_id: i64, features: &AudioFeatures) -> Result<(), DbError> {
-        let vec = features.to_vector();
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-        params.insert("vec".to_string(), DataValue::List(vec.into_iter().map(DataValue::from).collect()));
-
-        db.run_script(r#"
-            ?[track_id, vec] <- [[$track_id, $vec]]
-            :put audio_features {track_id => vec}
-        "#, params)?;
-
-        Ok(())
-    }
-
-    /// Check if a track has audio features stored
-    pub fn has_features(db: &MeshDb, track_id: i64) -> Result<bool, DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-
-        let result = db.run_query(r#"
-            ?[count(track_id)] := *audio_features{track_id}, track_id = $track_id
-        "#, params)?;
-
-        Ok(result.rows.first()
-            .and_then(|row| row.first())
-            .and_then(|v| v.get_int())
-            .unwrap_or(0) > 0)
-    }
-
-    /// Get all track IDs that have audio features
-    pub fn get_tracks_with_features(db: &MeshDb) -> Result<Vec<i64>, DbError> {
-        let result = db.run_query(r#"
-            ?[track_id] := *audio_features{track_id}
-        "#, BTreeMap::new())?;
-
-        Ok(result.rows.iter()
-            .filter_map(|row| row.first().and_then(|v| v.get_int()))
-            .collect())
     }
 
     pub fn get_tracks_with_ml_embeddings(db: &MeshDb) -> Result<Vec<i64>, DbError> {
@@ -879,28 +784,7 @@ impl SimilarityQuery {
             .collect())
     }
 
-    pub fn get_tracks_with_dissonance(db: &MeshDb) -> Result<Vec<i64>, DbError> {
-        let result = db.run_query(r#"
-            ?[track_id] := *track_dissonance{track_id}
-        "#, BTreeMap::new())?;
-        Ok(result.rows.iter()
-            .filter_map(|row| row.first().and_then(|v| v.get_int()))
-            .collect())
-    }
-
-    /// Count tracks with audio features
-    pub fn count_with_features(db: &MeshDb) -> Result<usize, DbError> {
-        let result = db.run_query(r#"
-            ?[count(track_id)] := *audio_features{track_id}
-        "#, BTreeMap::new())?;
-
-        Ok(result.rows.first()
-            .and_then(|row| row.first())
-            .and_then(|v| v.get_int())
-            .unwrap_or(0) as usize)
-    }
-
-    // ── EffNet 1280-dim embedding ──────────────────────────────────────────
+    // ── EffNet 1280-dim embedding ─────────────────────────────────���────────
 
     /// Insert or update a 1280-dim EffNet embedding for a track.
     pub fn upsert_ml_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {

@@ -29,9 +29,9 @@ use std::time::SystemTime;
 
 use super::batch::BatchQuery;
 use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery, HistoryQuery};
-use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
+use super::schema::{TrackRow, Playlist, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
-use cozo::{DataValue, Vector};
+use cozo::DataValue;
 use std::collections::{BTreeMap, HashMap};
 
 // ============================================================================
@@ -53,13 +53,8 @@ pub struct MlScores {
     pub mood_acoustic: Option<f32>,
     /// Electronic sound probability (0.0 = non-electronic, 1.0 = electronic)
     pub mood_electronic: Option<f32>,
-    /// Primary genre label (for genre-normalized aggression grouping)
+    /// Primary genre label
     pub top_genre: Option<String>,
-    /// Aggression probability extracted from binary_moods (0.0–1.0)
-    pub aggression: Option<f32>,
-    /// Relaxed mood probability extracted from binary_moods (0.0–1.0).
-    /// Inverse complement of aggression for intra-genre intensity discrimination.
-    pub relaxed: Option<f32>,
 }
 
 // ============================================================================
@@ -524,33 +519,7 @@ impl DatabaseService {
             }
         }
 
-        // 7. Sync audio features
-        match source_db.get_audio_features(source_track_id) {
-            Ok(Some(features)) => {
-                if let Err(e) = self.store_audio_features(track_id, &features) {
-                    log::warn!(
-                        "sync_track_atomic: Failed to store audio features for track {}: {}",
-                        track_id, e
-                    );
-                } else {
-                    log::debug!("sync_track_atomic: Audio features synced for track {}", track_id);
-                }
-            }
-            Ok(None) => {
-                log::debug!(
-                    "sync_track_atomic: No audio features in source DB for source_track_id={}",
-                    source_track_id
-                );
-            }
-            Err(e) => {
-                log::warn!(
-                    "sync_track_atomic: Failed to read audio features from source: {}",
-                    e
-                );
-            }
-        }
-
-        // 8. Sync EffNet ML embedding
+        // 7. Sync EffNet ML embedding
         if let Ok(Some(emb)) = source_db.get_ml_embedding_raw(source_track_id) {
             let _ = self.store_ml_embedding(track_id, &emb);
         }
@@ -560,12 +529,7 @@ impl DatabaseService {
             let _ = self.store_stem_energy(track_id, v, d, b, o);
         }
 
-        // 10. Sync psychoacoustic dissonance
-        if let Ok(Some(diss)) = source_db.get_dissonance(source_track_id) {
-            let _ = self.store_dissonance(track_id, diss);
-        }
-
-        // 11. Sync PCA embedding (128-dim library-tuned similarity index)
+        // 10. Sync PCA embedding (128-dim library-tuned similarity index)
         if let Ok(Some(pca_emb)) = source_db.get_pca_embedding_raw(source_track_id) {
             let _ = self.store_pca_embedding(track_id, &pca_emb);
         }
@@ -955,75 +919,8 @@ impl DatabaseService {
     }
 
     // ========================================================================
-    // Audio Features & Similarity
+    // ML Embeddings & Similarity
     // ========================================================================
-
-    /// Store audio features for a track
-    pub fn store_audio_features(&self, track_id: i64, features: &AudioFeatures) -> Result<(), DbError> {
-        SimilarityQuery::upsert_features(&self.db, track_id, features)
-    }
-
-    /// Get audio features for a track
-    ///
-    /// Returns the 16-dimensional feature vector if stored, or None if not analyzed.
-    pub fn get_audio_features(&self, track_id: i64) -> Result<Option<AudioFeatures>, DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-
-        let result = self.db.run_query(r#"
-            ?[vec] := *audio_features{track_id: $track_id, vec}
-        "#, params)?;
-
-        if let Some(row) = result.rows.first() {
-            match &row[0] {
-                // CozoDB stores <F32; 16> as DataValue::Vec(Vector::F32(...))
-                DataValue::Vec(Vector::F32(arr)) => {
-                    let vec: Vec<f64> = arr.iter().map(|&v| v as f64).collect();
-                    return Ok(AudioFeatures::from_vector(&vec));
-                }
-                DataValue::Vec(Vector::F64(arr)) => {
-                    let vec: Vec<f64> = arr.to_vec();
-                    return Ok(AudioFeatures::from_vector(&vec));
-                }
-                // Fallback for List representation (shouldn't happen with vector types)
-                DataValue::List(vec_vals) => {
-                    let vec: Vec<f64> = vec_vals.iter()
-                        .filter_map(|v| v.get_float())
-                        .collect();
-                    return Ok(AudioFeatures::from_vector(&vec));
-                }
-                other => {
-                    log::warn!(
-                        "get_audio_features: unexpected DataValue type for track {}: {:?}",
-                        track_id, std::mem::discriminant(other)
-                    );
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    /// Count tracks that have audio features stored
-    pub fn count_audio_features(&self) -> Result<usize, DbError> {
-        SimilarityQuery::count_with_features(&self.db)
-    }
-
-    /// Find similar tracks using audio features
-    ///
-    /// Returns tracks with basic metadata only and similarity scores.
-    pub fn find_similar_tracks(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
-        let results = SimilarityQuery::find_similar(&self.db, track_id, limit)?;
-        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
-    }
-
-    /// Find similar tracks using a raw feature vector (cross-database search).
-    ///
-    /// Searches this database's HNSW index using an externally-provided vector,
-    /// enabling seeds from one database to find matches in another.
-    pub fn find_similar_by_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
-        let results = SimilarityQuery::find_similar_by_vector(&self.db, query_vec, limit)?;
-        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
-    }
 
     // ── EffNet ML embedding ─────────────────────────────────────────────────
 
@@ -1131,7 +1028,6 @@ impl DatabaseService {
             .flat_map(|&track_id| {
                 let neighbors = self.find_similar_tracks_pca(track_id, k)
                     .or_else(|_| self.find_similar_tracks_ml(track_id, k))
-                    .or_else(|_| self.find_similar_tracks(track_id, k))
                     .unwrap_or_default();
 
                 neighbors.into_iter().filter_map(move |(track, dist)| {
@@ -1216,56 +1112,6 @@ impl DatabaseService {
         Ok(rows.into_iter().map(Track::from_row_only).collect())
     }
 
-    // ========================================================================
-    // Psychoacoustic Dissonance
-    // ========================================================================
-
-    /// Store the computed dissonance score for a track.
-    pub fn store_dissonance(&self, track_id: i64, dissonance: f32) -> Result<(), DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-        params.insert("dissonance".to_string(), DataValue::from(dissonance as f64));
-        self.db.run_query(r#"
-            ?[track_id, dissonance] <- [[$track_id, $dissonance]]
-            :put track_dissonance {track_id => dissonance}
-        "#, params)?;
-        Ok(())
-    }
-
-    /// Get the dissonance score for a single track.
-    pub fn get_dissonance(&self, track_id: i64) -> Result<Option<f32>, DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-        let result = self.db.run_query(r#"
-            ?[dissonance] := *track_dissonance{track_id: $track_id, dissonance}
-        "#, params)?;
-        Ok(result.rows.first()
-            .and_then(|row| row[0].get_float())
-            .map(|f| f as f32))
-    }
-
-    /// Batch-fetch dissonance scores for multiple tracks (avoids N+1 in scoring loops).
-    pub fn batch_get_dissonance(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {
-        if track_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
-        let mut params = BTreeMap::new();
-        params.insert("ids".to_string(), DataValue::List(id_values));
-        let result = self.db.run_query(r#"
-            ?[track_id, dissonance] :=
-                *track_dissonance{track_id, dissonance},
-                track_id in $ids
-        "#, params)?;
-        let mut map = HashMap::new();
-        for row in &result.rows {
-            if let (Some(tid), Some(d)) = (row[0].get_int(), row[1].get_float()) {
-                map.insert(tid, d as f32);
-            }
-        }
-        Ok(map)
-    }
-
     /// Store intensity components for a track.
     pub fn store_intensity_components(&self, track_id: i64, ic: &crate::db::schema::IntensityComponents) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
@@ -1316,39 +1162,6 @@ impl DatabaseService {
                     harmonic_complexity: row[7].get_float().unwrap_or(0.0) as f32,
                     spectral_rolloff: row[8].get_float().unwrap_or(0.0) as f32,
                 });
-            }
-        }
-        Ok(map)
-    }
-
-    /// Batch-fetch mfcc_flatness from audio_features for multiple tracks.
-    /// Element at index 15 in the 16-dim feature vector.
-    pub fn batch_get_flatness(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {
-        if track_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
-        let mut params = BTreeMap::new();
-        params.insert("ids".to_string(), DataValue::List(id_values));
-        let result = self.db.run_query(r#"
-            ?[track_id, vec] :=
-                *audio_features{track_id, vec},
-                track_id in $ids
-        "#, params)?;
-        let mut map = HashMap::new();
-        for row in &result.rows {
-            if let Some(tid) = row[0].get_int() {
-                let flatness = match &row[1] {
-                    DataValue::Vec(Vector::F32(arr)) if arr.len() == 16 => Some(arr[15]),
-                    DataValue::Vec(Vector::F64(arr)) if arr.len() == 16 => Some(arr[15] as f32),
-                    DataValue::List(v) if v.len() == 16 => {
-                        v[15].get_float().map(|f| f as f32)
-                    }
-                    _ => None,
-                };
-                if let Some(f) = flatness {
-                    map.insert(tid, f);
-                }
             }
         }
         Ok(map)
@@ -1758,29 +1571,15 @@ impl DatabaseService {
 
         let result = self.db.run_query(r#"
             ?[track_id, danceability, approachability, timbre, tonal,
-              mood_acoustic, mood_electronic, top_genre, binary_moods_json] :=
+              mood_acoustic, mood_electronic, top_genre] :=
                 *ml_analysis{track_id, danceability, approachability, timbre, tonal,
-                             mood_acoustic, mood_electronic, top_genre, binary_moods_json},
+                             mood_acoustic, mood_electronic, top_genre},
                 track_id in $ids
         "#, params)?;
 
         let mut map = HashMap::new();
         for row in &result.rows {
             if let Some(tid) = row[0].get_int() {
-                // Extract aggression and relaxed probabilities from binary_moods_json
-                let (aggression, relaxed) = row[8].get_str()
-                    .and_then(|s| serde_json::from_str::<Vec<(String, f32)>>(s).ok())
-                    .map(|moods| {
-                        let aggr = moods.iter()
-                            .find(|(l, _)| l == "Aggressive")
-                            .map(|(_, p)| p.clamp(0.0, 1.0));
-                        let rel = moods.iter()
-                            .find(|(l, _)| l == "Relaxed")
-                            .map(|(_, p)| p.clamp(0.0, 1.0));
-                        (aggr, rel)
-                    })
-                    .unwrap_or((None, None));
-
                 map.insert(tid, MlScores {
                     danceability: row[1].get_float().map(|f| f as f32),
                     approachability: row[2].get_float().map(|f| f as f32),
@@ -1789,8 +1588,6 @@ impl DatabaseService {
                     mood_acoustic: row[5].get_float().map(|f| f as f32),
                     mood_electronic: row[6].get_float().map(|f| f as f32),
                     top_genre: row[7].get_str().map(|s| s.to_string()),
-                    aggression,
-                    relaxed,
                 });
             }
         }

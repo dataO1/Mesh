@@ -3,9 +3,7 @@
 //! All functions in this module are stateless — they take musical properties
 //! as input and return scores. No database or IO access.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
-use crate::db::MlScores;
 use crate::music::MusicalKey;
 use super::config::KeyScoringModel;
 
@@ -307,35 +305,6 @@ pub fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
 
 // ─── Composite Intensity + Penalty Functions ─────��───────────────
 
-/// Combine aggression, spectral flatness, relaxed mood, and dissonance into a
-/// single energy-intensity score [0, 1].
-///
-/// Why each component:
-/// - `mood_aggressive` (0.40): Captures overall harshness as classified by the
-///   Discogs-EffNet model. Alone it conflates genre with sub-style.
-/// - `mfcc_flatness` (0.25): Spectral flatness — ratio of geometric to arithmetic
-///   mean of the spectrum. High = distorted/noisy (neuro DnB growl). Low = clean
-///   tonal content (liquid sub-bass, pads). Direct proxy for saturation.
-/// - `(1 - mood_relaxed)` (0.20): Inverse of the Relaxed binary mood classifier.
-///   Liquid DnB scores high on relaxed; neuro scores low. Complements aggression.
-/// - `dissonance` (0.15): Plomp-Levelt psychoacoustic roughness from spectral peaks.
-///   High = dense intermodulation products from distortion. Zero for tracks not yet
-///   re-analysed (neutral default 0.5 avoids penalty).
-///
-/// Returns `None` only if aggression is missing (tracks without any ML analysis).
-pub fn composite_intensity(
-    aggression: Option<f32>,
-    flatness: Option<f32>,
-    relaxed: Option<f32>,
-    dissonance: Option<f32>,
-) -> Option<f32> {
-    let aggr = aggression?;
-    let flat = flatness.unwrap_or(0.5);
-    let rel  = relaxed.unwrap_or(0.5);
-    let diss = dissonance.unwrap_or(0.5); // neutral when not yet computed
-    Some(0.40 * aggr + 0.25 * flat + 0.20 * (1.0 - rel) + 0.15 * diss)
-}
-
 /// Compute composite intensity from individual components (v2).
 ///
 /// All components are raw [0, 1] values stored per-track in DB.
@@ -394,59 +363,6 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
 /// Formula: `(|seed - cand| - min(seed, cand) + 1) / 2`
 pub fn stem_complement_component(seed: f32, cand: f32) -> f32 {
     ((seed - cand).abs() - seed.min(cand) + 1.0) / 2.0
-}
-
-/// Per-genre z-score normalization of composite intensity values.
-///
-/// Raw intensity scores are genre-biased — DnB tracks score higher than house
-/// tracks globally regardless of sub-style. This function groups by primary genre
-/// and normalises within each group, answering "how intense is this track *relative
-/// to its genre peers*?" A neuro track at 0.8 and a liquid track at 0.3 both in
-/// "Drum n Bass" will be re-scaled so their relative difference is preserved while
-/// the absolute genre offset is removed.
-///
-/// Genres with fewer than 3 tracks use raw values (insufficient sample for stats).
-/// The z-score is mapped to 0–1 via linear transform: `(z/3 + 0.5).clamp(0, 1)`.
-pub fn normalize_intensity_by_genre<K: Eq + std::hash::Hash + Copy>(
-    ml_scores: &HashMap<K, MlScores>,
-    flatness_map: &HashMap<K, f32>,
-    dissonance_map: &HashMap<K, f32>,
-) -> HashMap<K, f32> {
-    let mut genre_values: HashMap<&str, Vec<(K, f32)>> = HashMap::new();
-    for (&tid, scores) in ml_scores {
-        let intensity = match composite_intensity(
-            scores.aggression,
-            flatness_map.get(&tid).copied(),
-            scores.relaxed,
-            dissonance_map.get(&tid).copied(),
-        ) {
-            Some(v) => v,
-            None => continue, // skip tracks without ML analysis
-        };
-        let genre = scores.top_genre.as_deref().unwrap_or("Unknown");
-        genre_values.entry(genre).or_default().push((tid, intensity));
-    }
-
-    let mut normalized = HashMap::new();
-    for (_genre, tracks) in &genre_values {
-        if tracks.len() < 3 {
-            // Too few tracks in genre — use raw value (no normalization)
-            for &(tid, raw) in tracks {
-                normalized.insert(tid, raw);
-            }
-            continue;
-        }
-        let mean = tracks.iter().map(|t| t.1).sum::<f32>() / tracks.len() as f32;
-        let variance = tracks.iter().map(|t| (t.1 - mean).powi(2)).sum::<f32>()
-            / tracks.len() as f32;
-        let std = variance.sqrt().max(0.01); // avoid division by zero
-        for &(tid, raw) in tracks {
-            let z = (raw - mean) / std;
-            let norm = (z / 3.0 + 0.5).clamp(0.0, 1.0); // ±1.5 std → 0..1
-            normalized.insert(tid, norm);
-        }
-    }
-    normalized
 }
 
 // ─── Reason Tag Generation ──────────────────────────────────────────
@@ -909,44 +825,4 @@ mod tests {
         assert!(krumhansl > 0.5, "Krumhansl Am→C should be high: {krumhansl}");
     }
 
-    // ─── Genre-Normalized Intensity ─────────────��────────────────────
-
-    fn make_ml_intensity(id: i64, aggr: f32, genre: &str) -> ((usize, i64), MlScores) {
-        ((0usize, id), MlScores {
-            aggression: Some(aggr),
-            top_genre: Some(genre.to_string()),
-            ..Default::default()
-        })
-    }
-
-    #[test]
-    fn test_normalize_intensity_single_genre() {
-        let ml: HashMap<(usize, i64), MlScores> = [0.1_f32, 0.15, 0.2, 0.25, 0.3]
-            .iter().enumerate()
-            .map(|(i, &a)| make_ml_intensity(i as i64, a, "House"))
-            .collect();
-        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
-        assert!(norm[&(0,4)] > norm[&(0,2)], "Highest should normalize highest: {} vs {}", norm[&(0,4)], norm[&(0,2)]);
-        assert!(norm[&(0,2)] > norm[&(0,0)], "Middle should be between: {} vs {}", norm[&(0,2)], norm[&(0,0)]);
-    }
-
-    #[test]
-    fn test_normalize_intensity_cross_genre_equity() {
-        let mut ml: HashMap<(usize, i64), MlScores> = HashMap::new();
-        for (i, a) in [0.10_f32, 0.12, 0.14, 0.16, 0.20].iter().enumerate() {
-            let (k, v) = make_ml_intensity(i as i64, *a, "House");
-            ml.insert(k, v);
-        }
-        for (i, a) in [0.50_f32, 0.55, 0.60, 0.65, 0.70].iter().enumerate() {
-            let (k, v) = make_ml_intensity((i + 5) as i64, *a, "Drum and Bass");
-            ml.insert(k, v);
-        }
-        let norm = normalize_intensity_by_genre(&ml, &HashMap::new(), &HashMap::new());
-        let house_top = norm[&(0, 4)]; // raw 0.20, top of House
-        let dnb_top   = norm[&(0, 9)]; // raw 0.70, top of DnB
-        assert!(
-            (house_top - dnb_top).abs() < 0.15,
-            "Genre tops should converge: house={house_top} dnb={dnb_top}"
-        );
-    }
 }

@@ -1,8 +1,9 @@
 //! Audio feature extraction using Essentia algorithms
 //!
-//! Extracts a 16-dimensional feature vector for similarity search.
+//! Extracts audio features (spectral, rhythm, energy) for intensity scoring.
+//! The 16-dim HNSW vector is no longer stored — these features are only used
+//! to seed IntensityComponents for composite scoring.
 
-use mesh_core::db::AudioFeatures;
 use mesh_core::types::SAMPLE_RATE;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,6 +19,32 @@ pub enum FeatureExtractionError {
     Subprocess(String),
     #[error("IO error: {0}")]
     Io(String),
+}
+
+/// Extracted audio features from Essentia analysis.
+///
+/// Used locally to seed IntensityComponents. No longer stored in the database
+/// as a 16-dim HNSW vector — similarity search uses EffNet PCA embeddings instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioFeatures {
+    pub bpm_normalized: f32,
+    pub bpm_confidence: f32,
+    pub beat_strength: f32,
+    pub rhythm_regularity: f32,
+    pub key_x: f32,
+    pub key_y: f32,
+    pub mode: f32,
+    pub harmonic_complexity: f32,
+    pub lufs_normalized: f32,
+    pub dynamic_range: f32,
+    pub energy_mean: f32,
+    pub energy_variance: f32,
+    pub spectral_centroid: f32,
+    pub spectral_bandwidth: f32,
+    pub spectral_rolloff: f32,
+    pub mfcc_flatness: f32,
+    /// Psychoacoustic dissonance (Plomp-Levelt roughness). None if not computed.
+    pub dissonance: Option<f32>,
 }
 
 /// Extract audio features from samples
@@ -840,14 +867,9 @@ mod tests {
             dissonance: None,
         };
 
-        let vec = features.to_vector();
-        for (i, &v) in vec.iter().enumerate() {
-            assert!(
-                v >= 0.0 && v <= 1.0,
-                "Feature {} out of range: {}",
-                i,
-                v
-            );
-        }
+        // Verify all features are in [0, 1] range
+        assert!(features.bpm_normalized >= 0.0 && features.bpm_normalized <= 1.0);
+        assert!(features.spectral_centroid >= 0.0 && features.spectral_centroid <= 1.0);
+        assert!(features.energy_variance >= 0.0 && features.energy_variance <= 1.0);
     }
 }

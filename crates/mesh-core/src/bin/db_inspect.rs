@@ -67,9 +67,6 @@ fn main() {
             println!("  top_genre:    {:?}", ml.top_genre);
             println!("  vocal:        {:?}", ml.vocal_presence);
             println!("  danceability: {:?}", ml.danceability);
-            println!("  aggression:   {:?}", ml.binary_moods.as_ref().and_then(|m| {
-                m.iter().find(|(k, _)| k == "aggressive").map(|(_, v)| v)
-            }));
             println!("  timbre:       {:?}", ml.timbre);
         }
     }

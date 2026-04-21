@@ -984,27 +984,6 @@ fn process_single_track(
                 }
             }
 
-            // Store audio features for similarity search
-            if let Some(ref features) = analysis.audio_features {
-                if let Err(e) = config.db_service.store_audio_features(track_id, features) {
-                    log::warn!(
-                        "process_single_track: Failed to store audio features for '{}': {}",
-                        base_name, e
-                    );
-                } else {
-                    log::info!(
-                        "process_single_track: '{}' audio features stored for similarity search",
-                        base_name
-                    );
-                }
-                // Store dissonance separately (not part of the HNSW vector)
-                if let Some(d) = features.dissonance {
-                    if let Err(e) = config.db_service.store_dissonance(track_id, d) {
-                        log::warn!("process_single_track: Failed to store dissonance for '{}': {}", base_name, e);
-                    }
-                }
-            }
-
             // Store ML analysis results and auto-tag
             if let Some(ref ml) = ml_result {
                 if let Err(e) = config.db_service.store_ml_analysis(track_id, &ml.data) {

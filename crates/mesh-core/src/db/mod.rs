@@ -3,14 +3,15 @@
 //! This module provides:
 //! - Relational storage for tracks, playlists, cue points, loops
 //! - Graph edges for track relationships (similarity, harmonic compatibility)
-//! - Vector search via HNSW index for audio feature similarity
+//! - ML embeddings (EffNet 1280-dim + PCA) for similarity search
+//! - Intensity components for composite scoring
 //!
 //! # Architecture
 //!
 //! CozoDB is used as a unified database supporting:
 //! - **Relational queries** via Datalog
 //! - **Graph traversal** with built-in algorithms
-//! - **Vector similarity** with HNSW indexes
+//! - **Vector similarity** with HNSW indexes (EffNet embeddings)
 //!
 //! All queries are performed through typed Rust APIs that generate
 //! CozoScript (Datalog) queries internally.
@@ -24,7 +25,7 @@ mod service;
 pub(crate) use schema::TrackRow;
 
 // Public schema types (used across crates)
-pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, SimilarTo, HarmonicMatch, HarmonicMatchType, MlAnalysisData, SessionRecord, TrackPlayRecord, TrackPlayUpdate, IntensityComponents};
+pub use schema::{Playlist, CuePoint, SavedLoop, StemLink, SimilarTo, HarmonicMatch, HarmonicMatchType, MlAnalysisData, SessionRecord, TrackPlayRecord, TrackPlayUpdate, IntensityComponents};
 
 // Internal query module (pub(crate) - implementation detail)
 pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};

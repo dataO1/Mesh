@@ -833,20 +833,13 @@ impl MeshCueDomain {
         if row_ids.is_empty() { return; }
 
         let all_ids = row_ids;
-        let ml_scores = self.db_service.get_ml_scores_batch(&all_ids).unwrap_or_default();
-        let flatness = self.db_service.batch_get_flatness(&all_ids).unwrap_or_default();
-        let dissonance = self.db_service.batch_get_dissonance(&all_ids).unwrap_or_default();
+        let intensity_map = self.db_service.batch_get_intensity_components(&all_ids).unwrap_or_default();
 
         for row in rows.iter_mut() {
             if let Some(path) = &row.track_path {
                 if let Some(&id) = path_to_id.get(path) {
-                    if let Some(ml) = ml_scores.get(&id) {
-                        row.intensity = mesh_core::suggestions::scoring::composite_intensity(
-                            ml.aggression,
-                            flatness.get(&id).copied(),
-                            ml.relaxed,
-                            dissonance.get(&id).copied(),
-                        );
+                    if let Some(ic) = intensity_map.get(&id) {
+                        row.intensity = Some(mesh_core::suggestions::scoring::composite_intensity_v2(ic));
                     }
                 }
             }

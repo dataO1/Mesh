@@ -201,7 +201,7 @@ pub struct AnalysisResult {
     pub integrated_lufs: Option<f32>,
     /// 16-dimensional audio features for similarity search
     /// Includes rhythm, harmony, energy, and timbre features
-    pub audio_features: Option<mesh_core::db::AudioFeatures>,
+    pub audio_features: Option<crate::features::AudioFeatures>,
     /// Mel spectrogram for ML analysis (96 bands, computed in worker thread)
     /// Only populated when ML analysis is enabled
     #[serde(skip)]

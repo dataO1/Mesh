@@ -29,16 +29,6 @@ pub enum MlModelType {
     /// Input: mel spectrogram [batch, n_frames, 128] at 22050 Hz
     /// Outputs: beat_activation + downbeat_activation logits per frame (50 fps)
     BeatThis,
-    /// Binary mood: Happy (~502 KB) — positive class at index 0
-    MoodHappy,
-    /// Binary mood: Aggressive (~502 KB) — positive class at index 0
-    MoodAggressive,
-    /// Binary mood: Relaxed (~502 KB) — positive class at index 1
-    MoodRelaxed,
-    /// Binary mood: Sad (~502 KB) — positive class at index 1
-    MoodSad,
-    /// Binary mood: Party (~502 KB) — positive class at index 1
-    MoodParty,
     /// Voice/Instrumental classifier (~502 KB) — positive class ("voice") at index 1
     /// Classes: [instrumental, voice] — 2-class softmax on EffNet embeddings
     VoiceInstrumental,
@@ -74,11 +64,6 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
             MlModelType::BeatThis => "beat_this_small.onnx",
-            MlModelType::MoodHappy => "mood_happy-discogs-effnet-1.onnx",
-            MlModelType::MoodAggressive => "mood_aggressive-discogs-effnet-1.onnx",
-            MlModelType::MoodRelaxed => "mood_relaxed-discogs-effnet-1.onnx",
-            MlModelType::MoodSad => "mood_sad-discogs-effnet-1.onnx",
-            MlModelType::MoodParty => "mood_party-discogs-effnet-1.onnx",
             MlModelType::VoiceInstrumental => "voice_instrumental-discogs-effnet-1.onnx",
             MlModelType::Timbre => "timbre-discogs-effnet-1.onnx",
             MlModelType::TonalAtonal => "tonal_atonal-discogs-effnet-1.onnx",
@@ -96,11 +81,6 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "https://github.com/dataO1/Mesh/releases/download/models/discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "https://github.com/dataO1/Mesh/releases/download/models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
             MlModelType::BeatThis => "https://github.com/dataO1/Mesh/releases/download/models/beat_this_small.onnx",
-            MlModelType::MoodHappy => "https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
-            MlModelType::MoodAggressive => "https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
-            MlModelType::MoodRelaxed => "https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
-            MlModelType::MoodSad => "https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
-            MlModelType::MoodParty => "https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
             MlModelType::VoiceInstrumental => "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
             MlModelType::Timbre => "https://essentia.upf.edu/models/classification-heads/timbre/timbre-discogs-effnet-1.onnx",
             MlModelType::TonalAtonal => "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-discogs-effnet-1.onnx",
@@ -119,11 +99,6 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "EffNet (Genre + Embedding)",
             MlModelType::JamendoMood => "Jamendo Mood/Theme",
             MlModelType::BeatThis => "Beat This! (Beat Tracking)",
-            MlModelType::MoodHappy => "Mood: Happy",
-            MlModelType::MoodAggressive => "Mood: Aggressive",
-            MlModelType::MoodRelaxed => "Mood: Relaxed",
-            MlModelType::MoodSad => "Mood: Sad",
-            MlModelType::MoodParty => "Mood: Party",
             MlModelType::VoiceInstrumental => "Voice/Instrumental",
             MlModelType::Timbre => "Timbre (Bright/Dark)",
             MlModelType::TonalAtonal => "Tonal/Atonal",
@@ -139,53 +114,11 @@ impl MlModelType {
     ///
     /// Returns `None` for models that aren't binary classifiers.
     /// The index varies per model due to different training class orderings.
-    pub fn positive_class_index(&self) -> Option<usize> {
-        match self {
-            MlModelType::MoodHappy => Some(0),
-            MlModelType::MoodAggressive => Some(0),
-            MlModelType::MoodRelaxed => Some(1),
-            MlModelType::MoodSad => Some(1),
-            MlModelType::MoodParty => Some(1),
-            MlModelType::VoiceInstrumental => Some(1),
-            _ => None,
-        }
-    }
-
-    /// Human-readable mood label for tag generation.
-    ///
-    /// Returns `None` for non-mood models.
-    pub fn mood_label(&self) -> Option<&'static str> {
-        match self {
-            MlModelType::MoodHappy => Some("Happy"),
-            MlModelType::MoodAggressive => Some("Aggressive"),
-            MlModelType::MoodRelaxed => Some("Relaxed"),
-            MlModelType::MoodSad => Some("Sad"),
-            MlModelType::MoodParty => Some("Party"),
-            _ => None,
-        }
-    }
-
-    /// All binary mood classifier model types
-    pub fn binary_mood_models() -> &'static [MlModelType] {
-        &[
-            MlModelType::MoodHappy,
-            MlModelType::MoodAggressive,
-            MlModelType::MoodRelaxed,
-            MlModelType::MoodSad,
-            MlModelType::MoodParty,
-        ]
-    }
-
     /// Models required for ML analysis (genre + mood + voice + audio characteristics)
     pub fn base_models() -> &'static [MlModelType] {
         &[
             MlModelType::EffNetEmbedding,
             MlModelType::JamendoMood,
-            MlModelType::MoodHappy,
-            MlModelType::MoodAggressive,
-            MlModelType::MoodRelaxed,
-            MlModelType::MoodSad,
-            MlModelType::MoodParty,
             MlModelType::VoiceInstrumental,
             MlModelType::Timbre,
             MlModelType::TonalAtonal,
@@ -368,7 +301,6 @@ mod tests {
 
     #[test]
     fn test_base_models_list() {
-        assert_eq!(MlModelType::base_models().len(), 15);
-        assert_eq!(MlModelType::binary_mood_models().len(), 5);
+        assert_eq!(MlModelType::base_models().len(), 10);
     }
 }
