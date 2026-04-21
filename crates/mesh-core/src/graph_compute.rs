@@ -689,10 +689,13 @@ pub fn compute_community_thresholds(
     // Medium: midpoint in percentile space
     let medium_target = (tight_target + open_target) / 2.0;
 
-    // Bell widths in percentile-rank space
-    let tight_width = ((tight_target * 0.4).max(0.03)).min(0.15);
-    let medium_width = (((open_target - tight_target) * 0.3).max(0.05)).min(0.20);
-    let open_width = ((open_target * 0.3).max(0.06)).min(0.25);
+    // Bell widths proportional to the gap between tight and open targets.
+    // The full useful range is (open - tight). Each mode gets a fraction:
+    // tight = narrow (15% of range), medium = moderate (25%), open = wide (40%).
+    let range = (open_target - tight_target).max(0.05);
+    let tight_width = (range * 0.15).clamp(0.008, 0.05);
+    let medium_width = (range * 0.25).clamp(0.015, 0.08);
+    let open_width = (range * 0.40).clamp(0.025, 0.12);
 
     let thresholds = CommunityThresholds {
         tight_target, tight_width,
