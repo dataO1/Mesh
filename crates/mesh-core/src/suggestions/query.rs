@@ -545,7 +545,21 @@ pub fn query_suggestions(
     let w_other_pen = if suggestion_config.stem_complement { 0.05 * (1.0 - bias_abs) } else { 0.0 };
 
     // Distances are already percentile-rank normalized to [0, 1]
-    // No pool-max normalization needed
+
+    // Precompute transition reward as percentile-rank of deviation from target.
+    // This replaces the Gaussian bell curve which had poor resolution near the peak.
+    // Each track's |percentile_rank - target| is ranked, giving uniform [0, 1] spread.
+    let target = suggestion_config.transition_target;
+    let transition_rewards: HashMap<(usize, i64), f32> = {
+        let mut deviations: Vec<((usize, i64), f32)> = candidates.iter()
+            .map(|(&key, (_, dist))| (key, (*dist - target).abs()))
+            .collect();
+        deviations.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let n_cand = deviations.len().max(1) as f32;
+        deviations.iter().enumerate()
+            .map(|(rank, &(key, _))| (key, 1.0 - rank as f32 / (n_cand - 1.0).max(1.0)))
+            .collect()
+    };
 
     let source_names: HashMap<usize, &str> = sources.iter().enumerate()
         .map(|(i, s)| (i, s.name.as_str()))
@@ -610,14 +624,12 @@ pub fn query_suggestions(
             // ── Vector similarity reward ──
             // hnsw_dist is already percentile-rank normalized [0, 1]
             // Center: similarity → high reward (1 - percentile_rank).
-            // Extremes: bell curve centered at transition_target.
+            // Extremes: transition reward from deviation-rank (closest to target = best).
             let norm_dist = hnsw_dist; // already [0, 1] from percentile rank
             let similarity = 1.0 - norm_dist;
-            let target = suggestion_config.transition_target;
-            let width = suggestion_config.transition_width;
-            let transition_bell = (-(norm_dist - target).powi(2) / width).exp();
+            let transition_reward = transition_rewards.get(&(src_idx, track_id)).copied().unwrap_or(0.5);
             let blend_t = (bias_abs / suggestion_config.blend_crossover).clamp(0.0, 1.0);
-            let vec_reward = similarity * (1.0 - blend_t) + transition_bell * blend_t;
+            let vec_reward = similarity * (1.0 - blend_t) + transition_reward * blend_t;
 
             // ── Co-play reward ──
             // Proven follow-ups get a boost. No history = 0 reward (not a penalty).
