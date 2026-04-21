@@ -634,21 +634,23 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     // Offset all points by bounds origin (no frame.translate — avoids coordinate bugs)
     let ox = bounds.x;
     let oy = bounds.y;
+    // Snap to whole pixels to avoid blurry anti-aliased sub-pixel circles
     let pt = |pos: (f32, f32)| -> Point {
         let s = to_screen(pos, pan, zoom, graph_bounds);
-        Point::new(s.x + ox, s.y + oy)
+        Point::new((s.x + ox).round(), (s.y + oy).round())
     };
 
-    // ── Layer 1: Suggestion edges (gray, visible) ──
-    let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
-    for &(from, to, score) in &state.suggestion_edges {
-        let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
-        let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
-        let p1 = pt(from_pos);
-        let p2 = pt(to_pos);
-        let opacity = score.clamp(0.3, 0.8);
-        let width = 0.5 + score * 1.5;
-        frame.stroke(&Path::line(p1, p2), Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
+    // ── Layer 1: Edges only for the selected (hovered) track ──
+    if let Some(hovered_id) = state.hovered_id {
+        let edge_gray = Color::from_rgb(0.55, 0.55, 0.55);
+        for &(from, to, score) in &state.suggestion_edges {
+            if to != hovered_id { continue; }
+            let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
+            let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
+            let opacity = score.clamp(0.4, 0.9);
+            let width = 1.0 + score;
+            frame.stroke(&Path::line(pt(from_pos), pt(to_pos)), Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
+        }
     }
 
     // ── Layer 2: Seed history trail ──
@@ -666,23 +668,30 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         }
     }
 
-    // ── Layer 3: Unrelated nodes ──
-    // Keep base nodes visible (40% opacity) even when a seed is active
-    let base_alpha = if has_seed { 0.40 } else { 1.0 };
+    // ── Layer 3: Base nodes (cluster-colored, pixel-snapped) ──
+    let base_alpha = if has_seed { 0.45 } else { 1.0 };
     for (&id, &pos) in &state.positions {
-        if seed_set.contains(&id) || state.suggestion_ids.contains(&id) { continue; }
+        if seed_set.contains(&id) { continue; }
         let screen = pt(pos);
         if screen.x < ox - 5.0 || screen.y < oy - 5.0 || screen.x > ox + bounds.width + 5.0 || screen.y > oy + bounds.height + 5.0 { continue; }
+
+        // Suggestion nodes get a slightly brighter treatment
+        let is_suggestion = state.suggestion_ids.contains(&id);
         let base_color = state.clusters.get(&id)
             .and_then(|&cid| if cid >= 0 { state.cluster_colors.get(&cid) } else { None })
             .copied()
             .unwrap_or(COLOR_NODE_DIM);
         let confidence = state.cluster_confidence.get(&id).copied().unwrap_or(0.2);
-        let alpha = (confidence * 0.7 + 0.15) * base_alpha;
-        frame.fill(&Path::circle(screen, 2.5), Color { a: alpha, ..base_color });
+        let alpha = if is_suggestion {
+            (confidence * 0.5 + 0.4).min(0.9)
+        } else {
+            (confidence * 0.7 + 0.15) * base_alpha
+        };
+        let radius = if is_suggestion { 3.0 } else { 2.0 };
+        frame.fill(&Path::circle(screen, radius), Color { a: alpha, ..base_color });
     }
 
-    // ── Layer 4: Hovered node highlight (selected track in suggestion list) ──
+    // ── Layer 4: Selected track highlight (ring + dot) ──
     if let Some(hovered_id) = state.hovered_id {
         if let Some(&pos) = state.positions.get(&hovered_id) {
             let screen = pt(pos);
@@ -700,7 +709,7 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         if let Some(&pos) = state.positions.get(&id) {
             let screen = pt(pos);
             frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..seed_accent }).with_width(1.5));
-            frame.fill(&Path::circle(screen, 3.5), Color { a: 0.6, ..seed_accent });
+            frame.fill(&Path::circle(screen, 3.0), Color { a: 0.6, ..seed_accent });
         }
     }
 
