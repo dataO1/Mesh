@@ -217,10 +217,14 @@ pub fn query_suggestions(
         return Ok(Vec::new());
     }
 
-    // Seed filenames for cross-DB deduplication (same audio file may exist in multiple DBs)
-    let seed_filenames: HashSet<String> = seed_tracks
+    // Seed artist-titles for cross-DB deduplication (same track may exist in multiple DBs)
+    let seed_keys: HashSet<String> = seed_tracks
         .iter()
-        .filter_map(|(_, t)| t.path.file_name().map(|n| n.to_string_lossy().to_string()))
+        .map(|(_, t)| {
+            let artist = t.artist.as_deref().unwrap_or("").to_lowercase();
+            let title = t.title.to_lowercase();
+            format!("{}\x00{}", artist, title)
+        })
         .collect();
 
     // Step 2: Brute-force candidate selection via PCA cosine distance.
@@ -264,10 +268,11 @@ pub fn query_suggestions(
                 None => continue,
             };
 
-            // Skip seed tracks
-            if let Some(name) = track.path.file_name() {
-                if seed_filenames.contains(&*name.to_string_lossy()) { continue; }
-            }
+            // Skip seed tracks (by artist-title match)
+            let cand_artist = track.artist.as_deref().unwrap_or("").to_lowercase();
+            let cand_title = track.title.to_lowercase();
+            let cand_key = format!("{}\x00{}", cand_artist, cand_title);
+            if seed_keys.contains(&cand_key) { continue; }
 
             // Resolve relative paths
             if !track.path.is_absolute() {
@@ -299,22 +304,23 @@ pub fn query_suggestions(
     }
 
     // Cross-source dedup: same track may exist in both Local and USB DBs.
+    // Dedup by artist-title combination (case-insensitive), keeping the best distance.
     if sources.len() > 1 {
-        let mut best_by_filename: HashMap<String, (usize, i64, f32)> = HashMap::new();
+        let mut best_by_track: HashMap<String, (usize, i64, f32)> = HashMap::new();
         for (&(src_idx, track_id), (track, dist)) in &candidates {
-            if let Some(name) = track.path.file_name() {
-                let fname = name.to_string_lossy().to_string();
-                best_by_filename
-                    .entry(fname)
-                    .and_modify(|existing| {
-                        if *dist < existing.2 {
-                            *existing = (src_idx, track_id, *dist);
-                        }
-                    })
-                    .or_insert((src_idx, track_id, *dist));
-            }
+            let artist = track.artist.as_deref().unwrap_or("").to_lowercase();
+            let title = track.title.to_lowercase();
+            let dedup_key = format!("{}\x00{}", artist, title);
+            best_by_track
+                .entry(dedup_key)
+                .and_modify(|existing| {
+                    if *dist < existing.2 {
+                        *existing = (src_idx, track_id, *dist);
+                    }
+                })
+                .or_insert((src_idx, track_id, *dist));
         }
-        let keep_keys: HashSet<(usize, i64)> = best_by_filename
+        let keep_keys: HashSet<(usize, i64)> = best_by_track
             .values()
             .map(|&(src, id, _)| (src, id))
             .collect();
@@ -322,7 +328,7 @@ pub fn query_suggestions(
         candidates.retain(|key, _| keep_keys.contains(key));
         let deduped = before - candidates.len();
         if deduped > 0 {
-            log::debug!("[SUGGESTIONS] Deduped {} cross-source duplicates", deduped);
+            log::debug!("[SUGGESTIONS] Deduped {} cross-source duplicates (by artist-title)", deduped);
         }
     }
 
@@ -780,7 +786,11 @@ fn query_opener_suggestions(
     );
 
     results.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
-    results.dedup_by(|a, b| a.track.path == b.track.path);
+    results.dedup_by(|a, b| {
+        a.track.artist.as_deref().unwrap_or("").eq_ignore_ascii_case(
+            b.track.artist.as_deref().unwrap_or("")
+        ) && a.track.title.eq_ignore_ascii_case(&b.track.title)
+    });
     results.truncate(total_limit);
     Ok(results)
 }
