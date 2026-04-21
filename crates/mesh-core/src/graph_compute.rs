@@ -511,11 +511,18 @@ pub fn compute_community_thresholds(
         open_width: (open_width / max_dist).max(0.06),
     };
 
-    log::info!("[GRAPH] Community thresholds: tight={:.3} (w={:.3}), medium={:.3} (w={:.3}), open={:.3} (w={:.3}), from {} intra + {} inter samples",
+    // Also log raw (unnormalized) values for evaluation
+    eprintln!("[GRAPH] Community thresholds (raw): tight={:.4}, medium={:.4}, open={:.4}, max_dist={:.4}",
+        tight_target, medium_target, open_target, max_dist);
+    eprintln!("[GRAPH] Community thresholds (normalized): tight={:.3} (w={:.3}), medium={:.3} (w={:.3}), open={:.3} (w={:.3})",
         thresholds.tight_target, thresholds.tight_width,
         thresholds.medium_target, thresholds.medium_width,
-        thresholds.open_target, thresholds.open_width,
+        thresholds.open_target, thresholds.open_width);
+    eprintln!("[GRAPH] Sampled {} intra-community + {} inter-community distance pairs",
         intra_distances.len(), inter_distances.len());
+    eprintln!("[GRAPH] Intra range: [{:.4}, {:.4}], Inter range: [{:.4}, {:.4}]",
+        intra_distances.first().unwrap_or(&0.0), intra_distances.last().unwrap_or(&0.0),
+        inter_distances.first().unwrap_or(&0.0), inter_distances.last().unwrap_or(&0.0));
 
     thresholds
 }
