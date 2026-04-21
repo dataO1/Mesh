@@ -8,328 +8,77 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
-- **Suggestion Graph View (mesh-cue)** — New "Graph" tab in the collection
-  browser visualises the entire library as an interactive node graph. Select any
-  track as a seed to see scored suggestions radiating outward (closer = better
-  match). The intent slider dynamically re-scores and re-layouts the graph:
-  centre favours similar tracks for layering/mashups, extremes favour dissimilar
-  tracks for transitions. Includes breadcrumb seed history (red trail), ranked
-  suggestion list with match percentages, and score component breakdown.
+- **Suggestion graph view** — Both apps now show an interactive similarity
+  graph of your entire library. Tracks appear as cluster-colored nodes
+  positioned by spectral similarity (t-SNE). Selecting a track in the
+  suggestion list highlights its node and draws an edge from the seed,
+  showing where you'd "land" in the library. In mesh-cue this is a full
+  interactive tab with seed navigation, intent slider, and set plan export.
+  In mesh-player it's a compact read-only panel beside the track list.
 
-- **Reward-based suggestion scoring** — The scoring algorithm is rewritten from
-  penalty-based (lower = better) to reward-based (higher = better). Each
-  component contributes up to its weight: intensity matching (33%), key
-  compatibility (30%), vector similarity (30%), co-play history (7%). Stem
-  complement works as a penalty (clashing vocals subtract from score). Score
-  range now spans 0-100% instead of a narrow 44-86% band. Intensity dominates
-  because energy management is the primary mixing concern. Key scoring includes
-  a 25% harmonic floor to prevent dissonant transitions from outranking
-  compatible ones at extreme slider positions. Tritone energy direction
-  corrected from -0.80 to 0.0 (dissonant, not directional).
+- **Energy arc ribbon** — A flowing ribbon in the collection browser
+  visualises set flow across three dimensions: vertical position shows
+  energy/aggression, width shows spectral jump size between tracks, and
+  color shows key transition quality (green = compatible, amber = moderate,
+  red = difficult). Available in both mesh-cue and mesh-player.
 
-- **Brute-force all-tracks scoring** — Suggestion queries now compute exact PCA
-  cosine distances for every track in the library instead of relying on HNSW
-  approximate nearest-neighbour search. This removes the ~100 candidate limit
-  and gives every track a meaningful score. Trivially fast for libraries up to
-  5000 tracks.
+- **Reward-based suggestion scoring** — The scoring algorithm now produces
+  0-100% match scores (higher = better) with clear component breakdown:
+  intensity (33%), key compatibility (30%), vector similarity (30%), co-play
+  history (7%). Brute-force scoring across all tracks replaces the
+  approximate nearest-neighbour search, giving every track a meaningful score.
 
-- **Blend Mode setting** — New "Blend Mode" setting (Layering / Balanced /
-  Transition) replaces the old Sound Target and Sound Focus settings. Controls
-  how far the intent slider must move before the vector component flips from
-  rewarding similarity (layering) to rewarding dissimilarity (transitions).
+- **Browser Analytics panel** — Energy arc and similarity graph share a
+  single panel to the right of the track list. Togglable via Settings >
+  Display > Browser > "Browser Analytics" (default on).
 
-- **Auto-rebuild PCA similarity index** — The PCA-128 similarity index is now
-  automatically rebuilt after batch import and ML re-analysis. Previously,
-  newly imported tracks were invisible to the suggestion system until the user
-  manually triggered "Build Similarity Index" from the context menu.
+- **Blend Mode and Transition Reach settings** — New controls replace the
+  old Sound Target/Focus settings. Blend Mode (Layering/Balanced/Transition)
+  sets when the intent slider flips from similarity to diversity. Transition
+  Reach (Tight/Medium/Open) controls how far transitions reach at the
+  extremes.
 
-- **t-SNE library clustering** — The graph view's initial (no-seed) layout uses
-  Barnes-Hut t-SNE (via bhtsne crate, pure Rust) to project 128-dim PCA
-  embeddings to 2D, showing natural genre and style clusters with tight local
-  grouping. Runs in background on first Graph tab open.
-
-- **HDBSCAN cluster detection** — Auto-detects genre/style clusters from PCA
-  embeddings. Nodes are colored by cluster assignment for visual orientation.
-
-- **Bidirectional hover brushing** — Hovering a node in the graph highlights the
-  corresponding row in the suggestion list. Clicking a row highlights the node.
-
-- **Genre-normalized vector distances** — Cosine distances are z-score normalized
-  within genre groups so spectrally tight genres (e.g., DnB) don't monopolize
-  suggestions over more spread genres (e.g., house).
-
-- **Click suggestion → seed** — Double-clicking a track in the suggestion list
-  navigates to it as the new seed in the graph.
-
-- **Normalize vectors toggle** — Toggle in the graph view header to L2-normalize
-  PCA vectors. Off by default (preserves natural variance for sharper clusters).
-  On = equal component weight. Rebuilds t-SNE and suggestions when toggled.
-
-- **Dynamic PCA dimensionality** — PCA projection now auto-detects the optimal
-  number of components via 95% explained variance threshold instead of
-  hardcoding 128. Typically selects 40-80 dimensions for a focused library,
-  removing noise components that diluted distances and fuzzied clusters.
-  Dimensionality displayed in graph legend alongside track and cluster count.
-
-- **Static t-SNE layout** — The t-SNE 2D positions are always the base layout,
-  even when a seed is selected. Selecting a seed only changes highlighting and
-  edges, not node positions. Cluster structure is always visible.
-
-- **Absolute intensity at slider extremes** — At peak/drop slider positions,
-  intensity scoring uses absolute level (aggressive/calm tracks) instead of
-  relative to seed. Fixes "neuro seed at peak shows 0% intensity for
-  everything" when the seed is already at max intensity. Coupled to the
-  SuggestionBlendMode crossover for consistent behavior.
-
-- **Transition Reach setting** — New setting (Tight / Medium / Open) controls
-  how far transitions reach at extreme slider. Uses a Gaussian bell curve
-  centered at the target distance instead of raw dissimilarity, preventing
-  jarring cross-genre jumps. Tight stays within the genre, Medium bridges to
-  adjacent communities, Open enables bold cross-genre transitions. Controllable
-  from both mesh-player settings and the graph view header.
-
-- **Multi-scale consensus clustering** — Replaces the manual HDBSCAN sensitivity
-  slider. Runs HDBSCAN at 7 different scales and keeps only communities that
-  persist across 70%+ of runs. No parameter tuning needed. Per-track confidence
-  controls color intensity — strong community members render vivid, boundary
-  tracks faded, noise tracks gray.
-
-- **Energy arc ribbon** — A flowing ribbon above the playlist browser encodes
-  three dimensions of set flow: center Y = ML intensity/aggression (with key
-  direction and similarity as modifiers), ribbon width = spectral dissimilarity
-  (wider = bigger transition jump, min-max normalized for full contrast), color
-  = key transition quality (green = Same Key/Adjacent, amber = Diagonal/Mood/
-  Boost/Cool, red = Semitone/Far/Tritone). Uses real ML composite intensity
-  from EffNet analysis — no BPM proxy. Highlighting focuses on the incoming
-  transition (the mix you need to execute), with smooth Gaussian color blend
-  from full theme colors to grayscale. Ribbon shape always visible (50% floor),
-  inner line fades faster than outer tube. Adapts to the active color theme.
-
-- **Similarity graph in mesh-player** — The t-SNE library graph from
-  mesh-cue's Graph tab now appears in mesh-player as a compact panel to
-  the right of the track list. Shows cluster-colored nodes for the entire
-  library with pixel-snapped rendering for crisp dots. When suggestions
-  are active, suggestion nodes render slightly larger and brighter.
-  Selecting a track in the suggestion list highlights its node in the
-  graph with a ring and draws a single edge from the seed, showing where
-  the track "lives" in the library's spectral space. Scrolling through
-  the list moves the highlight. Computes in the background on app
-  startup — the graph is ready by the time you browse.
-
-- **Energy arc + graph combined canvas** — The energy arc ribbon and
-  similarity graph share a single canvas panel on the right side of the
-  collection browser. The ribbon sits at the top (55px), the graph fills
-  the remaining space below with auto-fit zoom.
-
-- **Browser Analytics toggle** — New setting in Settings > Display >
-  Browser: "Browser Analytics" (default on). When disabled, the
-  side panel is hidden and the track list takes full width — useful on
-  smaller screens or when the analytics are not needed.
-
-- **Energy arc in mesh-player** — The same ribbon widget now appears in
-  mesh-player's collection browser with real ML intensity data. Batch
-  intensity enrichment avoids per-track DB queries. Filename-fallback
-  path matching handles relative/absolute path differences. Both apps
-  show identical visualizations for any playlist.
-
-- **Set plan export** — The graph view seed history can be exported as a
-  playlist via the "Export" button. Creates an ordered playlist playable in
-  mesh-player. Unlimited history length.
-
-- **Browser-like seed navigation** — Back/forward buttons navigate seed
-  history without losing forward trail. Fading red history line shows
-  navigation path with distance-based opacity.
-
-- **Click-to-preview** — Single-clicking a track in the graph suggestion list
-  loads it in the editor for audio preview.
+- **Set plan export** — Build a set by navigating seeds in the graph view,
+  then export the seed history as a playlist playable in mesh-player.
 
 ### Changed
 
-- **Smart suggestions v3 — PCA-128 similarity index** — A new "Build Similarity
-  Index" action in the Collection context menu (mesh-cue) reduces each track's
-  1280-dimension EffNet embedding to 128 dimensions via PCA/SVD, tuned to the
-  shape of your specific library. The compressed vectors are stored in a
-  dedicated HNSW index and become the primary similarity source for suggestions.
-  The reduction eliminates the concentration-of-measure effect that makes
-  1280-dim cosine distances cluster together, producing sharper neighbour
-  rankings. Tracks without a PCA embedding fall back gracefully to the ML-1280
-  index, then the legacy 16-dim index. PCA vectors are synced to USB sticks
-  during export so the improved matching works from USB sources too. The index
-  needs to be rebuilt after importing new tracks.
+- **Smart suggestions v3** — PCA-128 similarity index with dynamic
+  dimensionality (auto-detects optimal components via 95% variance
+  threshold). Dual-deck context awareness seeds from the staying deck.
+  Opener mode suggests candidates when no deck is loaded. Co-play bonus
+  rewards tracks with proven transition history. Genre-normalized distances
+  prevent tight genres from monopolizing results.
 
-- **Smart suggestions v3 — dual-deck context awareness** — When two decks are
-  playing simultaneously the suggestion engine now reads the mixer state. With
-  the intent slider near centre (layering), it queries a blended vector — the
-  L2-normalised average of both decks' embeddings — so results feel like a
-  bridge between the two playing tracks. With the slider pushed toward an
-  extreme (transitioning), it seeds from the **staying deck** (the one with the
-  highest channel volume) because the next track needs to work with what is
-  staying, not with what is leaving.
+- **Deterministic graph layout** — The t-SNE graph looks consistent across
+  restarts. Cluster colors are derived from spatial position (not random)
+  so communities keep their colors as the library grows.
 
-- **Smart suggestions v3 — opener mode** — When no deck is loaded the
-  suggestion panel now shows scored opener candidates instead of nothing. Tracks
-  are ranked on-the-fly using existing DB data: intro length derived from the
-  drop marker and BPM (minimum 8 bars required), low drum density at bar 1
-  (rewards builds over immediate drops), moderate vocal and melodic presence,
-  and energy level matched to the intent slider position. No re-import needed.
+- **Suggestion tag pills** — Tags now show the raw musical relationship
+  (key transition name, similarity level, energy direction) with
+  theme-aware colors matching the energy arc ribbon encoding.
 
-- **Smart suggestions v3 — transition graph co-play bonus** — The history
-  system now records the track IDs of co-playing tracks in each session (in
-  addition to names). A `played_after` graph is derived from this data: every
-  transition pair gets a time-decayed edge weight (30-day half-life). When
-  building suggestions the scorer applies a small co-play bonus (up to 8%,
-  fading to zero at the intent extremes) for tracks with proven follow-up
-  history. Tracks with a strong co-play relationship (decayed weight ≥ 0.3,
-  roughly 12+ past transitions at half-life) are highlighted with a green row
-  tint in the suggestion panel. The graph is built via "Analyse Library" or
-  programmatically; it is separate from HNSW and uses point lookups only.
+- **Stable track IDs** — Track identifiers use relative file paths instead
+  of auto-incrementing integers. Play history, cue points, and all per-track
+  data survive collection folder moves.
 
-- **Graph preloads on startup (mesh-cue)** — The t-SNE graph and cluster
-  detection now start building in the background as soon as the app launches
-  instead of waiting until the Graph tab is first opened. The graph is
-  immediately ready when you switch to the Graph tab.
+- **Configurable suggestion algorithm** — Settings expose Key Filter
+  (Strict/Relaxed/Off), Stem Complement toggle, Playlist Split toggle,
+  and Key Scoring Model (Camelot/Krumhansl).
 
-- **Graph and tag colors follow active theme** — The suggestion graph in
-  both apps uses theme-derived stem colors for score coloring (Vocals stem
-  for good matches, Bass stem for moderate, red for poor) and the theme
-  accent color for seed node highlighting. Colors update when switching
-  themes. Cluster colors are derived from each community's spatial
-  position in the t-SNE layout (angle → hue wheel), so they're
-  deterministic and correlate with visual placement.
+- **Browser search** — Fuzzy artist + title matching with on-screen
+  keyboard support for the embedded device.
 
-- **Deterministic graph layout** — t-SNE input is sorted by track ID and
-  the 2D output is PCA-aligned to canonical axes (dominant variance
-  horizontal, majority of mass in positive quadrants). The graph looks
-  very similar across restarts even though t-SNE has random initialization.
-  Adding new tracks shifts the layout incrementally rather than
-  rearranging everything.
+- **OTA updates** — Live progress display with spinner, elapsed time, and
+  streaming journal output.
 
-- **Suggestion tag pills show raw musical facts** — Reason tag pills now
-  describe the actual musical relationship between seed and candidate, not how
-  well they scored against the current intent. Key pill shows the transition
-  name ("Same Key", "Cool", "Tritone", etc.) colored by inherent harmonic
-  quality — matching the energy arc ribbon. Similarity pill is always
-  "Similarity", colored by raw cosine distance to seed. Energy pill is always
-  "Energy", colored by relative intensity shift. Vocals and Lead pills
-  unchanged (complementary vs clashing). Directional arrows removed from all
-  tags for cleaner presentation. All tag colors use theme stem colors (good →
-  Vocals stem, moderate → Bass stem, playlist source → Drums stem, poor →
-  warning red) so they adapt when switching color themes.
-
-- **Stable track IDs across collection moves** — Track identifiers are now
-  derived from the file's path relative to the collection root instead of an
-  auto-incrementing integer. This means your play history, co-play transition
-  graph, hot cues, saved loops, and all other per-track data survive if you
-  rename or move your collection folder — previously a folder rename would
-  orphan all existing data because every track got a new ID.
-
-- **Smart suggestions — neural audio matching + Goldilocks similarity** — The
-  suggestion engine now uses the 1280-dimensional Discogs-EffNet neural audio
-  fingerprint (already computed during import) as its primary similarity index,
-  replacing the previous hand-crafted 16-dimension feature vector. At the centre
-  of the intent slider (layering mode) the system rewards tracks in the same
-  musical neighbourhood at a "Goldilocks" distance — close enough to share
-  genre and character, far enough to avoid suggesting a near-identical clone. At
-  the extremes (transition mode) the engine switches to its original
-  diversity-seeking behaviour for bold energy shifts. Tracks analysed before
-  this update do not need re-importing; clicking **Re-analyse features** in
-  mesh-cue is enough to populate the new data.
-
-- **Smart suggestions — stem complement scoring** — At the centre intent
-  position the suggestion score now includes a stem balance component. The
-  system measures the vocal and melodic ("other") energy of each stem as a
-  fraction of the total RMS and rewards tracks that fill the current deck's
-  gaps: if your active deck is instrumental the scorer pushes vocal-rich tracks
-  up the list; if it is melody-heavy it favours sparser candidates. Tracks that
-  would clash (both decks loud in the same stem) are pushed down. The effect
-  fades smoothly to zero as the intent fader moves toward the extremes, where
-  complement scoring is not relevant to transition-style mixing. All four stem
-  densities (vocal, drums, bass, other) are stored and available for future use.
-
-- **Smart suggestions — stem complement reason tags** — Suggestions now show
-  **Vocals** and **Lead** pills in the reason tag row when stem complement
-  scoring influenced the result. Green means the candidate fills a gap in the
-  seed deck (complementary); red means it clashes. Tags only appear at
-  centre-ish intent fader positions where the stem weights are non-zero;
-  they disappear at the extremes where complement scoring is not active.
-
-- **Smart suggestions — configurable algorithm settings** — Settings ›
-  Browser › Suggestions now exposes four algorithm controls. **Sound Target**
-  (Tight / Balanced / Wide / Open) sets the ideal Goldilocks EffNet distance:
-  Tight suggests near-clones; Open reaches further into adjacent subgenres.
-  **Sound Focus** (Sharp / Normal / Broad) controls how tightly the Goldilocks
-  bell penalises candidates outside the target distance. **Key Filter**
-  (Strict / Relaxed / Off) replaces the previous hard-coded harmonic floor:
-  Strict blocks dissonant transitions at all intent levels; Relaxed allows
-  semitone and far-key moves; Off removes the filter entirely for free-form or
-  non-tonal mixing. **Stem Complement** toggle turns the vocal/melodic gap-fill
-  scoring on or off — when disabled the freed weight is redistributed to HNSW.
-
-- **Smart suggestions — simplified scoring** — The scoring formula has been
-  tightened to the three signals with the clearest musical grounding: EffNet
-  neural similarity (HNSW), harmonic compatibility (key score + transition
-  direction), and energy/aggression. BPM matching, production similarity,
-  danceability, and approachability weights have been removed; the freed budget
-  flows to HNSW, raising its baseline from 0.42 to 0.58 with stem complement
-  off, or 0.33 with it on. Aggression (energy-direction signal) is raised to a
-  maximum of 0.25 at the extremes, scaling linearly from zero at center.
-
-- **Smart suggestions — playlist split toggle** — Settings › Browser ›
-  Suggestions now has a **Playlist Split** toggle (on by default). When
-  enabled, results are split: up to 15 tracks from the selected playlist
-  appear first, followed by up to 15 global results. Disabling shows 30
-  results from any playlist without any split or section distinction.
-
-- **Browser search — fuzzy artist + title matching** — The track table
-  search now matches against both title and artist simultaneously. The query
-  is tokenised by whitespace; every token must appear somewhere in the
-  combined title/artist string. Searching "massive berlin" finds "Massive
-  Attack" tracks filed under artist "Berlin" as well as tracks titled "Berlin
-  Calling" by "Massive Attack". Applies in both mesh-player and mesh-cue.
-
-- **Browser search — on-screen keyboard** — The browser header now shows a
-  **⌕** search button. Tapping it opens the existing on-screen QWERTY
-  keyboard (pre-filled with the current query) so the embedded device can
-  enter search text without a physical keyboard. A **×** clear button appears
-  next to it when a query is active.
-
-- **OTA updates — live progress display** — The update screen now shows a
-  rotating spinner and elapsed time counter (e.g. "Installing ●○○ — 2m 14s")
-  while a system update is in progress, and streams the last 25 lines of
-  journal output live so you can see exactly what Nix is doing. The UI no
-  longer freezes on "Starting update…" for the duration of the rebuild.
-  When the update finishes, the kiosk restarts automatically; a **Force
-  Restart** button is available as a fallback if the auto-restart did not
-  fire.
-
-- **Auto headphones cue — logarithmic volume curve** — The auto-cue routing
-  now follows a smooth exponential decay across the full fader range instead of
-  the previous two-stage linear (full below 30%, linear fade 30→50%, off above
-  50%). The new curve maps volume 0→1 to cue weight 1.0→0.0 logarithmically: a
-  deck is nearly fully present in headphones at low volumes and fades away
-  naturally as the fader opens. At 30% fader the weight is now ~0.29 rather
-  than 1.0, providing a more gradual and musical transition.
+- **Auto headphones cue** — Logarithmic volume curve for more musical
+  crossfader-to-cue transitions.
 
 ### Fixed
 
-- **Graph suggestion edges not showing (mesh-player)** — Seed track ID
-  resolution used title matching which never matched filenames. Now uses
-  direct DB path lookup so suggestion edges render correctly from the
-  playing track to its scored matches.
-
-- **Graph zoomed out too far** — t-SNE outlier positions stretched the
-  auto-fit bounding box. Now uses 2nd/98th percentile bounds, trimming
-  extreme outliers for a tighter fit.
-
-- **Graph background mismatched app theme** — The graph used a hardcoded
-  dark background. Now reads the active theme's background color via
-  `theme.extended_palette()` in both mesh-cue and mesh-player.
-
-- **Energy arc not updating shape on playlist switch (mesh-player)** —
-  Switching playlists while suggestions were active left `suggestions_enabled`
-  set, causing the energy arc to render stale suggestion data instead of the
-  newly loaded playlist tracks. Folder and playlist changes now clear
-  suggestion state before rebuilding.
+- **Energy arc not updating on playlist switch** — Stale suggestion state
+  caused the arc to render old data when switching playlists.
 
 - **"Re-analyse Metadata" on entire collection now works** — Right-clicking
   the Collection root and choosing "Re-analyse Metadata" would silently find
