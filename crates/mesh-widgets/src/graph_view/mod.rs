@@ -687,7 +687,7 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         } else {
             (confidence * 0.7 + 0.15) * base_alpha
         };
-        let radius = if is_suggestion { 3.0 } else { 2.0 };
+        let radius = if is_suggestion { 4.0 } else { 2.0 };
         frame.fill(&Path::circle(screen, radius), Color { a: alpha, ..base_color });
     }
 

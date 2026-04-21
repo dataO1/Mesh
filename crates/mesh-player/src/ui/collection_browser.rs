@@ -1167,12 +1167,14 @@ impl CollectionBrowserState {
         self.suggestion_context_cache = contexts;
         self.suggestion_loading = false;
 
-        // Auto-select first suggestion
+        // Auto-select first suggestion and highlight in graph
         self.scroll_index = None;
-        if let Some(first) = self.suggestion_tracks.first() {
+        let first_id = self.suggestion_tracks.first().map(|f| f.id.clone());
+        if let Some(id) = first_id {
             self.scroll_index = Some(0);
-            self.browser.table_state.select(first.id.clone());
-            self.selected_track_path = self.suggestion_paths.get(&first.id).cloned();
+            self.browser.table_state.select(id.clone());
+            self.update_graph_hover(&id);
+            self.selected_track_path = self.suggestion_paths.get(&id).cloned();
         }
     }
 
