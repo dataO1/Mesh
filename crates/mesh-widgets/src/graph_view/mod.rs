@@ -647,8 +647,8 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
             if to != hovered_id { continue; }
             let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
             let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
-            let opacity = score.clamp(0.4, 0.9);
-            let width = 1.0 + score;
+            let opacity = score.clamp(0.5, 0.95);
+            let width = 1.5 + score * 1.5;
             frame.stroke(&Path::line(pt(from_pos), pt(to_pos)), Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
         }
     }
