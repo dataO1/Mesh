@@ -962,6 +962,28 @@ fn process_single_track(
                 base_name, track_id
             );
 
+            // Compute and store intensity components (multi-frame, pure Rust — no subprocess needed)
+            // Use the analysis audio features for spectral_centroid and energy_variance (full-track)
+            if let Some(ref features) = analysis.audio_features {
+                // We need the mono samples again — reload from the exported FLAC
+                // Actually, the features already contain spectral_centroid and energy_variance
+                // For the new multi-frame features (flux, flatness, etc.), we store what we can
+                // from the existing features and defer the rest to reanalysis
+                let mut ic = mesh_core::db::IntensityComponents {
+                    spectral_centroid: features.spectral_centroid,
+                    energy_variance: features.energy_variance,
+                    flatness: features.mfcc_flatness, // single-frame for now, improved during reanalysis
+                    dissonance: features.dissonance.unwrap_or(0.0),
+                    harmonic_complexity: features.harmonic_complexity,
+                    spectral_rolloff: features.spectral_rolloff,
+                    spectral_flux: 0.0,  // requires multi-frame — computed during reanalysis
+                    crest_factor: 0.0,   // requires full track audio — computed during reanalysis
+                };
+                if let Err(e) = config.db_service.store_intensity_components(track_id, &ic) {
+                    log::warn!("process_single_track: Failed to store intensity components for '{}': {}", base_name, e);
+                }
+            }
+
             // Store audio features for similarity search
             if let Some(ref features) = analysis.audio_features {
                 if let Err(e) = config.db_service.store_audio_features(track_id, features) {

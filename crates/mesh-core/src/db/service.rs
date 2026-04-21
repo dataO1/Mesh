@@ -1266,6 +1266,61 @@ impl DatabaseService {
         Ok(map)
     }
 
+    /// Store intensity components for a track.
+    pub fn store_intensity_components(&self, track_id: i64, ic: &crate::db::schema::IntensityComponents) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("spectral_flux".to_string(), DataValue::from(ic.spectral_flux as f64));
+        params.insert("flatness".to_string(), DataValue::from(ic.flatness as f64));
+        params.insert("spectral_centroid".to_string(), DataValue::from(ic.spectral_centroid as f64));
+        params.insert("dissonance".to_string(), DataValue::from(ic.dissonance as f64));
+        params.insert("crest_factor".to_string(), DataValue::from(ic.crest_factor as f64));
+        params.insert("energy_variance".to_string(), DataValue::from(ic.energy_variance as f64));
+        params.insert("harmonic_complexity".to_string(), DataValue::from(ic.harmonic_complexity as f64));
+        params.insert("spectral_rolloff".to_string(), DataValue::from(ic.spectral_rolloff as f64));
+        self.db.run_query(r#"
+            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff] <-
+                [[$track_id, $spectral_flux, $flatness, $spectral_centroid, $dissonance, $crest_factor, $energy_variance, $harmonic_complexity, $spectral_rolloff]]
+            :put track_intensity {
+                track_id =>
+                spectral_flux, flatness, spectral_centroid, dissonance,
+                crest_factor, energy_variance, harmonic_complexity, spectral_rolloff
+            }
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Batch-fetch intensity components for multiple tracks.
+    pub fn batch_get_intensity_components(&self, track_ids: &[i64]) -> Result<HashMap<i64, crate::db::schema::IntensityComponents>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+        let result = self.db.run_query(r#"
+            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff] :=
+                *track_intensity{track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff},
+                track_id in $ids
+        "#, params)?;
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if let Some(tid) = row[0].get_int() {
+                map.insert(tid, crate::db::schema::IntensityComponents {
+                    spectral_flux: row[1].get_float().unwrap_or(0.0) as f32,
+                    flatness: row[2].get_float().unwrap_or(0.0) as f32,
+                    spectral_centroid: row[3].get_float().unwrap_or(0.0) as f32,
+                    dissonance: row[4].get_float().unwrap_or(0.0) as f32,
+                    crest_factor: row[5].get_float().unwrap_or(0.0) as f32,
+                    energy_variance: row[6].get_float().unwrap_or(0.0) as f32,
+                    harmonic_complexity: row[7].get_float().unwrap_or(0.0) as f32,
+                    spectral_rolloff: row[8].get_float().unwrap_or(0.0) as f32,
+                });
+            }
+        }
+        Ok(map)
+    }
+
     /// Batch-fetch mfcc_flatness from audio_features for multiple tracks.
     /// Element at index 15 in the 16-dim feature vector.
     pub fn batch_get_flatness(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {

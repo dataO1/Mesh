@@ -728,3 +728,8 @@ visually compare tracks (if they fit in the time domain as well)
   tight/mid/open setting to select how big the gap ideally is that is rewarded
   based on slider position. center = same intensity, peak = more aggression,
   depending on the tight/mid/open setting, same for drop = less aggression.
+
+ok before we continue, can we cleanup the import/reanalysis path a little? are
+there any unused ml analysis infos? were not using the 16 dim hnsw vectors for example
+anymore, but use PCA derived from the 1280 dim vector. can we optimise the code
+for more efficient/fast analysis? both the import and re-analysis paths. evaluate first.

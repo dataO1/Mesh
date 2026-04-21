@@ -489,13 +489,49 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4e: Genre-normalize composite intensity across the candidate pool.
-    let norm_intensity = normalize_intensity_by_genre(&ml_scores, &flatness_map, &dissonance_map);
+    // Step 4e: Compute composite intensity from individual components (v2).
+    // Fetch intensity components and compute composite at query time.
+    let mut intensity_map: HashMap<(usize, i64), f32> = HashMap::new();
+    for (src_idx, source) in sources.iter().enumerate() {
+        let all_ids: Vec<i64> = candidates.keys()
+            .filter(|(si, _)| *si == src_idx)
+            .map(|(_, id)| *id)
+            .collect();
+        if all_ids.is_empty() { continue; }
+
+        // Try v2 intensity components first
+        if let Ok(components) = source.db.batch_get_intensity_components(&all_ids) {
+            for (id, ic) in &components {
+                intensity_map.insert((src_idx, *id), composite_intensity_v2(ic));
+            }
+        }
+
+        // Fallback: for tracks without v2 components, use legacy composite_intensity
+        let missing: Vec<i64> = all_ids.iter()
+            .filter(|id| !intensity_map.contains_key(&(src_idx, **id)))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            if let Ok(scores) = source.db.get_ml_scores_batch(&missing) {
+                let flatness_fb = source.db.batch_get_flatness(&missing).unwrap_or_default();
+                let dissonance_fb = source.db.batch_get_dissonance(&missing).unwrap_or_default();
+                for (id, ml) in &scores {
+                    if let Some(val) = composite_intensity(
+                        ml.aggression, flatness_fb.get(id).copied(),
+                        ml.relaxed, dissonance_fb.get(id).copied(),
+                    ) {
+                        intensity_map.insert((src_idx, *id), val);
+                    }
+                }
+            }
+        }
+    }
+
     let avg_seed_intensity = {
         let vals: Vec<f32> = seed_tracks
             .iter()
             .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
-            .filter_map(|key| norm_intensity.get(&key).copied())
+            .filter_map(|key| intensity_map.get(&key).copied())
             .collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
@@ -617,7 +653,7 @@ pub fn query_suggestions(
             // ── Intensity reward ──
             let ml_key = track.id.map(|id| (src_idx, id));
             let cand_norm_intensity = ml_key
-                .and_then(|k| norm_intensity.get(&k).copied())
+                .and_then(|k| intensity_map.get(&k).copied())
                 .unwrap_or(0.5);
             let int_reward = intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover);
 

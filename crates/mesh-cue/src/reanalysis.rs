@@ -541,6 +541,10 @@ fn reanalyze_metadata_track(
             match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(ESSENTIA_RATE_FEAT)) {
                 Ok(feat_stems) => {
                     let mono_44 = create_mono_mix(&feat_stems);
+                    // Compute multi-frame intensity components BEFORE subprocess
+                    // (subprocess moves mono_44, so we compute on a reference first)
+                    let intensity_components = crate::features::compute_intensity_components(&mono_44, ESSENTIA_RATE_FEAT as f32);
+
                     match crate::features::extract_audio_features_in_subprocess(mono_44) {
                         Ok(features) => {
                             if let Some(d) = features.dissonance {
@@ -551,6 +555,15 @@ fn reanalyze_metadata_track(
                             // Also refresh the 16-dim HNSW vector while we have fresh features
                             if let Err(e) = db.store_audio_features(track_id, &features) {
                                 log::warn!("reanalyze_metadata_track: Failed to store audio features: {:?}", e);
+                            }
+                            // Store multi-frame intensity components
+                            // Merge: use existing full-track centroid + energy_variance from features,
+                            // keep multi-frame values for flux, flatness, dissonance, etc.
+                            let mut ic = intensity_components;
+                            ic.spectral_centroid = features.spectral_centroid;
+                            ic.energy_variance = features.energy_variance;
+                            if let Err(e) = db.store_intensity_components(track_id, &ic) {
+                                log::warn!("reanalyze_metadata_track: Failed to store intensity components: {:?}", e);
                             }
                         }
                         Err(e) => {

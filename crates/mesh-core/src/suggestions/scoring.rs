@@ -336,6 +336,21 @@ pub fn composite_intensity(
     Some(0.40 * aggr + 0.25 * flat + 0.20 * (1.0 - rel) + 0.15 * diss)
 }
 
+/// Compute composite intensity from individual components (v2).
+///
+/// All components are raw [0, 1] values stored per-track in DB.
+/// The composite is computed at query time so weights can be tuned without reanalysis.
+pub fn composite_intensity_v2(ic: &crate::db::IntensityComponents) -> f32 {
+    (0.25 * ic.spectral_flux
+    + 0.20 * ic.flatness
+    + 0.15 * ic.spectral_centroid
+    + 0.15 * ic.dissonance
+    + 0.10 * (1.0 - ic.crest_factor)    // lower crest = more compressed = more aggressive
+    + 0.10 * ic.energy_variance
+    + 0.05 * (1.0 - ic.harmonic_complexity))  // less tonal = more aggressive
+    .clamp(0.0, 1.0)
+}
+
 /// Intensity reward [0, 1] that matches energy level at center and steers direction at extremes.
 ///
 /// - **Center** (`bias=0`): rewards candidates at similar intensity to the seed.

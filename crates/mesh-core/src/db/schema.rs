@@ -337,6 +337,20 @@ impl AudioFeatures {
 /// ML analysis results for a track (voice detection, genre, mood, audio characteristics)
 ///
 /// This struct is used across crates (mesh-core, mesh-cue, mesh-player) to pass
+/// Per-track intensity component values for composite scoring.
+/// All values are raw [0, 1] scalars, multi-frame averaged where applicable.
+#[derive(Debug, Clone, Default)]
+pub struct IntensityComponents {
+    pub spectral_flux: f32,
+    pub flatness: f32,
+    pub spectral_centroid: f32,
+    pub dissonance: f32,
+    pub crest_factor: f32,
+    pub energy_variance: f32,
+    pub harmonic_complexity: f32,
+    pub spectral_rolloff: f32,
+}
+
 /// ML analysis results. It has no iced dependencies.
 ///
 /// All probability/score fields are `Option<f32>` in 0.0–1.0 range.
@@ -457,6 +471,9 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
 
     // Psychoacoustic dissonance relation (additive — safe on old DBs)
     create_track_dissonance_relation(db)?;
+
+    // Intensity components for composite scoring (v2 — multi-frame averaged)
+    create_intensity_components_relation(db)?;
 
     // Transition graph: tracks played together → time-decayed co-play edges
     // Built explicitly via build_played_after_graph(); not auto-populated on import.
@@ -1043,6 +1060,25 @@ fn create_track_dissonance_relation(db: &DbInstance) -> Result<(), DbError> {
         {:create track_dissonance {
             track_id: Int =>
             dissonance: Float
+        }}
+    "#)
+}
+
+fn create_intensity_components_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Per-track intensity component values for composite scoring.
+    // All values are raw [0, 1] scalars, multi-frame averaged where applicable.
+    // The composite intensity is computed at query time from these components.
+    run_schema(db, r#"
+        {:create track_intensity {
+            track_id: Int =>
+            spectral_flux: Float,
+            flatness: Float,
+            spectral_centroid: Float,
+            dissonance: Float,
+            crest_factor: Float,
+            energy_variance: Float,
+            harmonic_complexity: Float,
+            spectral_rolloff: Float
         }}
     "#)
 }

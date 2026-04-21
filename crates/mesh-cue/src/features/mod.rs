@@ -23,6 +23,7 @@ mod extraction;
 pub use extraction::{
     extract_audio_features,
     extract_audio_features_in_subprocess,
+    compute_intensity_components,
     FeatureExtractionError,
 };
 

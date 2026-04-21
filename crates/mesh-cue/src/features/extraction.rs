@@ -633,6 +633,177 @@ fn compute_spectral_bandwidth(
     Ok((bandwidth / nyquist).clamp(0.0, 1.0))
 }
 
+/// Compute intensity components using multi-frame analysis (pure Rust).
+///
+/// Analyzes N frames spread across the track and averages the per-frame values.
+/// This avoids the single-frame reliability problem of the original 16-dim features.
+///
+/// Returns `IntensityComponents` with all values in [0, 1].
+pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_core::db::IntensityComponents {
+    use realfft::RealFftPlanner;
+
+    let frame_size = 4096;
+    let hop_size = frame_size / 2;
+    let n_bins = frame_size / 2 + 1;
+
+    if samples.len() < frame_size * 2 {
+        return mesh_core::db::IntensityComponents::default();
+    }
+
+    // Sample N frames evenly across the track (skip first/last 5% to avoid silence)
+    let start = samples.len() / 20;
+    let end = samples.len() - samples.len() / 20;
+    let usable = end - start;
+    let n_frames = 20.min(usable / hop_size);
+    if n_frames < 3 {
+        return mesh_core::db::IntensityComponents::default();
+    }
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(frame_size);
+    let mut fft_input = vec![0.0f32; frame_size];
+    let mut fft_output = vec![realfft::num_complex::Complex::new(0.0f32, 0.0); n_bins];
+
+    // Hann window
+    let window: Vec<f32> = (0..frame_size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (frame_size - 1) as f32).cos()))
+        .collect();
+
+    let mut flatness_values = Vec::with_capacity(n_frames);
+    let mut dissonance_values = Vec::with_capacity(n_frames);
+    let mut harmonic_complexity_values = Vec::with_capacity(n_frames);
+    let mut rolloff_values = Vec::with_capacity(n_frames);
+    let mut prev_magnitude: Option<Vec<f32>> = None;
+    let mut flux_values = Vec::with_capacity(n_frames);
+
+    for frame_idx in 0..n_frames {
+        let frame_start = start + frame_idx * (usable / n_frames);
+        if frame_start + frame_size > samples.len() { break; }
+
+        // Apply window and FFT
+        for i in 0..frame_size {
+            fft_input[i] = samples[frame_start + i] * window[i];
+        }
+        if fft.process(&mut fft_input, &mut fft_output).is_err() { continue; }
+
+        // Magnitude spectrum
+        let magnitude: Vec<f32> = fft_output.iter().map(|c| (c.re * c.re + c.im * c.im).sqrt()).collect();
+        let total_energy: f32 = magnitude.iter().map(|m| m * m).sum();
+
+        if total_energy < 1e-10 { continue; }
+
+        // ── Spectral flatness (geometric mean / arithmetic mean) ──
+        let arith_mean = magnitude.iter().sum::<f32>() / n_bins as f32;
+        let log_sum: f32 = magnitude.iter().map(|&m| (m.max(1e-10)).ln()).sum::<f32>();
+        let geom_mean = (log_sum / n_bins as f32).exp();
+        let flatness = if arith_mean > 1e-10 { (geom_mean / arith_mean).clamp(0.0, 1.0) } else { 0.0 };
+        flatness_values.push(flatness);
+
+        // ── Spectral rolloff (freq below which 85% of energy) ──
+        let threshold = total_energy * 0.85;
+        let mut cumulative = 0.0f32;
+        let mut rolloff_bin = n_bins - 1;
+        for (i, &m) in magnitude.iter().enumerate() {
+            cumulative += m * m;
+            if cumulative >= threshold {
+                rolloff_bin = i;
+                break;
+            }
+        }
+        let nyquist = sample_rate / 2.0;
+        let rolloff_freq = rolloff_bin as f32 / n_bins as f32 * nyquist;
+        rolloff_values.push((rolloff_freq / nyquist).clamp(0.0, 1.0));
+
+        // ── Harmonic complexity (number of significant spectral peaks) ──
+        let peak_threshold = arith_mean * 3.0;
+        let n_peaks = magnitude.iter().filter(|&&m| m > peak_threshold).count();
+        harmonic_complexity_values.push((n_peaks as f32 / 50.0).clamp(0.0, 1.0));
+
+        // ── Dissonance (simplified Plomp-Levelt: count close frequency pairs) ──
+        // Find top spectral peaks
+        let mut peaks: Vec<(usize, f32)> = Vec::new();
+        for i in 1..magnitude.len() - 1 {
+            if magnitude[i] > magnitude[i-1] && magnitude[i] > magnitude[i+1] && magnitude[i] > peak_threshold {
+                peaks.push((i, magnitude[i]));
+            }
+        }
+        peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        peaks.truncate(30);
+
+        let mut roughness = 0.0f32;
+        let mut pair_count = 0u32;
+        let freq_res = sample_rate / frame_size as f32;
+        for i in 0..peaks.len() {
+            for j in (i+1)..peaks.len() {
+                let f1 = peaks[i].0 as f32 * freq_res;
+                let f2 = peaks[j].0 as f32 * freq_res;
+                let diff = (f2 - f1).abs();
+                let s = 0.24 * (f1.min(f2) * 0.021 + 19.0); // critical bandwidth
+                if diff < s && diff > 0.0 {
+                    let d = diff / s;
+                    roughness += (peaks[i].1.min(peaks[j].1)) * (d * (-3.5 * d).exp());
+                    pair_count += 1;
+                }
+            }
+        }
+        let norm_roughness = if pair_count > 0 {
+            (roughness / pair_count as f32 * 10.0).clamp(0.0, 1.0)
+        } else { 0.0 };
+        dissonance_values.push(norm_roughness);
+
+        // ── Spectral flux (L2 distance from previous frame) ──
+        if let Some(ref prev) = prev_magnitude {
+            let flux: f32 = magnitude.iter().zip(prev.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            // Normalize by frame energy
+            let norm_flux = (flux / total_energy.sqrt().max(1e-6)).clamp(0.0, 1.0);
+            flux_values.push(norm_flux);
+        }
+        prev_magnitude = Some(magnitude);
+    }
+
+    // ── Crest factor (peak / RMS over the full track) ──
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let crest_db = if rms > 1e-10 { 20.0 * (peak / rms).log10() } else { 20.0 };
+    // Normalize: 3 dB (heavily limited) → 1.0, 20 dB (very dynamic) → 0.0
+    let crest_norm = (1.0 - (crest_db - 3.0) / 17.0).clamp(0.0, 1.0);
+
+    // ── Spectral centroid (full-track via average of frame centroids) ──
+    // Already computed full-track in the existing pipeline, but we compute our own here
+    // for consistency in the multi-frame approach
+    let spectral_centroid = {
+        // Use the existing full-track value from AudioFeatures if available,
+        // otherwise fallback — for now use the value from existing extraction
+        // (this field will be populated from the existing audio_features[12])
+        0.5 // placeholder — overwritten by caller with existing DB value
+    };
+
+    // ── Energy variance (use existing full-track computation) ──
+    let energy_variance = {
+        // Placeholder — overwritten by caller with existing DB value
+        0.5
+    };
+
+    // Average all multi-frame values
+    let avg = |vals: &[f32]| -> f32 {
+        if vals.is_empty() { 0.0 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
+    };
+
+    mesh_core::db::IntensityComponents {
+        spectral_flux: avg(&flux_values),
+        flatness: avg(&flatness_values),
+        spectral_centroid,
+        dissonance: avg(&dissonance_values),
+        crest_factor: crest_norm,
+        energy_variance,
+        harmonic_complexity: avg(&harmonic_complexity_values),
+        spectral_rolloff: avg(&rolloff_values),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
