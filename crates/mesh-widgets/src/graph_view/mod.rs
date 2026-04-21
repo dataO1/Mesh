@@ -379,7 +379,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         }
 
         // ── Layer 3: Unrelated nodes (cluster-colored with confidence alpha) ──
-        let base_alpha = if has_seed { 0.12 } else { 1.0 };
+        let base_alpha = if has_seed { 0.40 } else { 1.0 };
         for (&id, &pos) in &self.positions {
             if seed_set.contains(&id) || self.suggestion_ids.contains(&id) {
                 continue;
@@ -634,39 +634,6 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     // Offset all points by bounds origin (no frame.translate — avoids coordinate bugs)
     let ox = bounds.x;
     let oy = bounds.y;
-
-    // Diagnostic: unconditional log to verify draw is called
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static SEED_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-    if has_seed {
-        let seed_count = SEED_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-        if seed_count < 3 {
-            eprintln!("[GRAPH DRAW] bounds=({},{} {}x{}), zoom={:.3}, pan=({:.3},{:.3}), ox={}, oy={}, graph_bounds={}x{}",
-                bounds.x, bounds.y, bounds.width, bounds.height, zoom, pan.0, pan.1, ox, oy,
-                graph_bounds.width, graph_bounds.height);
-            if let Some(seed_id) = current_seed {
-                if let Some(&pos) = state.positions.get(&seed_id) {
-                    let s = to_screen(pos, pan, zoom, graph_bounds);
-                    eprintln!("[GRAPH DRAW] seed id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
-                        seed_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
-                }
-            }
-            if let Some(&sugg_id) = state.suggestion_ids.iter().next() {
-                if let Some(&pos) = state.positions.get(&sugg_id) {
-                    let s = to_screen(pos, pan, zoom, graph_bounds);
-                    eprintln!("[GRAPH DRAW] sugg id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
-                        sugg_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
-                }
-            }
-            if let Some((&uid, &upos)) = state.positions.iter()
-                .find(|(id, _)| !seed_set.contains(id) && !state.suggestion_ids.contains(id))
-            {
-                let s = to_screen(upos, pan, zoom, graph_bounds);
-                eprintln!("[GRAPH DRAW] unrelated id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
-                    uid, upos.0, upos.1, s.x, s.y, s.x + ox, s.y + oy);
-            }
-        }
-    }
     let pt = |pos: (f32, f32)| -> Point {
         let s = to_screen(pos, pan, zoom, graph_bounds);
         Point::new(s.x + ox, s.y + oy)
@@ -700,7 +667,8 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     }
 
     // ── Layer 3: Unrelated nodes ──
-    let base_alpha = if has_seed { 0.12 } else { 1.0 };
+    // Keep base nodes visible (40% opacity) even when a seed is active
+    let base_alpha = if has_seed { 0.40 } else { 1.0 };
     for (&id, &pos) in &state.positions {
         if seed_set.contains(&id) || state.suggestion_ids.contains(&id) { continue; }
         let screen = pt(pos);

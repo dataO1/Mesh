@@ -802,18 +802,6 @@ impl CollectionBrowserState {
             .padding([6, 10])
             .width(Length::Fill);
 
-        // Diagnostic: log view() state once (mesh_player crate so it shows in logs)
-        {
-            use std::sync::atomic::{AtomicBool, Ordering};
-            static VIEW_LOGGED: AtomicBool = AtomicBool::new(false);
-            if !VIEW_LOGGED.swap(true, Ordering::Relaxed) {
-                log::info!("[BROWSER VIEW] show_analytics={} canvas_graph={} canvas_arc={}",
-                    self.show_analytics,
-                    self.canvas_state.graph.is_some(),
-                    self.canvas_state.energy_arc.is_some());
-            }
-        }
-
         if self.show_analytics {
             let side_canvas: Element<'_, CollectionBrowserMessage> =
                 mesh_widgets::browser_canvas::browser_canvas(&self.canvas_state);
