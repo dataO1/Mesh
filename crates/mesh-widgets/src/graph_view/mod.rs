@@ -637,41 +637,32 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
 
     // Diagnostic: unconditional log to verify draw is called
     use std::sync::atomic::{AtomicU32, Ordering};
-    static DRAW_CALL_COUNT: AtomicU32 = AtomicU32::new(0);
     static SEED_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-    let draw_n = DRAW_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    if draw_n < 3 || (draw_n % 600 == 0) {
-        log::info!("[GRAPH DRAW] call#{} has_seed={} seed_stack_len={} suggestions={} edges={} positions={}",
-            draw_n, has_seed, state.seed_stack.len(), state.suggestion_ids.len(),
-            state.suggestion_edges.len(), state.positions.len());
-    }
     if has_seed {
         let seed_count = SEED_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
         if seed_count < 3 {
-            log::info!("[GRAPH DRAW] bounds=({},{} {}x{}), zoom={:.3}, pan=({:.3},{:.3}), ox={}, oy={}, graph_bounds={}x{}, positions={}, suggestions={}, edges={}",
+            eprintln!("[GRAPH DRAW] bounds=({},{} {}x{}), zoom={:.3}, pan=({:.3},{:.3}), ox={}, oy={}, graph_bounds={}x{}",
                 bounds.x, bounds.y, bounds.width, bounds.height, zoom, pan.0, pan.1, ox, oy,
-                graph_bounds.width, graph_bounds.height,
-                state.positions.len(), state.suggestion_ids.len(), state.suggestion_edges.len());
+                graph_bounds.width, graph_bounds.height);
             if let Some(seed_id) = current_seed {
                 if let Some(&pos) = state.positions.get(&seed_id) {
                     let s = to_screen(pos, pan, zoom, graph_bounds);
-                    log::info!("[GRAPH DRAW] seed id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
+                    eprintln!("[GRAPH DRAW] seed id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
                         seed_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
                 }
             }
             if let Some(&sugg_id) = state.suggestion_ids.iter().next() {
                 if let Some(&pos) = state.positions.get(&sugg_id) {
                     let s = to_screen(pos, pan, zoom, graph_bounds);
-                    log::info!("[GRAPH DRAW] sugg id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
+                    eprintln!("[GRAPH DRAW] sugg id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
                         sugg_id, pos.0, pos.1, s.x, s.y, s.x + ox, s.y + oy);
                 }
             }
-            // Also log a random unrelated node for comparison
             if let Some((&uid, &upos)) = state.positions.iter()
                 .find(|(id, _)| !seed_set.contains(id) && !state.suggestion_ids.contains(id))
             {
                 let s = to_screen(upos, pan, zoom, graph_bounds);
-                log::info!("[GRAPH DRAW] unrelated id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
+                eprintln!("[GRAPH DRAW] unrelated id={} raw=({:.2},{:.2}) screen=({:.1},{:.1}) final=({:.1},{:.1})",
                     uid, upos.0, upos.1, s.x, s.y, s.x + ox, s.y + oy);
             }
         }
