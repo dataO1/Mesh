@@ -725,10 +725,9 @@ impl MeshApp {
             }
             Message::GraphDataReady(data) => {
                 use mesh_widgets::graph_view::GraphViewState;
-                // Arc::try_unwrap may fail if cloned — just deref in that case
                 let data = match Arc::try_unwrap(data) {
                     Ok(d) => d,
-                    Err(arc) => return Task::none(), // shouldn't happen
+                    Err(_) => return Task::none(),
                 };
                 let mut state = GraphViewState::new();
                 state.positions = data.positions.clone();
@@ -738,7 +737,12 @@ impl MeshApp {
                 state.cluster_colors = data.colors.into_iter()
                     .map(|(id, [r, g, b])| (id, Color::from_rgb(r, g, b)))
                     .collect();
-                state.track_meta = data.track_meta;
+                // Convert mesh-core TrackMeta → mesh-widgets TrackMeta
+                state.track_meta = data.track_meta.into_iter()
+                    .map(|(id, m)| (id, mesh_widgets::graph_view::TrackMeta {
+                        id: m.id, title: m.title, artist: m.artist, key: m.key, bpm: m.bpm,
+                    }))
+                    .collect();
                 state.stem_colors = Some(self.collection_browser.arc_stem_colors);
                 state.accent_color = Some(self.collection_browser.arc_success);
                 self.collection_browser.canvas_state.graph = Some(state);
@@ -746,6 +750,14 @@ impl MeshApp {
                 log::info!("[GRAPH] Graph data ready — {} nodes",
                     self.collection_browser.canvas_state.graph.as_ref().map(|s| s.positions.len()).unwrap_or(0));
                 Task::none()
+            }
+            Message::RebuildGraph => {
+                if self.collection_browser.graph_building {
+                    return Task::none();
+                }
+                let sources = self.collection_browser.all_graph_sources();
+                self.collection_browser.graph_building = true;
+                build_graph_task(sources)
             }
         }
     }
@@ -2173,4 +2185,43 @@ pub(crate) fn convert_hid_event_to_captured(
         hardware_type: descriptor.map(|d| d.control_type),
         source_device: Some(device_name.to_string()),
     }
+}
+
+/// Build a background Task that computes the t-SNE graph from multiple database sources.
+/// Used both at startup and when USB devices are plugged/unplugged.
+pub fn build_graph_task(
+    sources: Vec<(std::sync::Arc<mesh_core::db::DatabaseService>, String)>,
+) -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                mesh_core::rt::pin_to_big_cores();
+                use mesh_core::graph_compute;
+
+                let (pca_data, track_meta) = graph_compute::collect_pca_from_sources(&sources);
+
+                if pca_data.len() < 10 {
+                    return None;
+                }
+
+                let positions = graph_compute::compute_tsne_layout(&pca_data, false);
+                let cluster_result = graph_compute::run_consensus_clustering(&positions);
+
+                Some(super::message::GraphData {
+                    positions,
+                    clusters: cluster_result.clusters,
+                    confidence: cluster_result.confidence,
+                    colors: cluster_result.colors,
+                    track_meta,
+                })
+            })
+            .await
+            .ok()
+            .flatten()
+        },
+        |data: Option<super::message::GraphData>| match data {
+            Some(d) => Message::GraphDataReady(std::sync::Arc::new(d)),
+            None => Message::RefreshResourceStats, // no-op
+        },
+    )
 }

@@ -3,7 +3,71 @@
 //! - **t-SNE**: Barnes-Hut t-SNE via bhtsne to project high-dim PCA embeddings to 2D
 //! - **Consensus clustering**: Multi-scale HDBSCAN for robust community detection
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use crate::db::DatabaseService;
+
+/// Collect PCA embeddings from multiple database sources, deduplicated by artist-title.
+///
+/// Each source is a `(database, source_name)` pair. When the same track appears in
+/// multiple sources (matched by lowercase artist + title), the first source wins.
+/// Returns `(track_id, pca_vector)` pairs plus a separate metadata map.
+pub fn collect_pca_from_sources(
+    sources: &[(Arc<DatabaseService>, String)],
+) -> (Vec<(i64, Vec<f32>)>, HashMap<i64, TrackMeta>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut pca_data: Vec<(i64, Vec<f32>)> = Vec::new();
+    let mut track_meta: HashMap<i64, TrackMeta> = HashMap::new();
+
+    for (db, source_name) in sources {
+        let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+        let source_total = all_pca.len();
+        let count_before = pca_data.len();
+
+        for (track, pca_vec) in all_pca {
+            let id = match track.id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Dedup key: lowercase "artist - title"
+            let artist_lower = track.artist.as_deref().unwrap_or("").to_lowercase();
+            let title_lower = track.title.to_lowercase();
+            let dedup_key = format!("{}\x00{}", artist_lower, title_lower);
+
+            if seen.contains(&dedup_key) {
+                continue;
+            }
+            seen.insert(dedup_key);
+
+            pca_data.push((id, pca_vec));
+            track_meta.insert(id, TrackMeta {
+                id,
+                title: track.title.clone(),
+                artist: track.artist.clone(),
+                key: track.key.clone(),
+                bpm: track.bpm,
+            });
+        }
+
+        let added = pca_data.len() - count_before;
+        log::info!("[GRAPH] Source '{}': {} new tracks ({} duplicates skipped)",
+            source_name, added, source_total - added);
+    }
+
+    log::info!("[GRAPH] Total: {} unique tracks from {} sources", pca_data.len(), sources.len());
+    (pca_data, track_meta)
+}
+
+/// Track metadata for graph visualization.
+#[derive(Debug, Clone)]
+pub struct TrackMeta {
+    pub id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub key: Option<String>,
+    pub bpm: Option<f64>,
+}
 
 /// Result of consensus clustering.
 #[derive(Debug)]

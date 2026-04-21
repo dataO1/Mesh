@@ -1094,6 +1094,29 @@ impl CollectionBrowserState {
         self.db_service.clone()
     }
 
+    /// Build the list of all database sources (local + mounted USBs) for graph computation.
+    pub fn all_graph_sources(&self) -> Vec<(Arc<DatabaseService>, String)> {
+        let mut sources = vec![(self.db_service.clone(), "Local".to_string())];
+        for (_, usb_storage) in &self.usb_storages {
+            if let Some(db) = usb_storage.db() {
+                sources.push((db.clone(), usb_storage.device().label.clone()));
+            }
+        }
+        sources
+    }
+
+    /// Get the active database (USB if browsing USB, local otherwise).
+    fn active_db(&self) -> Arc<DatabaseService> {
+        if let Some(idx) = self.active_usb_idx {
+            if let Some((_, storage)) = self.usb_storages.get(idx) {
+                if let Some(db) = storage.db() {
+                    return db.clone();
+                }
+            }
+        }
+        self.db_service.clone()
+    }
+
     /// Check if currently browsing USB storage
     pub fn is_browsing_usb(&self) -> bool {
         self.active_usb_idx.is_some()
@@ -1217,7 +1240,7 @@ impl CollectionBrowserState {
     }
     /// Compute PCA cosine distances between consecutive tracks.
     fn compute_similarities(&mut self) {
-        let all_pca = self.db_service.get_all_pca_with_tracks().unwrap_or_default();
+        let all_pca = self.active_db().get_all_pca_with_tracks().unwrap_or_default();
         // Index by both full path and filename for matching (DB stores absolute,
         // playlist storage may return relative paths)
         let mut pca_by_path: HashMap<String, Vec<f32>> = HashMap::new();
@@ -1252,7 +1275,8 @@ impl CollectionBrowserState {
     /// Batch-populate intensity on tracks from ML analysis, then rebuild arc.
     fn enrich_and_rebuild(&mut self) {
         // Build path→ID map (by both full path and filename for matching)
-        let all_tracks = self.db_service.get_all_tracks().unwrap_or_default();
+        let db = self.active_db();
+        let all_tracks = db.get_all_tracks().unwrap_or_default();
         let mut path_to_id: HashMap<String, i64> = HashMap::new();
         for t in &all_tracks {
             if let Some(id) = t.id {
@@ -1274,9 +1298,9 @@ impl CollectionBrowserState {
             .collect();
 
         if !row_ids.is_empty() {
-            let ml_scores = self.db_service.get_ml_scores_batch(&row_ids).unwrap_or_default();
-            let flatness = self.db_service.batch_get_flatness(&row_ids).unwrap_or_default();
-            let dissonance = self.db_service.batch_get_dissonance(&row_ids).unwrap_or_default();
+            let ml_scores = db.get_ml_scores_batch(&row_ids).unwrap_or_default();
+            let flatness = db.batch_get_flatness(&row_ids).unwrap_or_default();
+            let dissonance = db.batch_get_dissonance(&row_ids).unwrap_or_default();
 
             for row in &mut self.tracks {
                 if let Some(path) = &row.track_path {

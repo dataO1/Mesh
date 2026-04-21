@@ -365,58 +365,10 @@ fn main() -> iced::Result {
             });
 
             // Background t-SNE + clustering for the graph view
-            let graph_db = app.collection_browser.db_service_arc();
+            // Build graph from all connected sources (local + any mounted USBs)
+            let graph_sources = app.collection_browser.all_graph_sources();
             app.collection_browser.graph_building = true;
-            let graph_task = Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        mesh_core::rt::pin_to_big_cores();
-                        use mesh_core::graph_compute;
-                        use mesh_widgets::graph_view::TrackMeta;
-
-                        let all_pca = graph_db.get_all_pca_with_tracks().unwrap_or_default();
-                        let pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
-                            .filter_map(|(t, v)| Some((t.id?, v.clone())))
-                            .collect();
-
-                        if pca_data.len() < 10 {
-                            return None;
-                        }
-
-                        let positions = graph_compute::compute_tsne_layout(&pca_data, false);
-                        let cluster_result = graph_compute::run_consensus_clustering(&positions);
-
-                        // Build track metadata
-                        let track_meta: std::collections::HashMap<i64, TrackMeta> = all_pca.iter()
-                            .filter_map(|(t, _)| {
-                                let id = t.id?;
-                                Some((id, TrackMeta {
-                                    id,
-                                    title: t.title.clone(),
-                                    artist: t.artist.clone(),
-                                    key: t.key.clone(),
-                                    bpm: t.bpm,
-                                }))
-                            })
-                            .collect();
-
-                        Some(ui::message::GraphData {
-                            positions,
-                            clusters: cluster_result.clusters,
-                            confidence: cluster_result.confidence,
-                            colors: cluster_result.colors,
-                            track_meta,
-                        })
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                },
-                |data: Option<ui::message::GraphData>| match data {
-                    Some(d) => Message::GraphDataReady(std::sync::Arc::new(d)),
-                    None => Message::RefreshResourceStats, // no-op reuse
-                },
-            );
+            let graph_task = ui::app::build_graph_task(graph_sources);
 
             // If --midi-learn flag was passed or no midi.yaml exists, start MIDI learn mode
             let startup_task = if start_learn {

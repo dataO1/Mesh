@@ -117,6 +117,7 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
     match usb_msg {
         UsbMsg::DevicesRefreshed(devices) => {
             log::info!("USB: {} devices detected", devices.len());
+            let has_usb = devices.iter().any(|d| d.mount_point.is_some() && d.has_mesh_collection);
             app.collection_browser.update_usb_devices(devices.clone());
             // Initialize storages for mounted devices and trigger metadata preload
             for device in &devices {
@@ -131,6 +132,10 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
                         }
                     );
                 }
+            }
+            // Rebuild graph to include USB sources if any were found
+            if has_usb {
+                return Task::done(Message::RebuildGraph);
             }
         }
         UsbMsg::DeviceConnected(device) => {
@@ -147,6 +152,8 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
                 );
             }
             app.status = format!("USB: {} connected", device.label);
+            // Rebuild graph to include the new USB source
+            return Task::done(Message::RebuildGraph);
         }
         UsbMsg::DeviceDisconnected { device_path } => {
             // Clear cached database for this USB device
@@ -158,6 +165,8 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
 
             app.collection_browser.remove_usb_device(&device_path);
             app.status = "USB: Device disconnected".to_string();
+            // Rebuild graph without the removed source
+            return Task::done(Message::RebuildGraph);
         }
         UsbMsg::MountComplete { result } => {
             match result {
