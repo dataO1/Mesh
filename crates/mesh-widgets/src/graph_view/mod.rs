@@ -318,7 +318,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         let seed_accent = self.accent_color.unwrap_or(COLOR_SEED_ACCENT);
         let stems = self.stem_colors;
 
-        // ── Layer 1: Suggestion edges (gray, score-weighted width) ──
+        // ── Layer 1: Suggestion edges (gray, visible) ──
         let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
         for &(from, to, score) in &self.suggestion_edges {
             let from_pos = match self.positions.get(&from) {
@@ -333,7 +333,7 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             let p1 = to_screen(from_pos, self.pan, self.zoom, bounds);
             let p2 = to_screen(to_pos, self.pan, self.zoom, bounds);
 
-            let opacity = score.clamp(0.15, 0.6);
+            let opacity = score.clamp(0.3, 0.8);
             let width = 0.5 + score * 1.5;
 
             let path = Path::line(p1, p2);
@@ -639,14 +639,14 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         Point::new(s.x + ox, s.y + oy)
     };
 
-    // ── Layer 1: Suggestion edges (gray, score-weighted width) ──
+    // ── Layer 1: Suggestion edges (gray, visible) ──
     let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
     for &(from, to, score) in &state.suggestion_edges {
         let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
         let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
         let p1 = pt(from_pos);
         let p2 = pt(to_pos);
-        let opacity = score.clamp(0.15, 0.6);
+        let opacity = score.clamp(0.3, 0.8);
         let width = 0.5 + score * 1.5;
         frame.stroke(&Path::line(p1, p2), Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
     }
@@ -682,12 +682,16 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         frame.fill(&Path::circle(screen, 2.5), Color { a: alpha, ..base_color });
     }
 
-    // ── Layer 4: Suggestion nodes ──
-    for &id in &state.suggestion_ids {
-        if seed_set.contains(&id) { continue; }
-        let pos = match state.positions.get(&id) { Some(p) => *p, None => continue };
-        let score = state.suggestion_scores.get(&id).copied().unwrap_or(1.0);
-        frame.fill(&Path::circle(pt(pos), 4.0), themed_score_color(score, stems));
+    // ── Layer 4: Hovered node highlight (selected track in suggestion list) ──
+    if let Some(hovered_id) = state.hovered_id {
+        if let Some(&pos) = state.positions.get(&hovered_id) {
+            let screen = pt(pos);
+            let color = state.suggestion_scores.get(&hovered_id)
+                .map(|&s| themed_score_color(s, stems))
+                .unwrap_or(seed_accent);
+            frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(Color { a: 0.9, ..color }).with_width(2.0));
+            frame.fill(&Path::circle(screen, 5.0), Color { a: 0.9, ..color });
+        }
     }
 
     // ── Layer 5: Breadcrumb seeds ──

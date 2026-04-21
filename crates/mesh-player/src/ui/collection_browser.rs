@@ -421,6 +421,8 @@ impl CollectionBrowserState {
                                 self.scroll_index = active.iter().position(|t| &t.id == track_id);
                                 // Update selected track path for load buttons
                                 self.selected_track_path = self.get_track_path(track_id);
+                                // Highlight selected track in graph
+                                self.update_graph_hover(track_id);
                                 // Update energy arc focus
                                 self.rebuild_energy_arc();
                             }
@@ -435,6 +437,7 @@ impl CollectionBrowserState {
                                 self.browser.table_state.select(track_id.clone());
                                 let active = self.active_track_list();
                                 self.scroll_index = active.iter().position(|t| &t.id == track_id);
+                                self.update_graph_hover(track_id);
                                 self.rebuild_energy_arc();
                                 self.selected_track_path = self.get_track_path(track_id);
                             }
@@ -500,6 +503,7 @@ impl CollectionBrowserState {
                     self.scroll_index = Some(new_idx);
                     self.browser.table_state.select(track.id.clone());
                     self.selected_track_path = self.get_track_path(&track.id);
+                    self.update_graph_hover(&track.id.clone());
                 }
                 None
             }
@@ -1294,6 +1298,16 @@ impl CollectionBrowserState {
     }
 
     /// Rebuild energy arc from the active track list.
+    /// Update graph hover to highlight the selected track node.
+    /// Parses the DB track ID from suggestion NodeIds ("suggestion:{id}").
+    fn update_graph_hover(&mut self, node_id: &NodeId) {
+        if let Some(ref mut graph) = self.canvas_state.graph {
+            let db_id = node_id.0.strip_prefix("suggestion:")
+                .and_then(|s| s.parse::<i64>().ok());
+            graph.hovered_id = db_id;
+        }
+    }
+
     pub fn rebuild_energy_arc(&mut self) {
         let display_tracks = self.active_track_list();
         if display_tracks.len() < 2 {
