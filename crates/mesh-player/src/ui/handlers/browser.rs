@@ -274,16 +274,10 @@ pub fn handle_suggestions_ready(
                     }
                 }
 
-                // Update seed stack
+                // Update seed stack — include all active seeds (multiple playing decks)
                 if !seed_ids.is_empty() {
-                    let current = graph.seed_stack.get(graph.seed_position).copied();
-                    if current != seed_ids.first().copied() {
-                        if let Some(&new_seed) = seed_ids.first() {
-                            graph.seed_stack.truncate(graph.seed_position + if current.is_some() { 1 } else { 0 });
-                            graph.seed_stack.push(new_seed);
-                            graph.seed_position = graph.seed_stack.len() - 1;
-                        }
-                    }
+                    graph.seed_stack = seed_ids.clone();
+                    graph.seed_position = 0;
                 }
 
                 graph.clear_caches();

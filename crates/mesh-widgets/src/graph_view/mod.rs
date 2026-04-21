@@ -703,19 +703,9 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         }
     }
 
-    // ── Layer 5: Breadcrumb seeds ──
+    // ── Layer 5+6: All seed nodes (playing decks) ──
     for &id in &state.seed_stack {
-        if Some(id) == current_seed { continue; }
         if let Some(&pos) = state.positions.get(&id) {
-            let screen = pt(pos);
-            frame.stroke(&Path::circle(screen, 5.0), Stroke::default().with_color(Color { a: 0.6, ..seed_accent }).with_width(1.5));
-            frame.fill(&Path::circle(screen, 3.0), Color { a: 0.6, ..seed_accent });
-        }
-    }
-
-    // ── Layer 6: Current seed ──
-    if let Some(seed_id) = current_seed {
-        if let Some(&pos) = state.positions.get(&seed_id) {
             let screen = pt(pos);
             frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(seed_accent).with_width(2.0));
             frame.fill(&Path::circle(screen, 5.0), seed_accent);
