@@ -429,13 +429,16 @@ pub fn run_consensus_clustering(
     ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default() }
 }
 
-/// Compute dynamic similarity thresholds from PCA distances + cluster assignments.
+/// Compute dynamic similarity thresholds as percentile ranks.
 ///
-/// Analyzes intra-community and inter-community PCA cosine distances to derive
-/// thresholds that adapt to the library's actual structure:
-/// - Tight: 75th percentile of intra-community distances (stay inside)
-/// - Medium: midpoint between intra max and nearest-neighbor community distance
-/// - Open: median of all inter-community distances (~50/50)
+/// Since the suggestion algorithm uses percentile-rank normalization (rank / N),
+/// the thresholds must also be on the percentile-rank scale [0, 1].
+///
+/// Approach: sample pairwise distances, sort them ALL into one pool, then find
+/// what percentile rank corresponds to the intra/inter community boundaries:
+/// - Tight target: percentile rank where 75% of intra-community pairs fall below
+/// - Open target: percentile rank of the median inter-community distance
+/// - Medium: midpoint
 pub fn compute_community_thresholds(
     pca_data: &[(i64, Vec<f32>)],
     clusters: &HashMap<i64, i32>,
@@ -448,15 +451,18 @@ pub fn compute_community_thresholds(
 
     let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
 
-    // Collect intra-community and inter-community distances
-    let mut intra_distances: Vec<f32> = Vec::new();
-    let mut inter_distances: Vec<f32> = Vec::new();
-
-    // Sample pairs (full N² is too expensive, sample up to 10000 pairs)
+    // Sample pairwise distances, tracking whether each pair is intra or inter community
     let ids: Vec<i64> = pca_data.iter().map(|(id, _)| *id).collect();
     let n = ids.len();
     let step = (n * n / 10000).max(1);
     let mut pair_count = 0usize;
+
+    // All sampled distances (for percentile ranking)
+    let mut all_distances: Vec<f32> = Vec::new();
+    // Intra-community distances (subset of all)
+    let mut intra_distances: Vec<f32> = Vec::new();
+    // Inter-community distances (subset of all)
+    let mut inter_distances: Vec<f32> = Vec::new();
 
     for i in 0..n {
         for j in (i + 1)..n {
@@ -468,6 +474,8 @@ pub fn compute_community_thresholds(
                 _ => continue,
             };
             let dist = cosine_distance_pub(va, vb);
+            all_distances.push(dist);
+
             let ca = clusters.get(&ids[i]).copied().unwrap_or(-1);
             let cb = clusters.get(&ids[j]).copied().unwrap_or(-1);
 
@@ -479,50 +487,50 @@ pub fn compute_community_thresholds(
         }
     }
 
-    if intra_distances.is_empty() || inter_distances.is_empty() {
+    if intra_distances.is_empty() || inter_distances.is_empty() || all_distances.is_empty() {
         return CommunityThresholds::default();
     }
 
+    all_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     intra_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     inter_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Tight: 75th percentile of intra-community distances
-    let tight_target = intra_distances[(intra_distances.len() * 3 / 4).min(intra_distances.len() - 1)];
-    // Open: median of inter-community distances
-    let open_target = inter_distances[inter_distances.len() / 2];
-    // Medium: midpoint
-    let medium_target = (tight_target + open_target) / 2.0;
+    let total = all_distances.len();
 
-    // Bell widths proportional to the range they cover
-    let tight_width = (tight_target * 0.3).max(0.02);
-    let medium_width = ((open_target - tight_target) * 0.25).max(0.04);
-    let open_width = (open_target * 0.3).max(0.06);
-
-    // Normalize to [0, 1] range using the max observed distance
-    let max_dist = inter_distances.last().copied().unwrap_or(1.0).max(0.01);
-    let norm = |d: f32| (d / max_dist).clamp(0.05, 0.95);
-
-    let thresholds = CommunityThresholds {
-        tight_target: norm(tight_target),
-        tight_width: (tight_width / max_dist).max(0.02),
-        medium_target: norm(medium_target),
-        medium_width: (medium_width / max_dist).max(0.04),
-        open_target: norm(open_target),
-        open_width: (open_width / max_dist).max(0.06),
+    // Helper: find the percentile rank of a raw distance in the full pool
+    let to_percentile = |raw_dist: f32| -> f32 {
+        let pos = all_distances.partition_point(|&d| d < raw_dist);
+        pos as f32 / (total as f32 - 1.0).max(1.0)
     };
 
-    // Also log raw (unnormalized) values for evaluation
-    eprintln!("[GRAPH] Community thresholds (raw): tight={:.4}, medium={:.4}, open={:.4}, max_dist={:.4}",
-        tight_target, medium_target, open_target, max_dist);
-    eprintln!("[GRAPH] Community thresholds (normalized): tight={:.3} (w={:.3}), medium={:.3} (w={:.3}), open={:.3} (w={:.3})",
-        thresholds.tight_target, thresholds.tight_width,
-        thresholds.medium_target, thresholds.medium_width,
-        thresholds.open_target, thresholds.open_width);
-    eprintln!("[GRAPH] Sampled {} intra-community + {} inter-community distance pairs",
-        intra_distances.len(), inter_distances.len());
-    eprintln!("[GRAPH] Intra range: [{:.4}, {:.4}], Inter range: [{:.4}, {:.4}]",
-        intra_distances.first().unwrap_or(&0.0), intra_distances.last().unwrap_or(&0.0),
-        inter_distances.first().unwrap_or(&0.0), inter_distances.last().unwrap_or(&0.0));
+    // Tight: 75th percentile of intra-community raw distances → convert to percentile rank
+    let intra_p75 = intra_distances[(intra_distances.len() * 3 / 4).min(intra_distances.len() - 1)];
+    let tight_target = to_percentile(intra_p75);
+
+    // Open: median of inter-community raw distances → convert to percentile rank
+    let inter_median = inter_distances[inter_distances.len() / 2];
+    let open_target = to_percentile(inter_median);
+
+    // Medium: midpoint in percentile space
+    let medium_target = (tight_target + open_target) / 2.0;
+
+    // Bell widths in percentile-rank space
+    let tight_width = ((tight_target * 0.4).max(0.03)).min(0.15);
+    let medium_width = (((open_target - tight_target) * 0.3).max(0.05)).min(0.20);
+    let open_width = ((open_target * 0.3).max(0.06)).min(0.25);
+
+    let thresholds = CommunityThresholds {
+        tight_target, tight_width,
+        medium_target, medium_width,
+        open_target, open_width,
+    };
+
+    eprintln!("[GRAPH] Community thresholds (percentile-rank): tight={:.3} (w={:.3}), medium={:.3} (w={:.3}), open={:.3} (w={:.3})",
+        tight_target, tight_width, medium_target, medium_width, open_target, open_width);
+    eprintln!("[GRAPH] Raw distance boundaries: intra_p75={:.4}, inter_median={:.4}",
+        intra_p75, inter_median);
+    eprintln!("[GRAPH] Sampled {} total, {} intra, {} inter pairs",
+        all_distances.len(), intra_distances.len(), inter_distances.len());
 
     thresholds
 }
