@@ -32,7 +32,7 @@ impl<M: 'static> canvas::Program<M> for BrowserCanvasState {
         static CANVAS_DRAW_COUNT: AtomicU32 = AtomicU32::new(0);
         let n = CANVAS_DRAW_COUNT.fetch_add(1, Ordering::Relaxed);
         if n < 3 || n % 600 == 0 {
-            log::info!("[BROWSER_CANVAS] draw#{} arc={} graph={} bounds={}x{}",
+            eprintln!("[BROWSER_CANVAS] draw#{} arc={} graph={} bounds={}x{}",
                 n, self.energy_arc.is_some(), self.graph.is_some(),
                 bounds.width, bounds.height);
         }
