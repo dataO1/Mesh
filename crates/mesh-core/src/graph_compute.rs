@@ -7,6 +7,30 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use crate::db::DatabaseService;
 
+/// Graph layout algorithm selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphAlgorithm {
+    #[default]
+    Tsne,
+    Umap,
+}
+
+impl GraphAlgorithm {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            GraphAlgorithm::Tsne => "t-SNE",
+            GraphAlgorithm::Umap => "UMAP",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GraphAlgorithm::Tsne => GraphAlgorithm::Umap,
+            GraphAlgorithm::Umap => GraphAlgorithm::Tsne,
+        }
+    }
+}
+
 /// Collect PCA embeddings from multiple database sources, deduplicated by artist-title.
 ///
 /// Each source is a `(database, source_name)` pair. When the same track appears in
@@ -110,6 +134,18 @@ pub struct ClusterResult {
     pub thresholds: CommunityThresholds,
 }
 
+/// Dispatch to the selected layout algorithm.
+pub fn compute_layout(
+    pca_data: &[(i64, Vec<f32>)],
+    algorithm: GraphAlgorithm,
+    normalize: bool,
+) -> HashMap<i64, (f32, f32)> {
+    match algorithm {
+        GraphAlgorithm::Tsne => compute_tsne_layout(pca_data, normalize),
+        GraphAlgorithm::Umap => compute_umap_layout(pca_data, normalize),
+    }
+}
+
 /// Run Barnes-Hut t-SNE on PCA embeddings to produce 2D positions.
 ///
 /// Input: slice of (track_id, pca_vector). Returns track_id -> (x, y).
@@ -177,6 +213,128 @@ pub fn compute_tsne_layout(
     }
 
     log::info!("[GRAPH] t-SNE complete — {} 2D positions", positions.len());
+    positions
+}
+
+/// Run UMAP on PCA embeddings to produce 2D positions.
+///
+/// UMAP preserves both local AND global structure better than t-SNE.
+/// Tracks that are similar across communities appear close in the graph.
+///
+/// Dynamic defaults:
+/// - n_neighbors: sqrt(n) clamped to [5, 50] (same scaling as t-SNE perplexity)
+/// - min_dist: 0.1 (standard, controls cluster packing)
+/// - n_epochs: scales with dataset size (200 for small, 500 for large)
+pub fn compute_umap_layout(
+    pca_data: &[(i64, Vec<f32>)],
+    normalize: bool,
+) -> HashMap<i64, (f32, f32)> {
+    use ndarray::{Array2, ArrayView2};
+    use umap_rs::{Umap, UmapConfig};
+    use umap_rs::config::{GraphParams, ManifoldParams, OptimizationParams};
+
+    if pca_data.len() < 10 {
+        log::warn!("[GRAPH] Not enough PCA embeddings for UMAP ({})", pca_data.len());
+        return HashMap::new();
+    }
+
+    let mut sorted: Vec<(i64, &Vec<f32>)> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+    sorted.sort_by_key(|(id, _)| *id);
+
+    let n = sorted.len();
+    let dims = sorted[0].1.len();
+    log::info!("[GRAPH] Running UMAP on {} tracks ({}d → 2D)...", n, dims);
+
+    let ids: Vec<i64> = sorted.iter().map(|(id, _)| *id).collect();
+
+    // Build ndarray matrix from PCA vectors (optional normalization)
+    let mut data = Array2::<f32>::zeros((n, dims));
+    for (i, (_, pca)) in sorted.iter().enumerate() {
+        let mut row = data.row_mut(i);
+        for (j, &val) in pca.iter().enumerate() {
+            row[j] = val;
+        }
+        if normalize {
+            let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 1e-10 {
+                row.iter_mut().for_each(|x| *x /= norm);
+            }
+        }
+    }
+
+    // Dynamic parameters
+    let n_neighbors = ((n as f32).sqrt() as usize).clamp(5, 50);
+    let n_epochs = if n < 500 { 200 } else { 500 };
+
+    // Brute-force KNN computation (fine for N < 5000)
+    let k = n_neighbors;
+    let mut knn_indices = Array2::<u32>::zeros((n, k));
+    let mut knn_dists = Array2::<f32>::zeros((n, k));
+
+    for i in 0..n {
+        let mut dists: Vec<(usize, f32)> = (0..n)
+            .filter(|&j| j != i)
+            .map(|j| {
+                let d: f32 = data.row(i).iter().zip(data.row(j).iter())
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
+                (j, d)
+            })
+            .collect();
+        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (ki, &(j, d)) in dists.iter().take(k).enumerate() {
+            knn_indices[[i, ki]] = j as u32;
+            knn_dists[[i, ki]] = d;
+        }
+    }
+
+    // Random initialization (spectral would be better but this works)
+    let mut init = Array2::<f32>::zeros((n, 2));
+    // Use deterministic init from first 2 PCA components (scaled down)
+    for i in 0..n {
+        init[[i, 0]] = if dims > 0 { data[[i, 0]] * 0.01 } else { 0.0 };
+        init[[i, 1]] = if dims > 1 { data[[i, 1]] * 0.01 } else { 0.0 };
+    }
+
+    let config = UmapConfig {
+        manifold: ManifoldParams {
+            min_dist: 0.1,
+            ..Default::default()
+        },
+        graph: GraphParams {
+            n_neighbors: k,
+            ..Default::default()
+        },
+        optimization: OptimizationParams {
+            n_epochs: Some(n_epochs),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let umap = Umap::new(config);
+    let fitted = umap.fit(
+        data.view(),
+        knn_indices.view(),
+        knn_dists.view(),
+        init.view(),
+    );
+
+    let embedding = fitted.embedding();
+    let mut raw_positions: Vec<(f32, f32)> = (0..n)
+        .map(|i| (embedding[[i, 0]], embedding[[i, 1]]))
+        .collect();
+
+    pca_align_2d(&mut raw_positions);
+
+    let mut positions = HashMap::with_capacity(n);
+    for (i, &id) in ids.iter().enumerate() {
+        positions.insert(id, raw_positions[i]);
+    }
+
+    log::info!("[GRAPH] UMAP complete — {} 2D positions (n_neighbors={}, n_epochs={})", n, k, n_epochs);
     positions
 }
 

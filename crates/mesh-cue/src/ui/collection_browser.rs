@@ -307,6 +307,11 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                     toggler(graph_state.normalize_vectors)
                         .on_toggle(Message::GraphToggleNormalize)
                         .size(sz(14.0)),
+                    Space::new().width(8.0),
+                    button(text(state.graph_algorithm.display_name()).size(sz(10.0)))
+                        .on_press(Message::GraphSwitchAlgorithm)
+                        .style(button::secondary)
+                        .padding([2, 6]),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center)

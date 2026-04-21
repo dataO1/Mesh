@@ -29,6 +29,8 @@ dirs = "5"
 rayon.workspace = true
 bhtsne = "0.5.4"
 hdbscan = "0.12.0"
+umap-rs = "0.4.5"
+ndarray = "0.17"  # Required by umap-rs
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
 hound = "3.5"           # WAV file writing for set recording
 chrono = { version = "0.4", default-features = false, features = ["clock"] }  # Local timestamps for recording filenames

@@ -155,6 +155,8 @@ pub struct CollectionState {
     pub graph_building: bool,
     /// Whether to L2-normalize PCA vectors (persists across graph rebuilds)
     pub graph_normalize_vectors: bool,
+    /// Graph layout algorithm (t-SNE or UMAP)
+    pub graph_algorithm: mesh_core::graph_compute::GraphAlgorithm,
     /// Dynamic community thresholds for suggestion scoring
     pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Suggestion tracks for graph left panel (populated on seed select)
@@ -285,6 +287,7 @@ impl Default for CollectionState {
             graph_edges: None,
             graph_building: false,
             graph_normalize_vectors: false,
+            graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
             community_thresholds: None,
             graph_suggestion_rows: Vec::new(),
             graph_table_state: {

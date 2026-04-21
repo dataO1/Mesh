@@ -68,6 +68,7 @@ impl MeshCueApp {
 
         let db = self.domain.db_arc();
         let normalize = self.collection.graph_normalize_vectors;
+        let algorithm = self.collection.graph_algorithm;
         let stem_colors = self.collection.stem_colors;
 
         Task::perform(
@@ -98,8 +99,8 @@ impl MeshCueApp {
                     // Detect PCA dimensionality
                     let pca_dims = pca_data.first().map(|(_, v)| v.len()).unwrap_or(0);
 
-                    // Run t-SNE
-                    let positions = mesh_core::graph_compute::compute_tsne_layout(&pca_data, normalize);
+                    // Run layout algorithm
+                    let positions = mesh_core::graph_compute::compute_layout(&pca_data, algorithm, normalize);
 
                     // Run consensus clustering + compute community thresholds
                     let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);

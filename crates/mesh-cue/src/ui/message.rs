@@ -405,6 +405,8 @@ pub enum Message {
     GraphExportPlaylist,
     /// Toggle L2-normalization of PCA vectors in graph view
     GraphToggleNormalize(bool),
+    /// Switch graph layout algorithm (t-SNE / UMAP)
+    GraphSwitchAlgorithm,
     /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)
     GraphClusterSensitivity(usize),
     /// Change transition reach in graph view (0=Tight, 1=Medium, 2=Open)
