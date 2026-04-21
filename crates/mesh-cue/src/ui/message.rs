@@ -409,6 +409,8 @@ pub enum Message {
     GraphSwitchAlgorithm,
     /// Suggestion weight changed [similarity, key, intensity]
     GraphWeightsChanged([f32; 3]),
+    /// Cycle key filter strictness (Strict/Relaxed/Off)
+    GraphCycleKeyFilter,
     /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)
     GraphClusterSensitivity(usize),
     /// Change transition reach in graph view (0=Tight, 1=Medium, 2=Open)

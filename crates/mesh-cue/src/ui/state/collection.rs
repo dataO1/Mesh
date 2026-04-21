@@ -159,6 +159,8 @@ pub struct CollectionState {
     pub graph_algorithm: mesh_core::graph_compute::GraphAlgorithm,
     /// Custom suggestion weights [similarity, key, intensity] (sum to 1.0)
     pub suggestion_weights: [f32; 3],
+    /// Key filter strictness index (0=Strict, 1=Relaxed, 2=Off)
+    pub graph_key_filter_index: usize,
     /// Dynamic community thresholds for suggestion scoring
     pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Suggestion tracks for graph left panel (populated on seed select)
@@ -291,6 +293,7 @@ impl Default for CollectionState {
             graph_normalize_vectors: false,
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
             suggestion_weights: [0.25, 0.30, 0.30],
+            graph_key_filter_index: 0, // Strict by default
             community_thresholds: None,
             graph_suggestion_rows: Vec::new(),
             graph_table_state: {

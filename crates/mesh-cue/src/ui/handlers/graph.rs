@@ -408,10 +408,12 @@ impl MeshCueApp {
         // The top 30 will be highlighted as suggestions
         let reach_idx = state.transition_reach_index;
         let reach = SuggestionTransitionReach::ALL[reach_idx.min(2)];
+        let key_filter = SuggestionKeyFilter::ALL[self.collection.graph_key_filter_index.min(2)];
+        let (harmonic_floor, blended_threshold) = key_filter.thresholds();
         let config = SuggestionConfig {
             blend_crossover: SuggestionBlendMode::Balanced.crossover(),
-            harmonic_floor: 0.0,
-            blended_threshold: 0.0,
+            harmonic_floor,
+            blended_threshold,
             stem_complement: false,
             transition_target: reach.target_distance(self.collection.community_thresholds.as_ref()),
             transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),

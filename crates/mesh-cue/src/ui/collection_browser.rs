@@ -302,6 +302,17 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                             .style(button::secondary)
                             .padding([2, 6])
                     },
+                    Space::new().width(4.0),
+                    text("Key").size(sz(10.0)),
+                    {
+                        let idx = state.graph_key_filter_index;
+                        let labels = ["Strict", "Relax", "Off"];
+                        let label = labels[idx.min(2)];
+                        button(text(label).size(sz(10.0)))
+                            .on_press(Message::GraphCycleKeyFilter)
+                            .style(button::secondary)
+                            .padding([2, 6])
+                    },
                     Space::new().width(8.0),
                     text("Norm").size(sz(10.0)),
                     toggler(graph_state.normalize_vectors)
