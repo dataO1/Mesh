@@ -635,9 +635,16 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
     let ox = bounds.x;
     let oy = bounds.y;
 
-    // Diagnostic: log transform params when seed is active (rate-limited)
+    // Diagnostic: unconditional log to verify draw is called
     use std::sync::atomic::{AtomicU32, Ordering};
+    static DRAW_CALL_COUNT: AtomicU32 = AtomicU32::new(0);
     static SEED_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    let draw_n = DRAW_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if draw_n < 3 || (draw_n % 600 == 0) {
+        log::info!("[GRAPH DRAW] call#{} has_seed={} seed_stack_len={} suggestions={} edges={} positions={}",
+            draw_n, has_seed, state.seed_stack.len(), state.suggestion_ids.len(),
+            state.suggestion_edges.len(), state.positions.len());
+    }
     if has_seed {
         let seed_count = SEED_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
         if seed_count < 3 {
