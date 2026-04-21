@@ -25,10 +25,6 @@ pub enum MlModelType {
     /// Jamendo mood/theme classification head (~2.7 MB)
     /// 56-class sigmoid output over mood/theme tags
     JamendoMood,
-    /// Beat This! small model (~10 MB) — SOTA beat + downbeat tracking
-    /// Input: mel spectrogram [batch, n_frames, 128] at 22050 Hz
-    /// Outputs: beat_activation + downbeat_activation logits per frame (50 fps)
-    BeatThis,
     /// Voice/Instrumental classifier (~502 KB) — positive class ("voice") at index 1
     /// Classes: [instrumental, voice] — 2-class softmax on EffNet embeddings
     VoiceInstrumental,
@@ -63,7 +59,6 @@ impl MlModelType {
             // bsdynamic = dynamic batch size ONNX variant (bs64 is TF-only)
             MlModelType::EffNetEmbedding => "discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
-            MlModelType::BeatThis => "beat_this_small.onnx",
             MlModelType::VoiceInstrumental => "voice_instrumental-discogs-effnet-1.onnx",
             MlModelType::Timbre => "timbre-discogs-effnet-1.onnx",
             MlModelType::TonalAtonal => "tonal_atonal-discogs-effnet-1.onnx",
@@ -80,7 +75,6 @@ impl MlModelType {
         match self {
             MlModelType::EffNetEmbedding => "https://github.com/dataO1/Mesh/releases/download/models/discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "https://github.com/dataO1/Mesh/releases/download/models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
-            MlModelType::BeatThis => "https://github.com/dataO1/Mesh/releases/download/models/beat_this_small.onnx",
             MlModelType::VoiceInstrumental => "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
             MlModelType::Timbre => "https://essentia.upf.edu/models/classification-heads/timbre/timbre-discogs-effnet-1.onnx",
             MlModelType::TonalAtonal => "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-discogs-effnet-1.onnx",
@@ -98,7 +92,6 @@ impl MlModelType {
         match self {
             MlModelType::EffNetEmbedding => "EffNet (Genre + Embedding)",
             MlModelType::JamendoMood => "Jamendo Mood/Theme",
-            MlModelType::BeatThis => "Beat This! (Beat Tracking)",
             MlModelType::VoiceInstrumental => "Voice/Instrumental",
             MlModelType::Timbre => "Timbre (Bright/Dark)",
             MlModelType::TonalAtonal => "Tonal/Atonal",
@@ -130,10 +123,6 @@ impl MlModelType {
         ]
     }
 
-    /// Models needed for advanced beat detection
-    pub fn beat_detection_models() -> &'static [MlModelType] {
-        &[MlModelType::BeatThis]
-    }
 }
 
 /// Manages ML model downloads and caching
@@ -199,14 +188,6 @@ impl MlModelManager {
     /// Ensure all models needed for ML analysis are available
     pub fn ensure_all_models(&self) -> Result<(), String> {
         for &model in MlModelType::base_models() {
-            self.ensure_model(model, None)?;
-        }
-        Ok(())
-    }
-
-    /// Ensure Beat This! model is available (for advanced beat detection)
-    pub fn ensure_beat_detection_models(&self) -> Result<(), String> {
-        for &model in MlModelType::beat_detection_models() {
             self.ensure_model(model, None)?;
         }
         Ok(())

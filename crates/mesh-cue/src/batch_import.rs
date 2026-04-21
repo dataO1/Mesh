@@ -30,11 +30,11 @@
 //! // Poll progress_rx for updates
 //! ```
 
-use crate::analysis::{analyze_audio, fit_bpm_to_range, generate_beat_grid, AnalysisResult};
-use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
+use crate::analysis::{analyze_audio, AnalysisResult};
+use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file;
 use crate::import::StemImporter;
-use crate::ml_analysis::{self, BeatThisAnalyzer, MlAnalysisResult, MlAnalyzer};
+use crate::ml_analysis::{self, MlAnalysisResult, MlAnalyzer};
 use crate::separation::{SeparationConfig, SeparationService};
 use anyhow::{Context, Result};
 use mesh_core::db::{DatabaseService, MlAnalysisData, Track};
@@ -545,12 +545,10 @@ pub fn compute_stem_energy_ratios(
 ///
 /// This is run by worker threads. When `ml_analyzer` is provided,
 /// also runs ML analysis (genre, arousal/valence, mood) and auto-tagging.
-/// When `beat_this` is provided and backend is Advanced, uses Beat This! for BPM/beats.
 fn process_single_track(
     group: &StemGroup,
     config: &ImportConfig,
     ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
-    beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
     known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = group.base_name.clone();
@@ -679,52 +677,8 @@ fn process_single_track(
     // Select BPM audio: drums-only if available, otherwise full mix
     let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
 
-    // Run Beat This! BEFORE subprocess if using Advanced backend
-    // (ort is thread-safe, mel spectrogram borrows bpm_audio, then mono_samples is moved to subprocess)
-    let beat_this_result = if config.bpm_config.backend == BeatDetectionBackend::Advanced {
-        if let Some(bt_arc) = beat_this {
-            log::info!("process_single_track: Computing Beat This! mel spectrogram for '{}'", base_name);
-            match ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(bpm_audio, 44100.0) {
-                Ok(mel) => {
-                    match bt_arc.lock() {
-                        Ok(mut analyzer) => {
-                            match analyzer.detect_beats(&mel) {
-                                Ok(result) => {
-                                    log::info!(
-                                        "process_single_track: Beat This! detected {} beats, BPM={:.1}",
-                                        result.beat_times.len(),
-                                        result.bpm
-                                    );
-                                    Some(result)
-                                }
-                                Err(e) => {
-                                    log::warn!("process_single_track: Beat This! inference failed, falling back to Essentia: {}", e);
-                                    None
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("process_single_track: BeatThisAnalyzer lock poisoned: {}", e);
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("process_single_track: Beat This! mel spectrogram failed: {}", e);
-                    None
-                }
-            }
-        } else {
-            log::warn!("process_single_track: Advanced backend selected but Beat This! model not available");
-            None
-        }
-    } else {
-        None
-    };
-
-    // Analyze audio in isolated subprocess (Essentia for key, LUFS, features;
-    // BPM only if Simple backend or if Beat This! failed above)
-    let mut analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
+    // Analyze audio in isolated subprocess (Essentia for key, LUFS, features, BPM, beat grid)
+    let analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
         Ok(a) => a,
         Err(e) => {
             return TrackImportResult {
@@ -735,41 +689,6 @@ fn process_single_track(
             };
         }
     };
-
-    // Override BPM/beat_grid with Beat This! results when available
-    if let Some(ref bt_result) = beat_this_result {
-        // Round BPM for display/engine use; keep raw value as original for reference
-        analysis.bpm = fit_bpm_to_range(bt_result.bpm, config.bpm_config.min_tempo, config.bpm_config.max_tempo);
-        analysis.original_bpm = bt_result.bpm;
-        analysis.confidence = bt_result.confidence;
-
-        // Convert Beat This! beat times (seconds) to a fixed beat grid at system sample rate
-        // Use the first detected beat as the phase anchor, BPM from median IBI
-        let duration_samples = (analysis.beat_grid.last().copied().unwrap_or(0) as f64 * 1.1) as u64;
-        let duration_from_source = if !bt_result.beat_times.is_empty() {
-            // Duration in system samples: last beat time * sample_rate + some padding
-            let last_beat = bt_result.beat_times.last().unwrap_or(&0.0);
-            ((last_beat + 2.0) * SAMPLE_RATE as f64) as u64
-        } else {
-            duration_samples
-        };
-
-        // Build fixed grid from Beat This! detected beats
-        // Convert beat times to tick positions for generate_beat_grid (expects f64 seconds)
-        analysis.beat_grid = generate_beat_grid(
-            bt_result.bpm,
-            &bt_result.beat_times,
-            &[], // No raw audio needed — we have direct beat positions
-            duration_from_source,
-            None, // No ODF — Beat This! provides better phase than onset search
-        );
-
-        log::info!(
-            "process_single_track: Overrode with Beat This! — BPM={:.1}, {} grid beats",
-            analysis.bpm,
-            analysis.beat_grid.len()
-        );
-    }
 
     log::info!(
         "process_single_track: '{}' analyzed: BPM={:.1}, Key={}",
@@ -1172,7 +1091,6 @@ fn process_mixed_track(
     config: &ImportConfig,
     progress_tx: &Sender<ImportProgress>,
     ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
-    beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
     known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = file.base_name.clone();
@@ -1291,7 +1209,7 @@ fn process_mixed_track(
     // Process using existing pipeline
     // Note: We don't delete source files from group.all_paths() since they're temp files
     // that will be cleaned up by the guards
-    process_single_track(&group, config, ml_analyzer, beat_this, known_artists)
+    process_single_track(&group, config, ml_analyzer, known_artists)
 }
 
 /// Run the batch import process
@@ -1335,7 +1253,7 @@ pub fn run_batch_import(
     }
 
     // Initialize ML analyzer if models are available
-    let (ml_analyzer, beat_this_analyzer): (Option<Arc<Mutex<MlAnalyzer>>>, Option<Arc<Mutex<BeatThisAnalyzer>>>) = {
+    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
         match ml_analysis::models::MlModelManager::new() {
             Ok(mgr) => {
                 // Ensure models are downloaded before starting import
@@ -1345,7 +1263,7 @@ pub fn run_batch_import(
                 let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
                     .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
 
-                let ml = match MlAnalyzer::new(&model_dir) {
+                match MlAnalyzer::new(&model_dir) {
                     Ok(analyzer) => {
                         log::info!("run_batch_import: ML analyzer initialized");
                         Some(Arc::new(Mutex::new(analyzer)))
@@ -1354,32 +1272,11 @@ pub fn run_batch_import(
                         log::warn!("run_batch_import: ML models not available, skipping ML analysis: {}", e);
                         None
                     }
-                };
-
-                // Initialize Beat This! analyzer if using Advanced backend
-                let bt = if config.bpm_config.backend == BeatDetectionBackend::Advanced {
-                    if let Err(e) = mgr.ensure_beat_detection_models() {
-                        log::warn!("run_batch_import: Failed to download Beat This! model: {}", e);
-                    }
-                    match BeatThisAnalyzer::new(&model_dir) {
-                        Ok(analyzer) => {
-                            log::info!("run_batch_import: Beat This! analyzer initialized");
-                            Some(Arc::new(Mutex::new(analyzer)))
-                        }
-                        Err(e) => {
-                            log::warn!("run_batch_import: Beat This! model not available, falling back to Essentia: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                (ml, bt)
+                }
             }
             Err(e) => {
                 log::warn!("run_batch_import: Cannot determine model cache dir: {}", e);
-                (None, None)
+                None
             }
         }
     };
@@ -1419,7 +1316,7 @@ pub fn run_batch_import(
                 });
 
                 // Process the track
-                let result = process_single_track(group, &config, ml_analyzer.as_ref(), beat_this_analyzer.as_ref(), &known_artists);
+                let result = process_single_track(group, &config, ml_analyzer.as_ref(), &known_artists);
 
                 // Delete source files on success
                 if result.success {
@@ -1515,8 +1412,8 @@ pub fn run_batch_import_mixed(
         return;
     }
 
-    // Initialize ML analyzer and Beat This! if models are available
-    let (ml_analyzer, beat_this_analyzer): (Option<Arc<Mutex<MlAnalyzer>>>, Option<Arc<Mutex<BeatThisAnalyzer>>>) = {
+    // Initialize ML analyzer if models are available
+    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
         match ml_analysis::models::MlModelManager::new() {
             Ok(mgr) => {
                 if let Err(e) = mgr.ensure_all_models() {
@@ -1525,7 +1422,7 @@ pub fn run_batch_import_mixed(
                 let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
                     .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
 
-                let ml = match MlAnalyzer::new(&model_dir) {
+                match MlAnalyzer::new(&model_dir) {
                     Ok(analyzer) => {
                         log::info!("run_batch_import_mixed: ML analyzer initialized");
                         Some(Arc::new(Mutex::new(analyzer)))
@@ -1534,31 +1431,11 @@ pub fn run_batch_import_mixed(
                         log::warn!("run_batch_import_mixed: ML models not available, skipping ML analysis: {}", e);
                         None
                     }
-                };
-
-                let bt = if config.bpm_config.backend == BeatDetectionBackend::Advanced {
-                    if let Err(e) = mgr.ensure_beat_detection_models() {
-                        log::warn!("run_batch_import_mixed: Failed to download Beat This! model: {}", e);
-                    }
-                    match BeatThisAnalyzer::new(&model_dir) {
-                        Ok(analyzer) => {
-                            log::info!("run_batch_import_mixed: Beat This! analyzer initialized");
-                            Some(Arc::new(Mutex::new(analyzer)))
-                        }
-                        Err(e) => {
-                            log::warn!("run_batch_import_mixed: Beat This! not available: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                (ml, bt)
+                }
             }
             Err(e) => {
                 log::warn!("run_batch_import_mixed: Cannot determine model cache dir: {}", e);
-                (None, None)
+                None
             }
         }
     };
@@ -1590,7 +1467,7 @@ pub fn run_batch_import_mixed(
         });
 
         // Process the track (separation + import)
-        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref(), beat_this_analyzer.as_ref(), &known_artists);
+        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref(), &known_artists);
 
         // Delete source file on success
         if result.success {

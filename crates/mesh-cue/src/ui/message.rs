@@ -12,7 +12,7 @@ use mesh_widgets::PlaylistBrowserMessage;
 
 use crate::analysis::{ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
-use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType};
+use crate::config::{BackendType, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
@@ -151,8 +151,6 @@ pub enum Message {
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
     UpdateSettingsBpmSource(BpmSource),
-    /// Update beat detection backend (Simple = Essentia, Advanced = Beat This!)
-    UpdateSettingsBeatDetection(BeatDetectionBackend),
     UpdateSettingsSlicerBufferBars(u32),
     /// Update selected audio output pair
     UpdateSettingsOutputPair(usize),

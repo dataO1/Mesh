@@ -428,7 +428,6 @@ impl MeshCueApp {
             Message::UpdateSettingsTrackNameFormat(value) => return self.handle_update_settings_track_name_format(value),
             Message::UpdateSettingsGridBars(value) => return self.handle_update_settings_grid_bars(value),
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
-            Message::UpdateSettingsBeatDetection(backend) => return self.handle_update_settings_beat_detection(backend),
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
             Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
             Message::UpdateSettingsScratchInterpolation(method) => return self.handle_update_settings_scratch_interpolation(method),
@@ -760,7 +759,7 @@ impl MeshCueApp {
                 base,
                 super::import_modal::view(
                     &self.import_state,
-                    self.domain.config().analysis.bpm.backend == crate::config::BeatDetectionBackend::Advanced,
+                    false,  // no Advanced beat detection banner
                 ),
                 Message::CloseImport,
             )
@@ -1129,28 +1128,7 @@ impl MeshCueApp {
             Message::CancelReanalysis,
         );
 
-        // Show a subtle hint when ML beat detection is active for Beats analysis
-        let uses_beats = matches!(
-            self.reanalysis_state.analysis_type,
-            Some(crate::analysis::AnalysisType::Beats)
-        );
-        let uses_advanced = self.domain.config().analysis.bpm.backend
-            == crate::config::BeatDetectionBackend::Advanced;
-
-        if uses_beats && uses_advanced {
-            Some(
-                column![
-                    bar,
-                    text("ML beat detection active — switch to Simple in Settings if too slow")
-                        .size(sz(11.0))
-                        .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
-                ]
-                .spacing(2)
-                .into(),
-            )
-        } else {
-            Some(bar)
-        }
+        Some(bar)
     }
 
     fn view_pca_progress_bar(&self) -> Option<Element<'_, Message>> {

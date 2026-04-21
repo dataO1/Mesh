@@ -122,6 +122,33 @@ All notable changes to Mesh are documented in this file.
 - **Auto headphones cue** — Logarithmic volume curve for more musical
   crossfader-to-cue transitions.
 
+### Removed
+
+- **16-dim HNSW audio feature vector** — The handcrafted 16-dimensional feature
+  vector (BPM, key, spectral centroid, etc.) and its CozoDB HNSW index have been
+  removed. Similarity search now exclusively uses EffNet PCA embeddings with
+  brute-force cosine distance, which produces better clustering and more
+  meaningful suggestions. The `audio_features` and `track_dissonance` database
+  relations are no longer created or queried.
+
+- **Binary mood classifiers** — The five binary mood models (Happy, Aggressive,
+  Relaxed, Sad, Party) have been removed from the ML inference pipeline. These
+  ~502 KB ONNX heads were only used for the legacy `composite_intensity()`
+  formula. Intensity scoring now uses `composite_intensity_v2()` which relies on
+  pure audio measurements (spectral flux, crest factor, etc.) from multi-frame
+  analysis. The Jamendo 56-class mood/theme model remains for mood tagging.
+
+- **Beat This! ML beat detection** — The Beat This! ONNX model (~10 MB) and its
+  Advanced/Simple backend toggle have been removed. BPM detection now always uses
+  Essentia's RhythmExtractor2013 with onset-weighted phase refinement. The
+  Settings panel no longer shows a beat detection method selector.
+
+- **Legacy intensity scoring** — `composite_intensity()`, `normalize_intensity_by_genre()`,
+  and the `batch_get_flatness`/`batch_get_dissonance` methods have been removed.
+  All intensity computation goes through `composite_intensity_v2()` using the
+  7-component `IntensityComponents` stored per track. Tracks without v2 data
+  default to neutral (0.5).
+
 ### Fixed
 
 - **Energy arc not updating on playlist switch** — Stale suggestion state

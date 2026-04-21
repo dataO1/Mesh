@@ -20,7 +20,7 @@ pub use loudness::{
 // (analyze_partial, analyze_partial_in_subprocess) are defined below and
 // are already public.
 
-use crate::config::{BeatDetectionBackend, BpmConfig};
+use crate::config::BpmConfig;
 use mesh_core::playlist::NodeId;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -255,41 +255,32 @@ pub fn analyze_audio(samples: &[f32], bpm_samples: Option<&[f32]>, bpm_config: &
         if bpm_samples.is_some() { "separate" } else { "same" }
     );
 
-    // BPM detection: skip if using Advanced backend (Beat This! runs outside subprocess)
-    let (bpm_result_bpm, beat_ticks, bpm_confidence) =
-        if bpm_config.backend == BeatDetectionBackend::Advanced {
-            log::info!("analyze_audio: Skipping Essentia BPM (Advanced backend — Beat This! runs outside subprocess)");
-            (120.0, vec![], 0.0_f32)
-        } else {
-            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
-            log::info!(
-                "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s), confidence={:.2}",
-                bpm_result.beat_ticks.len(),
-                bpm_result.beat_ticks.first().unwrap_or(&0.0),
-                bpm_result.beat_ticks.last().unwrap_or(&0.0),
-                bpm_result.confidence
-            );
-            (bpm_result.bpm, bpm_result.beat_ticks, bpm_result.confidence)
-        };
+    // BPM detection via Essentia RhythmExtractor2013
+    let (bpm_result_bpm, beat_ticks, bpm_confidence) = {
+        let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
+        log::info!(
+            "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s), confidence={:.2}",
+            bpm_result.beat_ticks.len(),
+            bpm_result.beat_ticks.first().unwrap_or(&0.0),
+            bpm_result.beat_ticks.last().unwrap_or(&0.0),
+            bpm_result.confidence
+        );
+        (bpm_result.bpm, bpm_result.beat_ticks, bpm_result.confidence)
+    };
 
     // Compute onset detection function for phase-optimal grid alignment
-    // (Skip for Advanced backend — grid is built from Beat This! output instead)
-    let onset_function = if bpm_config.backend == BeatDetectionBackend::Advanced {
-        None
-    } else {
-        match detect_onset_function(bpm_audio) {
-            Ok(odf) => {
-                log::info!(
-                    "analyze_audio: ODF computed ({} frames at {:.1} fps)",
-                    odf.values.len(),
-                    odf.frame_rate
-                );
-                Some(odf)
-            }
-            Err(e) => {
-                log::warn!("Onset detection failed, grid will use circular median only: {}", e);
-                None
-            }
+    let onset_function = match detect_onset_function(bpm_audio) {
+        Ok(odf) => {
+            log::info!(
+                "analyze_audio: ODF computed ({} frames at {:.1} fps)",
+                odf.values.len(),
+                odf.frame_rate
+            );
+            Some(odf)
+        }
+        Err(e) => {
+            log::warn!("Onset detection failed, grid will use circular median only: {}", e);
+            None
         }
     };
 

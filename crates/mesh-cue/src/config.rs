@@ -161,31 +161,6 @@ impl AnalysisConfig {
 /// Note: Use `calculate_gain_db_direct(lufs)` for non-optional gain calculation.
 pub type LoudnessConfig = CoreLoudnessConfig;
 
-/// Beat detection backend
-///
-/// Controls which algorithm is used for BPM detection and beat grid generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum BeatDetectionBackend {
-    /// Essentia RhythmExtractor2013 + onset-weighted phase refinement
-    /// Fast, no model download required
-    #[default]
-    Simple,
-    /// Beat This! ONNX model (CPJKU, ISMIR 2024)
-    /// Higher accuracy on some genres, built-in downbeat detection
-    /// Downloads ~8 MB model on first use
-    Advanced,
-}
-
-impl std::fmt::Display for BeatDetectionBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BeatDetectionBackend::Simple => write!(f, "Simple"),
-            BeatDetectionBackend::Advanced => write!(f, "Advanced"),
-        }
-    }
-}
-
 /// Source audio for BPM detection
 ///
 /// Determines which audio is used for tempo analysis.
@@ -224,8 +199,6 @@ pub struct BpmConfig {
     pub max_tempo: i32,
     /// Which audio source to use for BPM detection
     pub source: BpmSource,
-    /// Which beat detection algorithm to use
-    pub backend: BeatDetectionBackend,
 }
 
 impl Default for BpmConfig {
@@ -234,7 +207,6 @@ impl Default for BpmConfig {
             min_tempo: 40,
             max_tempo: 208,
             source: BpmSource::default(),
-            backend: BeatDetectionBackend::default(),
         }
     }
 }

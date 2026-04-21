@@ -65,12 +65,6 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Handle UpdateSettingsBeatDetection message
-    pub fn handle_update_settings_beat_detection(&mut self, backend: crate::config::BeatDetectionBackend) -> Task<Message> {
-        self.settings.draft_beat_detection = backend;
-        Task::none()
-    }
-
     /// Handle UpdateSettingsSlicerBufferBars message
     pub fn handle_update_settings_slicer_buffer_bars(&mut self, bars: u32) -> Task<Message> {
         self.settings.draft_slicer_buffer_bars = bars;
@@ -157,7 +151,6 @@ impl MeshCueApp {
             config.analysis.bpm.min_tempo = min;
             config.analysis.bpm.max_tempo = max;
             config.analysis.bpm.source = self.settings.draft_bpm_source;
-            config.analysis.bpm.backend = self.settings.draft_beat_detection;
             config.analysis.parallel_processes = parallel;
             config.analysis.validate(); // validates both bpm and parallel_processes
 

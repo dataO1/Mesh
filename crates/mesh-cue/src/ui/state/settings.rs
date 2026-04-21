@@ -1,7 +1,7 @@
 //! Settings modal state
 
 use crate::audio::StereoPair;
-use crate::config::{BackendType, BeatDetectionBackend, BpmSource, Config, ModelType};
+use crate::config::{BackendType, BpmSource, Config, ModelType};
 use mesh_core::engine::InterpolationMethod;
 use mesh_widgets::{AppFont, FontSize};
 
@@ -41,9 +41,6 @@ pub struct SettingsState {
     pub draft_separation_use_gpu: bool,
     /// Draft shift augmentation value (1-5)
     pub draft_separation_shifts: u8,
-    // ── Beat Detection Settings ────────────────────────────────────────────
-    /// Draft beat detection backend (Simple = Essentia, Advanced = Beat This!)
-    pub draft_beat_detection: BeatDetectionBackend,
     // ── Theme Settings ────────────────────────────────────────────────────
     /// Draft theme name (from theme.yaml)
     pub draft_theme: String,
@@ -76,8 +73,6 @@ impl SettingsState {
             draft_separation_model: config.analysis.separation.model,
             draft_separation_use_gpu: config.analysis.separation.use_gpu,
             draft_separation_shifts: config.analysis.separation.shifts,
-            // Beat detection
-            draft_beat_detection: config.analysis.bpm.backend,
             // Theme
             draft_theme: config.display.theme.clone(),
             available_theme_names: Vec::new(),

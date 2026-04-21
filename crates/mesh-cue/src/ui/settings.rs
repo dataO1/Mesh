@@ -3,7 +3,7 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
-use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType, SeparationConfig};
+use crate::config::{BackendType, BpmSource, ModelType, SeparationConfig};
 use mesh_widgets::{sz, AppFont, FontSize};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use mesh_core::engine::InterpolationMethod;
@@ -218,35 +218,6 @@ fn view_bpm_section(state: &SettingsState) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Center);
 
-    // Beat detection backend subsection
-    let beat_title = text("Beat Detection Method").size(sz(14.0));
-    let beat_hint = text("Simple = Essentia (fast, no download). Advanced = Beat This! ML (~8 MB model, SOTA accuracy)")
-        .size(sz(12.0));
-
-    let beat_options = [BeatDetectionBackend::Simple, BeatDetectionBackend::Advanced];
-    let beat_buttons: Vec<Element<Message>> = beat_options
-        .iter()
-        .map(|&backend| {
-            let is_selected = state.draft_beat_detection == backend;
-            let btn = button(text(backend.to_string()).size(sz(12.0)))
-                .on_press(Message::UpdateSettingsBeatDetection(backend))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(90.0));
-            btn.into()
-        })
-        .collect();
-
-    let beat_label = text("Method:").size(sz(14.0));
-    let beat_row = row![
-        beat_label,
-        row(beat_buttons).spacing(4).align_y(Alignment::Center),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
 
     // Parallel processes subsection
     let parallel_title = text("Parallel Analysis").size(sz(14.0));
@@ -274,10 +245,6 @@ fn view_bpm_section(state: &SettingsState) -> Element<'_, Message> {
             source_title,
             source_hint,
             source_row,
-            Space::new().height(10),
-            beat_title,
-            beat_hint,
-            beat_row,
             Space::new().height(10),
             parallel_title,
             parallel_hint,
