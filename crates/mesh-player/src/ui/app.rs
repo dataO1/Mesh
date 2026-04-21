@@ -746,6 +746,7 @@ impl MeshApp {
                 state.stem_colors = Some(self.collection_browser.arc_stem_colors);
                 state.accent_color = Some(self.collection_browser.arc_success);
                 self.collection_browser.canvas_state.graph = Some(state);
+                self.collection_browser.community_thresholds = Some(data.thresholds);
                 self.collection_browser.graph_building = false;
                 log::info!("[GRAPH] Graph data ready — {} nodes",
                     self.collection_browser.canvas_state.graph.as_ref().map(|s| s.positions.len()).unwrap_or(0));
@@ -2206,6 +2207,7 @@ pub fn build_graph_task(
 
                 let positions = graph_compute::compute_tsne_layout(&pca_data, false);
                 let cluster_result = graph_compute::run_consensus_clustering(&positions);
+                let thresholds = graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
                 Some(super::message::GraphData {
                     positions,
@@ -2213,6 +2215,7 @@ pub fn build_graph_task(
                     confidence: cluster_result.confidence,
                     colors: cluster_result.colors,
                     track_meta,
+                    thresholds,
                 })
             })
             .await

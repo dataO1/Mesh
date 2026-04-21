@@ -465,12 +465,14 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
     let key_model = app.config.display.key_scoring_model;
     let played = app.history.played_paths().clone();
 
-    // Build suggestion algorithm config from display settings
+    // Build suggestion algorithm config from display settings + dynamic community thresholds
+    let community_thresholds = app.collection_browser.community_thresholds.clone();
     let suggestion_config = crate::suggestions::SuggestionConfig::from_display(
         app.config.display.suggestion_blend_mode,
         app.config.display.suggestion_key_filter,
         app.config.display.suggestion_stem_complement,
         app.config.display.suggestion_transition_reach,
+        community_thresholds.as_ref(),
     );
 
     // Snapshot current playlist context for the split logic

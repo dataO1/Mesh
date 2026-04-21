@@ -79,6 +79,8 @@ pub struct CollectionBrowserState {
     pub arc_danger: Color,
     /// Whether graph data is currently being computed
     pub graph_building: bool,
+    /// Dynamic community thresholds from graph clustering (for suggestion algorithm)
+    pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Whether to show the analytics panel (energy arc + graph)
     pub show_analytics: bool,
     /// Combined canvas state: energy arc ribbon + graph view (single Canvas widget).
@@ -175,6 +177,7 @@ impl CollectionBrowserState {
             arc_warning: Color::from_rgb(0.77, 0.60, 0.17),
             arc_danger: Color::from_rgb(0.65, 0.24, 0.25),
             graph_building: false,
+            community_thresholds: None,
             show_analytics: true,
             canvas_state: mesh_widgets::browser_canvas::BrowserCanvasState {
                 energy_arc: None,

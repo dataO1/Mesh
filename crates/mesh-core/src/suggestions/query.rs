@@ -38,6 +38,7 @@ impl SuggestionConfig {
         key_filter: super::config::SuggestionKeyFilter,
         stem_complement: bool,
         transition_reach: super::config::SuggestionTransitionReach,
+        community_thresholds: Option<&crate::graph_compute::CommunityThresholds>,
     ) -> Self {
         let (harmonic_floor, blended_threshold) = key_filter.thresholds();
         Self {
@@ -45,8 +46,8 @@ impl SuggestionConfig {
             harmonic_floor,
             blended_threshold,
             stem_complement,
-            transition_target: transition_reach.target_distance(),
-            transition_width: transition_reach.bell_width(),
+            transition_target: transition_reach.target_distance(community_thresholds),
+            transition_width: transition_reach.bell_width(community_thresholds),
         }
     }
 }

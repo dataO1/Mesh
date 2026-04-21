@@ -201,4 +201,6 @@ pub struct GraphData {
     pub confidence: std::collections::HashMap<i64, f32>,
     pub colors: std::collections::HashMap<i32, [f32; 3]>,
     pub track_meta: std::collections::HashMap<i64, mesh_core::graph_compute::TrackMeta>,
+    /// Dynamic community thresholds for suggestion scoring
+    pub thresholds: mesh_core::graph_compute::CommunityThresholds,
 }

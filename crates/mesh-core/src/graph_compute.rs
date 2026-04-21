@@ -69,6 +69,32 @@ pub struct TrackMeta {
     pub bpm: Option<f64>,
 }
 
+/// Dynamic similarity thresholds derived from actual community structure.
+/// Replaces the hardcoded target_distance/bell_width values.
+#[derive(Debug, Clone)]
+pub struct CommunityThresholds {
+    /// Tight: target distance stays within same community
+    pub tight_target: f32,
+    pub tight_width: f32,
+    /// Medium: same community + nearest neighbors
+    pub medium_target: f32,
+    pub medium_width: f32,
+    /// Open: ~50/50 same community vs others
+    pub open_target: f32,
+    pub open_width: f32,
+}
+
+impl Default for CommunityThresholds {
+    fn default() -> Self {
+        // Fallback to original hardcoded values if no clustering data
+        Self {
+            tight_target: 0.25, tight_width: 0.08,
+            medium_target: 0.40, medium_width: 0.12,
+            open_target: 0.60, open_width: 0.18,
+        }
+    }
+}
+
 /// Result of consensus clustering.
 #[derive(Debug)]
 pub struct ClusterResult {
@@ -80,6 +106,8 @@ pub struct ClusterResult {
     /// Cluster colors as [r, g, b] floats (0..1). Derived from the
     /// community's average intensity (warm = high energy, cool = low energy).
     pub colors: HashMap<i32, [f32; 3]>,
+    /// Dynamic thresholds derived from community distance statistics
+    pub thresholds: CommunityThresholds,
 }
 
 /// Run Barnes-Hut t-SNE on PCA embeddings to produce 2D positions.
@@ -232,6 +260,7 @@ pub fn run_consensus_clustering(
             clusters: HashMap::new(),
             confidence: HashMap::new(),
             colors: HashMap::new(),
+            thresholds: CommunityThresholds::default(),
         };
     }
 
@@ -263,6 +292,7 @@ pub fn run_consensus_clustering(
             clusters: ids.iter().map(|&id| (id, -1)).collect(),
             confidence: ids.iter().map(|&id| (id, 0.0)).collect(),
             colors: HashMap::new(),
+            thresholds: CommunityThresholds::default(),
         };
     }
     let num_runs = all_labels.len();
@@ -396,7 +426,98 @@ pub fn run_consensus_clustering(
         num_clusters, num_runs, min_cluster_size, 70, n
     );
 
-    ClusterResult { clusters, confidence, colors }
+    ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default() }
+}
+
+/// Compute dynamic similarity thresholds from PCA distances + cluster assignments.
+///
+/// Analyzes intra-community and inter-community PCA cosine distances to derive
+/// thresholds that adapt to the library's actual structure:
+/// - Tight: 75th percentile of intra-community distances (stay inside)
+/// - Medium: midpoint between intra max and nearest-neighbor community distance
+/// - Open: median of all inter-community distances (~50/50)
+pub fn compute_community_thresholds(
+    pca_data: &[(i64, Vec<f32>)],
+    clusters: &HashMap<i64, i32>,
+) -> CommunityThresholds {
+    use crate::suggestions::query::cosine_distance_pub;
+
+    if pca_data.len() < 20 {
+        return CommunityThresholds::default();
+    }
+
+    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+
+    // Collect intra-community and inter-community distances
+    let mut intra_distances: Vec<f32> = Vec::new();
+    let mut inter_distances: Vec<f32> = Vec::new();
+
+    // Sample pairs (full N² is too expensive, sample up to 10000 pairs)
+    let ids: Vec<i64> = pca_data.iter().map(|(id, _)| *id).collect();
+    let n = ids.len();
+    let step = (n * n / 10000).max(1);
+    let mut pair_count = 0usize;
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            pair_count += 1;
+            if pair_count % step != 0 { continue; }
+
+            let (va, vb) = match (pca_map.get(&ids[i]), pca_map.get(&ids[j])) {
+                (Some(a), Some(b)) => (a, b),
+                _ => continue,
+            };
+            let dist = cosine_distance_pub(va, vb);
+            let ca = clusters.get(&ids[i]).copied().unwrap_or(-1);
+            let cb = clusters.get(&ids[j]).copied().unwrap_or(-1);
+
+            if ca >= 0 && ca == cb {
+                intra_distances.push(dist);
+            } else if ca >= 0 && cb >= 0 {
+                inter_distances.push(dist);
+            }
+        }
+    }
+
+    if intra_distances.is_empty() || inter_distances.is_empty() {
+        return CommunityThresholds::default();
+    }
+
+    intra_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    inter_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Tight: 75th percentile of intra-community distances
+    let tight_target = intra_distances[(intra_distances.len() * 3 / 4).min(intra_distances.len() - 1)];
+    // Open: median of inter-community distances
+    let open_target = inter_distances[inter_distances.len() / 2];
+    // Medium: midpoint
+    let medium_target = (tight_target + open_target) / 2.0;
+
+    // Bell widths proportional to the range they cover
+    let tight_width = (tight_target * 0.3).max(0.02);
+    let medium_width = ((open_target - tight_target) * 0.25).max(0.04);
+    let open_width = (open_target * 0.3).max(0.06);
+
+    // Normalize to [0, 1] range using the max observed distance
+    let max_dist = inter_distances.last().copied().unwrap_or(1.0).max(0.01);
+    let norm = |d: f32| (d / max_dist).clamp(0.05, 0.95);
+
+    let thresholds = CommunityThresholds {
+        tight_target: norm(tight_target),
+        tight_width: (tight_width / max_dist).max(0.02),
+        medium_target: norm(medium_target),
+        medium_width: (medium_width / max_dist).max(0.04),
+        open_target: norm(open_target),
+        open_width: (open_width / max_dist).max(0.06),
+    };
+
+    log::info!("[GRAPH] Community thresholds: tight={:.3} (w={:.3}), medium={:.3} (w={:.3}), open={:.3} (w={:.3}), from {} intra + {} inter samples",
+        thresholds.tight_target, thresholds.tight_width,
+        thresholds.medium_target, thresholds.medium_width,
+        thresholds.open_target, thresholds.open_width,
+        intra_distances.len(), inter_distances.len());
+
+    thresholds
 }
 
 /// Convert HSL to RGB. h in [0, 360), s and l in [0, 1].

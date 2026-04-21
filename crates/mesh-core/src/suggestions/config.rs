@@ -114,20 +114,35 @@ impl SuggestionTransitionReach {
     }
 
     /// Target normalized distance for the transition bell curve.
-    pub fn target_distance(self) -> f32 {
-        match self {
-            SuggestionTransitionReach::Tight  => 0.25,
-            SuggestionTransitionReach::Medium => 0.40,
-            SuggestionTransitionReach::Open   => 0.60,
+    /// Uses dynamic thresholds if available, otherwise falls back to hardcoded defaults.
+    pub fn target_distance(self, dynamic: Option<&crate::graph_compute::CommunityThresholds>) -> f32 {
+        match dynamic {
+            Some(t) => match self {
+                SuggestionTransitionReach::Tight  => t.tight_target,
+                SuggestionTransitionReach::Medium => t.medium_target,
+                SuggestionTransitionReach::Open   => t.open_target,
+            },
+            None => match self {
+                SuggestionTransitionReach::Tight  => 0.25,
+                SuggestionTransitionReach::Medium => 0.40,
+                SuggestionTransitionReach::Open   => 0.60,
+            },
         }
     }
 
     /// Width (2σ²) of the bell curve around the target distance.
-    pub fn bell_width(self) -> f32 {
-        match self {
-            SuggestionTransitionReach::Tight  => 0.08,
-            SuggestionTransitionReach::Medium => 0.12,
-            SuggestionTransitionReach::Open   => 0.18,
+    pub fn bell_width(self, dynamic: Option<&crate::graph_compute::CommunityThresholds>) -> f32 {
+        match dynamic {
+            Some(t) => match self {
+                SuggestionTransitionReach::Tight  => t.tight_width,
+                SuggestionTransitionReach::Medium => t.medium_width,
+                SuggestionTransitionReach::Open   => t.open_width,
+            },
+            None => match self {
+                SuggestionTransitionReach::Tight  => 0.08,
+                SuggestionTransitionReach::Medium => 0.12,
+                SuggestionTransitionReach::Open   => 0.18,
+            },
         }
     }
 }

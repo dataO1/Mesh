@@ -31,6 +31,7 @@ impl GraphBuildResult {
                 clusters: HashMap::new(),
                 confidence: HashMap::new(),
                 colors: HashMap::new(),
+                thresholds: mesh_core::graph_compute::CommunityThresholds::default(),
             },
             normalize: false,
             stem_colors: [Color::WHITE; 4],
@@ -100,8 +101,9 @@ impl MeshCueApp {
                     // Run t-SNE
                     let positions = mesh_core::graph_compute::compute_tsne_layout(&pca_data, normalize);
 
-                    // Run consensus clustering
-                    let cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);
+                    // Run consensus clustering + compute community thresholds
+                    let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);
+                    cluster_result.thresholds = mesh_core::graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
                     (positions, track_meta, pca_dims, cluster_result, normalize, stem_colors)
                 })
@@ -146,6 +148,7 @@ impl MeshCueApp {
             .collect();
 
         self.collection.graph_state = Some(state);
+        self.collection.community_thresholds = Some(data.cluster_result.thresholds.clone());
         log::info!("[GRAPH] Graph ready — {} nodes, {} clusters",
             data.positions.len(),
             data.cluster_result.colors.len());
@@ -409,8 +412,8 @@ impl MeshCueApp {
             harmonic_floor: 0.0,
             blended_threshold: 0.0,
             stem_complement: false,
-            transition_target: reach.target_distance(),
-            transition_width: reach.bell_width(),
+            transition_target: reach.target_distance(self.collection.community_thresholds.as_ref()),
+            transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),
         };
 
         let sources = vec![DbSource {

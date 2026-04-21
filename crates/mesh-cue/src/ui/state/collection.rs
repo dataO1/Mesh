@@ -155,6 +155,8 @@ pub struct CollectionState {
     pub graph_building: bool,
     /// Whether to L2-normalize PCA vectors (persists across graph rebuilds)
     pub graph_normalize_vectors: bool,
+    /// Dynamic community thresholds for suggestion scoring
+    pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Suggestion tracks for graph left panel (populated on seed select)
     pub graph_suggestion_rows: Vec<TrackRow<NodeId>>,
     /// Table state for the graph suggestion list
@@ -283,6 +285,7 @@ impl Default for CollectionState {
             graph_edges: None,
             graph_building: false,
             graph_normalize_vectors: false,
+            community_thresholds: None,
             graph_suggestion_rows: Vec::new(),
             graph_table_state: {
                 let mut ts = mesh_widgets::TrackTableState::new();
