@@ -415,7 +415,14 @@ impl MeshCueApp {
             stem_complement: false,
             transition_target: reach.target_distance(self.collection.community_thresholds.as_ref()),
             transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),
-            custom_weights: None,
+            custom_weights: {
+                let w = self.collection.suggestion_weights;
+                if (w[0] - 0.25).abs() > 0.01 || (w[1] - 0.30).abs() > 0.01 || (w[2] - 0.30).abs() > 0.01 {
+                    Some(w)
+                } else {
+                    None
+                }
+            },
         };
 
         let sources = vec![DbSource {

@@ -655,6 +655,14 @@ impl MeshCueApp {
             Message::GraphSeedForward => return self.handle_graph_seed_forward(),
             Message::GraphExportPlaylist => return self.handle_graph_export_playlist(),
             Message::GraphToggleNormalize(enabled) => return self.handle_graph_toggle_normalize(enabled),
+            Message::GraphWeightsChanged(weights) => {
+                self.collection.suggestion_weights = weights;
+                eprintln!("[WEIGHTS] similarity={:.2}, key={:.2}, intensity={:.2}", weights[0], weights[1], weights[2]);
+                // Re-query via slider changed (which handles the debounced re-query)
+                let energy = self.collection.graph_state.as_ref()
+                    .map(|s| s.energy_direction).unwrap_or(0.5);
+                return self.handle_graph_slider_changed(energy);
+            }
             Message::GraphSwitchAlgorithm => {
                 self.collection.graph_algorithm = self.collection.graph_algorithm.next();
                 self.collection.graph_state = None;

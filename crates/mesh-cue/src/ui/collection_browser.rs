@@ -319,6 +319,33 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
             )
             .width(Length::Fill);
 
+            // Weight tuner sliders
+            let [ws, wk, wi] = state.suggestion_weights;
+            let weight_row: Element<'_, Message> = row![
+                text(format!("S:{:.0}", ws * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, ws, move |v| {
+                    let total = v + wk + wi;
+                    if total > 0.0 { Message::GraphWeightsChanged([v/total, wk/total, wi/total]) }
+                    else { Message::GraphWeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(Length::Fill),
+                text(format!("K:{:.0}", wk * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, wk, move |v| {
+                    let total = ws + v + wi;
+                    if total > 0.0 { Message::GraphWeightsChanged([ws/total, v/total, wi/total]) }
+                    else { Message::GraphWeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(Length::Fill),
+                text(format!("I:{:.0}", wi * 100.0)).size(sz(9.0)),
+                slider(0.0..=1.0_f32, wi, move |v| {
+                    let total = ws + wk + v;
+                    if total > 0.0 { Message::GraphWeightsChanged([ws/total, wk/total, v/total]) }
+                    else { Message::GraphWeightsChanged([0.33, 0.33, 0.34]) }
+                }).step(0.01).width(Length::Fill),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .padding([2, 8])
+            .into();
+
             // Legend with PCA dims info
             let dims_info = if graph_state.pca_dims > 0 {
                 format!("PCA: {}d", graph_state.pca_dims)
@@ -365,6 +392,7 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
 
             let right_panel = column![
                 controls,
+                weight_row,
                 legend,
                 graph_canvas,
             ]

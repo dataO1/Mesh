@@ -157,6 +157,8 @@ pub struct CollectionState {
     pub graph_normalize_vectors: bool,
     /// Graph layout algorithm (t-SNE or UMAP)
     pub graph_algorithm: mesh_core::graph_compute::GraphAlgorithm,
+    /// Custom suggestion weights [similarity, key, intensity] (sum to 1.0)
+    pub suggestion_weights: [f32; 3],
     /// Dynamic community thresholds for suggestion scoring
     pub community_thresholds: Option<mesh_core::graph_compute::CommunityThresholds>,
     /// Suggestion tracks for graph left panel (populated on seed select)
@@ -288,6 +290,7 @@ impl Default for CollectionState {
             graph_building: false,
             graph_normalize_vectors: false,
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
+            suggestion_weights: [0.25, 0.30, 0.30],
             community_thresholds: None,
             graph_suggestion_rows: Vec::new(),
             graph_table_state: {
