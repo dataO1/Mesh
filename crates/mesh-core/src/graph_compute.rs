@@ -229,7 +229,7 @@ pub fn compute_umap_layout(
     pca_data: &[(i64, Vec<f32>)],
     normalize: bool,
 ) -> HashMap<i64, (f32, f32)> {
-    use ndarray::{Array2, ArrayView2};
+    use ndarray::Array2;
     use umap_rs::{Umap, UmapConfig};
     use umap_rs::config::{GraphParams, ManifoldParams, OptimizationParams};
 
@@ -266,7 +266,7 @@ pub fn compute_umap_layout(
     let n_neighbors = ((n as f32).sqrt() as usize).clamp(5, 50);
     let n_epochs = if n < 500 { 200 } else { 500 };
 
-    // Brute-force KNN computation (fine for N < 5000)
+    // Brute-force KNN using cosine distance (matches the suggestion algorithm)
     let k = n_neighbors;
     let mut knn_indices = Array2::<u32>::zeros((n, k));
     let mut knn_dists = Array2::<f32>::zeros((n, k));
@@ -275,11 +275,20 @@ pub fn compute_umap_layout(
         let mut dists: Vec<(usize, f32)> = (0..n)
             .filter(|&j| j != i)
             .map(|j| {
-                let d: f32 = data.row(i).iter().zip(data.row(j).iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt();
-                (j, d)
+                // Cosine distance: 1 - (dot / (norm_a * norm_b))
+                let mut dot = 0.0f32;
+                let mut na = 0.0f32;
+                let mut nb = 0.0f32;
+                for d in 0..dims {
+                    let a = data[[i, d]];
+                    let b = data[[j, d]];
+                    dot += a * b;
+                    na += a * a;
+                    nb += b * b;
+                }
+                let denom = (na * nb).sqrt();
+                let cos_dist = if denom > 1e-10 { (1.0 - dot / denom).max(0.0) } else { 1.0 };
+                (j, cos_dist)
             })
             .collect();
         dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -290,12 +299,20 @@ pub fn compute_umap_layout(
         }
     }
 
-    // Random initialization (spectral would be better but this works)
+    // Deterministic initialization from first 2 PCA components at natural scale
     let mut init = Array2::<f32>::zeros((n, 2));
-    // Use deterministic init from first 2 PCA components (scaled down)
-    for i in 0..n {
-        init[[i, 0]] = if dims > 0 { data[[i, 0]] * 0.01 } else { 0.0 };
-        init[[i, 1]] = if dims > 1 { data[[i, 1]] * 0.01 } else { 0.0 };
+    // Scale to reasonable range for UMAP (std ~1.0)
+    let std0: f32;
+    let std1: f32;
+    if dims >= 2 {
+        let mean0: f32 = (0..n).map(|i| data[[i, 0]]).sum::<f32>() / n as f32;
+        let mean1: f32 = (0..n).map(|i| data[[i, 1]]).sum::<f32>() / n as f32;
+        std0 = ((0..n).map(|i| (data[[i, 0]] - mean0).powi(2)).sum::<f32>() / n as f32).sqrt().max(1e-6);
+        std1 = ((0..n).map(|i| (data[[i, 1]] - mean1).powi(2)).sum::<f32>() / n as f32).sqrt().max(1e-6);
+        for i in 0..n {
+            init[[i, 0]] = (data[[i, 0]] - mean0) / std0 * 0.1;
+            init[[i, 1]] = (data[[i, 1]] - mean1) / std1 * 0.1;
+        }
     }
 
     let config = UmapConfig {
