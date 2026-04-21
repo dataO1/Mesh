@@ -724,3 +724,7 @@ visually compare tracks (if they fit in the time domain as well)
 
 - shfit select with a filter selects everything not visible via the filter in
   between
+- the intesity slider should also be relative to the seed and use the same
+  tight/mid/open setting to select how big the gap ideally is that is rewarded
+  based on slider position. center = same intensity, peak = more aggression,
+  depending on the tight/mid/open setting, same for drop = less aggression.

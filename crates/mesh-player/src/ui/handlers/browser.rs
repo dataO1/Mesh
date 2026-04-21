@@ -45,15 +45,8 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             }
             return Task::none();
         }
-        CollectionBrowserMessage::WeightsChanged(weights) => {
-            app.collection_browser.suggestion_weights = *weights;
-            app.collection_browser.canvas_state.weights = *weights;
-            eprintln!("[WEIGHTS] similarity={:.2}, key={:.2}, intensity={:.2}", weights[0], weights[1], weights[2]);
-            // Re-query with new weights
-            if app.collection_browser.is_suggestions_enabled() && !active_seed_paths(app).is_empty() {
-                app.collection_browser.set_suggestion_loading(true);
-                return trigger_suggestion_query(app);
-            }
+        CollectionBrowserMessage::WeightsChanged(_) | CollectionBrowserMessage::ToggleWeightTuner => {
+            // Weight tuning only available in mesh-cue
             return Task::none();
         }
         CollectionBrowserMessage::SetEnergyDirection(value) => {
@@ -486,12 +479,6 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
         app.config.display.suggestion_transition_reach,
         community_thresholds.as_ref(),
     );
-    // Apply custom weights from the triangle picker (if not default)
-    let w = app.collection_browser.suggestion_weights;
-    if (w[0] - 0.30).abs() > 0.01 || (w[1] - 0.30).abs() > 0.01 || (w[2] - 0.33).abs() > 0.01 {
-        suggestion_config.custom_weights = Some(w);
-    }
-
     // Snapshot current playlist context for the split logic
     let playlist_paths = app.collection_browser.playlist_track_paths().map(|(p, _)| p);
     let playlist_split = app.config.display.suggestion_playlist_split;
