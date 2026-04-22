@@ -176,9 +176,9 @@ impl IntensityMatchMode {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            IntensityMatchMode::Composite    => "Comp",
-            IntensityMatchMode::PerComponent => "PerComp",
-            IntensityMatchMode::Hybrid       => "Hybrid",
+            IntensityMatchMode::Composite    => "Sum",
+            IntensityMatchMode::PerComponent => "Match",
+            IntensityMatchMode::Hybrid       => "Auto",
         }
     }
 
