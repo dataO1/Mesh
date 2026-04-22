@@ -677,6 +677,10 @@ fn process_single_track(
     // Select BPM audio: drums-only if available, otherwise full mix
     let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
 
+    // Compute multi-frame intensity components BEFORE the subprocess consumes mono_samples.
+    // Pure Rust (realfft) — 20 frames sampled across the track at 44100 Hz.
+    let intensity_base = crate::features::compute_intensity_components(&mono_samples, 44100.0);
+
     // Analyze audio in isolated subprocess (Essentia for key, LUFS, features, BPM, beat grid)
     let analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
         Ok(a) => a,
@@ -881,23 +885,15 @@ fn process_single_track(
                 base_name, track_id
             );
 
-            // Compute and store intensity components (multi-frame, pure Rust — no subprocess needed)
-            // Use the analysis audio features for spectral_centroid and energy_variance (full-track)
-            if let Some(ref features) = analysis.audio_features {
-                // We need the mono samples again — reload from the exported FLAC
-                // Actually, the features already contain spectral_centroid and energy_variance
-                // For the new multi-frame features (flux, flatness, etc.), we store what we can
-                // from the existing features and defer the rest to reanalysis
-                let mut ic = mesh_core::db::IntensityComponents {
-                    spectral_centroid: features.spectral_centroid,
-                    energy_variance: features.energy_variance,
-                    flatness: features.mfcc_flatness, // single-frame for now, improved during reanalysis
-                    dissonance: features.dissonance.unwrap_or(0.0),
-                    harmonic_complexity: features.harmonic_complexity,
-                    spectral_rolloff: features.spectral_rolloff,
-                    spectral_flux: 0.0,  // requires multi-frame — computed during reanalysis
-                    crest_factor: 0.0,   // requires full track audio — computed during reanalysis
-                };
+            // Store multi-frame intensity components (computed before subprocess from mono audio).
+            // Merge: use Essentia's full-track centroid + energy_variance when available,
+            // keep multi-frame values for flux, flatness, dissonance, crest, etc.
+            {
+                let mut ic = intensity_base.clone();
+                if let Some(ref features) = analysis.audio_features {
+                    ic.spectral_centroid = features.spectral_centroid;
+                    ic.energy_variance = features.energy_variance;
+                }
                 if let Err(e) = config.db_service.store_intensity_components(track_id, &ic) {
                     log::warn!("process_single_track: Failed to store intensity components for '{}': {}", base_name, e);
                 }
