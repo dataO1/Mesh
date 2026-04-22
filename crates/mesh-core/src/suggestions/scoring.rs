@@ -417,42 +417,43 @@ pub fn intensity_reward_per_component(
         .sum();
     let match_reward = 1.0 - dist_sq.sqrt().min(1.0);
 
-    // Extremes: one-sided directional reward per component.
-    // Target interpolates from seed toward library extreme (0.0 or 1.0).
-    // reach_factor: Tight=0.5, Medium=0.75, Open=1.0 (mapped from intensity_reach)
-    let reach_factor = (intensity_reach / 0.50).clamp(0.0, 1.0); // 0.15→0.3, 0.30→0.6, 0.50→1.0
+    // Extremes: one-sided linear reward per component.
+    //
+    // Target: slider position interpolates from seed (center) to library extreme
+    // (full peak → 1.0, full drop → 0.0). The slider itself controls how far.
+    //
+    // Reach controls acceptance width around the target:
+    //   Tight (0.15) = narrow zone, only very close to target scores well
+    //   Open (0.50) = wide zone, broad acceptance in the right direction
+    //
+    // One-sided: wrong direction from seed gets sharp penalty to 0.
     let is_peak = energy_bias >= 0.0;
 
     let directional_reward: f32 = weights.iter()
         .map(|(w, c, s)| {
             if *w < 1e-6 { return 0.0; }
 
-            // Target: interpolate from seed toward 1.0 (peak) or 0.0 (drop)
+            // Target: blend_t interpolates from seed toward extreme
             let target = if is_peak {
-                s + (1.0 - s) * reach_factor // toward 1.0
+                s + (1.0 - s) * blend_t   // center: seed, full peak: 1.0
             } else {
-                s * (1.0 - reach_factor)      // toward 0.0
+                s * (1.0 - blend_t)        // center: seed, full drop: 0.0
             };
 
             // One-sided linear falloff:
-            // - At target: 1.0 (best)
-            // - Between target and seed: gentle linear falloff (still good)
-            // - Past target in right direction: gentle falloff (still OK)
-            // - Wrong direction from seed: sharp linear penalty to 0.0
             let delta = if is_peak { c - s } else { s - c }; // positive = right direction
 
-            let reward = if delta < 0.0 {
+            if delta < 0.0 {
                 // Wrong direction: sharp linear penalty
-                (1.0 + delta).max(0.0)
+                w * (1.0 + delta).max(0.0)
             } else {
-                // Right direction: score based on distance from target
-                let target_delta = if is_peak { c - target } else { target - c };
-                // At target: target_delta = 0 → reward = 1.0
-                // Past target or before target: gentle linear falloff
-                (1.0 - target_delta.abs() * 0.5).max(0.3)
-            };
-
-            w * reward
+                // Right direction: reward based on distance from target
+                // Width of acceptance zone scales with intensity_reach
+                let target_delta = (c - target).abs();
+                let width = intensity_reach.max(0.10); // minimum width to avoid division issues
+                let reward = (1.0 - target_delta / width).max(0.0);
+                w * reward
+            }
         })
         .sum();
 
@@ -474,21 +475,21 @@ pub fn intensity_reward_hybrid(
     // Center: per-component distance (match character)
     let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover, intensity_reach);
 
-    // Extreme: composite with one-sided linear falloff toward library extreme
-    let reach_factor = (intensity_reach / 0.50).clamp(0.0, 1.0);
+    // Extreme: composite with one-sided linear falloff
     let is_peak = energy_bias >= 0.0;
     let target = if is_peak {
-        seed_composite + (1.0 - seed_composite) * reach_factor
+        seed_composite + (1.0 - seed_composite) * blend_t
     } else {
-        seed_composite * (1.0 - reach_factor)
+        seed_composite * (1.0 - blend_t)
     };
 
     let delta = if is_peak { cand_composite - seed_composite } else { seed_composite - cand_composite };
+    let width = intensity_reach.max(0.10);
     let composite_reward = if delta < 0.0 {
         (1.0 + delta).max(0.0)
     } else {
-        let target_delta = if is_peak { cand_composite - target } else { target - cand_composite };
-        (1.0 - target_delta.abs() * 0.5).max(0.3)
+        let target_delta = (cand_composite - target).abs();
+        (1.0 - target_delta / width).max(0.0)
     };
 
     per_comp * (1.0 - blend_t) + composite_reward * blend_t
