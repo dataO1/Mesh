@@ -310,16 +310,22 @@ pub fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
 /// All components are raw [0, 1] values stored per-track in DB.
 /// The composite is computed at query time so weights can be tuned without reanalysis.
 pub fn composite_intensity_v2(ic: &crate::db::IntensityComponents) -> f32 {
-    (0.20 * ic.spectral_flux
-    + 0.15 * ic.flatness
-    + 0.12 * ic.spectral_centroid
-    + 0.12 * ic.dissonance
-    + 0.10 * ic.crest_factor             // high stored value = compressed = more aggressive
-    + 0.08 * ic.energy_variance
-    + 0.05 * (1.0 - ic.harmonic_complexity)  // less tonal = more aggressive
-    + 0.05 * ic.spectral_rolloff
-    + 0.07 * ic.centroid_variance        // filter sweeps = more dynamic
-    + 0.06 * ic.flux_variance)           // inconsistent chop = more chaotic
+    // Weights tuned against human-ranked DnB aggression judgments.
+    // Grit/compression dominate (0.65); texture/dynamics are secondary.
+    // Variance features (evar, cvar, fvar) set to 0.0 — they measure temporal
+    // dynamics (jazzy variation), which inversely correlates with perceived
+    // aggression in electronic music. Kept at 0.0 rather than removed so
+    // they remain documented and can be re-enabled if rhythm features are added.
+    (0.15 * ic.spectral_flux             // timbral chop — moderate aggression signal
+    + 0.25 * ic.flatness                 // distortion/noise — primary aggression marker
+    + 0.10 * ic.spectral_centroid        // brightness/harshness
+    + 0.20 * ic.dissonance               // spectral roughness — strong aggression marker
+    + 0.15 * ic.crest_factor             // compression = wall-of-sound = aggressive
+    + 0.00 * ic.energy_variance          // DISABLED: dynamic range ≠ aggression
+    + 0.05 * (1.0 - ic.harmonic_complexity)  // atonal noise content
+    + 0.04 * ic.spectral_rolloff         // high-frequency energy
+    + 0.04 * ic.centroid_variance        // filter sweeps — minor texture signal
+    + 0.02 * ic.flux_variance)           // chop inconsistency — minor texture signal
     .clamp(0.0, 1.0)
 }
 
@@ -374,16 +380,16 @@ pub fn intensity_reward_per_component(
     // Component weights (same as composite_intensity_v2)
     let weights: [(f32, f32, f32); 10] = [
         // (weight, cand_value, seed_value)
-        (0.20, cand_ic.spectral_flux,        seed_ic.spectral_flux),
-        (0.15, cand_ic.flatness,             seed_ic.flatness),
-        (0.12, cand_ic.spectral_centroid,    seed_ic.spectral_centroid),
-        (0.12, cand_ic.dissonance,           seed_ic.dissonance),
-        (0.10, cand_ic.crest_factor,         seed_ic.crest_factor),
-        (0.08, cand_ic.energy_variance,      seed_ic.energy_variance),
+        (0.15, cand_ic.spectral_flux,        seed_ic.spectral_flux),
+        (0.25, cand_ic.flatness,             seed_ic.flatness),
+        (0.10, cand_ic.spectral_centroid,    seed_ic.spectral_centroid),
+        (0.20, cand_ic.dissonance,           seed_ic.dissonance),
+        (0.15, cand_ic.crest_factor,         seed_ic.crest_factor),
+        (0.00, cand_ic.energy_variance,      seed_ic.energy_variance),
         (0.05, 1.0 - cand_ic.harmonic_complexity, 1.0 - seed_ic.harmonic_complexity),
-        (0.05, cand_ic.spectral_rolloff,     seed_ic.spectral_rolloff),
-        (0.07, cand_ic.centroid_variance,    seed_ic.centroid_variance),
-        (0.06, cand_ic.flux_variance,        seed_ic.flux_variance),
+        (0.04, cand_ic.spectral_rolloff,     seed_ic.spectral_rolloff),
+        (0.04, cand_ic.centroid_variance,    seed_ic.centroid_variance),
+        (0.02, cand_ic.flux_variance,        seed_ic.flux_variance),
     ];
 
     let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
