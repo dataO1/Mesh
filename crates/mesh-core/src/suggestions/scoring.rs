@@ -314,7 +314,7 @@ pub fn composite_intensity_v2(ic: &crate::db::IntensityComponents) -> f32 {
     + 0.15 * ic.flatness
     + 0.12 * ic.spectral_centroid
     + 0.12 * ic.dissonance
-    + 0.10 * (1.0 - ic.crest_factor)    // lower crest = more compressed = more aggressive
+    + 0.10 * ic.crest_factor             // high stored value = compressed = more aggressive
     + 0.08 * ic.energy_variance
     + 0.05 * (1.0 - ic.harmonic_complexity)  // less tonal = more aggressive
     + 0.05 * ic.spectral_rolloff
@@ -431,7 +431,7 @@ impl IntensityTagGroup {
                 (0.20 * ic.flatness + 0.15 * ic.dissonance
                  + 0.05 * (1.0 - ic.harmonic_complexity)) / 0.40
             }
-            Self::Density => 1.0 - ic.crest_factor,
+            Self::Density => ic.crest_factor, // already inverted at computation: high = compressed = dense
             Self::Brightness => ic.spectral_centroid,
         }
     }
