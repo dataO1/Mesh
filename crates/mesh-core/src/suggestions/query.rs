@@ -810,7 +810,7 @@ pub fn query_suggestions(
     // Step 6: Sort DESCENDING (higher score = better match) and limit
     suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Diagnostic: top 10 suggestion breakdown
+    // Diagnostic: top 10 suggestion breakdown with full component detail
     {
         let w = match suggestion_config.custom_weights {
             Some([ws, wk, wi]) => format!("S={:.2} K={:.2} I={:.2}", ws, wk, wi),
@@ -822,14 +822,24 @@ pub fn query_suggestions(
             let composite = id_key.and_then(|k| intensity_map.get(&k).copied());
             let ic = id_key.and_then(|k| intensity_components_map.get(&k));
             let ic_str = if let Some(ic) = ic {
-                format!("flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3}",
+                format!("flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} cvar={:.3} fvar={:.3}",
                     ic.spectral_flux, ic.flatness, ic.spectral_centroid,
-                    ic.dissonance, ic.crest_factor, ic.energy_variance)
+                    ic.dissonance, ic.crest_factor, ic.energy_variance,
+                    ic.harmonic_complexity, ic.spectral_rolloff,
+                    ic.centroid_variance, ic.flux_variance)
             } else {
                 "NO DATA".to_string()
             };
-            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} int={:.3} | {} | {}",
-                i + 1, s.score, composite.unwrap_or(-1.0), s.track.title, ic_str);
+            // Show per-component score breakdown
+            let breakdown = if let Some(cs) = &s.component_scores {
+                format!("vec={:.3} key={:.3} int={:.3} cop={:.3}",
+                    cs.hnsw_component, cs.key_score, cs.intensity_penalty, cs.coplay_score)
+            } else {
+                let int_rwd = composite.map(|c| intensity_reward(c, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover));
+                format!("int_reward={:.3}", int_rwd.unwrap_or(-1.0))
+            };
+            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} comp={:.3} {} | {} | ranked: {}",
+                i + 1, s.score, composite.unwrap_or(-1.0), breakdown, s.track.title, ic_str);
         }
     }
 
