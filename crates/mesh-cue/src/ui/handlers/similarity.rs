@@ -64,6 +64,37 @@ impl MeshCueApp {
                     }
 
                     log::info!("[PCA] Build complete: {} PCA embeddings stored (of {} total)", stored, total);
+
+                    // Compute PCA aggression axis from genre + mood tags
+                    log::info!("[PCA] Computing aggression axis from genre + mood tags...");
+                    let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
+                        .filter_map(|(t, v)| Some((t.id?, v.clone())))
+                        .collect();
+
+                    // Build aggression estimates from ML analysis (genre + mood)
+                    let mut aggression_estimates = std::collections::HashMap::new();
+                    for (track_id, _) in &pca_data {
+                        if let Ok(Some(ml)) = db.get_ml_analysis(*track_id) {
+                            let genre = ml.top_genre.as_deref().unwrap_or("");
+                            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(
+                                genre, ml.mood_themes.as_ref(),
+                            );
+                            aggression_estimates.insert(*track_id, aggr);
+                        }
+                    }
+
+                    if let Some((dim, sign, corr)) = mesh_core::suggestions::aggression::find_aggression_axis(
+                        &pca_data, &aggression_estimates, 20,
+                    ) {
+                        log::info!("[PCA] Aggression axis: dim={}, sign={:+.0}, r={:.4}", dim, sign, corr);
+                        if let Err(e) = db.store_aggression_axis(dim, sign, corr) {
+                            log::warn!("[PCA] Failed to store aggression axis: {}", e);
+                        }
+                    } else {
+                        log::warn!("[PCA] Could not determine aggression axis (insufficient genre/mood data)");
+                    }
+
                     Ok(())
                 })
                 .await

@@ -1182,6 +1182,38 @@ impl DatabaseService {
     }
 
     // ========================================================================
+    // PCA Aggression Axis
+    // ========================================================================
+
+    /// Store the PCA aggression axis metadata (single row, overwritten each PCA build).
+    pub fn store_aggression_axis(&self, dimension: usize, sign: f32, correlation: f32) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(0i64));
+        params.insert("dimension".to_string(), DataValue::from(dimension as i64));
+        params.insert("sign".to_string(), DataValue::from(sign as f64));
+        params.insert("correlation".to_string(), DataValue::from(correlation as f64));
+        self.db.run_script(r#"
+            ?[id, dimension, sign, correlation] <- [[$id, $dimension, $sign, $correlation]]
+            :put pca_aggression_axis {id => dimension, sign, correlation}
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Get the PCA aggression axis: (dimension_index, sign, correlation).
+    /// Returns None if no axis has been computed yet.
+    pub fn get_aggression_axis(&self) -> Result<Option<(usize, f32, f32)>, DbError> {
+        let result = self.db.run_query(r#"
+            ?[dimension, sign, correlation] := *pca_aggression_axis{id: 0, dimension, sign, correlation}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.first().and_then(|row| {
+            let dim = row[0].get_int()? as usize;
+            let sign = row[1].get_float()? as f32;
+            let corr = row[2].get_float()? as f32;
+            Some((dim, sign, corr))
+        }))
+    }
+
+    // ========================================================================
     // Internal Helpers
     // ========================================================================
 

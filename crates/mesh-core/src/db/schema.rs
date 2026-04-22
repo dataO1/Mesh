@@ -414,6 +414,10 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     }
     create_ml_pca_embeddings_relation(db)?;
 
+    // PCA aggression axis metadata (single row, rebuilt each PCA build).
+    // Stores which PCA dimension best correlates with perceived aggression.
+    create_pca_aggression_axis_relation(db)?;
+
     Ok(())
 }
 
@@ -937,6 +941,21 @@ fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
             to_id: Int =>
             count: Int,
             last_played_epoch: Int
+        }}
+    "#)
+}
+
+fn create_pca_aggression_axis_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Single-row metadata: which PCA dimension best correlates with perceived aggression.
+    // Rebuilt each time "Build Similarity Index" runs.
+    // id=0 (constant key), dimension = PCA component index, sign = ±1.0,
+    // correlation = Pearson r with the aggression proxy.
+    run_schema(db, r#"
+        {:create pca_aggression_axis {
+            id: Int =>
+            dimension: Int,
+            sign: Float,
+            correlation: Float
         }}
     "#)
 }
