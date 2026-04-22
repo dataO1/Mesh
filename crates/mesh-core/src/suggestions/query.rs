@@ -427,8 +427,9 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: Compute composite intensity from individual components (v2).
-    // Fetch intensity components and compute composite at query time.
+    // Step 4d: Fetch intensity components and compute composite at query time.
+    // Keep raw components for per-group tag generation alongside composite scores.
+    let mut intensity_components_map: HashMap<(usize, i64), crate::db::IntensityComponents> = HashMap::new();
     let mut intensity_map: HashMap<(usize, i64), f32> = HashMap::new();
     for (src_idx, source) in sources.iter().enumerate() {
         let all_ids: Vec<i64> = candidates.keys()
@@ -437,14 +438,25 @@ pub fn query_suggestions(
             .collect();
         if all_ids.is_empty() { continue; }
 
-        // Try v2 intensity components first
         if let Ok(components) = source.db.batch_get_intensity_components(&all_ids) {
-            for (id, ic) in &components {
-                intensity_map.insert((src_idx, *id), composite_intensity_v2(ic));
+            for (id, ic) in components {
+                intensity_map.insert((src_idx, id), composite_intensity_v2(&ic));
+                intensity_components_map.insert((src_idx, id), ic);
             }
         }
-
-        // Tracks without v2 components get default 0.5 (neutral) via unwrap_or in scoring
+    }
+    // Also fetch seed components for intensity tags
+    for &(src_idx, ref track) in &seed_tracks {
+        if let Some(id) = track.id {
+            if !intensity_components_map.contains_key(&(src_idx, id)) {
+                if let Ok(components) = sources[src_idx].db.batch_get_intensity_components(&[id]) {
+                    for (sid, ic) in components {
+                        intensity_map.entry((src_idx, sid)).or_insert_with(|| composite_intensity_v2(&ic));
+                        intensity_components_map.insert((src_idx, sid), ic);
+                    }
+                }
+            }
+        }
     }
 
     let avg_seed_intensity = {
@@ -454,6 +466,51 @@ pub fn query_suggestions(
             .filter_map(|key| intensity_map.get(&key).copied())
             .collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
+    };
+
+    // Average seed IntensityComponents for per-group tag deltas
+    let avg_seed_ic: crate::db::IntensityComponents = {
+        let seed_ics: Vec<&crate::db::IntensityComponents> = seed_tracks.iter()
+            .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
+            .filter_map(|key| intensity_components_map.get(&key))
+            .collect();
+        if seed_ics.is_empty() {
+            crate::db::IntensityComponents::default()
+        } else {
+            let n = seed_ics.len() as f32;
+            crate::db::IntensityComponents {
+                spectral_flux: seed_ics.iter().map(|ic| ic.spectral_flux).sum::<f32>() / n,
+                flatness: seed_ics.iter().map(|ic| ic.flatness).sum::<f32>() / n,
+                spectral_centroid: seed_ics.iter().map(|ic| ic.spectral_centroid).sum::<f32>() / n,
+                dissonance: seed_ics.iter().map(|ic| ic.dissonance).sum::<f32>() / n,
+                crest_factor: seed_ics.iter().map(|ic| ic.crest_factor).sum::<f32>() / n,
+                energy_variance: seed_ics.iter().map(|ic| ic.energy_variance).sum::<f32>() / n,
+                harmonic_complexity: seed_ics.iter().map(|ic| ic.harmonic_complexity).sum::<f32>() / n,
+                spectral_rolloff: seed_ics.iter().map(|ic| ic.spectral_rolloff).sum::<f32>() / n,
+            }
+        }
+    };
+
+    // Percentile thresholds for intensity tag group deltas across candidates
+    let intensity_group_percentiles: [(f32, f32); 4] = {
+        let cand_ics: Vec<&crate::db::IntensityComponents> = candidates.keys()
+            .filter_map(|key| intensity_components_map.get(key))
+            .collect();
+        if cand_ics.len() < 5 {
+            [(f32::MIN, f32::MAX); 4] // too few → no tags
+        } else {
+            let mut result = [(0.0f32, 1.0f32); 4];
+            for (i, group) in IntensityTagGroup::ALL.iter().enumerate() {
+                let seed_val = group.value(&avg_seed_ic);
+                let mut deltas: Vec<f32> = cand_ics.iter()
+                    .map(|ic| group.value(ic) - seed_val)
+                    .collect();
+                deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let n = deltas.len();
+                result[i] = (deltas[n / 5], deltas[n * 4 / 5]);
+            }
+            result
+        }
     };
 
     // ════════════════════════════════════════════════════════════════════════
@@ -623,6 +680,12 @@ pub fn query_suggestions(
                 vocal_comp, other_comp,
                 w_vocal_pen, w_other_pen,
             );
+
+            // Intensity component tags (outlier deltas from seed)
+            if let Some(cand_ic) = intensity_components_map.get(&(src_idx, track_id)) {
+                let int_tags = generate_intensity_tags(cand_ic, &avg_seed_ic, &intensity_group_percentiles);
+                reason_tags.extend(int_tags);
+            }
 
             if multi_source {
                 let source_name = source_names.get(&src_idx).copied().unwrap_or("?");

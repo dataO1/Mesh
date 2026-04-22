@@ -90,6 +90,7 @@ fn resolve_tag_color(tag_color: Option<Color>, category_colors: Option<[Color; 4
         (0, 170, 1) => cats[1],  // TAG_COLOR_GOOD → Vocals stem
         (0, 170, 2) => cats[3],  // TAG_COLOR_MODERATE → Bass stem
         (0, 170, 3) => cats[0],  // TAG_COLOR_SOURCE → Drums stem
+        (0, 170, 4) => cats[2],  // TAG_COLOR_INTENSITY → Other stem
         // Score-based suggestion poor (#a63d40) + custom — keep as-is
         _ => color,
     }

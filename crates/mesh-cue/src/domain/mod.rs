@@ -826,20 +826,32 @@ impl MeshCueDomain {
 
         if path_to_id.is_empty() { return; }
 
-        // Only fetch ML data for tracks that exist in our rows
+        // Only fetch intensity data for tracks that exist in our rows
         let row_ids: Vec<i64> = rows.iter()
             .filter_map(|r| r.track_path.as_ref().and_then(|p| path_to_id.get(p)).copied())
             .collect();
         if row_ids.is_empty() { return; }
 
-        let all_ids = row_ids;
-        let intensity_map = self.db_service.batch_get_intensity_components(&all_ids).unwrap_or_default();
+        let intensity_map = self.db_service.batch_get_intensity_components(&row_ids).unwrap_or_default();
+
+        // Compute library-wide percentiles for intensity tag groups
+        let all_ics: Vec<&mesh_core::db::IntensityComponents> = intensity_map.values().collect();
+        let library_percentiles = mesh_core::suggestions::scoring::compute_intensity_percentiles(&all_ics);
 
         for row in rows.iter_mut() {
             if let Some(path) = &row.track_path {
                 if let Some(&id) = path_to_id.get(path) {
                     if let Some(ic) = intensity_map.get(&id) {
                         row.intensity = Some(mesh_core::suggestions::scoring::composite_intensity_v2(ic));
+
+                        // Intensity component tags (library-relative outliers)
+                        let tags = mesh_core::suggestions::scoring::generate_intensity_tags_absolute(
+                            ic, &library_percentiles,
+                        );
+                        for (label, color) in tags {
+                            let tag_color = color.and_then(|c| mesh_widgets::parse_hex_color(&c));
+                            row.tags.push(mesh_widgets::TrackTag { label, color: tag_color });
+                        }
                     }
                 }
             }

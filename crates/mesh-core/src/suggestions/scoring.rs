@@ -391,6 +391,137 @@ pub const TAG_COLOR_GOOD: &str = "#00AA01";
 pub const TAG_COLOR_MODERATE: &str = "#00AA02";
 pub const TAG_COLOR_SOURCE: &str = "#00AA03";
 pub const TAG_COLOR_POOR: &str = "#a63d40";
+/// Intensity component tag — maps to Other stem color in theme
+pub const TAG_COLOR_INTENSITY: &str = "#00AA04";
+
+// ─── Intensity Tag Groups ──────────────────────────────────────────
+
+/// The four intensity tag groups derived from IntensityComponents.
+///
+/// Each group combines correlated audio measurements into a single
+/// musically meaningful axis. Values are in [0, 1] where higher = more aggressive.
+#[derive(Debug, Clone, Copy)]
+pub enum IntensityTagGroup {
+    /// Spectral flux + energy variance: temporal instability / choppiness
+    Texture,
+    /// Flatness + dissonance + inverse harmonic complexity: noise/distortion
+    Grit,
+    /// Inverse crest factor: dynamic range compression / wall-of-sound
+    Density,
+    /// Spectral centroid: frequency balance / harshness
+    Brightness,
+}
+
+impl IntensityTagGroup {
+    pub const ALL: [IntensityTagGroup; 4] = [
+        Self::Texture, Self::Grit, Self::Density, Self::Brightness,
+    ];
+
+    /// Compute the group value from raw intensity components.
+    pub fn value(&self, ic: &crate::db::IntensityComponents) -> f32 {
+        match self {
+            Self::Texture => {
+                (0.25 * ic.spectral_flux + 0.10 * ic.energy_variance) / 0.35
+            }
+            Self::Grit => {
+                (0.20 * ic.flatness + 0.15 * ic.dissonance
+                 + 0.05 * (1.0 - ic.harmonic_complexity)) / 0.40
+            }
+            Self::Density => 1.0 - ic.crest_factor,
+            Self::Brightness => ic.spectral_centroid,
+        }
+    }
+
+    /// Label when candidate is MORE intense than reference on this axis.
+    pub fn high_label(&self) -> &'static str {
+        match self {
+            Self::Texture => "Choppy",
+            Self::Grit => "Gritty",
+            Self::Density => "Dense",
+            Self::Brightness => "Bright",
+        }
+    }
+
+    /// Label when candidate is LESS intense than reference on this axis.
+    pub fn low_label(&self) -> &'static str {
+        match self {
+            Self::Texture => "Smooth",
+            Self::Grit => "Clean",
+            Self::Density => "Punchy",
+            Self::Brightness => "Dark",
+        }
+    }
+}
+
+/// Generate up to 2 intensity component tags for a suggestion candidate.
+///
+/// Tags show direction relative to seed. Only shown when this track's delta
+/// is an outlier (top/bottom 20%) among all candidate deltas for that group.
+/// `group_percentiles` contains (p20, p80) per group, ordered as `IntensityTagGroup::ALL`.
+pub fn generate_intensity_tags(
+    cand_ic: &crate::db::IntensityComponents,
+    seed_ic: &crate::db::IntensityComponents,
+    group_percentiles: &[(f32, f32); 4],
+) -> Vec<(String, Option<String>)> {
+    let mut tags: Vec<(String, Option<String>, f32)> = Vec::new();
+
+    for (i, group) in IntensityTagGroup::ALL.iter().enumerate() {
+        let delta = group.value(cand_ic) - group.value(seed_ic);
+        let (p20, p80) = group_percentiles[i];
+
+        if delta > p80 {
+            tags.push((group.high_label().to_string(), Some(TAG_COLOR_INTENSITY.to_string()), delta.abs()));
+        } else if delta < p20 {
+            tags.push((group.low_label().to_string(), Some(TAG_COLOR_INTENSITY.to_string()), delta.abs()));
+        }
+    }
+
+    tags.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    tags.truncate(2);
+    tags.into_iter().map(|(label, color, _)| (label, color)).collect()
+}
+
+/// Generate up to 2 intensity tags for browser display (absolute, no seed).
+///
+/// Tags show when a track is in the top/bottom 20% of the library for a group.
+/// `library_percentiles` contains (p20, p80) for each group across the collection.
+pub fn generate_intensity_tags_absolute(
+    ic: &crate::db::IntensityComponents,
+    library_percentiles: &[(f32, f32); 4],
+) -> Vec<(String, Option<String>)> {
+    let mut tags: Vec<(String, Option<String>, f32)> = Vec::new();
+
+    for (i, group) in IntensityTagGroup::ALL.iter().enumerate() {
+        let val = group.value(ic);
+        let (p20, p80) = library_percentiles[i];
+
+        if val > p80 {
+            tags.push((group.high_label().to_string(), Some(TAG_COLOR_INTENSITY.to_string()), val - p80));
+        } else if val < p20 {
+            tags.push((group.low_label().to_string(), Some(TAG_COLOR_INTENSITY.to_string()), p20 - val));
+        }
+    }
+
+    tags.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    tags.truncate(2);
+    tags.into_iter().map(|(label, color, _)| (label, color)).collect()
+}
+
+/// Compute (p20, p80) percentile thresholds for each intensity tag group.
+pub fn compute_intensity_percentiles(
+    components: &[&crate::db::IntensityComponents],
+) -> [(f32, f32); 4] {
+    let mut result = [(0.0f32, 1.0f32); 4];
+    if components.is_empty() { return result; }
+
+    for (i, group) in IntensityTagGroup::ALL.iter().enumerate() {
+        let mut values: Vec<f32> = components.iter().map(|ic| group.value(ic)).collect();
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = values.len();
+        result[i] = (values[n / 5], values[n * 4 / 5]);
+    }
+    result
+}
 
 /// Color a tag by reward quality: high reward = good, low = poor.
 pub fn reward_color(reward: f32) -> &'static str {
