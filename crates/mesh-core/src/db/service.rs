@@ -1124,7 +1124,7 @@ impl DatabaseService {
         params.insert("energy_variance".to_string(), DataValue::from(ic.energy_variance as f64));
         params.insert("harmonic_complexity".to_string(), DataValue::from(ic.harmonic_complexity as f64));
         params.insert("spectral_rolloff".to_string(), DataValue::from(ic.spectral_rolloff as f64));
-        self.db.run_query(r#"
+        self.db.run_script(r#"
             ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff] <-
                 [[$track_id, $spectral_flux, $flatness, $spectral_centroid, $dissonance, $crest_factor, $energy_variance, $harmonic_complexity, $spectral_rolloff]]
             :put track_intensity {
