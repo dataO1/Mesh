@@ -7,6 +7,55 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use crate::db::DatabaseService;
 
+/// Apply partial PCA whitening to a set of vectors in-place.
+///
+/// For each component k, divides by `std_k^alpha` where `std_k` is the standard
+/// deviation of component k across all vectors. Then L2-normalizes.
+///
+/// `alpha=0.0`: no change (identity). `alpha=1.0`: full whitening (all components
+/// get equal variance). Intermediate values blend between the two.
+///
+/// This is computed on-the-fly from the stored vectors — no need to persist
+/// singular values separately.
+pub fn apply_pca_whitening(vectors: &mut [(i64, Vec<f32>)], alpha: f32) {
+    if alpha < 1e-6 || vectors.is_empty() { return; }
+
+    let n = vectors.len();
+    let dim = vectors[0].1.len();
+    if dim == 0 { return; }
+
+    // Compute per-component mean and std
+    let mut means = vec![0.0f32; dim];
+    for (_, v) in vectors.iter() {
+        for (k, &val) in v.iter().enumerate() {
+            means[k] += val;
+        }
+    }
+    for m in &mut means { *m /= n as f32; }
+
+    let mut stds = vec![0.0f32; dim];
+    for (_, v) in vectors.iter() {
+        for (k, &val) in v.iter().enumerate() {
+            stds[k] += (val - means[k]).powi(2);
+        }
+    }
+    for s in &mut stds {
+        *s = (*s / n as f32).sqrt().max(1e-10);
+    }
+
+    // Apply partial whitening: divide each component by std^alpha, then L2-normalize
+    for (_, v) in vectors.iter_mut() {
+        for (k, val) in v.iter_mut().enumerate() {
+            *val /= stds[k].powf(alpha);
+        }
+        // L2-normalize
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            for val in v.iter_mut() { *val /= norm; }
+        }
+    }
+}
+
 /// Graph layout algorithm selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphAlgorithm {

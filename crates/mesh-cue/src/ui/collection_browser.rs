@@ -319,6 +319,11 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                         .on_press(Message::GraphCycleIntensityMode)
                         .style(button::secondary)
                         .padding([2, 6]),
+                    Space::new().width(4.0),
+                    text(format!("W:{:.1}", state.pca_whitening_alpha)).size(sz(10.0)),
+                    slider(0.0..=1.0, state.pca_whitening_alpha, Message::GraphWhiteningAlpha)
+                        .step(0.1)
+                        .width(Length::Fixed(50.0)),
                     Space::new().width(8.0),
                     text("Norm").size(sz(10.0)),
                     toggler(graph_state.normalize_vectors)

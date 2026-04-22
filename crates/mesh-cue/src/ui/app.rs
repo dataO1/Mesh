@@ -674,6 +674,12 @@ impl MeshCueApp {
                     .map(|s| s.energy_direction).unwrap_or(0.5);
                 return self.handle_graph_slider_changed(energy);
             }
+            Message::GraphWhiteningAlpha(alpha) => {
+                self.collection.pca_whitening_alpha = alpha;
+                let energy = self.collection.graph_state.as_ref()
+                    .map(|s| s.energy_direction).unwrap_or(0.5);
+                return self.handle_graph_slider_changed(energy);
+            }
             Message::GraphSwitchAlgorithm => {
                 self.collection.graph_algorithm = self.collection.graph_algorithm.next();
                 self.collection.graph_state = None;

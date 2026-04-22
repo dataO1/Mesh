@@ -36,6 +36,9 @@ pub struct SuggestionConfig {
     /// Target intensity shift at full peak/drop (percentile-rank delta from seed).
     /// Derived from SuggestionTransitionReach: Tight=0.15, Medium=0.30, Open=0.50.
     pub intensity_reach: f32,
+    /// PCA whitening alpha: 0.0 = off (default), 1.0 = full whitening.
+    /// Equalizes per-component variance so subtle PCA dimensions contribute equally.
+    pub pca_whitening_alpha: f32,
 }
 
 impl SuggestionConfig {
@@ -58,6 +61,7 @@ impl SuggestionConfig {
             custom_weights: None,
             intensity_match_mode: Default::default(),
             intensity_reach: transition_reach.intensity_reach(),
+            pca_whitening_alpha: 0.0,
         }
     }
 }
@@ -257,6 +261,49 @@ pub fn query_suggestions(
         v.iter().map(|&x| x as f32).collect()
     });
 
+    let whiten_alpha = suggestion_config.pca_whitening_alpha;
+
+    // PCA whitening: precompute per-component scaling factors from first source's library.
+    // Applied on-the-fly to each vector during distance computation.
+    let whiten_scales: Option<Vec<f32>> = if whiten_alpha > 1e-6 {
+        // Load the first source's PCA to compute stds (library-wide statistics)
+        let lib_pca: Vec<Vec<f32>> = sources.first()
+            .and_then(|s| s.db.get_all_pca_with_tracks().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect();
+        if lib_pca.len() > 10 && !lib_pca.is_empty() {
+            let dim = lib_pca[0].len();
+            let n = lib_pca.len() as f32;
+            let mut means = vec![0.0f32; dim];
+            for v in &lib_pca { for (k, &val) in v.iter().enumerate() { means[k] += val; } }
+            for m in &mut means { *m /= n; }
+            let mut stds = vec![0.0f32; dim];
+            for v in &lib_pca { for (k, &val) in v.iter().enumerate() { stds[k] += (val - means[k]).powi(2); } }
+            Some(stds.iter().map(|s| (s / n).sqrt().max(1e-10).powf(whiten_alpha)).collect())
+        } else { None }
+    } else { None };
+
+    // Helper: apply whitening to a single vector (divide by std^alpha, L2-normalize)
+    let whiten_vec = |v: &[f32], scales: &[f32]| -> Vec<f32> {
+        let mut w: Vec<f32> = v.iter().zip(scales.iter()).map(|(&x, &s)| x / s).collect();
+        let norm: f32 = w.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 { for x in &mut w { *x /= norm; } }
+        w
+    };
+
+    // Pre-whiten seed vectors if whitening is active
+    let seed_pca_vecs: Vec<(usize, Vec<f32>)> = if let Some(ref scales) = whiten_scales {
+        seed_pca_vecs.into_iter().map(|(idx, v)| (idx, whiten_vec(&v, scales))).collect()
+    } else {
+        seed_pca_vecs
+    };
+    let blend_pca: Option<Vec<f32>> = match (&blend_pca, &whiten_scales) {
+        (Some(b), Some(s)) => Some(whiten_vec(b, s)),
+        _ => blend_pca,
+    };
+
     for (src_idx, source) in sources.iter().enumerate() {
         // Load all tracks + PCA embeddings from this source
         let all_pca = match source.db.get_all_pca_with_tracks() {
@@ -292,7 +339,12 @@ pub fn query_suggestions(
             // Skip already-played tracks
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
 
-            // No L2-normalization needed — cosine distance already normalizes internally
+            // Apply whitening to candidate vector if active
+            let pca_vec = if let Some(ref scales) = whiten_scales {
+                whiten_vec(&pca_vec, scales)
+            } else {
+                pca_vec
+            };
 
             // Compute cosine distance to seed(s)
             let dist = if let Some(ref blend) = blend_pca {
