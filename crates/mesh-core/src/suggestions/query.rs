@@ -468,6 +468,44 @@ pub fn query_suggestions(
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
 
+    // Diagnostic: intensity data coverage + distribution
+    {
+        let total_candidates = candidates.len();
+        let with_intensity = candidates.keys()
+            .filter(|k| intensity_map.contains_key(k))
+            .count();
+        let with_components = candidates.keys()
+            .filter(|k| intensity_components_map.contains_key(k))
+            .count();
+        eprintln!("[INTENSITY] candidates: {} total, {} with composite, {} with raw components",
+            total_candidates, with_intensity, with_components);
+        eprintln!("[INTENSITY] seed avg_intensity={:.3}", avg_seed_intensity);
+
+        // Log seed raw components
+        for (idx, t) in &seed_tracks {
+            if let Some(id) = t.id {
+                if let Some(ic) = intensity_components_map.get(&(*idx, id)) {
+                    eprintln!("[INTENSITY] seed '{}': flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} → composite={:.3}",
+                        t.title, ic.spectral_flux, ic.flatness, ic.spectral_centroid,
+                        ic.dissonance, ic.crest_factor, ic.energy_variance,
+                        ic.harmonic_complexity, ic.spectral_rolloff,
+                        intensity_map.get(&(*idx, id)).copied().unwrap_or(-1.0));
+                } else {
+                    eprintln!("[INTENSITY] seed '{}': NO COMPONENTS", t.title);
+                }
+            }
+        }
+
+        // Distribution of composite values
+        if with_intensity > 0 {
+            let mut vals: Vec<f32> = intensity_map.values().copied().collect();
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = vals.len();
+            eprintln!("[INTENSITY] composite distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3}",
+                vals[0], vals[n/4], vals[n/2], vals[n*3/4], vals[n-1]);
+        }
+    }
+
     // Average seed IntensityComponents for per-group tag deltas
     let avg_seed_ic: crate::db::IntensityComponents = {
         let seed_ics: Vec<&crate::db::IntensityComponents> = seed_tracks.iter()
@@ -714,6 +752,30 @@ pub fn query_suggestions(
 
     // Step 6: Sort DESCENDING (higher score = better match) and limit
     suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Diagnostic: top 10 suggestion breakdown
+    {
+        let w = match suggestion_config.custom_weights {
+            Some([ws, wk, wi]) => format!("S={:.2} K={:.2} I={:.2}", ws, wk, wi),
+            None => "default".to_string(),
+        };
+        eprintln!("[SUGGESTIONS] Top results (weights: {}, energy_bias={:.2}):", w, energy_bias);
+        for (i, s) in suggestions.iter().take(10).enumerate() {
+            let id_key = s.track.id.map(|id| (0usize, id));
+            let composite = id_key.and_then(|k| intensity_map.get(&k).copied());
+            let ic = id_key.and_then(|k| intensity_components_map.get(&k));
+            let ic_str = if let Some(ic) = ic {
+                format!("flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3}",
+                    ic.spectral_flux, ic.flatness, ic.spectral_centroid,
+                    ic.dissonance, ic.crest_factor, ic.energy_variance)
+            } else {
+                "NO DATA".to_string()
+            };
+            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} int={:.3} | {} | {}",
+                i + 1, s.score, composite.unwrap_or(-1.0), s.track.title, ic_str);
+        }
+    }
+
     suggestions.truncate(total_limit);
 
     Ok(suggestions)
