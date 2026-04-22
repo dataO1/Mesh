@@ -89,12 +89,12 @@ impl SuggestionBlendMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionTransitionReach {
-    /// Stay close: transitions within the same genre cluster (target distance 0.25)
-    Tight,
-    /// Adjacent community: bridge to neighboring styles (target distance 0.40)
+    /// Stay close: transitions within the same genre cluster
     #[default]
+    Tight,
+    /// Adjacent community: bridge to neighboring styles
     Medium,
-    /// Cross-genre: bold transitions to different genres (target distance 0.60)
+    /// Cross-genre: bold transitions to different genres
     Open,
 }
 
@@ -123,9 +123,9 @@ impl SuggestionTransitionReach {
                 SuggestionTransitionReach::Open   => t.open_target,
             },
             None => match self {
-                SuggestionTransitionReach::Tight  => 0.25,
-                SuggestionTransitionReach::Medium => 0.40,
-                SuggestionTransitionReach::Open   => 0.60,
+                SuggestionTransitionReach::Tight  => 0.15,
+                SuggestionTransitionReach::Medium => 0.25,
+                SuggestionTransitionReach::Open   => 0.40,
             },
         }
     }
@@ -149,9 +149,9 @@ impl SuggestionTransitionReach {
                 SuggestionTransitionReach::Open   => t.open_width,
             },
             None => match self {
-                SuggestionTransitionReach::Tight  => 0.08,
-                SuggestionTransitionReach::Medium => 0.12,
-                SuggestionTransitionReach::Open   => 0.18,
+                SuggestionTransitionReach::Tight  => 0.05,
+                SuggestionTransitionReach::Medium => 0.08,
+                SuggestionTransitionReach::Open   => 0.12,
             },
         }
     }

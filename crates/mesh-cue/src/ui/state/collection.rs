@@ -294,7 +294,7 @@ impl Default for CollectionState {
             graph_building: false,
             graph_normalize_vectors: false,
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
-            suggestion_weights: [0.25, 0.30, 0.30],
+            suggestion_weights: [0.40, 0.25, 0.35],
             graph_key_filter_index: 0, // Strict by default
             intensity_match_mode: Default::default(),
             community_thresholds: None,

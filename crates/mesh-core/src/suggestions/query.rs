@@ -29,7 +29,7 @@ pub struct SuggestionConfig {
     pub transition_target: f32,
     /// Width (2σ²) of the transition bell curve.
     pub transition_width: f32,
-    /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.30, 0.30, 0.33).
+    /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.40, 0.25, 0.35).
     pub custom_weights: Option<[f32; 3]>,
     /// Intensity matching mode (per-component / hybrid).
     pub intensity_match_mode: super::config::IntensityMatchMode,
@@ -652,7 +652,7 @@ pub fn query_suggestions(
     let bias_abs = energy_bias.abs();
     let (w_vector, w_key, w_intensity) = match suggestion_config.custom_weights {
         Some([ws, wk, wi]) => (ws, wk, wi),
-        None => (0.25, 0.30, 0.30),
+        None => (0.40, 0.25, 0.35),
     };
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
