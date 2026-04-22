@@ -566,14 +566,18 @@ pub fn query_suggestions(
     // └────────────────────────────────────────────────────────────────────┘
 
     let bias_abs = energy_bias.abs();
-    let (w_vector_base, w_key, w_aggr_max) = match suggestion_config.custom_weights {
-        Some([ws, wk, wi]) => (ws, wk, wi),
-        None => (0.55, 0.25, 0.20),
+    let (w_vector, w_key, w_aggr) = match suggestion_config.custom_weights {
+        Some([ws, wk, wi]) => {
+            // Custom weights: use directly (user explicitly controls the balance)
+            (ws, wk, wi)
+        }
+        None => {
+            // Default weights: aggression linearly introduced from 0 at center to 0.20 at extremes
+            let w_aggr = 0.20 * bias_abs;
+            let w_vector = 0.55 - w_aggr * 0.5; // reduce similarity to make room
+            (w_vector, 0.25, w_aggr)
+        }
     };
-    // Aggression linearly introduced from 0 at center to w_aggr_max at extremes
-    let w_aggr = w_aggr_max * bias_abs;
-    // Similarity reduced proportionally to make room for aggression
-    let w_vector = w_vector_base - w_aggr * 0.5;
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };

@@ -423,7 +423,7 @@ impl MeshCueApp {
             transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),
             custom_weights: {
                 let w = self.collection.suggestion_weights;
-                if (w[0] - 0.25).abs() > 0.01 || (w[1] - 0.30).abs() > 0.01 || (w[2] - 0.30).abs() > 0.01 {
+                if (w[0] - 0.55).abs() > 0.01 || (w[1] - 0.25).abs() > 0.01 || (w[2] - 0.20).abs() > 0.01 {
                     Some(w)
                 } else {
                     None
