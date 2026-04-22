@@ -147,6 +147,50 @@ impl SuggestionTransitionReach {
     }
 }
 
+/// Intensity matching mode for smart suggestions.
+///
+/// Controls how the intensity component compares seed vs candidate tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntensityMatchMode {
+    /// Composite: collapse 10 components into a single aggression score,
+    /// match on that scalar. Current/legacy behaviour.
+    #[default]
+    Composite,
+    /// Per-component: compute weighted Euclidean distance between the 10-dim
+    /// ranked component vectors. Rewards tracks similar on EVERY axis individually.
+    /// A gritty+smooth track won't match a clean+choppy seed.
+    PerComponent,
+    /// Hybrid: per-component distance at center (layering — match character),
+    /// composite direction at extremes (transitioning — match energy level).
+    /// Blends between the two using the intent slider position.
+    Hybrid,
+}
+
+impl IntensityMatchMode {
+    pub const ALL: [IntensityMatchMode; 3] = [
+        IntensityMatchMode::Composite,
+        IntensityMatchMode::PerComponent,
+        IntensityMatchMode::Hybrid,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            IntensityMatchMode::Composite    => "Comp",
+            IntensityMatchMode::PerComponent => "PerComp",
+            IntensityMatchMode::Hybrid       => "Hybrid",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Composite    => Self::PerComponent,
+            Self::PerComponent => Self::Hybrid,
+            Self::Hybrid       => Self::Composite,
+        }
+    }
+}
+
 /// Harmonic filter strictness for smart suggestions.
 ///
 /// Controls which key relationships are allowed to appear at all.

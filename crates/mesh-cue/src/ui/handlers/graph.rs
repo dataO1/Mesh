@@ -425,6 +425,7 @@ impl MeshCueApp {
                     None
                 }
             },
+            intensity_match_mode: self.collection.intensity_match_mode,
         };
 
         let sources = vec![DbSource {

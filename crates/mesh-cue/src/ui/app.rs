@@ -664,7 +664,12 @@ impl MeshCueApp {
             }
             Message::GraphCycleKeyFilter => {
                 self.collection.graph_key_filter_index = (self.collection.graph_key_filter_index + 1) % 3;
-                // Re-query suggestions with new key filter
+                let energy = self.collection.graph_state.as_ref()
+                    .map(|s| s.energy_direction).unwrap_or(0.5);
+                return self.handle_graph_slider_changed(energy);
+            }
+            Message::GraphCycleIntensityMode => {
+                self.collection.intensity_match_mode = self.collection.intensity_match_mode.next();
                 let energy = self.collection.graph_state.as_ref()
                     .map(|s| s.energy_direction).unwrap_or(0.5);
                 return self.handle_graph_slider_changed(energy);

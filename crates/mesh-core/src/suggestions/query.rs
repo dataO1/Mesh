@@ -31,6 +31,8 @@ pub struct SuggestionConfig {
     pub transition_width: f32,
     /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.30, 0.30, 0.33).
     pub custom_weights: Option<[f32; 3]>,
+    /// Intensity matching mode (composite / per-component / hybrid).
+    pub intensity_match_mode: super::config::IntensityMatchMode,
 }
 
 impl SuggestionConfig {
@@ -51,6 +53,7 @@ impl SuggestionConfig {
             transition_target: transition_reach.target_distance(community_thresholds),
             transition_width: transition_reach.bell_width(community_thresholds),
             custom_weights: None,
+            intensity_match_mode: Default::default(),
         }
     }
 }
@@ -727,7 +730,23 @@ pub fn query_suggestions(
             let cand_norm_intensity = ml_key
                 .and_then(|k| intensity_map.get(&k).copied())
                 .unwrap_or(0.5);
-            let int_reward = intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover);
+            let int_reward = match suggestion_config.intensity_match_mode {
+                super::config::IntensityMatchMode::Composite => {
+                    intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover)
+                }
+                super::config::IntensityMatchMode::PerComponent => {
+                    ml_key
+                        .and_then(|k| intensity_components_map.get(&k))
+                        .map(|cand_ic| intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover))
+                        .unwrap_or(0.5)
+                }
+                super::config::IntensityMatchMode::Hybrid => {
+                    ml_key
+                        .and_then(|k| intensity_components_map.get(&k))
+                        .map(|cand_ic| intensity_reward_hybrid(cand_ic, &avg_seed_ic, cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover))
+                        .unwrap_or(0.5)
+                }
+            };
 
             // ── Vector similarity reward ──
             // hnsw_dist is already percentile-rank normalized [0, 1]

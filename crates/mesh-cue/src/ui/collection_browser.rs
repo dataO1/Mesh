@@ -313,6 +313,12 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                             .style(button::secondary)
                             .padding([2, 6])
                     },
+                    Space::new().width(4.0),
+                    text("Int").size(sz(10.0)),
+                    button(text(state.intensity_match_mode.display_name()).size(sz(10.0)))
+                        .on_press(Message::GraphCycleIntensityMode)
+                        .style(button::secondary)
+                        .padding([2, 6]),
                     Space::new().width(8.0),
                     text("Norm").size(sz(10.0)),
                     toggler(graph_state.normalize_vectors)

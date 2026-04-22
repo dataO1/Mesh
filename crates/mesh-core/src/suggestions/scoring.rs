@@ -357,6 +357,82 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
     1.0 - intensity_reward(cand_intensity, seed_intensity, energy_bias, 0.6)
 }
 
+/// Per-component intensity reward: weighted Euclidean distance between ranked component vectors.
+///
+/// Rewards tracks that are similar on EVERY axis individually, not just on the blended composite.
+/// A gritty+smooth track won't match a clean+choppy seed even if their composites are equal.
+///
+/// At center: small distance = high reward (similar character).
+/// At peak: reward candidates whose ranked components are each HIGHER than seed.
+/// At drop: reward candidates whose ranked components are each LOWER than seed.
+pub fn intensity_reward_per_component(
+    cand_ic: &crate::db::IntensityComponents,
+    seed_ic: &crate::db::IntensityComponents,
+    energy_bias: f32,
+    blend_crossover: f32,
+) -> f32 {
+    // Component weights (same as composite_intensity_v2)
+    let weights: [(f32, f32, f32); 10] = [
+        // (weight, cand_value, seed_value)
+        (0.20, cand_ic.spectral_flux,        seed_ic.spectral_flux),
+        (0.15, cand_ic.flatness,             seed_ic.flatness),
+        (0.12, cand_ic.spectral_centroid,    seed_ic.spectral_centroid),
+        (0.12, cand_ic.dissonance,           seed_ic.dissonance),
+        (0.10, cand_ic.crest_factor,         seed_ic.crest_factor),
+        (0.08, cand_ic.energy_variance,      seed_ic.energy_variance),
+        (0.05, 1.0 - cand_ic.harmonic_complexity, 1.0 - seed_ic.harmonic_complexity),
+        (0.05, cand_ic.spectral_rolloff,     seed_ic.spectral_rolloff),
+        (0.07, cand_ic.centroid_variance,    seed_ic.centroid_variance),
+        (0.06, cand_ic.flux_variance,        seed_ic.flux_variance),
+    ];
+
+    let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
+
+    // Match component (center): weighted Euclidean distance → reward
+    let dist_sq: f32 = weights.iter()
+        .map(|(w, c, s)| w * (c - s).powi(2))
+        .sum();
+    let match_reward = 1.0 - dist_sq.sqrt().min(1.0);
+
+    // Directional component (extremes): reward candidates with each component
+    // shifted in the desired direction relative to seed.
+    // For each component: delta > 0 means candidate is more aggressive.
+    let direction_reward: f32 = weights.iter()
+        .map(|(w, c, s)| {
+            let delta = c - s;
+            let aligned = if energy_bias >= 0.0 { delta } else { -delta };
+            // Map [-1, 1] to [0, 1]: fully aligned = 1.0, fully opposing = 0.0
+            w * (aligned + 1.0) / 2.0
+        })
+        .sum();
+
+    match_reward * (1.0 - blend_t) + direction_reward * blend_t
+}
+
+/// Hybrid intensity reward: per-component at center, composite at extremes.
+pub fn intensity_reward_hybrid(
+    cand_ic: &crate::db::IntensityComponents,
+    seed_ic: &crate::db::IntensityComponents,
+    cand_composite: f32,
+    _seed_composite: f32,
+    energy_bias: f32,
+    blend_crossover: f32,
+) -> f32 {
+    let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
+
+    // Center: per-component distance (match character)
+    let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover);
+
+    // Extreme: composite direction (match energy level)
+    let composite_dir = if energy_bias >= 0.0 {
+        cand_composite
+    } else {
+        1.0 - cand_composite
+    };
+
+    per_comp * (1.0 - blend_t) + composite_dir * blend_t
+}
+
 /// Stem complement component — bipolar [0, 1].
 ///
 /// - seed=1, cand=0 (or vice versa): → 1.0 (fully complementary, max boost)
