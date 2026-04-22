@@ -64,13 +64,20 @@ All notable changes to Mesh are documented in this file.
 ### Changed
 
 - **Intensity scoring v2** — Complete redesign of the intensity/aggression
-  system. Individual audio components (spectral flux, flatness, dissonance,
-  crest factor, energy variance, harmonic complexity, spectral rolloff) are
-  stored per track and combined at query time with tunable weights. Replaces
-  the old binary ML classifiers (mood_aggressive/mood_relaxed) which couldn't
-  distinguish sub-styles within a genre. Multi-frame analysis (20 frames
-  across the track) replaces single-midpoint-frame measurements. Re-analyse
-  ML with tags ticked to populate the new values.
+  system. 10 audio components (spectral flux, flatness, centroid, dissonance,
+  crest factor, energy variance, harmonic complexity, spectral rolloff,
+  centroid variance, flux variance) are stored per track and combined at query
+  time with tunable weights. Full-track FFT analysis (~4,650 frames for a
+  4-minute track) replaces the old 20-frame subsample. Raw values stored
+  without artificial scaling — percentile-rank normalization at query time
+  ensures every component contributes equally regardless of absolute scale.
+  Replaces the old binary ML classifiers which couldn't distinguish sub-styles.
+
+- **Intensity component tags** — Per-track tags (Choppy/Smooth, Gritty/Clean,
+  Dense/Punchy, Bright/Dark) derived from 4 audio characteristic groups.
+  Tags only appear for top/bottom 20% outliers — in suggestions relative to
+  other candidates, in the browser relative to the whole library. Max 2 tags
+  per track, displayed in the "Other" stem color from the active theme.
 
 - **Percentile-rank normalization** — Vector similarity and intensity scores
   use percentile-rank normalization instead of pool-max + genre z-score.

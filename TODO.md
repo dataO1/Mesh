@@ -148,15 +148,22 @@ These features would make clusters queryable and actionable:
 
 - [x] **Energy arc ribbon** in browser analytics panel: vertical = intensity,
   width = spectral jump, color = key transition quality. Uses
-  `composite_intensity_v2()` from 7-component IntensityComponents.
+  `composite_intensity_v2()` from 10-component IntensityComponents.
 
 ---
 
 ## Intensity Scoring v2 — DONE
 
-- [x] **7-component IntensityComponents**: spectral_flux, flatness, centroid,
-  dissonance, crest_factor, energy_variance, harmonic_complexity. Multi-frame
-  analysis (20 frames). Composite computed at query time.
+- [x] **10-component IntensityComponents**: spectral_flux, flatness, centroid,
+  dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff,
+  centroid_variance, flux_variance. Full-track FFT analysis (~4,650 frames for
+  a 4-minute track). Raw values stored without artificial scaling — percentile-rank
+  normalization at query time ensures equal component contribution.
+- [x] **Spectral gradient** replaces peak counting for harmonic_complexity
+  (Essentia SpectralComplexity style — doesn't saturate for dense electronic music).
+- [x] **All multi-frame**: centroid + energy_variance computed from full-track FFT
+  (was single-frame Essentia placeholders). No Essentia subprocess dependency for
+  intensity — pure Rust realfft only.
 - [x] **4 intensity tag groups**: Texture (Choppy/Smooth), Grit (Gritty/Clean),
   Density (Dense/Punchy), Brightness (Bright/Dark). Top/bottom 20% outliers
   shown as pills in Other stem color. Max 2 per track.
