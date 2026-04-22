@@ -486,226 +486,97 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: Fetch intensity components and compute composite at query time.
-    // Keep raw components for per-group tag generation alongside composite scores.
-    let mut intensity_components_map: HashMap<(usize, i64), crate::db::IntensityComponents> = HashMap::new();
-    let mut intensity_map: HashMap<(usize, i64), f32> = HashMap::new();
-    for (src_idx, source) in sources.iter().enumerate() {
-        let all_ids: Vec<i64> = candidates.keys()
-            .filter(|(si, _)| *si == src_idx)
-            .map(|(_, id)| *id)
-            .collect();
-        if all_ids.is_empty() { continue; }
+    // Step 4d: PCA aggression axis — extract per-track aggression scores from PCA vectors.
+    // The aggression axis (best PCA dimension correlated with genre+mood aggression)
+    // is computed at PCA build time and stored in the DB.
+    let aggression_axis = sources.first()
+        .and_then(|s| s.db.get_aggression_axis().ok().flatten());
+    let mut aggression_map: HashMap<(usize, i64), f32> = HashMap::new();
 
-        if let Ok(components) = source.db.batch_get_intensity_components(&all_ids) {
-            for (id, ic) in components {
-                intensity_map.insert((src_idx, id), composite_intensity_v2(&ic));
-                intensity_components_map.insert((src_idx, id), ic);
-            }
-        }
-    }
-    // Also fetch seed components for intensity tags
-    for &(src_idx, ref track) in &seed_tracks {
-        if let Some(id) = track.id {
-            if !intensity_components_map.contains_key(&(src_idx, id)) {
-                if let Ok(components) = sources[src_idx].db.batch_get_intensity_components(&[id]) {
-                    for (sid, ic) in components {
-                        intensity_map.entry((src_idx, sid)).or_insert_with(|| composite_intensity_v2(&ic));
-                        intensity_components_map.insert((src_idx, sid), ic);
+    if let Some((aggr_dim, aggr_sign, aggr_corr)) = aggression_axis {
+        // Extract aggression score from each candidate's PCA vector
+        // (PCA vectors are already loaded in `candidates` with their distances)
+        for (src_idx, source) in sources.iter().enumerate() {
+            if let Ok(all_pca) = source.db.get_all_pca_with_tracks() {
+                for (track, pca_vec) in &all_pca {
+                    if let Some(id) = track.id {
+                        if pca_vec.len() > aggr_dim {
+                            let raw = pca_vec[aggr_dim] * aggr_sign;
+                            aggression_map.insert((src_idx, id), raw);
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Percentile-rank normalize each intensity component across all candidates + seeds.
-    // Ensures every component contributes equally regardless of absolute scale.
-    {
-        let component_keys: Vec<(usize, i64)> = intensity_components_map.keys().copied().collect();
-        if component_keys.len() >= 5 {
-            macro_rules! rank_field {
-                ($field:ident) => {{
-                    let mut vals: Vec<((usize, i64), f32)> = component_keys.iter()
-                        .filter_map(|k| intensity_components_map.get(k).map(|ic| (*k, ic.$field)))
-                        .collect();
-                    vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                    let n = vals.len().max(1) as f32;
-                    let ranks: HashMap<(usize, i64), f32> = vals.iter().enumerate()
-                        .map(|(rank, &(key, _))| (key, rank as f32 / (n - 1.0).max(1.0)))
-                        .collect();
-                    ranks
-                }};
-            }
-
-            let r_flux = rank_field!(spectral_flux);
-            let r_flat = rank_field!(flatness);
-            let r_cent = rank_field!(spectral_centroid);
-            let r_diss = rank_field!(dissonance);
-            let r_crest = rank_field!(crest_factor);
-            let r_evar = rank_field!(energy_variance);
-            let r_harm = rank_field!(harmonic_complexity);
-            let r_roll = rank_field!(spectral_rolloff);
-            let r_cvar = rank_field!(centroid_variance);
-            let r_fvar = rank_field!(flux_variance);
-
-            for key in &component_keys {
-                if let Some(ic) = intensity_components_map.get_mut(key) {
-                    if let Some(&r) = r_flux.get(key) { ic.spectral_flux = r; }
-                    if let Some(&r) = r_flat.get(key) { ic.flatness = r; }
-                    if let Some(&r) = r_cent.get(key) { ic.spectral_centroid = r; }
-                    if let Some(&r) = r_diss.get(key) { ic.dissonance = r; }
-                    if let Some(&r) = r_crest.get(key) { ic.crest_factor = r; }
-                    if let Some(&r) = r_evar.get(key) { ic.energy_variance = r; }
-                    if let Some(&r) = r_harm.get(key) { ic.harmonic_complexity = r; }
-                    if let Some(&r) = r_roll.get(key) { ic.spectral_rolloff = r; }
-                    if let Some(&r) = r_cvar.get(key) { ic.centroid_variance = r; }
-                    if let Some(&r) = r_fvar.get(key) { ic.flux_variance = r; }
-                }
-            }
-
-            // Recompute composites from percentile-ranked values
-            for key in &component_keys {
-                if let Some(ic) = intensity_components_map.get(key) {
-                    intensity_map.insert(*key, composite_intensity_v2(ic));
-                }
+        // Percentile-rank the aggression scores across all tracks
+        if aggression_map.len() >= 5 {
+            let mut ranked: Vec<((usize, i64), f32)> = aggression_map.iter()
+                .map(|(&k, &v)| (k, v))
+                .collect();
+            ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let n = ranked.len().max(1) as f32;
+            for (rank, &(key, _)) in ranked.iter().enumerate() {
+                aggression_map.insert(key, rank as f32 / (n - 1.0).max(1.0));
             }
         }
+
+        eprintln!("[AGGRESSION] axis: dim={}, sign={:+.0}, r={:.3}, {} tracks scored",
+            aggr_dim, aggr_sign, aggr_corr, aggression_map.len());
+    } else {
+        eprintln!("[AGGRESSION] No aggression axis found — build similarity index first");
     }
 
-    let avg_seed_intensity = {
-        let vals: Vec<f32> = seed_tracks
-            .iter()
+    // Seed aggression (percentile-ranked)
+    let avg_seed_aggression = {
+        let vals: Vec<f32> = seed_tracks.iter()
             .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
-            .filter_map(|key| intensity_map.get(&key).copied())
+            .filter_map(|key| aggression_map.get(&key).copied())
             .collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
 
-    // Diagnostic: intensity data coverage + distribution
-    {
-        let total_candidates = candidates.len();
-        let with_intensity = candidates.keys()
-            .filter(|k| intensity_map.contains_key(k))
-            .count();
-        let with_components = candidates.keys()
-            .filter(|k| intensity_components_map.contains_key(k))
-            .count();
-        eprintln!("[INTENSITY] candidates: {} total, {} with composite, {} with raw components",
-            total_candidates, with_intensity, with_components);
-        eprintln!("[INTENSITY] seed avg_intensity={:.3}", avg_seed_intensity);
-
-        // Log seed raw components
-        for (idx, t) in &seed_tracks {
-            if let Some(id) = t.id {
-                if let Some(ic) = intensity_components_map.get(&(*idx, id)) {
-                    eprintln!("[INTENSITY] seed '{}': flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} cvar={:.3} fvar={:.3} → composite={:.3}",
-                        t.title, ic.spectral_flux, ic.flatness, ic.spectral_centroid,
-                        ic.dissonance, ic.crest_factor, ic.energy_variance,
-                        ic.harmonic_complexity, ic.spectral_rolloff,
-                        ic.centroid_variance, ic.flux_variance,
-                        intensity_map.get(&(*idx, id)).copied().unwrap_or(-1.0));
-                } else {
-                    eprintln!("[INTENSITY] seed '{}': NO COMPONENTS", t.title);
-                }
-            }
-        }
-
-        // Distribution of composite values
-        if with_intensity > 0 {
-            let mut vals: Vec<f32> = intensity_map.values().copied().collect();
-            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let n = vals.len();
-            eprintln!("[INTENSITY] composite distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3}",
-                vals[0], vals[n/4], vals[n/2], vals[n*3/4], vals[n-1]);
+    // Diagnostic
+    for (idx, t) in &seed_tracks {
+        if let Some(id) = t.id {
+            let aggr = aggression_map.get(&(*idx, id)).copied().unwrap_or(-1.0);
+            eprintln!("[AGGRESSION] seed '{}': percentile={:.3}", t.title, aggr);
         }
     }
-
-    // Average seed IntensityComponents for per-group tag deltas
-    let avg_seed_ic: crate::db::IntensityComponents = {
-        let seed_ics: Vec<&crate::db::IntensityComponents> = seed_tracks.iter()
-            .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
-            .filter_map(|key| intensity_components_map.get(&key))
-            .collect();
-        if seed_ics.is_empty() {
-            crate::db::IntensityComponents::default()
-        } else {
-            let n = seed_ics.len() as f32;
-            crate::db::IntensityComponents {
-                spectral_flux: seed_ics.iter().map(|ic| ic.spectral_flux).sum::<f32>() / n,
-                flatness: seed_ics.iter().map(|ic| ic.flatness).sum::<f32>() / n,
-                spectral_centroid: seed_ics.iter().map(|ic| ic.spectral_centroid).sum::<f32>() / n,
-                dissonance: seed_ics.iter().map(|ic| ic.dissonance).sum::<f32>() / n,
-                crest_factor: seed_ics.iter().map(|ic| ic.crest_factor).sum::<f32>() / n,
-                energy_variance: seed_ics.iter().map(|ic| ic.energy_variance).sum::<f32>() / n,
-                harmonic_complexity: seed_ics.iter().map(|ic| ic.harmonic_complexity).sum::<f32>() / n,
-                spectral_rolloff: seed_ics.iter().map(|ic| ic.spectral_rolloff).sum::<f32>() / n,
-                centroid_variance: seed_ics.iter().map(|ic| ic.centroid_variance).sum::<f32>() / n,
-                flux_variance: seed_ics.iter().map(|ic| ic.flux_variance).sum::<f32>() / n,
-            }
-        }
-    };
-
-    // Percentile thresholds for intensity tag group deltas across candidates
-    let intensity_group_percentiles: [(f32, f32); 4] = {
-        let cand_ics: Vec<&crate::db::IntensityComponents> = candidates.keys()
-            .filter_map(|key| intensity_components_map.get(key))
-            .collect();
-        if cand_ics.len() < 5 {
-            [(f32::MIN, f32::MAX); 4] // too few → no tags
-        } else {
-            let mut result = [(0.0f32, 1.0f32); 4];
-            for (i, group) in IntensityTagGroup::ALL.iter().enumerate() {
-                let seed_val = group.value(&avg_seed_ic);
-                let mut deltas: Vec<f32> = cand_ics.iter()
-                    .map(|ic| group.value(ic) - seed_val)
-                    .collect();
-                deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let n = deltas.len();
-                result[i] = (deltas[n / 5], deltas[n * 4 / 5]);
-            }
-            result
-        }
-    };
+    if !aggression_map.is_empty() {
+        let mut vals: Vec<f32> = aggression_map.values().copied().collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = vals.len();
+        eprintln!("[AGGRESSION] distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3}",
+            vals[0], vals[n/4], vals[n/2], vals[n*3/4], vals[n-1]);
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Step 5: Reward-based scoring (higher = better match)
     // ════════════════════════════════════════════════════════════════════════
     //
-    // Each component contributes a REWARD in [0, weight] to the total score.
-    // A perfect match on all dimensions yields score ≈ 1.0.
-    // A terrible match yields score ≈ 0.0.
+    // Center: similarity + key dominate (aggression has zero weight).
+    // Extremes: aggression linearly introduced, similarity reduced.
     //
-    // ┌─────────────────────────────────────────────────────────────────────┐
-    // │ Component     │ Weight │ Center (layering)  │ Extremes (transition)│
-    // ├───────────────┼────────┼────────────────────┼──────────────────────┤
-    // │ Intensity     │ 0.30   │ Same level → high  │ Directional → high  │
-    // │ Key compat.   │ 0.30   │ Compatible → high  │ Energy-aligned→high │
-    // │ Vector sim.   │ 0.25   │ Similar → high     │ Dissimilar → high   │
-    // │ Co-play hist. │ 0.07   │ Proven → high      │ Fades to 0          │
-    // ├───────────────┼────────┼────────────────────┴──────────────────────┤
-    // │ Stem penalty  │ -0.13  │ Clashing vocals/lead SUBTRACT from score │
-    // │ (only center) │        │ Complementary = no penalty               │
-    // └─────────────────────────────────────────────────────────────────────┘
-    //
-    // Note: key_transition_score() already blends harmonic compatibility with
-    // energy direction based on the slider position, so no separate key_dir
-    // component is needed.
-    //
-    // Slider semantics:
-    //   Center (0.5): Find tracks for LAYERING — similar sound, compatible key,
-    //                 similar energy, complementary stems. Good for mashups.
-    //   High (→1.0):  Find tracks for TRANSITION UP — dissimilar sound, energy-
-    //                 raising key transitions, more aggressive. Build energy.
-    //   Low (→0.0):   Find tracks for TRANSITION DOWN — dissimilar sound, energy-
-    //                 lowering key transitions, less aggressive. Wind down.
-    //
-    // Sort: DESCENDING (higher score = better match).
+    // ┌────────────────────────────────────────────────────────────────────┐
+    // │ Component     │ Center weight │ Extreme weight │ Behavior         │
+    // ├───────────────┼───────────────┼────────────────┼──────────────────┤
+    // │ Similarity    │ 0.55          │ 0.40           │ Genre coherence  │
+    // │ Key compat.   │ 0.25          │ 0.25           │ Harmonic + dir.  │
+    // │ Aggression    │ 0.00          │ 0.20           │ PCA direction    │
+    // │ Co-play       │ 0.07          │ 0.00           │ History bonus    │
+    // │ Stem penalty  │ -0.13         │ 0.00           │ Layering only    │
+    // └────────────────────────────────────────────────────────────────────┘
 
     let bias_abs = energy_bias.abs();
-    let (w_vector, w_key, w_intensity) = match suggestion_config.custom_weights {
+    let (w_vector_base, w_key, w_aggr_max) = match suggestion_config.custom_weights {
         Some([ws, wk, wi]) => (ws, wk, wi),
-        None => (0.40, 0.25, 0.35),
+        None => (0.55, 0.25, 0.20),
     };
+    // Aggression linearly introduced from 0 at center to w_aggr_max at extremes
+    let w_aggr = w_aggr_max * bias_abs;
+    // Similarity reduced proportionally to make room for aggression
+    let w_vector = w_vector_base - w_aggr * 0.5;
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
@@ -781,25 +652,11 @@ pub fn query_suggestions(
             // No separate key_dir component needed — it's already incorporated.
             let key_reward = best_key_score;
 
-            // ── Intensity reward ──
-            let ml_key = track.id.map(|id| (src_idx, id));
-            let cand_norm_intensity = ml_key
-                .and_then(|k| intensity_map.get(&k).copied())
+            // ── Aggression reward (PCA-based, only at extremes) ──
+            let cand_aggr = track.id
+                .and_then(|id| aggression_map.get(&(src_idx, id)).copied())
                 .unwrap_or(0.5);
-            let int_reward = match suggestion_config.intensity_match_mode {
-                super::config::IntensityMatchMode::Match => {
-                    ml_key
-                        .and_then(|k| intensity_components_map.get(&k))
-                        .map(|cand_ic| intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach))
-                        .unwrap_or(0.5)
-                }
-                super::config::IntensityMatchMode::Auto => {
-                    ml_key
-                        .and_then(|k| intensity_components_map.get(&k))
-                        .map(|cand_ic| intensity_reward_hybrid(cand_ic, &avg_seed_ic, cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach))
-                        .unwrap_or(0.5)
-                }
-            };
+            let aggr_reward = aggression_reward(cand_aggr, avg_seed_aggression, energy_bias, suggestion_config.intensity_reach);
 
             // ── Vector similarity reward ──
             // hnsw_dist is already percentile-rank normalized [0, 1]
@@ -831,7 +688,7 @@ pub fn query_suggestions(
             // ── Final score: sum of rewards minus stem penalties ──
             let score = (w_vector    * vec_reward
                 + w_key       * key_reward
-                + w_intensity * int_reward
+                + w_aggr      * aggr_reward
                 + w_coplay    * coplay_reward
                 - w_vocal_pen * vocal_clash
                 - w_other_pen * other_clash)
@@ -839,7 +696,7 @@ pub fn query_suggestions(
 
             let is_proven_followup = coplay >= 0.3;
 
-            let energy_delta = cand_norm_intensity - avg_seed_intensity;
+            let energy_delta = cand_aggr - avg_seed_aggression;
             let mut reason_tags = generate_reason_tags(
                 best_tt,
                 similarity,
@@ -848,12 +705,6 @@ pub fn query_suggestions(
                 w_vocal_pen, w_other_pen,
             );
 
-            // Intensity component tags (outlier deltas from seed)
-            if let Some(cand_ic) = intensity_components_map.get(&(src_idx, track_id)) {
-                let int_tags = generate_intensity_tags(cand_ic, &avg_seed_ic, &intensity_group_percentiles);
-                reason_tags.extend(int_tags);
-            }
-
             if multi_source {
                 let source_name = source_names.get(&src_idx).copied().unwrap_or("?");
                 reason_tags.insert(0, (source_name.to_string(), Some("#808080".to_string())));
@@ -861,11 +712,11 @@ pub fn query_suggestions(
 
             let component_scores = if emit_components {
                 Some(ComponentScores {
-                    hnsw_distance: vec_reward, // store reward, not raw distance
+                    hnsw_distance: vec_reward,
                     hnsw_component: vec_reward,
                     key_score: key_reward,
-                    key_direction: key_reward, // same value, key already includes direction
-                    intensity_penalty: int_reward, // now a reward despite the field name
+                    key_direction: key_reward,
+                    intensity_penalty: aggr_reward, // now PCA aggression reward
                     coplay_score: coplay_reward,
                     vocal_complement: vocal_comp,
                     other_complement: other_comp,
@@ -882,43 +733,24 @@ pub fn query_suggestions(
     // Step 6: Sort DESCENDING (higher score = better match) and limit
     suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Diagnostic: top 10 suggestion breakdown with full component detail
+    // Diagnostic: top 10 suggestion breakdown
     {
         let w = match suggestion_config.custom_weights {
-            Some([ws, wk, wi]) => format!("S={:.2} K={:.2} I={:.2}", ws, wk, wi),
+            Some([ws, wk, wi]) => format!("S={:.2} K={:.2} A={:.2}", ws, wk, wi),
             None => "default".to_string(),
         };
-        eprintln!("[SUGGESTIONS] Top results (weights: {}, energy_bias={:.2}):", w, energy_bias);
+        eprintln!("[SUGGESTIONS] Top results (weights: {}, energy_bias={:.2}, w_aggr_eff={:.2}):", w, energy_bias, w_aggr);
         for (i, s) in suggestions.iter().take(10).enumerate() {
             let id_key = s.track.id.map(|id| (0usize, id));
-            let composite = id_key.and_then(|k| intensity_map.get(&k).copied());
-            let ic = id_key.and_then(|k| intensity_components_map.get(&k));
-            let ic_str = if let Some(ic) = ic {
-                format!("flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} cvar={:.3} fvar={:.3}",
-                    ic.spectral_flux, ic.flatness, ic.spectral_centroid,
-                    ic.dissonance, ic.crest_factor, ic.energy_variance,
-                    ic.harmonic_complexity, ic.spectral_rolloff,
-                    ic.centroid_variance, ic.flux_variance)
-            } else {
-                "NO DATA".to_string()
-            };
-            // Show per-component score breakdown
+            let aggr = id_key.and_then(|k| aggression_map.get(&k).copied()).unwrap_or(-1.0);
             let breakdown = if let Some(cs) = &s.component_scores {
-                format!("vec={:.3} key={:.3} int={:.3} cop={:.3}",
+                format!("vec={:.3} key={:.3} aggr={:.3} cop={:.3}",
                     cs.hnsw_component, cs.key_score, cs.intensity_penalty, cs.coplay_score)
             } else {
-                // Recompute the intensity reward using the active mode for logging
-                let int_rwd = id_key.and_then(|k| intensity_components_map.get(&k))
-                    .map(|cand_ic| match suggestion_config.intensity_match_mode {
-                        super::config::IntensityMatchMode::Match =>
-                            intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach),
-                        super::config::IntensityMatchMode::Auto =>
-                            intensity_reward_hybrid(cand_ic, &avg_seed_ic, composite.unwrap_or(0.5), avg_seed_intensity, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach),
-                    });
-                format!("int_reward={:.3} mode={}", int_rwd.unwrap_or(-1.0), suggestion_config.intensity_match_mode.display_name())
+                format!("aggr_rwd={:.3}", aggression_reward(aggr, avg_seed_aggression, energy_bias, suggestion_config.intensity_reach))
             };
-            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} comp={:.3} {} | {} | ranked: {}",
-                i + 1, s.score, composite.unwrap_or(-1.0), breakdown, s.track.title, ic_str);
+            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} aggr={:.3} {} | {}",
+                i + 1, s.score, aggr, breakdown, s.track.title);
         }
     }
 

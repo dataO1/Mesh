@@ -363,6 +363,45 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
     1.0 - intensity_reward(cand_intensity, seed_intensity, energy_bias, 0.6)
 }
 
+/// PCA aggression reward — directional scoring using the library's aggression axis.
+///
+/// Uses one-sided linear falloff: wrong direction from seed gets hard penalty,
+/// right direction gets linear reward toward the target.
+///
+/// - `cand_aggr`: candidate's percentile-ranked aggression score [0, 1]
+/// - `seed_aggr`: seed's percentile-ranked aggression score [0, 1]
+/// - `energy_bias`: slider position, -1.0 (drop) to +1.0 (peak), 0.0 = center
+/// - `intensity_reach`: acceptance width (Tight=0.15, Medium=0.30, Open=0.50)
+///
+/// At center (bias=0): returns 1.0 for all tracks (no aggression influence).
+/// The aggression weight is linearly introduced by the caller based on |bias|.
+pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, intensity_reach: f32) -> f32 {
+    let bias_abs = energy_bias.abs();
+    if bias_abs < 0.01 { return 1.0; } // center: no aggression preference
+
+    let is_peak = energy_bias > 0.0;
+
+    // Target: slider interpolates from seed toward library extreme
+    let target = if is_peak {
+        seed_aggr + (1.0 - seed_aggr) * bias_abs   // center: seed, full peak: 1.0
+    } else {
+        seed_aggr * (1.0 - bias_abs)                 // center: seed, full drop: 0.0
+    };
+
+    // One-sided: wrong direction from seed = hard penalty
+    let delta = if is_peak { cand_aggr - seed_aggr } else { seed_aggr - cand_aggr };
+
+    if delta < 0.0 {
+        // Wrong direction: sharp linear penalty
+        (1.0 + delta * 2.0).max(0.0)
+    } else {
+        // Right direction: reward based on distance from target
+        let width = intensity_reach.max(0.10);
+        let target_delta = (cand_aggr - target).abs();
+        (1.0 - target_delta / width).max(0.0)
+    }
+}
+
 /// Per-component intensity reward: weighted Euclidean distance between ranked component vectors.
 ///
 /// Rewards tracks that are similar on EVERY axis individually, not just on the blended composite.
