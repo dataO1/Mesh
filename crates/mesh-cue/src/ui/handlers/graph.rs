@@ -70,6 +70,7 @@ impl MeshCueApp {
         let normalize = self.collection.graph_normalize_vectors;
         let algorithm = self.collection.graph_algorithm;
         let stem_colors = self.collection.stem_colors;
+        let whiten_alpha = self.collection.pca_whitening_alpha;
 
         Task::perform(
             async move {
@@ -78,9 +79,12 @@ impl MeshCueApp {
 
                     // Load PCA embeddings + track metadata in one pass
                     let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
+                    let mut pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
                         .filter_map(|(t, v)| Some((t.id?, v.clone())))
                         .collect();
+
+                    // Apply partial PCA whitening before layout
+                    mesh_core::graph_compute::apply_pca_whitening(&mut pca_data, whiten_alpha);
 
                     // Build track metadata
                     let track_meta: HashMap<i64, TrackMeta> = all_pca.iter()

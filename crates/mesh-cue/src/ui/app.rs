@@ -676,9 +676,9 @@ impl MeshCueApp {
             }
             Message::GraphWhiteningAlpha(alpha) => {
                 self.collection.pca_whitening_alpha = alpha;
-                let energy = self.collection.graph_state.as_ref()
-                    .map(|s| s.energy_direction).unwrap_or(0.5);
-                return self.handle_graph_slider_changed(energy);
+                // Rebuild graph + re-query suggestions (whitening affects both t-SNE layout and distances)
+                self.collection.graph_state = None;
+                return self.handle_build_graph_edges();
             }
             Message::GraphSwitchAlgorithm => {
                 self.collection.graph_algorithm = self.collection.graph_algorithm.next();
