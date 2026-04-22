@@ -310,13 +310,16 @@ pub fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
 /// All components are raw [0, 1] values stored per-track in DB.
 /// The composite is computed at query time so weights can be tuned without reanalysis.
 pub fn composite_intensity_v2(ic: &crate::db::IntensityComponents) -> f32 {
-    (0.25 * ic.spectral_flux
-    + 0.20 * ic.flatness
-    + 0.15 * ic.spectral_centroid
-    + 0.15 * ic.dissonance
+    (0.20 * ic.spectral_flux
+    + 0.15 * ic.flatness
+    + 0.12 * ic.spectral_centroid
+    + 0.12 * ic.dissonance
     + 0.10 * (1.0 - ic.crest_factor)    // lower crest = more compressed = more aggressive
-    + 0.10 * ic.energy_variance
-    + 0.05 * (1.0 - ic.harmonic_complexity))  // less tonal = more aggressive
+    + 0.08 * ic.energy_variance
+    + 0.05 * (1.0 - ic.harmonic_complexity)  // less tonal = more aggressive
+    + 0.05 * ic.spectral_rolloff
+    + 0.07 * ic.centroid_variance        // filter sweeps = more dynamic
+    + 0.06 * ic.flux_variance)           // inconsistent chop = more chaotic
     .clamp(0.0, 1.0)
 }
 
@@ -421,7 +424,8 @@ impl IntensityTagGroup {
     pub fn value(&self, ic: &crate::db::IntensityComponents) -> f32 {
         match self {
             Self::Texture => {
-                (0.25 * ic.spectral_flux + 0.10 * ic.energy_variance) / 0.35
+                (0.25 * ic.spectral_flux + 0.10 * ic.energy_variance
+                 + 0.10 * ic.centroid_variance + 0.10 * ic.flux_variance) / 0.55
             }
             Self::Grit => {
                 (0.20 * ic.flatness + 0.15 * ic.dissonance

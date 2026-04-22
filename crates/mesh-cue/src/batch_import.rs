@@ -885,18 +885,10 @@ fn process_single_track(
                 base_name, track_id
             );
 
-            // Store multi-frame intensity components (computed before subprocess from mono audio).
-            // Merge: use Essentia's full-track centroid + energy_variance when available,
-            // keep multi-frame values for flux, flatness, dissonance, crest, etc.
-            {
-                let mut ic = intensity_base.clone();
-                if let Some(ref features) = analysis.audio_features {
-                    ic.spectral_centroid = features.spectral_centroid;
-                    ic.energy_variance = features.energy_variance;
-                }
-                if let Err(e) = config.db_service.store_intensity_components(track_id, &ic) {
-                    log::warn!("process_single_track: Failed to store intensity components for '{}': {}", base_name, e);
-                }
+            // Store full-track multi-frame intensity components (computed before subprocess).
+            // All 10 values are from the multi-frame analysis — no Essentia overwrite needed.
+            if let Err(e) = config.db_service.store_intensity_components(track_id, &intensity_base) {
+                log::warn!("process_single_track: Failed to store intensity components for '{}': {}", base_name, e);
             }
 
             // Store ML analysis results and auto-tag

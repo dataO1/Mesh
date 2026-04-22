@@ -422,26 +422,13 @@ fn reanalyze_metadata_track(
             log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
         }
 
-        // Intensity components — always computed when tags are ticked (no ML dependency).
-        // Load at 44100 Hz for Essentia features, multi-frame intensity is pure Rust.
-        const ESSENTIA_RATE_FEAT: u32 = 44100;
-        match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(ESSENTIA_RATE_FEAT)) {
+        // Intensity components — full-track multi-frame analysis (pure Rust, no subprocess).
+        // All 10 components computed from FFT frames across the track. No Essentia dependency.
+        const INTENSITY_RATE: u32 = 44100;
+        match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(INTENSITY_RATE)) {
             Ok(feat_stems) => {
                 let mono_44 = create_mono_mix(&feat_stems);
-                // Compute multi-frame intensity components (pure Rust, no subprocess)
-                let mut ic = crate::features::compute_intensity_components(&mono_44, ESSENTIA_RATE_FEAT as f32);
-
-                // Try to merge full-track centroid + energy_variance from Essentia.
-                // If the subprocess fails, the multi-frame values are still meaningful.
-                match crate::features::extract_audio_features_in_subprocess(mono_44) {
-                    Ok(features) => {
-                        ic.spectral_centroid = features.spectral_centroid;
-                        ic.energy_variance = features.energy_variance;
-                    }
-                    Err(e) => {
-                        log::warn!("reanalyze_metadata_track: Essentia features failed, using multi-frame values only: {:?}", e);
-                    }
-                }
+                let ic = crate::features::compute_intensity_components(&mono_44, INTENSITY_RATE as f32);
                 if let Err(e) = db.store_intensity_components(track_id, &ic) {
                     log::warn!("reanalyze_metadata_track: Failed to store intensity components: {:?}", e);
                 }

@@ -246,6 +246,10 @@ pub struct IntensityComponents {
     pub energy_variance: f32,
     pub harmonic_complexity: f32,
     pub spectral_rolloff: f32,
+    /// Variance of per-frame spectral centroid — measures filter sweeps vs static timbre
+    pub centroid_variance: f32,
+    /// Variance of per-frame spectral flux — measures consistent chop vs occasional hits
+    pub flux_variance: f32,
 }
 
 /// ML analysis results. It has no iced dependencies.
@@ -360,7 +364,23 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // Stem energy density relation (vocal + other)
     create_stem_energy_relation(db)?;
 
-    // Intensity components for composite scoring (v2 — multi-frame averaged)
+    // Intensity components for composite scoring (v2 — full-track multi-frame)
+    // Migration: add centroid_variance + flux_variance. CozoDB has no ALTER TABLE,
+    // so drop and recreate. Data repopulated on next reanalysis with tags ticked.
+    if existing.contains("track_intensity") {
+        let cols = db.run_script(
+            "::columns track_intensity",
+            Default::default(),
+            cozo::ScriptMutability::Immutable,
+        ).map_err(|e| DbError::Schema(e.to_string()))?;
+        let has_new = cols.rows.iter().any(|row| {
+            row.first().and_then(|v| v.get_str()) == Some("centroid_variance")
+        });
+        if !has_new {
+            log::info!("Migrating track_intensity: adding centroid_variance + flux_variance (drop + recreate)");
+            let _ = db.run_script("::remove track_intensity", Default::default(), cozo::ScriptMutability::Mutable);
+        }
+    }
     create_intensity_components_relation(db)?;
 
     // Transition graph: tracks played together → time-decayed co-play edges
@@ -887,7 +907,7 @@ fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
 
 fn create_intensity_components_relation(db: &DbInstance) -> Result<(), DbError> {
     // Per-track intensity component values for composite scoring.
-    // All values are raw [0, 1] scalars, multi-frame averaged where applicable.
+    // All values are raw [0, 1] scalars, full-track multi-frame averaged.
     // The composite intensity is computed at query time from these components.
     run_schema(db, r#"
         {:create track_intensity {
@@ -899,7 +919,9 @@ fn create_intensity_components_relation(db: &DbInstance) -> Result<(), DbError> 
             crest_factor: Float,
             energy_variance: Float,
             harmonic_complexity: Float,
-            spectral_rolloff: Float
+            spectral_rolloff: Float,
+            centroid_variance: Float default 0.0,
+            flux_variance: Float default 0.0
         }}
     "#)
 }

@@ -1124,13 +1124,18 @@ impl DatabaseService {
         params.insert("energy_variance".to_string(), DataValue::from(ic.energy_variance as f64));
         params.insert("harmonic_complexity".to_string(), DataValue::from(ic.harmonic_complexity as f64));
         params.insert("spectral_rolloff".to_string(), DataValue::from(ic.spectral_rolloff as f64));
+        params.insert("centroid_variance".to_string(), DataValue::from(ic.centroid_variance as f64));
+        params.insert("flux_variance".to_string(), DataValue::from(ic.flux_variance as f64));
         self.db.run_script(r#"
-            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff] <-
-                [[$track_id, $spectral_flux, $flatness, $spectral_centroid, $dissonance, $crest_factor, $energy_variance, $harmonic_complexity, $spectral_rolloff]]
+            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
+              energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance] <-
+                [[$track_id, $spectral_flux, $flatness, $spectral_centroid, $dissonance, $crest_factor,
+                  $energy_variance, $harmonic_complexity, $spectral_rolloff, $centroid_variance, $flux_variance]]
             :put track_intensity {
                 track_id =>
                 spectral_flux, flatness, spectral_centroid, dissonance,
-                crest_factor, energy_variance, harmonic_complexity, spectral_rolloff
+                crest_factor, energy_variance, harmonic_complexity, spectral_rolloff,
+                centroid_variance, flux_variance
             }
         "#, params)?;
         Ok(())
@@ -1145,8 +1150,10 @@ impl DatabaseService {
         let mut params = BTreeMap::new();
         params.insert("ids".to_string(), DataValue::List(id_values));
         let result = self.db.run_query(r#"
-            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff] :=
-                *track_intensity{track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor, energy_variance, harmonic_complexity, spectral_rolloff},
+            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
+              energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance] :=
+                *track_intensity{track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
+                                 energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance},
                 track_id in $ids
         "#, params)?;
         let mut map = HashMap::new();
@@ -1161,6 +1168,8 @@ impl DatabaseService {
                     energy_variance: row[6].get_float().unwrap_or(0.0) as f32,
                     harmonic_complexity: row[7].get_float().unwrap_or(0.0) as f32,
                     spectral_rolloff: row[8].get_float().unwrap_or(0.0) as f32,
+                    centroid_variance: row[9].get_float().unwrap_or(0.0) as f32,
+                    flux_variance: row[10].get_float().unwrap_or(0.0) as f32,
                 });
             }
         }

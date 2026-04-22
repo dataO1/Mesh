@@ -459,6 +459,60 @@ pub fn query_suggestions(
         }
     }
 
+    // Percentile-rank normalize each intensity component across all candidates + seeds.
+    // Ensures every component contributes equally regardless of absolute scale.
+    {
+        let component_keys: Vec<(usize, i64)> = intensity_components_map.keys().copied().collect();
+        if component_keys.len() >= 5 {
+            macro_rules! rank_field {
+                ($field:ident) => {{
+                    let mut vals: Vec<((usize, i64), f32)> = component_keys.iter()
+                        .filter_map(|k| intensity_components_map.get(k).map(|ic| (*k, ic.$field)))
+                        .collect();
+                    vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let n = vals.len().max(1) as f32;
+                    let ranks: HashMap<(usize, i64), f32> = vals.iter().enumerate()
+                        .map(|(rank, &(key, _))| (key, rank as f32 / (n - 1.0).max(1.0)))
+                        .collect();
+                    ranks
+                }};
+            }
+
+            let r_flux = rank_field!(spectral_flux);
+            let r_flat = rank_field!(flatness);
+            let r_cent = rank_field!(spectral_centroid);
+            let r_diss = rank_field!(dissonance);
+            let r_crest = rank_field!(crest_factor);
+            let r_evar = rank_field!(energy_variance);
+            let r_harm = rank_field!(harmonic_complexity);
+            let r_roll = rank_field!(spectral_rolloff);
+            let r_cvar = rank_field!(centroid_variance);
+            let r_fvar = rank_field!(flux_variance);
+
+            for key in &component_keys {
+                if let Some(ic) = intensity_components_map.get_mut(key) {
+                    if let Some(&r) = r_flux.get(key) { ic.spectral_flux = r; }
+                    if let Some(&r) = r_flat.get(key) { ic.flatness = r; }
+                    if let Some(&r) = r_cent.get(key) { ic.spectral_centroid = r; }
+                    if let Some(&r) = r_diss.get(key) { ic.dissonance = r; }
+                    if let Some(&r) = r_crest.get(key) { ic.crest_factor = r; }
+                    if let Some(&r) = r_evar.get(key) { ic.energy_variance = r; }
+                    if let Some(&r) = r_harm.get(key) { ic.harmonic_complexity = r; }
+                    if let Some(&r) = r_roll.get(key) { ic.spectral_rolloff = r; }
+                    if let Some(&r) = r_cvar.get(key) { ic.centroid_variance = r; }
+                    if let Some(&r) = r_fvar.get(key) { ic.flux_variance = r; }
+                }
+            }
+
+            // Recompute composites from percentile-ranked values
+            for key in &component_keys {
+                if let Some(ic) = intensity_components_map.get(key) {
+                    intensity_map.insert(*key, composite_intensity_v2(ic));
+                }
+            }
+        }
+    }
+
     let avg_seed_intensity = {
         let vals: Vec<f32> = seed_tracks
             .iter()
@@ -485,10 +539,11 @@ pub fn query_suggestions(
         for (idx, t) in &seed_tracks {
             if let Some(id) = t.id {
                 if let Some(ic) = intensity_components_map.get(&(*idx, id)) {
-                    eprintln!("[INTENSITY] seed '{}': flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} → composite={:.3}",
+                    eprintln!("[INTENSITY] seed '{}': flux={:.3} flat={:.3} cent={:.3} diss={:.3} crest={:.3} evar={:.3} harm={:.3} roll={:.3} cvar={:.3} fvar={:.3} → composite={:.3}",
                         t.title, ic.spectral_flux, ic.flatness, ic.spectral_centroid,
                         ic.dissonance, ic.crest_factor, ic.energy_variance,
                         ic.harmonic_complexity, ic.spectral_rolloff,
+                        ic.centroid_variance, ic.flux_variance,
                         intensity_map.get(&(*idx, id)).copied().unwrap_or(-1.0));
                 } else {
                     eprintln!("[INTENSITY] seed '{}': NO COMPONENTS", t.title);
@@ -525,6 +580,8 @@ pub fn query_suggestions(
                 energy_variance: seed_ics.iter().map(|ic| ic.energy_variance).sum::<f32>() / n,
                 harmonic_complexity: seed_ics.iter().map(|ic| ic.harmonic_complexity).sum::<f32>() / n,
                 spectral_rolloff: seed_ics.iter().map(|ic| ic.spectral_rolloff).sum::<f32>() / n,
+                centroid_variance: seed_ics.iter().map(|ic| ic.centroid_variance).sum::<f32>() / n,
+                flux_variance: seed_ics.iter().map(|ic| ic.flux_variance).sum::<f32>() / n,
             }
         }
     };

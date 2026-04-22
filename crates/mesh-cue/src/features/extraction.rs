@@ -677,11 +677,12 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
         return mesh_core::db::IntensityComponents::default();
     }
 
-    // Sample N frames evenly across the track (skip first/last 5% to avoid silence)
+    // Full-track analysis: process ALL frames, skipping first/last 5% to avoid silence.
+    // Cost: <100ms for a 4-minute track (~4,650 frames × ~13µs/frame).
     let start = samples.len() / 20;
     let end = samples.len() - samples.len() / 20;
     let usable = end - start;
-    let n_frames = 20.min(usable / hop_size);
+    let n_frames = usable / hop_size;
     if n_frames < 3 {
         return mesh_core::db::IntensityComponents::default();
     }
@@ -700,11 +701,13 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
     let mut dissonance_values = Vec::with_capacity(n_frames);
     let mut harmonic_complexity_values = Vec::with_capacity(n_frames);
     let mut rolloff_values = Vec::with_capacity(n_frames);
+    let mut centroid_values = Vec::with_capacity(n_frames);
+    let mut rms_values = Vec::with_capacity(n_frames);
     let mut prev_magnitude: Option<Vec<f32>> = None;
     let mut flux_values = Vec::with_capacity(n_frames);
 
     for frame_idx in 0..n_frames {
-        let frame_start = start + frame_idx * (usable / n_frames);
+        let frame_start = start + frame_idx * hop_size;
         if frame_start + frame_size > samples.len() { break; }
 
         // Apply window and FFT
@@ -719,8 +722,21 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
 
         if total_energy < 1e-10 { continue; }
 
+        let sum_mag: f32 = magnitude.iter().sum::<f32>();
+        let arith_mean = sum_mag / n_bins as f32;
+
+        // ── Spectral centroid (weighted average frequency, normalized by Nyquist) ──
+        if sum_mag > 1e-10 {
+            let weighted_sum: f32 = magnitude.iter().enumerate()
+                .map(|(i, &m)| i as f32 * m)
+                .sum();
+            centroid_values.push((weighted_sum / sum_mag) / n_bins as f32);
+        }
+
+        // ── Per-frame RMS energy (for inter-frame energy variance) ──
+        rms_values.push((total_energy / n_bins as f32).sqrt());
+
         // ── Spectral flatness (geometric mean / arithmetic mean) ──
-        let arith_mean = magnitude.iter().sum::<f32>() / n_bins as f32;
         let log_sum: f32 = magnitude.iter().map(|&m| (m.max(1e-10)).ln()).sum::<f32>();
         let geom_mean = (log_sum / n_bins as f32).exp();
         let flatness = if arith_mean > 1e-10 { (geom_mean / arith_mean).clamp(0.0, 1.0) } else { 0.0 };
@@ -737,17 +753,19 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
                 break;
             }
         }
-        let nyquist = sample_rate / 2.0;
-        let rolloff_freq = rolloff_bin as f32 / n_bins as f32 * nyquist;
-        rolloff_values.push((rolloff_freq / nyquist).clamp(0.0, 1.0));
+        rolloff_values.push((rolloff_bin as f32 / n_bins as f32).clamp(0.0, 1.0));
 
-        // ── Harmonic complexity (number of significant spectral peaks) ──
+        // ── Harmonic complexity (spectral gradient — Essentia SpectralComplexity style) ──
+        // Sum of bin-to-bin magnitude differences / total magnitude.
+        // Measures how "spiky" the spectrum is. Doesn't saturate like peak counting.
+        let gradient: f32 = magnitude.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .sum();
+        let complexity = if sum_mag > 1e-10 { gradient / sum_mag } else { 0.0 };
+        harmonic_complexity_values.push((complexity / 50.0).clamp(0.0, 1.0));
+
+        // ── Dissonance (simplified Plomp-Levelt roughness from spectral peak pairs) ──
         let peak_threshold = arith_mean * 3.0;
-        let n_peaks = magnitude.iter().filter(|&&m| m > peak_threshold).count();
-        harmonic_complexity_values.push((n_peaks as f32 / 50.0).clamp(0.0, 1.0));
-
-        // ── Dissonance (simplified Plomp-Levelt: count close frequency pairs) ──
-        // Find top spectral peaks
         let mut peaks: Vec<(usize, f32)> = Vec::new();
         for i in 1..magnitude.len() - 1 {
             if magnitude[i] > magnitude[i-1] && magnitude[i] > magnitude[i+1] && magnitude[i] > peak_threshold {
@@ -774,7 +792,7 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
             }
         }
         let norm_roughness = if pair_count > 0 {
-            (roughness / pair_count as f32 * 10.0).clamp(0.0, 1.0)
+            (roughness / pair_count as f32 * 100.0).clamp(0.0, 1.0)
         } else { 0.0 };
         dissonance_values.push(norm_roughness);
 
@@ -784,7 +802,6 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
                 .map(|(a, b)| (a - b).powi(2))
                 .sum::<f32>()
                 .sqrt();
-            // Normalize by frame energy
             let norm_flux = (flux / total_energy.sqrt().max(1e-6)).clamp(0.0, 1.0);
             flux_values.push(norm_flux);
         }
@@ -798,36 +815,40 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
     // Normalize: 3 dB (heavily limited) → 1.0, 20 dB (very dynamic) → 0.0
     let crest_norm = (1.0 - (crest_db - 3.0) / 17.0).clamp(0.0, 1.0);
 
-    // ── Spectral centroid (full-track via average of frame centroids) ──
-    // Already computed full-track in the existing pipeline, but we compute our own here
-    // for consistency in the multi-frame approach
-    let spectral_centroid = {
-        // Use the existing full-track value from AudioFeatures if available,
-        // otherwise fallback — for now use the value from existing extraction
-        // (this field will be populated from the existing audio_features[12])
-        0.5 // placeholder — overwritten by caller with existing DB value
-    };
-
-    // ── Energy variance (use existing full-track computation) ──
-    let energy_variance = {
-        // Placeholder — overwritten by caller with existing DB value
-        0.5
-    };
-
-    // Average all multi-frame values
+    // ── Averages and variances ──
     let avg = |vals: &[f32]| -> f32 {
         if vals.is_empty() { 0.0 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
+    let variance_scaled = |vals: &[f32]| -> f32 {
+        if vals.len() < 2 { return 0.0; }
+        let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+        let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32;
+        // Values are in [0,1], so max variance is 0.25. Scale by 4 to fill [0,1].
+        (var * 4.0).clamp(0.0, 1.0)
+    };
+
+    // Energy variance: coefficient of variation² (scale-independent)
+    let energy_variance = if rms_values.len() >= 2 {
+        let mean_rms = avg(&rms_values);
+        if mean_rms > 1e-10 {
+            let var = rms_values.iter()
+                .map(|r| (r - mean_rms).powi(2))
+                .sum::<f32>() / rms_values.len() as f32;
+            (var / (mean_rms * mean_rms)).clamp(0.0, 1.0)
+        } else { 0.0 }
+    } else { 0.0 };
 
     mesh_core::db::IntensityComponents {
         spectral_flux: avg(&flux_values),
         flatness: avg(&flatness_values),
-        spectral_centroid,
+        spectral_centroid: avg(&centroid_values),
         dissonance: avg(&dissonance_values),
         crest_factor: crest_norm,
         energy_variance,
         harmonic_complexity: avg(&harmonic_complexity_values),
         spectral_rolloff: avg(&rolloff_values),
+        centroid_variance: variance_scaled(&centroid_values),
+        flux_variance: variance_scaled(&flux_values),
     }
 }
 
