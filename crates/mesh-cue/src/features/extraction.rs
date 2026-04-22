@@ -737,12 +737,14 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
         rms_values.push((total_energy / n_bins as f32).sqrt());
 
         // ── Spectral flatness (geometric mean / arithmetic mean) ──
+        // Mathematically bounded [0, 1] — no artificial scaling needed.
         let log_sum: f32 = magnitude.iter().map(|&m| (m.max(1e-10)).ln()).sum::<f32>();
         let geom_mean = (log_sum / n_bins as f32).exp();
-        let flatness = if arith_mean > 1e-10 { (geom_mean / arith_mean).clamp(0.0, 1.0) } else { 0.0 };
+        let flatness = if arith_mean > 1e-10 { geom_mean / arith_mean } else { 0.0 };
         flatness_values.push(flatness);
 
-        // ── Spectral rolloff (freq below which 85% of energy) ──
+        // ── Spectral rolloff (bin position / total bins) ──
+        // Intrinsically [0, 1] — fraction of spectrum containing 85% of energy.
         let threshold = total_energy * 0.85;
         let mut cumulative = 0.0f32;
         let mut rolloff_bin = n_bins - 1;
@@ -753,18 +755,18 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
                 break;
             }
         }
-        rolloff_values.push((rolloff_bin as f32 / n_bins as f32).clamp(0.0, 1.0));
+        rolloff_values.push(rolloff_bin as f32 / n_bins as f32);
 
-        // ── Harmonic complexity (spectral gradient — Essentia SpectralComplexity style) ──
-        // Sum of bin-to-bin magnitude differences / total magnitude.
-        // Measures how "spiky" the spectrum is. Doesn't saturate like peak counting.
+        // ── Harmonic complexity (spectral gradient / total magnitude) ──
+        // Raw ratio — no arbitrary /50.0 scaling. Percentile-ranked at query time.
         let gradient: f32 = magnitude.windows(2)
             .map(|w| (w[1] - w[0]).abs())
             .sum();
         let complexity = if sum_mag > 1e-10 { gradient / sum_mag } else { 0.0 };
-        harmonic_complexity_values.push((complexity / 50.0).clamp(0.0, 1.0));
+        harmonic_complexity_values.push(complexity);
 
-        // ── Dissonance (simplified Plomp-Levelt roughness from spectral peak pairs) ──
+        // ── Dissonance (Plomp-Levelt roughness per peak pair) ──
+        // Raw average roughness — no arbitrary *100 scaling. Percentile-ranked at query time.
         let peak_threshold = arith_mean * 3.0;
         let mut peaks: Vec<(usize, f32)> = Vec::new();
         for i in 1..magnitude.len() - 1 {
@@ -791,19 +793,19 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
                 }
             }
         }
-        let norm_roughness = if pair_count > 0 {
-            (roughness / pair_count as f32 * 100.0).clamp(0.0, 1.0)
+        let raw_roughness = if pair_count > 0 {
+            roughness / pair_count as f32
         } else { 0.0 };
-        dissonance_values.push(norm_roughness);
+        dissonance_values.push(raw_roughness);
 
-        // ── Spectral flux (L2 distance from previous frame) ──
+        // ── Spectral flux (energy-normalized L2 distance from previous frame) ──
+        // Divided by frame energy for scale-independence. Raw value, no clamp.
         if let Some(ref prev) = prev_magnitude {
             let flux: f32 = magnitude.iter().zip(prev.iter())
                 .map(|(a, b)| (a - b).powi(2))
                 .sum::<f32>()
                 .sqrt();
-            let norm_flux = (flux / total_energy.sqrt().max(1e-6)).clamp(0.0, 1.0);
-            flux_values.push(norm_flux);
+            flux_values.push(flux / total_energy.sqrt().max(1e-6));
         }
         prev_magnitude = Some(magnitude);
     }
@@ -816,25 +818,25 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
     let crest_norm = (1.0 - (crest_db - 3.0) / 17.0).clamp(0.0, 1.0);
 
     // ── Averages and variances ──
+    // All values stored raw — no artificial scaling or clamping.
+    // Percentile-rank normalization at query time handles scale equalization.
     let avg = |vals: &[f32]| -> f32 {
         if vals.is_empty() { 0.0 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
-    let variance_scaled = |vals: &[f32]| -> f32 {
+    let variance_of = |vals: &[f32]| -> f32 {
         if vals.len() < 2 { return 0.0; }
         let mean = vals.iter().sum::<f32>() / vals.len() as f32;
-        let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32;
-        // Values are in [0,1], so max variance is 0.25. Scale by 4 to fill [0,1].
-        (var * 4.0).clamp(0.0, 1.0)
+        vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32
     };
 
-    // Energy variance: coefficient of variation² (scale-independent)
+    // Energy variance: coefficient of variation² (scale-independent, raw)
     let energy_variance = if rms_values.len() >= 2 {
         let mean_rms = avg(&rms_values);
         if mean_rms > 1e-10 {
             let var = rms_values.iter()
                 .map(|r| (r - mean_rms).powi(2))
                 .sum::<f32>() / rms_values.len() as f32;
-            (var / (mean_rms * mean_rms)).clamp(0.0, 1.0)
+            var / (mean_rms * mean_rms)
         } else { 0.0 }
     } else { 0.0 };
 
@@ -847,8 +849,8 @@ pub fn compute_intensity_components(samples: &[f32], sample_rate: f32) -> mesh_c
         energy_variance,
         harmonic_complexity: avg(&harmonic_complexity_values),
         spectral_rolloff: avg(&rolloff_values),
-        centroid_variance: variance_scaled(&centroid_values),
-        flux_variance: variance_scaled(&flux_values),
+        centroid_variance: variance_of(&centroid_values),
+        flux_variance: variance_of(&flux_values),
     }
 }
 
