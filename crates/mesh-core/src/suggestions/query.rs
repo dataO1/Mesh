@@ -31,8 +31,6 @@ pub struct SuggestionConfig {
     pub transition_width: f32,
     /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.40, 0.25, 0.35).
     pub custom_weights: Option<[f32; 3]>,
-    /// Intensity matching mode (per-component / hybrid).
-    pub intensity_match_mode: super::config::IntensityMatchMode,
     /// Target intensity shift at full peak/drop (percentile-rank delta from seed).
     /// Derived from SuggestionTransitionReach: Tight=0.15, Medium=0.30, Open=0.50.
     pub intensity_reach: f32,
@@ -59,7 +57,6 @@ impl SuggestionConfig {
             transition_target: transition_reach.target_distance(community_thresholds),
             transition_width: transition_reach.bell_width(community_thresholds),
             custom_weights: None,
-            intensity_match_mode: Default::default(),
             intensity_reach: transition_reach.intensity_reach(),
             pca_whitening_alpha: 0.0,
         }

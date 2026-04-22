@@ -314,12 +314,6 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                             .padding([2, 6])
                     },
                     Space::new().width(4.0),
-                    text("Int").size(sz(10.0)),
-                    button(text(state.intensity_match_mode.display_name()).size(sz(10.0)))
-                        .on_press(Message::GraphCycleIntensityMode)
-                        .style(button::secondary)
-                        .padding([2, 6]),
-                    Space::new().width(4.0),
                     text(format!("W:{:.1}", state.pca_whitening_alpha)).size(sz(10.0)),
                     slider(0.0..=1.0, state.pca_whitening_alpha, Message::GraphWhiteningAlpha)
                         .step(0.1)

@@ -409,8 +409,6 @@ pub enum Message {
     GraphWeightsChanged([f32; 3]),
     /// Cycle key filter strictness (Strict/Relaxed/Off)
     GraphCycleKeyFilter,
-    /// Cycle intensity match mode (Match/Auto)
-    GraphCycleIntensityMode,
     /// Change PCA whitening alpha (0.0 = off, 1.0 = full)
     GraphWhiteningAlpha(f32),
     /// Change HDBSCAN cluster sensitivity (min_samples: 1=most clusters, 20=fewest)

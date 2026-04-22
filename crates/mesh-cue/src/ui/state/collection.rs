@@ -161,8 +161,6 @@ pub struct CollectionState {
     pub suggestion_weights: [f32; 3],
     /// Key filter strictness index (0=Strict, 1=Relaxed, 2=Off)
     pub graph_key_filter_index: usize,
-    /// Intensity matching mode (Match / Auto)
-    pub intensity_match_mode: mesh_core::suggestions::config::IntensityMatchMode,
     /// PCA whitening alpha: 0.0 = off, 1.0 = full whitening
     pub pca_whitening_alpha: f32,
     /// Dynamic community thresholds for suggestion scoring
@@ -298,7 +296,6 @@ impl Default for CollectionState {
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
             suggestion_weights: [0.40, 0.25, 0.35],
             graph_key_filter_index: 0, // Strict by default
-            intensity_match_mode: Default::default(),
             pca_whitening_alpha: 0.0,
             community_thresholds: None,
             graph_suggestion_rows: Vec::new(),

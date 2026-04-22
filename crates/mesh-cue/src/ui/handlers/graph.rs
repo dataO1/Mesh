@@ -429,7 +429,6 @@ impl MeshCueApp {
                     None
                 }
             },
-            intensity_match_mode: self.collection.intensity_match_mode,
             intensity_reach: reach.intensity_reach(),
             pca_whitening_alpha: self.collection.pca_whitening_alpha,
         };

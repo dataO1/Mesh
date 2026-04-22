@@ -157,46 +157,6 @@ impl SuggestionTransitionReach {
     }
 }
 
-/// Intensity matching mode for smart suggestions.
-///
-/// Controls how the intensity component compares seed vs candidate tracks.
-/// Both modes use weighted Euclidean distance between the 10-dim ranked
-/// component vectors — never a naive 1D composite sum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntensityMatchMode {
-    /// Match: per-component Euclidean distance at all slider positions.
-    /// Center = similar character, extremes = each component shifted toward
-    /// more/less aggressive. Pure 10D distance, no composite collapse.
-    Match,
-    /// Auto (default): per-component distance at center (match character),
-    /// composite direction at extremes (match energy level).
-    /// Blends between the two using the intent slider position.
-    #[default]
-    Auto,
-}
-
-impl IntensityMatchMode {
-    pub const ALL: [IntensityMatchMode; 2] = [
-        IntensityMatchMode::Match,
-        IntensityMatchMode::Auto,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            IntensityMatchMode::Match => "Match",
-            IntensityMatchMode::Auto  => "Auto",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Match => Self::Auto,
-            Self::Auto  => Self::Match,
-        }
-    }
-}
-
 /// Harmonic filter strictness for smart suggestions.
 ///
 /// Controls which key relationships are allowed to appear at all.
