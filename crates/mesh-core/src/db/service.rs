@@ -507,9 +507,14 @@ impl DatabaseService {
         BatchQuery::batch_insert_saved_loops(&self.db, track_id, &track.saved_loops)?;
         BatchQuery::batch_insert_stem_links(&self.db, track_id, &remapped_links)?;
 
-        // 5. Sync ML analysis data
+        // 5. Sync ML analysis data + intensity components
         if let Ok(Some(ml_data)) = source_db.get_ml_analysis(source_track_id) {
             let _ = self.store_ml_analysis(track_id, &ml_data);
+        }
+        if let Ok(components) = source_db.batch_get_intensity_components(&[source_track_id]) {
+            if let Some(ic) = components.get(&source_track_id) {
+                let _ = self.store_intensity_components(track_id, ic);
+            }
         }
 
         // 6. Sync tags (batch insert — single query instead of N)

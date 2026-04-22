@@ -45,6 +45,8 @@ pub struct TrackInfo {
     pub has_ml_embedding: bool,
     /// Whether stem energy densities are stored for this track
     pub has_stem_energy: bool,
+    /// Whether intensity components are stored for this track
+    pub has_intensity: bool,
 }
 
 /// A track membership in a playlist (database record)
@@ -289,16 +291,18 @@ pub fn scan_local_collection_from_db(
     let stem_links_map = StemLinkQuery::get_all(db).unwrap_or_default();
 
     let (ml_analysis_map, tags_map,
-         ml_embedding_set, stem_energy_set) = if let Some(svc) = db_service {
+         ml_embedding_set, stem_energy_set, intensity_set) = if let Some(svc) = db_service {
         let ml = svc.get_all_ml_analysis().unwrap_or_default();
         let tags = svc.get_all_track_tags().unwrap_or_default();
         let embeddings: HashSet<i64> = SimilarityQuery::get_tracks_with_ml_embeddings(db)
             .unwrap_or_default().into_iter().collect();
         let stem_energy: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db)
             .unwrap_or_default().into_iter().collect();
-        (ml, tags, embeddings, stem_energy)
+        let intensity: HashSet<i64> = SimilarityQuery::get_tracks_with_intensity(db)
+            .unwrap_or_default().into_iter().collect();
+        (ml, tags, embeddings, stem_energy, intensity)
     } else {
-        (HashMap::new(), HashMap::new(), HashSet::new(), HashSet::new())
+        (HashMap::new(), HashMap::new(), HashSet::new(), HashSet::new(), HashSet::new())
     };
 
     // Get file metadata for all unique tracks (sequential — local disk I/O
@@ -330,6 +334,7 @@ pub fn scan_local_collection_from_db(
             let tags = tags_map.get(&db_track.id).cloned().unwrap_or_default();
             let has_ml_embedding   = ml_embedding_set.contains(&db_track.id);
             let has_stem_energy    = stem_energy_set.contains(&db_track.id);
+            let has_intensity      = intensity_set.contains(&db_track.id);
 
             Ok(TrackInfo {
                 path,
@@ -344,6 +349,7 @@ pub fn scan_local_collection_from_db(
                 tags,
                 has_ml_embedding,
                 has_stem_energy,
+                has_intensity,
             })
         })
         .collect();
@@ -391,9 +397,8 @@ pub fn scan_usb_collection(
     // Build map of filename -> metadata from USB database (bulk queries)
     #[allow(clippy::type_complexity)]
     let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>,
-        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool, bool)> = HashMap::new();
+        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool, bool, bool)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
-        // Bulk-fetch all supplementary data in 9 queries instead of 9×N
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
             let cue_map = CuePointQuery::get_all(db_service.db()).unwrap_or_default();
             let loop_map = SavedLoopQuery::get_all(db_service.db()).unwrap_or_default();
@@ -403,6 +408,8 @@ pub fn scan_usb_collection(
             let embedding_set: HashSet<i64> = SimilarityQuery::get_tracks_with_ml_embeddings(db_service.db())
                 .unwrap_or_default().into_iter().collect();
             let stem_energy_set: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db_service.db())
+                .unwrap_or_default().into_iter().collect();
+            let intensity_set: HashSet<i64> = SimilarityQuery::get_tracks_with_intensity(db_service.db())
                 .unwrap_or_default().into_iter().collect();
 
             for track in all_tracks {
@@ -419,9 +426,10 @@ pub fn scan_usb_collection(
                 let tags = tag_map.get(&track.id).cloned().unwrap_or_default();
                 let has_ml_embedding   = embedding_set.contains(&track.id);
                 let has_stem_energy    = stem_energy_set.contains(&track.id);
+                let has_intensity      = intensity_set.contains(&track.id);
 
                 db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links,
-                    ml_analysis, tags, has_ml_embedding, has_stem_energy));
+                    ml_analysis, tags, has_ml_embedding, has_stem_energy, has_intensity));
             }
         }
 
@@ -494,13 +502,13 @@ pub fn scan_usb_collection(
 
             // Get database metadata if available
             let (db_track, cue_points, saved_loops, stem_links, ml_analysis, tags,
-                 has_ml_embedding, has_stem_energy) =
+                 has_ml_embedding, has_stem_energy, has_intensity) =
                 db_metadata
                     .get(&filename)
-                    .map(|(t, c, l, s, ml, tg, me, se)| {
-                        (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *me, *se)
+                    .map(|(t, c, l, s, ml, tg, me, se, hi)| {
+                        (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *me, *se, *hi)
                     })
-                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, false));
+                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, false, false));
 
             Ok(TrackInfo {
                 path,
@@ -515,6 +523,7 @@ pub fn scan_usb_collection(
                 tags,
                 has_ml_embedding,
                 has_stem_energy,
+                has_intensity,
             })
         })
         .collect();
@@ -625,13 +634,17 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
         return true;
     }
 
-    // Compare ML embedding and stem energy presence
+    // Compare ML embedding, stem energy, and intensity presence
     if local.has_ml_embedding != usb.has_ml_embedding {
         log::debug!("metadata_differs: ml_embedding presence differs for {}", local.filename);
         return true;
     }
     if local.has_stem_energy != usb.has_stem_energy {
         log::debug!("metadata_differs: stem_energy presence differs for {}", local.filename);
+        return true;
+    }
+    if local.has_intensity != usb.has_intensity {
+        log::debug!("metadata_differs: intensity presence differs for {}", local.filename);
         return true;
     }
     false
@@ -976,6 +989,7 @@ mod tests {
             tags: Vec::new(),
             has_ml_embedding: false,
             has_stem_energy: false,
+            has_intensity: false,
         }
     }
 

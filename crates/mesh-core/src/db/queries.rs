@@ -784,6 +784,15 @@ impl SimilarityQuery {
             .collect())
     }
 
+    pub fn get_tracks_with_intensity(db: &MeshDb) -> Result<Vec<i64>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id] := *track_intensity{track_id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_int()))
+            .collect())
+    }
+
     // ── EffNet 1280-dim embedding ─────────────────────────────────���────────
 
     /// Insert or update a 1280-dim EffNet embedding for a track.
