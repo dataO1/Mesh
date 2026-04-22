@@ -731,16 +731,13 @@ pub fn query_suggestions(
                 .and_then(|k| intensity_map.get(&k).copied())
                 .unwrap_or(0.5);
             let int_reward = match suggestion_config.intensity_match_mode {
-                super::config::IntensityMatchMode::Composite => {
-                    intensity_reward(cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover)
-                }
-                super::config::IntensityMatchMode::PerComponent => {
+                super::config::IntensityMatchMode::Match => {
                     ml_key
                         .and_then(|k| intensity_components_map.get(&k))
                         .map(|cand_ic| intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover))
                         .unwrap_or(0.5)
                 }
-                super::config::IntensityMatchMode::Hybrid => {
+                super::config::IntensityMatchMode::Auto => {
                     ml_key
                         .and_then(|k| intensity_components_map.get(&k))
                         .map(|cand_ic| intensity_reward_hybrid(cand_ic, &avg_seed_ic, cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover))
@@ -854,8 +851,15 @@ pub fn query_suggestions(
                 format!("vec={:.3} key={:.3} int={:.3} cop={:.3}",
                     cs.hnsw_component, cs.key_score, cs.intensity_penalty, cs.coplay_score)
             } else {
-                let int_rwd = composite.map(|c| intensity_reward(c, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover));
-                format!("int_reward={:.3}", int_rwd.unwrap_or(-1.0))
+                // Recompute the intensity reward using the active mode for logging
+                let int_rwd = id_key.and_then(|k| intensity_components_map.get(&k))
+                    .map(|cand_ic| match suggestion_config.intensity_match_mode {
+                        super::config::IntensityMatchMode::Match =>
+                            intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover),
+                        super::config::IntensityMatchMode::Auto =>
+                            intensity_reward_hybrid(cand_ic, &avg_seed_ic, composite.unwrap_or(0.5), avg_seed_intensity, energy_bias, suggestion_config.blend_crossover),
+                    });
+                format!("int_reward={:.3} mode={}", int_rwd.unwrap_or(-1.0), suggestion_config.intensity_match_mode.display_name())
             };
             eprintln!("[SUGGESTIONS] #{:>2} score={:.3} comp={:.3} {} | {} | ranked: {}",
                 i + 1, s.score, composite.unwrap_or(-1.0), breakdown, s.track.title, ic_str);

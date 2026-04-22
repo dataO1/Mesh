@@ -150,43 +150,39 @@ impl SuggestionTransitionReach {
 /// Intensity matching mode for smart suggestions.
 ///
 /// Controls how the intensity component compares seed vs candidate tracks.
+/// Both modes use weighted Euclidean distance between the 10-dim ranked
+/// component vectors — never a naive 1D composite sum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntensityMatchMode {
-    /// Composite: collapse 10 components into a single aggression score,
-    /// match on that scalar. Current/legacy behaviour.
-    #[default]
-    Composite,
-    /// Per-component: compute weighted Euclidean distance between the 10-dim
-    /// ranked component vectors. Rewards tracks similar on EVERY axis individually.
-    /// A gritty+smooth track won't match a clean+choppy seed.
-    PerComponent,
-    /// Hybrid: per-component distance at center (layering — match character),
-    /// composite direction at extremes (transitioning — match energy level).
+    /// Match: per-component Euclidean distance at all slider positions.
+    /// Center = similar character, extremes = each component shifted toward
+    /// more/less aggressive. Pure 10D distance, no composite collapse.
+    Match,
+    /// Auto (default): per-component distance at center (match character),
+    /// composite direction at extremes (match energy level).
     /// Blends between the two using the intent slider position.
-    Hybrid,
+    #[default]
+    Auto,
 }
 
 impl IntensityMatchMode {
-    pub const ALL: [IntensityMatchMode; 3] = [
-        IntensityMatchMode::Composite,
-        IntensityMatchMode::PerComponent,
-        IntensityMatchMode::Hybrid,
+    pub const ALL: [IntensityMatchMode; 2] = [
+        IntensityMatchMode::Match,
+        IntensityMatchMode::Auto,
     ];
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            IntensityMatchMode::Composite    => "Sum",
-            IntensityMatchMode::PerComponent => "Match",
-            IntensityMatchMode::Hybrid       => "Auto",
+            IntensityMatchMode::Match => "Match",
+            IntensityMatchMode::Auto  => "Auto",
         }
     }
 
     pub fn next(&self) -> Self {
         match self {
-            Self::Composite    => Self::PerComponent,
-            Self::PerComponent => Self::Hybrid,
-            Self::Hybrid       => Self::Composite,
+            Self::Match => Self::Auto,
+            Self::Auto  => Self::Match,
         }
     }
 }
