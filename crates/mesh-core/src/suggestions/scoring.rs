@@ -391,12 +391,16 @@ fn intensity_component_pairs(
     ]
 }
 
-/// Per-component intensity reward with Reach-controlled directional scaling.
+/// Per-component intensity reward with directional one-sided linear falloff.
 ///
-/// Center: weighted Euclidean distance between ranked component vectors (match character).
-/// Extremes: each component targets `seed ± reach` — controlled by the Reach setting.
-///   Tight=±0.15, Medium=±0.30, Open=±0.50 percentile-rank shift per component.
-///   Tracks closest to the target on every axis score highest.
+/// **Center**: weighted Euclidean distance between ranked component vectors (match character).
+///
+/// **Extremes**: one-sided linear reward per component.
+///   - Target = interpolation from seed toward library extreme (0.0 for drop, 1.0 for peak).
+///     Reach controls how far: Tight=50%, Medium=75%, Open=100% of the way.
+///   - Wrong direction (above seed at drop / below at peak) = sharp linear penalty to 0.
+///   - Right direction = gentle linear falloff from target (1.0) to seed (moderate) to extreme (still OK).
+///   - The entire "less aggressive" zone scores well, with target zone preferred.
 pub fn intensity_reward_per_component(
     cand_ic: &crate::db::IntensityComponents,
     seed_ic: &crate::db::IntensityComponents,
@@ -413,22 +417,49 @@ pub fn intensity_reward_per_component(
         .sum();
     let match_reward = 1.0 - dist_sq.sqrt().min(1.0);
 
-    // Extremes: each component targets seed ± reach.
-    // Reward = 1.0 when candidate is exactly at the target, drops with distance from target.
-    let direction = if energy_bias >= 0.0 { 1.0 } else { -1.0 };
-    let target_dist_sq: f32 = weights.iter()
+    // Extremes: one-sided directional reward per component.
+    // Target interpolates from seed toward library extreme (0.0 or 1.0).
+    // reach_factor: Tight=0.5, Medium=0.75, Open=1.0 (mapped from intensity_reach)
+    let reach_factor = (intensity_reach / 0.50).clamp(0.0, 1.0); // 0.15→0.3, 0.30→0.6, 0.50→1.0
+    let is_peak = energy_bias >= 0.0;
+
+    let directional_reward: f32 = weights.iter()
         .map(|(w, c, s)| {
-            let target = (s + direction * intensity_reach).clamp(0.0, 1.0);
-            w * (c - target).powi(2)
+            if *w < 1e-6 { return 0.0; }
+
+            // Target: interpolate from seed toward 1.0 (peak) or 0.0 (drop)
+            let target = if is_peak {
+                s + (1.0 - s) * reach_factor // toward 1.0
+            } else {
+                s * (1.0 - reach_factor)      // toward 0.0
+            };
+
+            // One-sided linear falloff:
+            // - At target: 1.0 (best)
+            // - Between target and seed: gentle linear falloff (still good)
+            // - Past target in right direction: gentle falloff (still OK)
+            // - Wrong direction from seed: sharp linear penalty to 0.0
+            let delta = if is_peak { c - s } else { s - c }; // positive = right direction
+
+            let reward = if delta < 0.0 {
+                // Wrong direction: sharp linear penalty
+                (1.0 + delta).max(0.0)
+            } else {
+                // Right direction: score based on distance from target
+                let target_delta = if is_peak { c - target } else { target - c };
+                // At target: target_delta = 0 → reward = 1.0
+                // Past target or before target: gentle linear falloff
+                (1.0 - target_delta.abs() * 0.5).max(0.3)
+            };
+
+            w * reward
         })
         .sum();
-    let target_reward = 1.0 - target_dist_sq.sqrt().min(1.0);
 
-    match_reward * (1.0 - blend_t) + target_reward * blend_t
+    match_reward * (1.0 - blend_t) + directional_reward * blend_t
 }
 
 /// Hybrid intensity reward: per-component distance at center, composite direction at extremes.
-/// Reach controls the composite target at extremes: seed_composite ± reach.
 pub fn intensity_reward_hybrid(
     cand_ic: &crate::db::IntensityComponents,
     seed_ic: &crate::db::IntensityComponents,
@@ -443,10 +474,22 @@ pub fn intensity_reward_hybrid(
     // Center: per-component distance (match character)
     let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover, intensity_reach);
 
-    // Extreme: composite targets seed ± reach (not raw cand_composite)
-    let direction = if energy_bias >= 0.0 { 1.0 } else { -1.0 };
-    let target_composite = (seed_composite + direction * intensity_reach).clamp(0.0, 1.0);
-    let composite_reward = 1.0 - (cand_composite - target_composite).abs().min(1.0);
+    // Extreme: composite with one-sided linear falloff toward library extreme
+    let reach_factor = (intensity_reach / 0.50).clamp(0.0, 1.0);
+    let is_peak = energy_bias >= 0.0;
+    let target = if is_peak {
+        seed_composite + (1.0 - seed_composite) * reach_factor
+    } else {
+        seed_composite * (1.0 - reach_factor)
+    };
+
+    let delta = if is_peak { cand_composite - seed_composite } else { seed_composite - cand_composite };
+    let composite_reward = if delta < 0.0 {
+        (1.0 + delta).max(0.0)
+    } else {
+        let target_delta = if is_peak { cand_composite - target } else { target - cand_composite };
+        (1.0 - target_delta.abs() * 0.5).max(0.3)
+    };
 
     per_comp * (1.0 - blend_t) + composite_reward * blend_t
 }
