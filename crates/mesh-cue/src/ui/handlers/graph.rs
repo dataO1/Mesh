@@ -426,6 +426,7 @@ impl MeshCueApp {
                 }
             },
             intensity_match_mode: self.collection.intensity_match_mode,
+            intensity_reach: reach.intensity_reach(),
         };
 
         let sources = vec![DbSource {

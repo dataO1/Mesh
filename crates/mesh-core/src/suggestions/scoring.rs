@@ -371,15 +371,13 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
 /// At center: small distance = high reward (similar character).
 /// At peak: reward candidates whose ranked components are each HIGHER than seed.
 /// At drop: reward candidates whose ranked components are each LOWER than seed.
-pub fn intensity_reward_per_component(
+/// Component weights for per-component intensity matching.
+/// Same weights as composite_intensity_v2.
+fn intensity_component_pairs(
     cand_ic: &crate::db::IntensityComponents,
     seed_ic: &crate::db::IntensityComponents,
-    energy_bias: f32,
-    blend_crossover: f32,
-) -> f32 {
-    // Component weights (same as composite_intensity_v2)
-    let weights: [(f32, f32, f32); 10] = [
-        // (weight, cand_value, seed_value)
+) -> [(f32, f32, f32); 10] {
+    [
         (0.15, cand_ic.spectral_flux,        seed_ic.spectral_flux),
         (0.25, cand_ic.flatness,             seed_ic.flatness),
         (0.10, cand_ic.spectral_centroid,    seed_ic.spectral_centroid),
@@ -390,53 +388,67 @@ pub fn intensity_reward_per_component(
         (0.04, cand_ic.spectral_rolloff,     seed_ic.spectral_rolloff),
         (0.04, cand_ic.centroid_variance,    seed_ic.centroid_variance),
         (0.02, cand_ic.flux_variance,        seed_ic.flux_variance),
-    ];
+    ]
+}
 
+/// Per-component intensity reward with Reach-controlled directional scaling.
+///
+/// Center: weighted Euclidean distance between ranked component vectors (match character).
+/// Extremes: each component targets `seed ± reach` — controlled by the Reach setting.
+///   Tight=±0.15, Medium=±0.30, Open=±0.50 percentile-rank shift per component.
+///   Tracks closest to the target on every axis score highest.
+pub fn intensity_reward_per_component(
+    cand_ic: &crate::db::IntensityComponents,
+    seed_ic: &crate::db::IntensityComponents,
+    energy_bias: f32,
+    blend_crossover: f32,
+    intensity_reach: f32,
+) -> f32 {
+    let weights = intensity_component_pairs(cand_ic, seed_ic);
     let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
 
-    // Match component (center): weighted Euclidean distance → reward
+    // Center: weighted Euclidean distance → reward (similar character)
     let dist_sq: f32 = weights.iter()
         .map(|(w, c, s)| w * (c - s).powi(2))
         .sum();
     let match_reward = 1.0 - dist_sq.sqrt().min(1.0);
 
-    // Directional component (extremes): reward candidates with each component
-    // shifted in the desired direction relative to seed.
-    // For each component: delta > 0 means candidate is more aggressive.
-    let direction_reward: f32 = weights.iter()
+    // Extremes: each component targets seed ± reach.
+    // Reward = 1.0 when candidate is exactly at the target, drops with distance from target.
+    let direction = if energy_bias >= 0.0 { 1.0 } else { -1.0 };
+    let target_dist_sq: f32 = weights.iter()
         .map(|(w, c, s)| {
-            let delta = c - s;
-            let aligned = if energy_bias >= 0.0 { delta } else { -delta };
-            // Map [-1, 1] to [0, 1]: fully aligned = 1.0, fully opposing = 0.0
-            w * (aligned + 1.0) / 2.0
+            let target = (s + direction * intensity_reach).clamp(0.0, 1.0);
+            w * (c - target).powi(2)
         })
         .sum();
+    let target_reward = 1.0 - target_dist_sq.sqrt().min(1.0);
 
-    match_reward * (1.0 - blend_t) + direction_reward * blend_t
+    match_reward * (1.0 - blend_t) + target_reward * blend_t
 }
 
-/// Hybrid intensity reward: per-component at center, composite at extremes.
+/// Hybrid intensity reward: per-component distance at center, composite direction at extremes.
+/// Reach controls the composite target at extremes: seed_composite ± reach.
 pub fn intensity_reward_hybrid(
     cand_ic: &crate::db::IntensityComponents,
     seed_ic: &crate::db::IntensityComponents,
     cand_composite: f32,
-    _seed_composite: f32,
+    seed_composite: f32,
     energy_bias: f32,
     blend_crossover: f32,
+    intensity_reach: f32,
 ) -> f32 {
     let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
 
     // Center: per-component distance (match character)
-    let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover);
+    let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover, intensity_reach);
 
-    // Extreme: composite direction (match energy level)
-    let composite_dir = if energy_bias >= 0.0 {
-        cand_composite
-    } else {
-        1.0 - cand_composite
-    };
+    // Extreme: composite targets seed ± reach (not raw cand_composite)
+    let direction = if energy_bias >= 0.0 { 1.0 } else { -1.0 };
+    let target_composite = (seed_composite + direction * intensity_reach).clamp(0.0, 1.0);
+    let composite_reward = 1.0 - (cand_composite - target_composite).abs().min(1.0);
 
-    per_comp * (1.0 - blend_t) + composite_dir * blend_t
+    per_comp * (1.0 - blend_t) + composite_reward * blend_t
 }
 
 /// Stem complement component — bipolar [0, 1].

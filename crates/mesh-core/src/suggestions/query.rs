@@ -31,8 +31,11 @@ pub struct SuggestionConfig {
     pub transition_width: f32,
     /// Custom weights [similarity, key, intensity]. If None, uses defaults (0.30, 0.30, 0.33).
     pub custom_weights: Option<[f32; 3]>,
-    /// Intensity matching mode (composite / per-component / hybrid).
+    /// Intensity matching mode (per-component / hybrid).
     pub intensity_match_mode: super::config::IntensityMatchMode,
+    /// Target intensity shift at full peak/drop (percentile-rank delta from seed).
+    /// Derived from SuggestionTransitionReach: Tight=0.15, Medium=0.30, Open=0.50.
+    pub intensity_reach: f32,
 }
 
 impl SuggestionConfig {
@@ -54,6 +57,7 @@ impl SuggestionConfig {
             transition_width: transition_reach.bell_width(community_thresholds),
             custom_weights: None,
             intensity_match_mode: Default::default(),
+            intensity_reach: transition_reach.intensity_reach(),
         }
     }
 }
@@ -734,13 +738,13 @@ pub fn query_suggestions(
                 super::config::IntensityMatchMode::Match => {
                     ml_key
                         .and_then(|k| intensity_components_map.get(&k))
-                        .map(|cand_ic| intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover))
+                        .map(|cand_ic| intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach))
                         .unwrap_or(0.5)
                 }
                 super::config::IntensityMatchMode::Auto => {
                     ml_key
                         .and_then(|k| intensity_components_map.get(&k))
-                        .map(|cand_ic| intensity_reward_hybrid(cand_ic, &avg_seed_ic, cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover))
+                        .map(|cand_ic| intensity_reward_hybrid(cand_ic, &avg_seed_ic, cand_norm_intensity, avg_seed_intensity, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach))
                         .unwrap_or(0.5)
                 }
             };
@@ -855,9 +859,9 @@ pub fn query_suggestions(
                 let int_rwd = id_key.and_then(|k| intensity_components_map.get(&k))
                     .map(|cand_ic| match suggestion_config.intensity_match_mode {
                         super::config::IntensityMatchMode::Match =>
-                            intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover),
+                            intensity_reward_per_component(cand_ic, &avg_seed_ic, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach),
                         super::config::IntensityMatchMode::Auto =>
-                            intensity_reward_hybrid(cand_ic, &avg_seed_ic, composite.unwrap_or(0.5), avg_seed_intensity, energy_bias, suggestion_config.blend_crossover),
+                            intensity_reward_hybrid(cand_ic, &avg_seed_ic, composite.unwrap_or(0.5), avg_seed_intensity, energy_bias, suggestion_config.blend_crossover, suggestion_config.intensity_reach),
                     });
                 format!("int_reward={:.3} mode={}", int_rwd.unwrap_or(-1.0), suggestion_config.intensity_match_mode.display_name())
             };

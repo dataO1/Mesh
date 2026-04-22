@@ -130,6 +130,16 @@ impl SuggestionTransitionReach {
         }
     }
 
+    /// Target intensity shift at full peak/drop slider.
+    /// Expressed as percentile-rank delta from seed (e.g., 0.15 = shift 15% of the library range).
+    pub fn intensity_reach(self) -> f32 {
+        match self {
+            SuggestionTransitionReach::Tight  => 0.15,
+            SuggestionTransitionReach::Medium => 0.30,
+            SuggestionTransitionReach::Open   => 0.50,
+        }
+    }
+
     /// Width (2σ²) of the bell curve around the target distance.
     pub fn bell_width(self, dynamic: Option<&crate::graph_compute::CommunityThresholds>) -> f32 {
         match dynamic {
