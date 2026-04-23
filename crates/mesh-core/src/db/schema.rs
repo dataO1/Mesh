@@ -432,6 +432,9 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     }
     create_pca_aggression_axis_relation(db)?;
 
+    // Aggression calibration: user pairwise comparison data
+    create_aggression_calibration_pairs_relation(db)?;
+
     Ok(())
 }
 
@@ -968,6 +971,22 @@ fn create_pca_aggression_axis_relation(db: &DbInstance) -> Result<(), DbError> {
             id: Int =>
             weights: [Float],
             correlation: Float
+        }}
+    "#)
+}
+
+fn create_aggression_calibration_pairs_relation(db: &DbInstance) -> Result<(), DbError> {
+    // User pairwise comparisons for aggression calibration.
+    // Each row records "user judged track_a vs track_b" with choice:
+    //   0 = track_a more aggressive, 1 = track_b more aggressive, 2 = about equal.
+    // Auto-incrementing id. Pairs accumulate across calibration sessions.
+    run_schema(db, r#"
+        {:create aggression_calibration_pairs {
+            id: Int =>
+            track_a: Int,
+            track_b: Int,
+            choice: Int,
+            timestamp: Int
         }}
     "#)
 }

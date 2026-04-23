@@ -3,6 +3,7 @@
 //! Extracted from app.rs for better organization and maintainability.
 //! Each submodule contains a cohesive set of state structures.
 
+pub mod calibration;
 pub mod collection;
 pub mod export;
 pub mod import;
@@ -11,6 +12,7 @@ pub mod reanalysis;
 pub mod settings;
 
 // Re-export all types for convenient access
+pub use calibration::{CalibrationPhase, CalibrationSide, CalibrationState, CalibrationTrackInfo, PreloadedPair, StoredPair};
 pub use collection::{BrowserSide, BrowserTab, CollectionState, DragState, GraphEdge, PendingDragState, DRAG_THRESHOLD};
 pub use export::{ExportPhase, ExportState};
 pub use import::{ImportMode, ImportPhase, ImportState};

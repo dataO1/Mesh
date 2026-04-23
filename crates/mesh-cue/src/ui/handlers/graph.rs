@@ -157,7 +157,9 @@ impl MeshCueApp {
         log::info!("[GRAPH] Graph ready — {} nodes, {} clusters",
             data.positions.len(),
             data.cluster_result.colors.len());
-        Task::none()
+
+        // Trigger calibration coverage check now that we have community assignments
+        self.trigger_calibration_coverage_check()
     }
 
     /// Change transition reach and re-query suggestions.

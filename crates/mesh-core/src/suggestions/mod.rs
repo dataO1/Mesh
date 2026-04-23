@@ -15,3 +15,4 @@ pub mod scoring;
 pub mod query;
 
 pub use query::GraphEdge;
+pub use aggression::UncoveredCommunity;

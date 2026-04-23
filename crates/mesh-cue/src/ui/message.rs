@@ -16,7 +16,8 @@ use crate::config::{BackendType, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, BrowserTab, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
+use super::state::{BrowserSide, BrowserTab, CalibrationSide, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PreloadedPair, PresetLoadedMsg, StemsLoadResult, View};
+use mesh_core::suggestions::UncoveredCommunity;
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -424,4 +425,32 @@ pub enum Message {
         /// Energy direction at query time (for debounce detection)
         queried_energy: f32,
     },
+
+    // Aggression Calibration
+    /// Coverage check completed — uncovered communities detected
+    CalibrationCoverageCheck(Vec<UncoveredCommunity>),
+    /// Open the calibration modal (auto-triggered or manual)
+    OpenCalibration,
+    /// Close the calibration modal
+    CloseCalibration,
+    /// User dismisses the explanation screen and starts comparisons
+    CalibrationStart,
+    /// User chose a track as more intense (Left or Right)
+    CalibrationChoice(CalibrationSide),
+    /// User pressed "About the same"
+    CalibrationEqual,
+    /// User pressed "Skip"
+    CalibrationSkip,
+    /// Toggle audio preview for a side (click to play/stop)
+    CalibrationPreviewToggle(CalibrationSide),
+    /// A pre-loaded pair is ready from the background thread
+    CalibrationPairPreloaded(Box<PreloadedPair>),
+    /// A pair failed to pre-load (decrement counter, try next)
+    CalibrationPairPreloadFailed,
+    /// User pressed "Finish Early"
+    CalibrationFinish,
+    /// User pressed "Reset All" (clear calibration data)
+    CalibrationReset,
+    /// User pressed "Back" (undo last comparison)
+    CalibrationBack,
 }

@@ -1220,6 +1220,87 @@ impl DatabaseService {
     }
 
     // ========================================================================
+    // Aggression Calibration Pairs
+    // ========================================================================
+
+    /// Store a calibration pair (user pairwise comparison).
+    /// Returns the auto-incremented id of the new pair.
+    pub fn store_calibration_pair(&self, track_a: i64, track_b: i64, choice: i32) -> Result<i64, DbError> {
+        // Find next ID: collect all IDs, take max + 1 (or 1 if empty)
+        let max_result = self.db.run_query(r#"
+            ?[id] := *aggression_calibration_pairs{id}
+        "#, BTreeMap::new())?;
+        let next_id = max_result.rows.iter()
+            .filter_map(|row| row[0].get_int())
+            .max()
+            .unwrap_or(0) + 1;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(next_id));
+        params.insert("track_a".to_string(), DataValue::from(track_a));
+        params.insert("track_b".to_string(), DataValue::from(track_b));
+        params.insert("choice".to_string(), DataValue::from(choice as i64));
+        params.insert("timestamp".to_string(), DataValue::from(timestamp));
+        self.db.run_script(r#"
+            ?[id, track_a, track_b, choice, timestamp] <- [[$id, $track_a, $track_b, $choice, $timestamp]]
+            :put aggression_calibration_pairs {id => track_a, track_b, choice, timestamp}
+        "#, params)?;
+        Ok(next_id)
+    }
+
+    /// Get all calibration pairs. Returns (id, track_a, track_b, choice, timestamp).
+    pub fn get_all_calibration_pairs(&self) -> Result<Vec<(i64, i64, i64, i32, i64)>, DbError> {
+        let result = self.db.run_query(r#"
+            ?[id, track_a, track_b, choice, timestamp] :=
+                *aggression_calibration_pairs{id, track_a, track_b, choice, timestamp}
+            :order id
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter().filter_map(|row| {
+            Some((
+                row[0].get_int()?,
+                row[1].get_int()?,
+                row[2].get_int()?,
+                row[3].get_int()? as i32,
+                row[4].get_int()?,
+            ))
+        }).collect())
+    }
+
+    /// Get the number of stored calibration pairs.
+    pub fn get_calibration_pair_count(&self) -> Result<usize, DbError> {
+        let result = self.db.run_query(r#"
+            ?[count] := count = count(id), *aggression_calibration_pairs{id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.first()
+            .and_then(|row| row[0].get_int())
+            .unwrap_or(0) as usize)
+    }
+
+    /// Delete the most recently added calibration pair (for undo).
+    pub fn delete_last_calibration_pair(&self) -> Result<(), DbError> {
+        self.db.run_script(r#"
+            max_id[id] := id = max(i), *aggression_calibration_pairs{id: i}
+            ?[id] := max_id[id]
+            :rm aggression_calibration_pairs {id}
+        "#, BTreeMap::new())?;
+        Ok(())
+    }
+
+    /// Delete all calibration pairs (reset calibration data).
+    pub fn clear_calibration_pairs(&self) -> Result<(), DbError> {
+        self.db.run_script(r#"
+            ?[id] := *aggression_calibration_pairs{id}
+            :rm aggression_calibration_pairs {id}
+        "#, BTreeMap::new())?;
+        Ok(())
+    }
+
+    // ========================================================================
     // Internal Helpers
     // ========================================================================
 

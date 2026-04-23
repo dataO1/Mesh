@@ -103,6 +103,8 @@ pub struct MeshCueApp {
     pub(crate) pca_build_progress: Option<(usize, usize)>,
     /// Channel to receive PCA build progress ticks from worker
     pub(crate) pca_progress_rx: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
+    /// Aggression calibration modal state
+    pub(crate) calibration: super::state::CalibrationState,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -244,6 +246,7 @@ impl MeshCueApp {
             tap_tempo_times: Vec::new(),
             pca_build_progress: None,
             pca_progress_rx: None,
+            calibration: Default::default(),
         };
 
         // Initial collection scan, playlist refresh, and background graph build
@@ -711,6 +714,53 @@ impl MeshCueApp {
             Message::GraphSuggestionsReady { seed_id, suggestions, queried_energy } => {
                 return self.handle_graph_suggestions_ready(seed_id, suggestions, queried_energy);
             }
+
+            // Calibration
+            Message::CalibrationCoverageCheck(uncovered) => {
+                return self.handle_calibration_coverage_check(uncovered);
+            }
+            Message::OpenCalibration => {
+                self.calibration.is_open = true;
+                self.calibration.explanation_shown = true;
+            }
+            Message::CloseCalibration => {
+                if self.calibration.playing_side.is_some() {
+                    self.audio.pause();
+                }
+                self.calibration.close();
+            }
+            Message::CalibrationStart => {
+                return self.handle_calibration_start();
+            }
+            Message::CalibrationChoice(side) => {
+                return self.handle_calibration_choice(side);
+            }
+            Message::CalibrationEqual => {
+                return self.handle_calibration_equal();
+            }
+            Message::CalibrationSkip => {
+                return self.handle_calibration_skip();
+            }
+            Message::CalibrationPreviewToggle(side) => {
+                return self.handle_calibration_preview_toggle(side);
+            }
+            Message::CalibrationPairPreloaded(pair) => {
+                return self.handle_calibration_pair_preloaded(pair);
+            }
+            Message::CalibrationPairPreloadFailed => {
+                // Decrement counter and try the next pair
+                self.calibration.preloading_count = self.calibration.preloading_count.saturating_sub(1);
+                return self.preload_next_calibration_pair().unwrap_or(Task::none());
+            }
+            Message::CalibrationFinish => {
+                return self.handle_calibration_finish();
+            }
+            Message::CalibrationReset => {
+                return self.handle_calibration_reset();
+            }
+            Message::CalibrationBack => {
+                return self.handle_calibration_back();
+            }
         }
 
         Task::none()
@@ -845,6 +895,12 @@ impl MeshCueApp {
                 base,
                 self.view_reanalysis_config_modal(),
                 Message::CloseReanalysisConfig,
+            )
+        } else if self.calibration.is_open {
+            with_modal_overlay(
+                base,
+                super::calibration_modal::view(&self.calibration),
+                Message::CloseCalibration,
             )
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content
