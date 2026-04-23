@@ -41,7 +41,7 @@ fn main() {
     }
 
     let pca_dim = all_pca.first().map(|(_, v)| v.len()).unwrap_or(0);
-    let check_dims = pca_dim.min(20);
+    let check_dims = pca_dim.min(113);
 
     eprintln!("PCA dimensionality: {}", pca_dim);
     eprintln!("Checking first {} dimensions for aggression correlation", check_dims);
@@ -137,11 +137,109 @@ fn main() {
 
     eprintln!("\n=== BEST DIMENSION: PCA[{}] (r={:+.4}) ===\n", best_dim, best_r);
 
-    // Sort tracks by best PCA dimension and print for manual inspection
+    // === MULTI-DIMENSION WEIGHTED SCORE ===
+    // Use top 5 correlated dimensions, weighted by their correlation
+    let top_dims: Vec<(usize, f32)> = correlations.iter().take(5).map(|&(d, r)| (d, r)).collect();
+    eprintln!("=== MULTI-DIMENSION AGGRESSION (top 5 dims, correlation-weighted) ===\n");
+    for (dim, r) in &top_dims {
+        eprintln!("  dim={}, weight={:+.4}", dim, r);
+    }
+
+    // Compute multi-dim score per track: sum(pca[dim] * correlation) for top 5 dims
+    let multi_scores: Vec<f32> = data.iter().map(|d| {
+        top_dims.iter().map(|&(dim, r)| d.pca[dim] * r).sum::<f32>()
+    }).collect();
+
+    // Compute correlation of multi-dim score with aggression proxy
+    let multi_mean = multi_scores.iter().sum::<f32>() / n;
+    let multi_var: f32 = multi_scores.iter().map(|v| (v - multi_mean).powi(2)).sum();
+    let multi_cov: f32 = multi_scores.iter().zip(aggr_scores.iter())
+        .map(|(v, a)| (v - multi_mean) * (a - aggr_mean)).sum();
+    let multi_r = if (multi_var * aggr_var).sqrt() > 1e-10 {
+        multi_cov / (multi_var * aggr_var).sqrt()
+    } else { 0.0 };
+
+    eprintln!("\n  Multi-dim (top 5) correlation: r = {:+.4} (vs single-dim r = {:+.4})", multi_r, best_r);
+
+    // === SWEEP N=1..50: find optimal number of dimensions ===
+    eprintln!("\n=== CUMULATIVE CORRELATION SWEEP (N=1..{}) ===\n", check_dims);
+    let mut best_n = 1usize;
+    let mut best_n_r = 0.0f32;
+    for n_dims in 1..=check_dims {
+        let top_n: Vec<(usize, f32)> = correlations.iter().take(n_dims).map(|&(d, r)| (d, r)).collect();
+        let scores_n: Vec<f32> = data.iter().map(|d| {
+            top_n.iter().map(|&(dim, r)| d.pca[dim] * r).sum::<f32>()
+        }).collect();
+        let mean_n = scores_n.iter().sum::<f32>() / n;
+        let var_n: f32 = scores_n.iter().map(|v| (v - mean_n).powi(2)).sum();
+        let cov_n: f32 = scores_n.iter().zip(aggr_scores.iter())
+            .map(|(v, a)| (v - mean_n) * (a - aggr_mean)).sum();
+        let r_n = if (var_n * aggr_var).sqrt() > 1e-10 {
+            cov_n / (var_n * aggr_var).sqrt()
+        } else { 0.0 };
+        let marker = if r_n.abs() > best_n_r { best_n = n_dims; best_n_r = r_n.abs(); " <<<" } else { "" };
+        eprintln!("  N={:>2}: r={:+.4}  dims=[{}]{}",
+            n_dims, r_n,
+            top_n.iter().map(|(d, _)| d.to_string()).collect::<Vec<_>>().join(","),
+            marker);
+    }
+    eprintln!("\n  Best N={} with r={:.4}\n", best_n, best_n_r);
+
+    // Sort by multi-dim score and show extremes
+    let mut multi_sorted: Vec<(usize, f32)> = multi_scores.iter().enumerate()
+        .map(|(i, &s)| (i, s)).collect();
+    multi_sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    eprintln!("=== LEAST AGGRESSIVE by multi-dim (bottom 15) ===");
+    for &(idx, score) in multi_sorted.iter().take(15) {
+        let d = &data[idx];
+        eprintln!("  {:.4}\t{:25}\t{}", score, d.artist, d.title);
+    }
+    eprintln!("\n=== MOST AGGRESSIVE by multi-dim (top 15) ===");
+    for &(idx, score) in multi_sorted.iter().rev().take(15) {
+        let d = &data[idx];
+        eprintln!("  {:.4}\t{:25}\t{}", score, d.artist, d.title);
+    }
+
+    // Show known artists
+    eprintln!("\n=== KNOWN ARTISTS: multi-dim scores ===");
+    for &(idx, score) in &multi_sorted {
+        let d = &data[idx];
+        if d.artist.contains("Random Movement") || d.artist.contains("Marcus Intalex")
+            || d.artist.contains("Black Sun Empire") || d.artist.contains("Billain")
+            || d.artist.contains("Current Value") || d.artist.contains("Noisia")
+            || d.artist.contains("Neonlight") || d.artist.contains("Phace") {
+            eprintln!("  {:.4}\t{:25}\t{}", score, d.artist, d.title);
+        }
+    }
+
+    // Sort tracks by best single PCA dimension for the TSV output
     let mut sorted: Vec<(usize, f32, f32)> = data.iter().enumerate()
         .map(|(i, d)| (i, d.pca[best_dim] * sign, aggr_scores[i]))
         .collect();
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Also compute real aggression scores using genre+mood and show mood tags
+    eprintln!("\n=== SAMPLE TRACKS: genre + mood tags + aggression score ===\n");
+    let sample_names = ["Fuzzy Teeth", "Slinkystink", "Airbourne", "Shinde", "Overcome",
+                         "Eraser", "Ego VIP", "Bitemark", "Omnivore", "Dooky Boogs",
+                         "Paradise", "Witch", "Air ", "Reptile", "Blindside"];
+    for (track, _) in &all_pca {
+        let Some(id) = track.id else { continue };
+        let matches = sample_names.iter().any(|s| track.title.contains(s));
+        if !matches { continue; }
+        if let Ok(Some(ml)) = db.get_ml_analysis(id) {
+            let moods = ml.mood_themes.clone().unwrap_or_default();
+            let top_moods: Vec<String> = moods.iter().take(5)
+                .map(|(tag, p)| format!("{}={:.2}", tag, p)).collect();
+            let genre = ml.top_genre.as_deref().unwrap_or("");
+            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(
+                genre, ml.mood_themes.as_ref(),
+            );
+            eprintln!("  aggr={:.3} genre={:20} artist={:25} title={:30} moods=[{}]",
+                aggr, genre, track.artist.as_deref().unwrap_or("?"), track.title, top_moods.join(", "));
+        }
+    }
 
     // Print header + data as TSV to stdout for inspection
     println!("pca_rank\tpca_val\taggr_label\tcomposite\tartist\ttitle\tgenre");

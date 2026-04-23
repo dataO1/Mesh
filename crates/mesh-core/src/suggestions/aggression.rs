@@ -203,41 +203,41 @@ pub fn compute_track_aggression(
     (0.6 * genre_score + 0.4 * (mood_score + 0.5).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
-/// Find the PCA dimension most correlated with aggression estimates.
+/// Compute per-dimension aggression weights from PCA data and aggression estimates.
 ///
-/// Returns (dimension_index, sign, correlation).
-/// sign: multiply PCA value by this to get "higher = more aggressive".
-pub fn find_aggression_axis(
+/// Returns a weight vector (one weight per PCA dimension) where each weight is
+/// the Pearson correlation between that dimension and the aggression proxy.
+/// The weighted sum `sum(pca[i] * weight[i])` projects each track onto the
+/// optimal aggression axis in the full PCA space.
+///
+/// Also returns the combined correlation r of the full weighted projection.
+pub fn compute_aggression_weights(
     pca_data: &[(i64, Vec<f32>)],
     aggression_estimates: &HashMap<i64, f32>,
-    max_dims_to_check: usize,
-) -> Option<(usize, f32, f32)> {
+) -> Option<(Vec<f32>, f32)> {
     if pca_data.is_empty() { return None; }
     let pca_dim = pca_data[0].1.len();
-    let check_dims = pca_dim.min(max_dims_to_check);
 
-    // Build paired vectors (pca_value, aggression) for tracks that have both
-    let paired: Vec<(i64, f32)> = pca_data.iter()
-        .filter_map(|(id, _)| aggression_estimates.get(id).map(|a| (*id, *a)))
+    // Build paired data: tracks that have both PCA and aggression estimate
+    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+    let paired: Vec<i64> = pca_data.iter()
+        .filter_map(|(id, _)| aggression_estimates.get(id).map(|_| *id))
         .collect();
 
     if paired.len() < 10 { return None; }
 
     let n = paired.len() as f32;
-    let aggr_vals: Vec<f32> = paired.iter().map(|(id, _)| aggression_estimates[id]).collect();
+    let aggr_vals: Vec<f32> = paired.iter().map(|id| aggression_estimates[id]).collect();
     let aggr_mean = aggr_vals.iter().sum::<f32>() / n;
     let aggr_var: f32 = aggr_vals.iter().map(|a| (a - aggr_mean).powi(2)).sum();
 
-    if aggr_var < 1e-10 { return None; } // no variance in aggression estimates
+    if aggr_var < 1e-10 { return None; }
 
-    let mut best = (0usize, 0.0f32, 0.0f32); // (dim, sign, |r|)
-
-    // Build a map for fast PCA lookup
-    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
-
-    for dim in 0..check_dims {
+    // Compute correlation weight for each PCA dimension
+    let mut weights = vec![0.0f32; pca_dim];
+    for dim in 0..pca_dim {
         let vals: Vec<f32> = paired.iter()
-            .filter_map(|(id, _)| pca_map.get(id).map(|v| v[dim]))
+            .filter_map(|id| pca_map.get(id).map(|v| v[dim]))
             .collect();
         if vals.len() != paired.len() { continue; }
 
@@ -248,16 +248,28 @@ pub fn find_aggression_axis(
         let cov: f32 = vals.iter().zip(aggr_vals.iter())
             .map(|(v, a)| (v - mean) * (a - aggr_mean))
             .sum();
-        let r = cov / (var * aggr_var).sqrt();
-
-        if r.abs() > best.2 {
-            best = (dim, if r > 0.0 { 1.0 } else { -1.0 }, r.abs());
-        }
+        weights[dim] = cov / (var * aggr_var).sqrt();
     }
 
-    if best.2 < 0.01 { return None; } // no meaningful correlation found
+    // Compute combined correlation of the weighted projection
+    let proj_scores: Vec<f32> = paired.iter()
+        .filter_map(|id| pca_map.get(id).map(|v| {
+            v.iter().zip(weights.iter()).map(|(p, w)| p * w).sum::<f32>()
+        }))
+        .collect();
+    let proj_mean = proj_scores.iter().sum::<f32>() / n;
+    let proj_var: f32 = proj_scores.iter().map(|v| (v - proj_mean).powi(2)).sum();
+    let proj_cov: f32 = proj_scores.iter().zip(aggr_vals.iter())
+        .map(|(v, a)| (v - proj_mean) * (a - aggr_mean)).sum();
+    let combined_r = if (proj_var * aggr_var).sqrt() > 1e-10 {
+        proj_cov / (proj_var * aggr_var).sqrt()
+    } else { 0.0 };
 
-    let sign = if best.1 > 0.0 { 1.0 } else { -1.0 };
-    let r_signed = best.2 * sign;
-    Some((best.0, sign, r_signed))
+    Some((weights, combined_r))
+}
+
+/// Compute aggression score for a single track using the weight vector.
+/// Returns a raw score (not percentile-ranked — caller should rank across library).
+pub fn project_aggression(pca_vec: &[f32], weights: &[f32]) -> f32 {
+    pca_vec.iter().zip(weights.iter()).map(|(p, w)| p * w).sum()
 }

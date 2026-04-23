@@ -483,24 +483,21 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: PCA aggression axis — extract per-track aggression scores from PCA vectors.
-    // The aggression axis (best PCA dimension correlated with genre+mood aggression)
-    // is computed at PCA build time and stored in the DB.
-    let aggression_axis = sources.first()
-        .and_then(|s| s.db.get_aggression_axis().ok().flatten());
+    // Step 4d: PCA aggression — project each track onto the aggression hyperplane.
+    // The weight vector (one correlation weight per PCA dimension) is computed at
+    // PCA build time from genre+mood proxy and stored in the DB.
+    let aggression_weights = sources.first()
+        .and_then(|s| s.db.get_aggression_weights().ok().flatten());
     let mut aggression_map: HashMap<(usize, i64), f32> = HashMap::new();
 
-    if let Some((aggr_dim, aggr_sign, aggr_corr)) = aggression_axis {
-        // Extract aggression score from each candidate's PCA vector
-        // (PCA vectors are already loaded in `candidates` with their distances)
+    if let Some((ref weights, combined_r)) = aggression_weights {
+        // Project each track's PCA vector onto the aggression axis
         for (src_idx, source) in sources.iter().enumerate() {
             if let Ok(all_pca) = source.db.get_all_pca_with_tracks() {
                 for (track, pca_vec) in &all_pca {
                     if let Some(id) = track.id {
-                        if pca_vec.len() > aggr_dim {
-                            let raw = pca_vec[aggr_dim] * aggr_sign;
-                            aggression_map.insert((src_idx, id), raw);
-                        }
+                        let raw = crate::suggestions::aggression::project_aggression(&pca_vec, weights);
+                        aggression_map.insert((src_idx, id), raw);
                     }
                 }
             }
@@ -518,10 +515,10 @@ pub fn query_suggestions(
             }
         }
 
-        eprintln!("[AGGRESSION] axis: dim={}, sign={:+.0}, r={:.3}, {} tracks scored",
-            aggr_dim, aggr_sign, aggr_corr, aggression_map.len());
+        eprintln!("[AGGRESSION] {} dims, combined r={:.3}, {} tracks scored",
+            weights.len(), combined_r, aggression_map.len());
     } else {
-        eprintln!("[AGGRESSION] No aggression axis found — build similarity index first");
+        eprintln!("[AGGRESSION] No aggression weights found — build similarity index first");
     }
 
     // Seed aggression (percentile-ranked)

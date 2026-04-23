@@ -414,8 +414,22 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     }
     create_ml_pca_embeddings_relation(db)?;
 
-    // PCA aggression axis metadata (single row, rebuilt each PCA build).
-    // Stores which PCA dimension best correlates with perceived aggression.
+    // PCA aggression axis (weight vector, rebuilt each PCA build).
+    // Migration: drop old schema if it has 'dimension' column (single-dim format)
+    if existing.contains("pca_aggression_axis") {
+        let cols = db.run_script(
+            "::columns pca_aggression_axis",
+            Default::default(),
+            cozo::ScriptMutability::Immutable,
+        ).map_err(|e| DbError::Schema(e.to_string()))?;
+        let has_old = cols.rows.iter().any(|row| {
+            row.first().and_then(|v| v.get_str()) == Some("dimension")
+        });
+        if has_old {
+            log::info!("Migrating pca_aggression_axis from single-dim to weight vector");
+            let _ = db.run_script("::remove pca_aggression_axis", Default::default(), cozo::ScriptMutability::Mutable);
+        }
+    }
     create_pca_aggression_axis_relation(db)?;
 
     Ok(())
@@ -946,15 +960,13 @@ fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
 }
 
 fn create_pca_aggression_axis_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Single-row metadata: which PCA dimension best correlates with perceived aggression.
+    // Aggression weight vector: one weight per PCA dimension (correlation with proxy).
     // Rebuilt each time "Build Similarity Index" runs.
-    // id=0 (constant key), dimension = PCA component index, sign = ±1.0,
-    // correlation = Pearson r with the aggression proxy.
+    // id=0 (constant key), weights = [Float] list, correlation = combined r.
     run_schema(db, r#"
         {:create pca_aggression_axis {
             id: Int =>
-            dimension: Int,
-            sign: Float,
+            weights: [Float],
             correlation: Float
         }}
     "#)

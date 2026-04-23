@@ -1185,31 +1185,37 @@ impl DatabaseService {
     // PCA Aggression Axis
     // ========================================================================
 
-    /// Store the PCA aggression axis metadata (single row, overwritten each PCA build).
-    pub fn store_aggression_axis(&self, dimension: usize, sign: f32, correlation: f32) -> Result<(), DbError> {
+    /// Store the PCA aggression weight vector (one weight per PCA dimension).
+    pub fn store_aggression_weights(&self, weights: &[f32], correlation: f32) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
         params.insert("id".to_string(), DataValue::from(0i64));
-        params.insert("dimension".to_string(), DataValue::from(dimension as i64));
-        params.insert("sign".to_string(), DataValue::from(sign as f64));
+        params.insert("weights".to_string(), DataValue::List(
+            weights.iter().map(|&w| DataValue::from(w as f64)).collect(),
+        ));
         params.insert("correlation".to_string(), DataValue::from(correlation as f64));
         self.db.run_script(r#"
-            ?[id, dimension, sign, correlation] <- [[$id, $dimension, $sign, $correlation]]
-            :put pca_aggression_axis {id => dimension, sign, correlation}
+            ?[id, weights, correlation] <- [[$id, $weights, $correlation]]
+            :put pca_aggression_axis {id => weights, correlation}
         "#, params)?;
         Ok(())
     }
 
-    /// Get the PCA aggression axis: (dimension_index, sign, correlation).
-    /// Returns None if no axis has been computed yet.
-    pub fn get_aggression_axis(&self) -> Result<Option<(usize, f32, f32)>, DbError> {
+    /// Get the PCA aggression weight vector and combined correlation.
+    /// Returns None if no weights have been computed yet.
+    pub fn get_aggression_weights(&self) -> Result<Option<(Vec<f32>, f32)>, DbError> {
         let result = self.db.run_query(r#"
-            ?[dimension, sign, correlation] := *pca_aggression_axis{id: 0, dimension, sign, correlation}
+            ?[weights, correlation] := *pca_aggression_axis{id: 0, weights, correlation}
         "#, BTreeMap::new())?;
         Ok(result.rows.first().and_then(|row| {
-            let dim = row[0].get_int()? as usize;
-            let sign = row[1].get_float()? as f32;
-            let corr = row[2].get_float()? as f32;
-            Some((dim, sign, corr))
+            let weights = match &row[0] {
+                DataValue::List(items) => {
+                    items.iter().filter_map(|v| v.get_float().map(|f| f as f32)).collect::<Vec<_>>()
+                }
+                _ => return None,
+            };
+            if weights.is_empty() { return None; }
+            let corr = row[1].get_float()? as f32;
+            Some((weights, corr))
         }))
     }
 

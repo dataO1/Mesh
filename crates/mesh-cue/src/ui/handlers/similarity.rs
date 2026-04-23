@@ -84,15 +84,17 @@ impl MeshCueApp {
                         }
                     }
 
-                    if let Some((dim, sign, corr)) = mesh_core::suggestions::aggression::find_aggression_axis(
-                        &pca_data, &aggression_estimates, 20,
+                    if let Some((weights, combined_r)) = mesh_core::suggestions::aggression::compute_aggression_weights(
+                        &pca_data, &aggression_estimates,
                     ) {
-                        log::info!("[PCA] Aggression axis: dim={}, sign={:+.0}, r={:.4}", dim, sign, corr);
-                        if let Err(e) = db.store_aggression_axis(dim, sign, corr) {
-                            log::warn!("[PCA] Failed to store aggression axis: {}", e);
+                        let n_nonzero = weights.iter().filter(|w| w.abs() > 0.01).count();
+                        log::info!("[PCA] Aggression weights: {} dims, {} significant, combined r={:.4}",
+                            weights.len(), n_nonzero, combined_r);
+                        if let Err(e) = db.store_aggression_weights(&weights, combined_r) {
+                            log::warn!("[PCA] Failed to store aggression weights: {}", e);
                         }
                     } else {
-                        log::warn!("[PCA] Could not determine aggression axis (insufficient genre/mood data)");
+                        log::warn!("[PCA] Could not compute aggression weights (insufficient genre/mood data)");
                     }
 
                     Ok(())
