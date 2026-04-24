@@ -990,14 +990,17 @@ const LOUVAIN_K_NEIGHBORS: usize = 25;
 
 /// Communities below this size get absorbed into their nearest larger
 /// community (by 2D centroid distance) rather than labeled noise. Keeps
-/// every track assigned — important for suggestion coverage.
-const LOUVAIN_MIN_CLUSTER_SIZE: usize = 20;
+/// every track assigned — important for suggestion coverage. 35 tracks
+/// lines up with "a subgenre has at least ~30–50 tracks worth of examples
+/// in a medium library".
+const LOUVAIN_MIN_CLUSTER_SIZE: usize = 35;
 
 /// Resolution parameter for the modularity objective:
 ///   Q = sum_ij [A_ij - gamma * k_i*k_j/2m] * delta(c_i, c_j)
-/// Lower gamma → fewer, larger communities. 0.7 is tuned for coarser
-/// subgenre-level granularity instead of fine-grained sub-subgenres.
-const LOUVAIN_RESOLUTION: f64 = 0.7;
+/// Lower gamma → fewer, larger communities. 0.5 combined with multi-phase
+/// Louvain yields coarse "rough subgenre" granularity instead of
+/// fine-grained sub-subgenre clusters.
+const LOUVAIN_RESOLUTION: f64 = 0.5;
 
 /// Minimum modularity improvement to continue iterating.
 const LOUVAIN_DELTA: f64 = 1e-4;
@@ -1066,8 +1069,8 @@ pub fn run_louvain_clustering(
 
     log::info!("[GRAPH/LOUVAIN] Built k-NN graph on {} nodes, k={}", n, LOUVAIN_K_NEIGHBORS);
 
-    // 3. Run Louvain
-    let mut node_to_comm = louvain_optimize(&adj, LOUVAIN_RESOLUTION);
+    // 3. Run multi-level Louvain (phase 1 → contract → phase 1 → ...)
+    let mut node_to_comm = louvain_multilevel(&adj, LOUVAIN_RESOLUTION);
 
     // 4. Identify small communities and absorb them into their nearest LARGE
     // community by 2D centroid distance. No track ends up as noise — keeps
@@ -1185,6 +1188,92 @@ fn absorb_small_communities(
     if absorbed > 0 {
         log::info!("[GRAPH/LOUVAIN] Absorbed {} tracks from small communities into nearest large community", absorbed);
     }
+}
+
+/// Multi-level Louvain:
+///   1. Run phase 1 (move nodes between communities)
+///   2. Contract graph: each community becomes a super-node, inter-community
+///      edges accumulate into super-edges (same-community edges become self-loops)
+///   3. Run phase 1 on the contracted graph to merge super-nodes further
+///   4. Repeat until a phase produces no merging
+///
+/// Returns a `node_to_comm` vector with the FINAL (coarsest) community of each
+/// original node. Classic Louvain needs this to produce coarse communities —
+/// single-phase output tends to stall at ~20-30 communities regardless of
+/// resolution, because a track can only be moved, not merged at a higher level.
+fn louvain_multilevel(initial_adj: &[Vec<(usize, f32)>], resolution: f64) -> Vec<usize> {
+    let n = initial_adj.len();
+    let mut partition: Vec<usize> = (0..n).collect(); // original node → current community id
+    let mut current_adj: Vec<Vec<(usize, f32)>> = initial_adj.to_vec();
+    let mut level = 0usize;
+
+    loop {
+        let new_comms = louvain_optimize(&current_adj, resolution);
+
+        // Renumber to contiguous 0..K
+        let mut unique: Vec<usize> = new_comms.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        let n_new = unique.len();
+
+        if n_new == current_adj.len() {
+            // Phase produced no merging at this level — stop here
+            // (but still update partition in case the first level moved anything)
+            if level == 0 {
+                let renumber: HashMap<usize, usize> = unique.into_iter().enumerate()
+                    .map(|(new, old)| (old, new)).collect();
+                for c in partition.iter_mut() {
+                    *c = renumber[&new_comms[*c]];
+                }
+            }
+            break;
+        }
+
+        let renumber: HashMap<usize, usize> = unique.into_iter().enumerate()
+            .map(|(new, old)| (old, new)).collect();
+        let renumbered: Vec<usize> = new_comms.iter().map(|c| renumber[c]).collect();
+
+        // Apply this level's partition to the cumulative partition
+        for c in partition.iter_mut() {
+            *c = renumbered[*c];
+        }
+
+        log::info!(
+            "[GRAPH/LOUVAIN] Level {}: {} → {} communities",
+            level, current_adj.len(), n_new,
+        );
+
+        // Contract for the next level
+        current_adj = contract_graph(&current_adj, &renumbered, n_new);
+        level += 1;
+
+        if level >= 10 { break; } // safety cap on hierarchy depth
+    }
+
+    partition
+}
+
+/// Build a super-graph where each node represents one community. Edges between
+/// communities sum their constituent edge weights. Self-loops (intra-community
+/// edges) are preserved because Louvain's modularity formula cares about them.
+fn contract_graph(
+    adj: &[Vec<(usize, f32)>],
+    partition: &[usize],
+    n_communities: usize,
+) -> Vec<Vec<(usize, f32)>> {
+    let mut edge_map: HashMap<(usize, usize), f32> = HashMap::new();
+    for i in 0..adj.len() {
+        let ci = partition[i];
+        for &(j, w) in &adj[i] {
+            let cj = partition[j];
+            *edge_map.entry((ci, cj)).or_default() += w;
+        }
+    }
+    let mut new_adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n_communities];
+    for ((ci, cj), w) in edge_map {
+        new_adj[ci].push((cj, w));
+    }
+    new_adj
 }
 
 /// Louvain phase-1 optimization: iterate moving nodes between neighboring
