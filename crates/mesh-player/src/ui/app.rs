@@ -2210,7 +2210,7 @@ pub fn build_graph_task(
                 let cache_key = graph_compute::graph_cache_key(
                     &pca_data,
                     graph_compute::GraphAlgorithm::Tsne,
-                    graph_compute::ClusteringAlgorithm::Hdbscan,
+                    graph_compute::ClusteringAlgorithm::Louvain,
                     false, 0.0,
                 );
                 let positions = graph_compute::compute_layout_cached(
@@ -2223,7 +2223,7 @@ pub fn build_graph_task(
                 let cluster_result = graph_compute::run_consensus_clustering_cached(
                     &pca_data,
                     &positions,
-                    graph_compute::ClusteringAlgorithm::Hdbscan,
+                    graph_compute::ClusteringAlgorithm::Louvain,
                     &cache_key,
                     cache_db,
                 );

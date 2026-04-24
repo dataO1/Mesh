@@ -88,8 +88,8 @@ impl GraphAlgorithm {
 /// mega-cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClusteringAlgorithm {
-    #[default]
     Hdbscan,
+    #[default]
     Louvain,
 }
 
@@ -982,12 +982,22 @@ fn run_consensus_clustering_once(
 // Reference: Blondel et al. 2008, "Fast unfolding of communities in large
 // networks", https://doi.org/10.1088/1742-5468/2008/10/P10008
 
-/// Number of nearest neighbors per node when building the k-NN graph. Small
-/// values make communities more fragmented, larger values coalesce them.
-const LOUVAIN_K_NEIGHBORS: usize = 15;
+/// Number of nearest neighbors per node when building the k-NN graph.
+/// Higher values produce coarser communities (more merging across the
+/// graph); lower values make communities more fragmented. 25 is tuned
+/// for "rough subgenres at a glance" on typical DJ libraries.
+const LOUVAIN_K_NEIGHBORS: usize = 25;
 
-/// Smallest community we'll emit. Smaller components get labeled noise (-1).
-const LOUVAIN_MIN_CLUSTER_SIZE: usize = 8;
+/// Communities below this size get absorbed into their nearest larger
+/// community (by 2D centroid distance) rather than labeled noise. Keeps
+/// every track assigned — important for suggestion coverage.
+const LOUVAIN_MIN_CLUSTER_SIZE: usize = 20;
+
+/// Resolution parameter for the modularity objective:
+///   Q = sum_ij [A_ij - gamma * k_i*k_j/2m] * delta(c_i, c_j)
+/// Lower gamma → fewer, larger communities. 0.7 is tuned for coarser
+/// subgenre-level granularity instead of fine-grained sub-subgenres.
+const LOUVAIN_RESOLUTION: f64 = 0.7;
 
 /// Minimum modularity improvement to continue iterating.
 const LOUVAIN_DELTA: f64 = 1e-4;
@@ -1057,15 +1067,18 @@ pub fn run_louvain_clustering(
     log::info!("[GRAPH/LOUVAIN] Built k-NN graph on {} nodes, k={}", n, LOUVAIN_K_NEIGHBORS);
 
     // 3. Run Louvain
-    let node_to_comm = louvain_optimize(&adj);
+    let mut node_to_comm = louvain_optimize(&adj, LOUVAIN_RESOLUTION);
 
-    // 4. Count community sizes, filter small, renumber by descending size
+    // 4. Identify small communities and absorb them into their nearest LARGE
+    // community by 2D centroid distance. No track ends up as noise — keeps
+    // calibration coverage and suggestion scoring working for every track.
+    absorb_small_communities(&mut node_to_comm, &ids, positions);
+
+    // 5. Renumber surviving communities by descending size, largest=0
     let mut comm_counts: HashMap<usize, usize> = HashMap::new();
     for &c in &node_to_comm { *comm_counts.entry(c).or_default() += 1; }
 
-    let mut comms_by_size: Vec<(usize, usize)> = comm_counts.into_iter()
-        .filter(|&(_, count)| count >= LOUVAIN_MIN_CLUSTER_SIZE)
-        .collect();
+    let mut comms_by_size: Vec<(usize, usize)> = comm_counts.into_iter().collect();
     comms_by_size.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     let mut new_idx: HashMap<usize, i32> = HashMap::new();
@@ -1078,9 +1091,8 @@ pub fn run_louvain_clustering(
     for i in 0..n {
         let cid = new_idx.get(&node_to_comm[i]).copied().unwrap_or(-1);
         clusters.insert(ids[i], cid);
-        // Simple confidence proxy: 1.0 if in any community, 0.0 if filtered as noise.
-        // (Louvain doesn't produce a per-node modularity contribution that's cheap
-        // to compute, so we keep it boolean for now.)
+        // Every track is assigned post-absorb; noise would only appear if the
+        // entire library is smaller than MIN_CLUSTER_SIZE (pathological case).
         confidence.insert(ids[i], if cid >= 0 { 1.0 } else { 0.0 });
     }
 
@@ -1089,9 +1101,8 @@ pub fn run_louvain_clustering(
 
     let num_clusters = new_idx.len();
     log::info!(
-        "[GRAPH/LOUVAIN] {} communities (filtered {} below min_size={}, {} tracks total)",
-        num_clusters, comm_counts_noise(&node_to_comm, &new_idx),
-        LOUVAIN_MIN_CLUSTER_SIZE, n,
+        "[GRAPH/LOUVAIN] {} communities (k={}, min_size={}, resolution={}, {} tracks — all assigned)",
+        num_clusters, LOUVAIN_K_NEIGHBORS, LOUVAIN_MIN_CLUSTER_SIZE, LOUVAIN_RESOLUTION, n,
     );
 
     // Gate: reject if the result looks as bad as the HDBSCAN collapse case.
@@ -1119,14 +1130,67 @@ pub fn run_louvain_clustering(
     }
 }
 
-fn comm_counts_noise(node_to_comm: &[usize], new_idx: &HashMap<usize, i32>) -> usize {
-    node_to_comm.iter().filter(|c| !new_idx.contains_key(c)).count()
+/// Absorb communities smaller than MIN_CLUSTER_SIZE into their nearest
+/// surviving community by 2D centroid distance. Mutates node_to_comm in
+/// place. After this call every track is guaranteed to be in a community
+/// that meets the size floor (unless the whole library is too small).
+fn absorb_small_communities(
+    node_to_comm: &mut [usize],
+    ids: &[i64],
+    positions: &HashMap<i64, (f32, f32)>,
+) {
+    // Count sizes
+    let mut sizes: HashMap<usize, usize> = HashMap::new();
+    for &c in node_to_comm.iter() { *sizes.entry(c).or_default() += 1; }
+
+    let large_comms: HashSet<usize> = sizes.iter()
+        .filter(|(_, &sz)| sz >= LOUVAIN_MIN_CLUSTER_SIZE)
+        .map(|(&c, _)| c)
+        .collect();
+
+    if large_comms.is_empty() || large_comms.len() == sizes.len() { return; }
+
+    // Centroid of each large community
+    let mut centroids: HashMap<usize, (f32, f32, u32)> = HashMap::new();
+    for i in 0..node_to_comm.len() {
+        let c = node_to_comm[i];
+        if !large_comms.contains(&c) { continue; }
+        if let Some(&(x, y)) = positions.get(&ids[i]) {
+            let e = centroids.entry(c).or_insert((0.0, 0.0, 0));
+            e.0 += x; e.1 += y; e.2 += 1;
+        }
+    }
+    let centroid_map: HashMap<usize, (f32, f32)> = centroids.into_iter()
+        .filter_map(|(c, (sx, sy, n))| if n > 0 { Some((c, (sx / n as f32, sy / n as f32))) } else { None })
+        .collect();
+
+    // Reassign every track in a small community to nearest large centroid
+    let mut absorbed = 0usize;
+    for i in 0..node_to_comm.len() {
+        if large_comms.contains(&node_to_comm[i]) { continue; }
+        let pos = match positions.get(&ids[i]) {
+            Some(&p) => p,
+            None => continue,
+        };
+        let mut best = (f32::INFINITY, node_to_comm[i]);
+        for (&c, &(cx, cy)) in &centroid_map {
+            let d2 = (pos.0 - cx).powi(2) + (pos.1 - cy).powi(2);
+            if d2 < best.0 { best = (d2, c); }
+        }
+        if best.1 != node_to_comm[i] {
+            node_to_comm[i] = best.1;
+            absorbed += 1;
+        }
+    }
+    if absorbed > 0 {
+        log::info!("[GRAPH/LOUVAIN] Absorbed {} tracks from small communities into nearest large community", absorbed);
+    }
 }
 
 /// Louvain phase-1 optimization: iterate moving nodes between neighboring
 /// communities to maximize modularity. Deterministic: iterates nodes in
 /// index order, breaks ties by lower community id.
-fn louvain_optimize(adj: &[Vec<(usize, f32)>]) -> Vec<usize> {
+fn louvain_optimize(adj: &[Vec<(usize, f32)>], resolution: f64) -> Vec<usize> {
     let n = adj.len();
 
     // Total weight (sum of edge weights, counted once per undirected edge)
@@ -1147,7 +1211,7 @@ fn louvain_optimize(adj: &[Vec<(usize, f32)>]) -> Vec<usize> {
 
     for iter in 0..LOUVAIN_MAX_ITER {
         // Modularity of current partition (rough check for early exit)
-        let modularity = compute_modularity(adj, &node_to_comm, &k, m2);
+        let modularity = compute_modularity(adj, &node_to_comm, &k, m2, resolution);
         if modularity - last_modularity < LOUVAIN_DELTA && iter > 0 { break; }
         last_modularity = modularity;
 
@@ -1168,17 +1232,16 @@ fn louvain_optimize(adj: &[Vec<(usize, f32)>]) -> Vec<usize> {
             sum_tot[current_comm] -= k_i;
             let w_to_current = w_to_comm.get(&current_comm).copied().unwrap_or(0.0);
 
-            // Gain formula (undirected, simplified):
-            //   delta_Q(move i to C) = w_to_C - k_i * sum_tot[C] / m
-            //   (where m = m2/2 is total edge weight)
-            // "Best" comm is whichever has max gain (including current_comm itself).
+            // Gain formula (undirected, with resolution parameter γ):
+            //   delta_Q(move i to C) = w_to_C - γ * k_i * sum_tot[C] / m
+            //   (m = m2/2 is total edge weight, γ < 1 favors larger communities)
             let m = m2 / 2.0;
             let mut best_comm = current_comm;
-            let mut best_gain = w_to_current - k_i * sum_tot[current_comm] / m;
+            let mut best_gain = w_to_current - resolution * k_i * sum_tot[current_comm] / m;
 
             for (&comm, &w_to) in &w_to_comm {
                 if comm == current_comm { continue; }
-                let gain = w_to - k_i * sum_tot[comm] / m;
+                let gain = w_to - resolution * k_i * sum_tot[comm] / m;
                 if gain > best_gain || (gain == best_gain && comm < best_comm) {
                     best_gain = gain;
                     best_comm = comm;
@@ -1199,12 +1262,14 @@ fn louvain_optimize(adj: &[Vec<(usize, f32)>]) -> Vec<usize> {
     node_to_comm
 }
 
-/// Modularity of a partition: Q = (1/2m) * sum_ij [A_ij - k_i*k_j/2m] * delta(c_i, c_j)
+/// Modularity of a partition (with resolution γ):
+///   Q = (1/2m) * sum_ij [A_ij - γ * k_i*k_j/2m] * delta(c_i, c_j)
 fn compute_modularity(
     adj: &[Vec<(usize, f32)>],
     node_to_comm: &[usize],
     k: &[f64],
     m2: f64,
+    resolution: f64,
 ) -> f64 {
     if m2 <= 0.0 { return 0.0; }
     let mut sum_in_per_comm: HashMap<usize, f64> = HashMap::new();
@@ -1222,7 +1287,7 @@ fn compute_modularity(
         let k_c = k_per_comm.get(c).copied().unwrap_or(0.0);
         // s_in here counts each internal edge twice (once from each endpoint),
         // which matches the standard Q formula when divided by m2.
-        q += s_in / m2 - (k_c / m2).powi(2);
+        q += s_in / m2 - resolution * (k_c / m2).powi(2);
     }
     q
 }
