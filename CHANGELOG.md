@@ -55,6 +55,28 @@ All notable changes to Mesh are documented in this file.
   colors and IDs no longer shuffle when you relaunch mesh-cue. Useful for
   re-finding "that techno cluster over there" after a restart.
 
+- **More reliable community detection** — Occasionally clustering would roll
+  a pathological result (one giant community covering the whole library and
+  two small fragments) and then cache it for the session, wrecking
+  suggestions until the next library change. The graph now evaluates each
+  roll and retries up to 5 times if the result looks broken (fewer than 5
+  communities, or one community swallowing more than half the library).
+  Only a healthy roll gets cached.
+
+- **Clustering now runs on PCA vectors, not the 2D projection** — Previously
+  communities were detected from the 2D layout, which collapsed genuinely
+  distinct groups into visual blobs. Clustering on the full PCA embedding
+  preserves the separations the suggestion algorithm cares about, giving
+  more consistent and more meaningful subgenre groups (typically 12–15 for
+  a 900-track library). 2D positions are still used for cluster colors.
+
+- **Cluster granularity is now fixed, not scaled to library size** — The
+  minimum cluster size is a fixed 15 tracks regardless of whether your
+  library is 200 or 20,000 tracks. The graph is there to show rough
+  subgenres at a glance (liquid vs techstep vs neuro), not niches inside
+  them — and that level of distinction doesn't get coarser just because
+  you own more tracks.
+
 ### Changed
 
 - **Calibration previews load much faster** — Each calibration question

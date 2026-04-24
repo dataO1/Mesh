@@ -197,8 +197,9 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
+    // v2: clustering moved from 2D positions to PCA space + fixed min_cluster_size
     format!(
-        "{:?}_norm{}_wh{:.2}_{:016x}",
+        "v2_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -208,6 +209,7 @@ pub fn graph_cache_key(
 /// HDBSCAN itself has internal non-determinism, so caching the full result
 /// is the only way to guarantee stable communities across restarts.
 pub fn run_consensus_clustering_cached(
+    pca_data: &[(i64, Vec<f32>)],
     positions: &HashMap<i64, (f32, f32)>,
     cache_key: &str,
     db: Option<&DatabaseService>,
@@ -232,7 +234,7 @@ pub fn run_consensus_clustering_cached(
         }
     }
 
-    let result = run_consensus_clustering(positions);
+    let result = run_consensus_clustering(pca_data, positions);
 
     if let Some(db) = db {
         match serde_json::to_string(&result) {
@@ -581,16 +583,49 @@ fn pca_align_2d(positions: &mut [(f32, f32)]) {
     }
 }
 
-/// Multi-scale consensus clustering on 2D positions.
+/// Minimum number of communities a clustering roll must produce to be
+/// accepted. Below this, we retry. Tuned for "rough subgenres at a glance"
+/// — typical good rolls produce 12–15 communities.
+const MIN_COMMUNITIES_GATE: usize = 5;
+
+/// Maximum share of assigned tracks that may land in the single largest
+/// community. If one community swallows more than this, the roll is rejected.
+const MAX_LARGEST_FRACTION: f32 = 0.5;
+
+/// Maximum clustering attempts before giving up and using the best-scoring
+/// roll from the pool. HDBSCAN has internal non-determinism, so successive
+/// rolls typically differ — 5 attempts is plenty to escape a bad roll without
+/// hanging the UI when the data genuinely clusters poorly.
+const MAX_CLUSTERING_ATTEMPTS: usize = 5;
+
+/// Fixed minimum cluster size. Tuned for showing rough subgenres (liquid vs
+/// techstep vs neuro) rather than fine-grained niches. Does NOT scale with
+/// library size: a 200-track and 20,000-track library care about roughly the
+/// same granularity of distinction at a glance.
+const MIN_CLUSTER_SIZE: usize = 15;
+
+/// Multi-scale consensus clustering on high-dimensional PCA vectors.
+///
+/// Clusters on the PCA embeddings directly (not the 2D projection), then
+/// uses the 2D positions only for deriving cluster colors. 2D projections
+/// collapse distinct communities into overlapping blobs; clustering in PCA
+/// space preserves the separation the suggestion algorithm actually cares
+/// about.
 ///
 /// Runs HDBSCAN at 7 different min_samples values and builds a co-occurrence
 /// matrix. Tracks that consistently cluster together (>= 70% of runs) are
 /// connected via union-find into robust communities.
 ///
-/// Cluster colors are derived from each community's average position in the
-/// 2D space — mapped to a perceptual hue wheel. This produces deterministic
-/// colors that correlate with the spatial layout.
+/// HDBSCAN has internal non-determinism; occasional rolls collapse the
+/// library into 1–3 mega-communities. We run up to MAX_CLUSTERING_ATTEMPTS
+/// rolls, accept the first that passes the quality gate, and fall back to
+/// the best-scoring roll if none pass.
+///
+/// Cluster colors are derived from each community's average 2D position —
+/// mapped to a perceptual hue wheel. This produces deterministic colors
+/// that correlate with the visual layout.
 pub fn run_consensus_clustering(
+    pca_data: &[(i64, Vec<f32>)],
     positions: &HashMap<i64, (f32, f32)>,
 ) -> ClusterResult {
     let n = positions.len();
@@ -603,24 +638,103 @@ pub fn run_consensus_clustering(
         };
     }
 
-    let mut ids: Vec<i64> = positions.keys().copied().collect();
-    ids.sort();
-    let data: Vec<Vec<f64>> = ids.iter()
-        .filter_map(|id| positions.get(id))
-        .map(|&(x, y)| vec![x as f64, y as f64])
+    // Intersect positions with pca_data — only tracks in both get clustered
+    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+    let mut ids: Vec<i64> = positions.keys().copied()
+        .filter(|id| pca_map.contains_key(id))
         .collect();
+    ids.sort();
+    if ids.len() < 10 {
+        log::warn!("[GRAPH] Not enough PCA vectors for clustering ({})", ids.len());
+        return ClusterResult {
+            clusters: HashMap::new(),
+            confidence: HashMap::new(),
+            colors: HashMap::new(),
+            thresholds: CommunityThresholds::default(),
+        };
+    }
+
+    // L2-normalize PCA vectors so Euclidean distance ~ cosine distance.
+    // (HDBSCAN crate only exposes Euclidean/Manhattan/etc., not cosine.)
+    let data: Vec<Vec<f64>> = ids.iter()
+        .map(|id| {
+            let v = pca_map[id];
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-10);
+            v.iter().map(|&x| (x / norm) as f64).collect()
+        })
+        .collect();
+
+    // Retry loop: keep the best-scoring attempt, return the first that passes
+    // the gate. Best-of-N is the fallback if all attempts collapse.
+    let mut best: Option<(ClusterResult, f32)> = None;
+    for attempt in 1..=MAX_CLUSTERING_ATTEMPTS {
+        let result = run_consensus_clustering_once(&data, positions, &ids);
+        let (num_communities, largest_frac, score) = grade_clustering(&result);
+        log::info!(
+            "[GRAPH] Clustering attempt {}/{}: {} communities, largest={:.1}%, score={:.2}",
+            attempt, MAX_CLUSTERING_ATTEMPTS, num_communities, largest_frac * 100.0, score,
+        );
+
+        if num_communities >= MIN_COMMUNITIES_GATE && largest_frac <= MAX_LARGEST_FRACTION {
+            log::info!("[GRAPH] Gate passed on attempt {}", attempt);
+            return result;
+        }
+
+        if best.as_ref().map_or(true, |(_, s)| score > *s) {
+            best = Some((result, score));
+        }
+    }
+
+    log::warn!(
+        "[GRAPH] All {} attempts failed gate — using best-scoring roll",
+        MAX_CLUSTERING_ATTEMPTS,
+    );
+    best.map(|(r, _)| r).unwrap_or_else(|| ClusterResult {
+        clusters: HashMap::new(),
+        confidence: HashMap::new(),
+        colors: HashMap::new(),
+        thresholds: CommunityThresholds::default(),
+    })
+}
+
+/// Grade a clustering result. Returns (num_communities, largest_fraction, score).
+/// Score rewards both community count and balance — higher is better.
+fn grade_clustering(result: &ClusterResult) -> (usize, f32, f32) {
+    let num = result.colors.len();
+    if num == 0 { return (0, 0.0, 0.0); }
+
+    let mut sizes: HashMap<i32, usize> = HashMap::new();
+    for &cid in result.clusters.values() {
+        if cid >= 0 { *sizes.entry(cid).or_default() += 1; }
+    }
+    let total_assigned: usize = sizes.values().sum();
+    if total_assigned == 0 { return (num, 0.0, 0.0); }
+    let largest = sizes.values().copied().max().unwrap_or(0);
+    let largest_frac = largest as f32 / total_assigned as f32;
+    // Reward more communities AND balanced sizes (small largest_frac).
+    let score = num as f32 * (1.0 - largest_frac);
+    (num, largest_frac, score)
+}
+
+/// Single consensus clustering roll — extracted from `run_consensus_clustering`
+/// so the retry loop can call it repeatedly without duplicating the body.
+fn run_consensus_clustering_once(
+    data: &[Vec<f64>],
+    positions: &HashMap<i64, (f32, f32)>,
+    ids: &[i64],
+) -> ClusterResult {
+    let n = data.len();
 
     // Run HDBSCAN at multiple scales
     let scales = [1usize, 2, 4, 6, 9, 13, 18];
     let mut all_labels: Vec<Vec<i32>> = Vec::new();
-    let min_cluster_size = (n / 100).max(5).min(20);
 
     for &min_samples in &scales {
         let hp = hdbscan::HdbscanHyperParams::builder()
-            .min_cluster_size(min_cluster_size)
+            .min_cluster_size(MIN_CLUSTER_SIZE)
             .min_samples(min_samples)
             .build();
-        let clusterer = hdbscan::Hdbscan::new(&data, hp);
+        let clusterer = hdbscan::Hdbscan::new(data, hp);
         match clusterer.cluster() {
             Ok(labels) => all_labels.push(labels),
             Err(_) => continue,
@@ -689,7 +803,7 @@ pub fn run_consensus_clustering(
     let mut cluster_id_map: HashMap<usize, i32> = HashMap::new();
     let mut next_id = 0i32;
     let mut roots_by_size: Vec<(usize, usize)> = component_sizes.iter()
-        .filter(|(_, &size)| size >= min_cluster_size)
+        .filter(|(_, &size)| size >= MIN_CLUSTER_SIZE)
         .map(|(&root, &size)| (root, size))
         .collect();
     roots_by_size.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -732,8 +846,9 @@ pub fn run_consensus_clustering(
     // This produces deterministic colors that match the visual layout.
     let mut colors = HashMap::new();
     let (global_cx, global_cy) = {
+        let total_positions = positions.len() as f32;
         let (sx, sy) = positions.values().fold((0.0f32, 0.0f32), |(sx, sy), &(x, y)| (sx + x, sy + y));
-        (sx / n as f32, sy / n as f32)
+        if total_positions > 0.0 { (sx / total_positions, sy / total_positions) } else { (0.0, 0.0) }
     };
 
     for (&_root, &cid) in &cluster_id_map {
@@ -766,7 +881,7 @@ pub fn run_consensus_clustering(
     let num_clusters = cluster_id_map.len();
     log::info!(
         "[GRAPH] Consensus clustering: {} communities from {} runs (min_cluster_size={}, threshold={}%, {} tracks)",
-        num_clusters, num_runs, min_cluster_size, 70, n
+        num_clusters, num_runs, MIN_CLUSTER_SIZE, 70, n
     );
 
     ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default() }

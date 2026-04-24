@@ -114,9 +114,10 @@ impl MeshCueApp {
                     );
 
                     // Run consensus clustering (also cached — HDBSCAN is non-deterministic
-                    // so caching the full result is the only way to keep communities stable)
+                    // so caching the full result is the only way to keep communities stable).
+                    // Clustering runs in PCA space, not 2D, so pca_data is passed through.
                     let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering_cached(
-                        &positions, &cache_key, Some(&db),
+                        &pca_data, &positions, &cache_key, Some(&db),
                     );
                     cluster_result.thresholds = mesh_core::graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 

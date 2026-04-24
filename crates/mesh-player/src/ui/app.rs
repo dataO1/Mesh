@@ -2218,7 +2218,7 @@ pub fn build_graph_task(
                     cache_db,
                 );
                 let cluster_result = graph_compute::run_consensus_clustering_cached(
-                    &positions, &cache_key, cache_db,
+                    &pca_data, &positions, &cache_key, cache_db,
                 );
                 let thresholds = graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
