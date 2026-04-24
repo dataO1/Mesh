@@ -205,11 +205,12 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v3: clustering is back in 2D (128-D PCA clustering collapsed to 3
-    // communities + lots of noise via curse-of-dimensionality). Retry+gate
-    // stays in place to catch 2D's occasional collapse rolls.
+    // v4: HDBSCAN in this crate has no randomness — retrying with identical
+    // params produces identical output, so each attempt now uses a different
+    // scale set. Also drops min_samples=1 which chain-merged the library
+    // into one mega-cluster via dense t-SNE blobs.
     format!(
-        "v3_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v4_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -615,11 +616,23 @@ const MIN_COMMUNITIES_GATE: usize = 5;
 /// community. If one community swallows more than this, the roll is rejected.
 const MAX_LARGEST_FRACTION: f32 = 0.5;
 
-/// Maximum clustering attempts before giving up and using the best-scoring
-/// roll from the pool. HDBSCAN has internal non-determinism, so successive
-/// rolls typically differ — 5 attempts is plenty to escape a bad roll without
-/// hanging the UI when the data genuinely clusters poorly.
-const MAX_CLUSTERING_ATTEMPTS: usize = 5;
+/// Per-attempt parameter sweeps. The `hdbscan` crate has NO randomness
+/// (no rand dep, no seed) — so a retry with identical params is identical
+/// output. To make retry meaningful, each attempt uses a different scale
+/// set, moving from moderate to more aggressive / more conservative.
+///
+/// `min_samples=1` is deliberately excluded: it makes HDBSCAN chain-merge
+/// everything reachable, which in a dense t-SNE layout creates a single
+/// giant community swallowing most of the library.
+const ATTEMPT_SCALES: [&[usize]; 5] = [
+    &[5, 10, 15, 20, 25],           // moderate default
+    &[8, 12, 16, 20, 25, 30],       // slightly stricter, wider range
+    &[3, 7, 12, 18, 25, 35],        // broader sweep
+    &[10, 15, 20, 25, 30, 40],      // conservative — favors tighter cores
+    &[5, 8, 12, 16, 20, 25, 30],    // dense mix including low end
+];
+
+const MAX_CLUSTERING_ATTEMPTS: usize = ATTEMPT_SCALES.len();
 
 /// Fixed minimum cluster size. Tuned for showing rough subgenres (liquid vs
 /// techstep vs neuro) rather than fine-grained niches. Does NOT scale with
@@ -676,15 +689,17 @@ pub fn run_consensus_clustering(
         .map(|&(x, y)| vec![x as f64, y as f64])
         .collect();
 
-    // Retry loop: keep the best-scoring attempt, return the first that passes
-    // the gate. Best-of-N is the fallback if all attempts collapse.
+    // Retry loop with parameter variation: each attempt uses a different
+    // scale set so results differ. Keep the best-scoring attempt; return
+    // the first that passes the gate. Best-of-N is the fallback.
     let mut best: Option<(ClusterResult, f32)> = None;
-    for attempt in 1..=MAX_CLUSTERING_ATTEMPTS {
-        let mut result = run_consensus_clustering_once(&data, positions, &ids);
+    for (attempt_idx, scales) in ATTEMPT_SCALES.iter().enumerate() {
+        let attempt = attempt_idx + 1;
+        let mut result = run_consensus_clustering_once(&data, positions, &ids, scales);
         let (num_communities, largest_frac, score) = grade_clustering(&result);
         log::info!(
-            "[GRAPH] Clustering attempt {}/{}: {} communities, largest={:.1}%, score={:.2}",
-            attempt, MAX_CLUSTERING_ATTEMPTS, num_communities, largest_frac * 100.0, score,
+            "[GRAPH] Clustering attempt {}/{} (scales={:?}): {} communities, largest={:.1}%, score={:.2}",
+            attempt, MAX_CLUSTERING_ATTEMPTS, scales, num_communities, largest_frac * 100.0, score,
         );
 
         if num_communities >= MIN_COMMUNITIES_GATE && largest_frac <= MAX_LARGEST_FRACTION {
@@ -733,19 +748,19 @@ fn grade_clustering(result: &ClusterResult) -> (usize, f32, f32) {
 }
 
 /// Single consensus clustering roll — extracted from `run_consensus_clustering`
-/// so the retry loop can call it repeatedly without duplicating the body.
+/// so the retry loop can call it with different scale sets per attempt.
 fn run_consensus_clustering_once(
     data: &[Vec<f64>],
     positions: &HashMap<i64, (f32, f32)>,
     ids: &[i64],
+    scales: &[usize],
 ) -> ClusterResult {
     let n = data.len();
 
-    // Run HDBSCAN at multiple scales
-    let scales = [1usize, 2, 4, 6, 9, 13, 18];
+    // Run HDBSCAN at the requested min_samples values
     let mut all_labels: Vec<Vec<i32>> = Vec::new();
 
-    for &min_samples in &scales {
+    for &min_samples in scales {
         let hp = hdbscan::HdbscanHyperParams::builder()
             .min_cluster_size(MIN_CLUSTER_SIZE)
             .min_samples(min_samples)
