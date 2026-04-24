@@ -233,13 +233,12 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v15: genre-driven L1 + HDBSCAN L2 on 2D positions. L2 was Louvain on
-    // PCA k-NN; that produced modularity-optimal but spatially-scattered
-    // sub-communities, so DnB sub-communities mixed into the same 2D region.
-    // HDBSCAN on 2D gives spatially-coherent sub-communities by construction.
-    // Recurse threshold raised 50 → 150 to avoid over-fragmenting small macros.
+    // v17: HDBSCAN-L2 min_cluster_size (sqrt(m)*0.8, clamp [15, 50]) +
+    // hard cap of 6 sub-communities per macro. Matches typical sub-style
+    // counts across DJ genres. Clusters above the cap merge into nearest
+    // surviving centroid via the noise-absorb path.
     format!(
-        "v15_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v17_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -1201,11 +1200,25 @@ fn cluster_subset_hdbscan(
         })
         .collect();
 
-    // Scale HDBSCAN params to subset size. Float sqrt / 2 gives a
-    // granularity that produces ~4-8 clusters for a 600-track subset and
-    // ~2-4 for a 150-track subset.
-    let min_cluster_size = ((m as f32).sqrt() as usize / 2).max(10).min(30);
+    // Scale HDBSCAN min_cluster_size to subset size. `sqrt(m) * 0.8`
+    // targets ~4-5 sub-communities per dominant macro, which matches the
+    // typical "4-5 commonly recognised sub-styles" across most DJ genres
+    // (DnB: liquid/neuro/techstep/jump-up; techno: minimal/melodic/hard/acid;
+    // house: deep/tech/progressive/classic; etc.). Genre-agnostic because
+    // it only depends on count, not on the genre label.
+    //
+    //   m=150  → 10 (clamped to 15 floor) → ~3 sub-communities
+    //   m=680  → 21 → ~4-5 (DnB sweet spot)
+    //   m=2000 → 36 → ~5-6
+    //   m=5000 → 50 (clamped) → ~6 (capped)
+    //
+    // A hard ceiling of MAX_SUB_COMMUNITIES is applied after clustering:
+    // more than 6 sub-communities per macro doesn't match how DJs think
+    // about sub-styles regardless of library size.
+    let min_cluster_size = ((m as f32).sqrt() * 0.8) as usize;
+    let min_cluster_size = min_cluster_size.clamp(15, 50);
     let min_samples: usize = 5;
+    const MAX_SUB_COMMUNITIES: usize = 6;
 
     log::debug!(
         "[GRAPH/HDBSCAN/L2] subset n={}, min_cluster_size={}, min_samples={}",
@@ -1225,7 +1238,7 @@ fn cluster_subset_hdbscan(
         }
     };
 
-    // Build centroid map for non-noise communities
+    // Build centroid map for non-noise communities, tracking size
     let mut sums: HashMap<i32, (f32, f32, u32)> = HashMap::new();
     for (i, &c) in labels.iter().enumerate() {
         if c < 0 { continue; }
@@ -1234,7 +1247,32 @@ fn cluster_subset_hdbscan(
             e.0 += x; e.1 += y; e.2 += 1;
         }
     }
+
+    // Hard cap at MAX_SUB_COMMUNITIES: if HDBSCAN returned more clusters
+    // than the cap, keep only the top-K largest. Tracks in the discarded
+    // smaller clusters fall through to the noise-absorb path and get
+    // reassigned to their nearest surviving centroid. Matches DJ intuition
+    // that no macro-genre has more than ~6 useful sub-styles.
+    let total_before = sums.len();
+    let kept_labels: HashSet<i32> = if sums.len() > MAX_SUB_COMMUNITIES {
+        let mut by_size: Vec<(i32, u32)> = sums.iter()
+            .map(|(&c, &(_, _, n))| (c, n))
+            .collect();
+        by_size.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        by_size.truncate(MAX_SUB_COMMUNITIES);
+        by_size.into_iter().map(|(c, _)| c).collect()
+    } else {
+        sums.keys().copied().collect()
+    };
+    if total_before > MAX_SUB_COMMUNITIES {
+        log::info!(
+            "[GRAPH/HDBSCAN/L2] Capping {} HDBSCAN clusters → top {} (others merge via nearest-centroid)",
+            total_before, MAX_SUB_COMMUNITIES,
+        );
+    }
+
     let centroids: HashMap<i32, (f32, f32)> = sums.into_iter()
+        .filter(|(c, _)| kept_labels.contains(c))
         .filter_map(|(c, (sx, sy, n))| if n > 0 { Some((c, (sx / n as f32, sy / n as f32))) } else { None })
         .collect();
 
@@ -1243,12 +1281,16 @@ fn cluster_subset_hdbscan(
         return vec![0; m];
     }
 
-    // Assign each track: non-noise → its label; noise → nearest centroid
+    // Assign each track:
+    //   - noise (-1): nearest surviving centroid
+    //   - kept cluster: its own label
+    //   - discarded cluster (exceeded cap): nearest surviving centroid
     let mut noise_absorbed = 0usize;
+    let mut capped_reassigned = 0usize;
     let result: Vec<usize> = (0..m).map(|i| {
         let c = labels[i];
-        if c >= 0 { return c as usize; }
-        noise_absorbed += 1;
+        if c >= 0 && kept_labels.contains(&c) { return c as usize; }
+        if c < 0 { noise_absorbed += 1; } else { capped_reassigned += 1; }
         let pos = positions.get(&subset_ids[i]).copied().unwrap_or((0.0, 0.0));
         let nearest = centroids.iter()
             .min_by(|a, b| {
@@ -1261,10 +1303,10 @@ fn cluster_subset_hdbscan(
         nearest
     }).collect();
 
-    if noise_absorbed > 0 {
+    if noise_absorbed > 0 || capped_reassigned > 0 {
         log::debug!(
-            "[GRAPH/HDBSCAN/L2] absorbed {} noise tracks into nearest community",
-            noise_absorbed,
+            "[GRAPH/HDBSCAN/L2] absorbed {} noise + {} cap-truncated tracks into nearest surviving community",
+            noise_absorbed, capped_reassigned,
         );
     }
 
