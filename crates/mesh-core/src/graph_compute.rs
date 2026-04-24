@@ -233,11 +233,10 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v7: Louvain is now multi-level (previously single-phase), min_cluster_size
-    // raised to 35, and resolution lowered to 0.5 — needs a cache bust since
-    // the prior v6 cached single-phase results passed the gate and would stay.
+    // v8: Louvain γ and min_cluster_size now scale with library size
+    // (see louvain_params_for_library_size). Cache-busts v7 single-shape results.
     format!(
-        "v7_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v8_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -985,24 +984,46 @@ fn run_consensus_clustering_once(
 // networks", https://doi.org/10.1088/1742-5468/2008/10/P10008
 
 /// Number of nearest neighbors per node when building the k-NN graph.
-/// Higher values produce coarser communities (more merging across the
-/// graph); lower values make communities more fragmented. 25 is tuned
-/// for "rough subgenres at a glance" on typical DJ libraries.
+/// Independent of library size — k=25 gives sufficient graph connectivity
+/// without over-coupling for libraries from ~200 to ~50,000 tracks.
 const LOUVAIN_K_NEIGHBORS: usize = 25;
 
-/// Communities below this size get absorbed into their nearest larger
-/// community (by 2D centroid distance) rather than labeled noise. Keeps
-/// every track assigned — important for suggestion coverage. 35 tracks
-/// lines up with "a subgenre has at least ~30–50 tracks worth of examples
-/// in a medium library".
-const LOUVAIN_MIN_CLUSTER_SIZE: usize = 35;
+/// Library-size-scaled Louvain parameters.
+///
+/// The natural count of communities tracks library diversity, which scales
+/// roughly with library size. Hardcoded γ and min_cluster_size would
+/// under-cluster very large libraries (10k tracks: too few communities to
+/// be useful) and over-cluster small ones (200 tracks: too many to be
+/// meaningful). These formulas keep community counts in a sensible range
+/// across orders of magnitude.
+///
+/// If a user wants direct control over granularity, the follow-up work
+/// (see TODO.md "Graph clustering: user-facing granularity slider") adds
+/// a Coarse/Default/Fine slider overriding these defaults.
+fn louvain_params_for_library_size(n: usize) -> (f64, usize) {
+    let n = n.max(1) as f64;
 
-/// Resolution parameter for the modularity objective:
-///   Q = sum_ij [A_ij - gamma * k_i*k_j/2m] * delta(c_i, c_j)
-/// Lower gamma → fewer, larger communities. 0.5 combined with multi-phase
-/// Louvain yields coarse "rough subgenre" granularity instead of
-/// fine-grained sub-subgenre clusters.
-const LOUVAIN_RESOLUTION: f64 = 0.5;
+    // Resolution γ in modularity objective: Q = sum_ij [A_ij - γ*k_i*k_j/2m]*δ(c_i,c_j)
+    // Lower γ → fewer, larger communities. Scales with ln(n):
+    //   n=200  → γ≈0.42 (very small library, favor big groups, target ~5 communities)
+    //   n=900  → γ≈0.53 (current user's size, target ~10)
+    //   n=5000 → γ≈0.70 (mid-library, target ~20)
+    //   n=10k  → γ≈0.76 (big library, target ~25-30)
+    //   n=50k  → γ≈0.90 (massive, target ~40-50)
+    let resolution = (0.25 + n.ln() * 0.075).clamp(0.35, 1.0);
+
+    // min_cluster_size: post-merge floor, absorbs small communities into
+    // their nearest larger one. Grows roughly as sqrt(n) so it scales with
+    // library but doesn't swallow real small subgenres in large libraries:
+    //   n=200  → min=20 (clamped)
+    //   n=900  → min=30
+    //   n=5000 → min=71
+    //   n=10k  → min=100
+    //   n=50k  → min=150 (clamped)
+    let min_cluster_size = (n.sqrt() as usize).clamp(20, 150);
+
+    (resolution, min_cluster_size)
+}
 
 /// Minimum modularity improvement to continue iterating.
 const LOUVAIN_DELTA: f64 = 1e-4;
@@ -1069,15 +1090,21 @@ pub fn run_louvain_clustering(
         }
     }
 
-    log::info!("[GRAPH/LOUVAIN] Built k-NN graph on {} nodes, k={}", n, LOUVAIN_K_NEIGHBORS);
+    // Scale Louvain params to library size — see louvain_params_for_library_size.
+    let (resolution, min_cluster_size) = louvain_params_for_library_size(n);
+
+    log::info!(
+        "[GRAPH/LOUVAIN] Built k-NN graph on {} nodes (k={}, γ={:.2}, min_size={})",
+        n, LOUVAIN_K_NEIGHBORS, resolution, min_cluster_size,
+    );
 
     // 3. Run multi-level Louvain (phase 1 → contract → phase 1 → ...)
-    let mut node_to_comm = louvain_multilevel(&adj, LOUVAIN_RESOLUTION);
+    let mut node_to_comm = louvain_multilevel(&adj, resolution);
 
     // 4. Identify small communities and absorb them into their nearest LARGE
     // community by 2D centroid distance. No track ends up as noise — keeps
     // calibration coverage and suggestion scoring working for every track.
-    absorb_small_communities(&mut node_to_comm, &ids, positions);
+    absorb_small_communities(&mut node_to_comm, &ids, positions, min_cluster_size);
 
     // 5. Renumber surviving communities by descending size, largest=0
     let mut comm_counts: HashMap<usize, usize> = HashMap::new();
@@ -1106,8 +1133,8 @@ pub fn run_louvain_clustering(
 
     let num_clusters = new_idx.len();
     log::info!(
-        "[GRAPH/LOUVAIN] {} communities (k={}, min_size={}, resolution={}, {} tracks — all assigned)",
-        num_clusters, LOUVAIN_K_NEIGHBORS, LOUVAIN_MIN_CLUSTER_SIZE, LOUVAIN_RESOLUTION, n,
+        "[GRAPH/LOUVAIN] {} communities (k={}, min_size={}, resolution={:.2}, {} tracks — all assigned)",
+        num_clusters, LOUVAIN_K_NEIGHBORS, min_cluster_size, resolution, n,
     );
 
     // Gate: reject if the result looks as bad as the HDBSCAN collapse case.
@@ -1135,7 +1162,7 @@ pub fn run_louvain_clustering(
     }
 }
 
-/// Absorb communities smaller than MIN_CLUSTER_SIZE into their nearest
+/// Absorb communities smaller than `min_cluster_size` into their nearest
 /// surviving community by 2D centroid distance. Mutates node_to_comm in
 /// place. After this call every track is guaranteed to be in a community
 /// that meets the size floor (unless the whole library is too small).
@@ -1143,13 +1170,14 @@ fn absorb_small_communities(
     node_to_comm: &mut [usize],
     ids: &[i64],
     positions: &HashMap<i64, (f32, f32)>,
+    min_cluster_size: usize,
 ) {
     // Count sizes
     let mut sizes: HashMap<usize, usize> = HashMap::new();
     for &c in node_to_comm.iter() { *sizes.entry(c).or_default() += 1; }
 
     let large_comms: HashSet<usize> = sizes.iter()
-        .filter(|(_, &sz)| sz >= LOUVAIN_MIN_CLUSTER_SIZE)
+        .filter(|(_, &sz)| sz >= min_cluster_size)
         .map(|(&c, _)| c)
         .collect();
 

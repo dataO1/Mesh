@@ -259,3 +259,19 @@ These features would make clusters queryable and actionable:
 - [ ] Touch support (screen or iced limitation?)
 - [ ] Smart suggestions for stem linking: per-stem weighting (drums = energy
   focused, vocals = key mandatory, bass/other = default weights).
+- [ ] Graph clustering: quality-driven community-count tuning.
+  Current behavior (shipped): Louvain parameters (γ, min_cluster_size)
+  scale with library size (see `LOUVAIN_*` constants in
+  `crates/mesh-core/src/graph_compute.rs`). Works because "more tracks
+  usually means more subgenres", but can misfire on a focused 10k-track
+  library (too many communities) or a diverse 300-track one (too few).
+  Optional improvement: after Louvain, compute a quality metric
+  (intra/inter mean-distance ratio, silhouette score, or modularity Q),
+  binary-search γ until the metric crosses a target threshold. Must
+  combine with a min/max community-count floor/ceiling so a continuous
+  library doesn't over-fragment. ~250ms total cost (4-6 Louvain runs at
+  ~50ms each). Evaluated: more principled but harder to debug and
+  tune — ship only if size-scaling turns out to miss in practice.
+- [ ] Graph clustering: user-facing granularity slider (Coarse /
+  Default / Fine) mapping to (γ, min_cluster_size) presets. Gives DJs
+  direct control over "how many buckets" without needing a quality heuristic.
