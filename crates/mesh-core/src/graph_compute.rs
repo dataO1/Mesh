@@ -233,11 +233,13 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v14: genre-driven level 1 + Louvain level 2 per macro. Level 1 is now
-    // deterministic and grounded in Discogs EffNet labels rather than
-    // modularity optimisation on the full graph.
+    // v15: genre-driven L1 + HDBSCAN L2 on 2D positions. L2 was Louvain on
+    // PCA k-NN; that produced modularity-optimal but spatially-scattered
+    // sub-communities, so DnB sub-communities mixed into the same 2D region.
+    // HDBSCAN on 2D gives spatially-coherent sub-communities by construction.
+    // Recurse threshold raised 50 → 150 to avoid over-fragmenting small macros.
     format!(
-        "v14_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v15_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -985,63 +987,15 @@ fn run_consensus_clustering_once(
 // Reference: Blondel et al. 2008, "Fast unfolding of communities in large
 // networks", https://doi.org/10.1088/1742-5468/2008/10/P10008
 
-/// Number of nearest neighbors per node when building the k-NN graph.
-/// Independent of library size — k=25 gives sufficient graph connectivity
-/// without over-coupling for libraries from ~200 to ~50,000 tracks.
-const LOUVAIN_K_NEIGHBORS: usize = 25;
-
-/// Library-size-scaled Louvain parameters.
-///
-/// The natural count of communities tracks library diversity, which scales
-/// roughly with library size. Hardcoded γ and min_cluster_size would
-/// under-cluster very large libraries (10k tracks: too few communities to
-/// be useful) and over-cluster small ones (200 tracks: too many to be
-/// meaningful). These formulas keep community counts in a sensible range
-/// across orders of magnitude.
-///
-/// If a user wants direct control over granularity, the follow-up work
-/// (see TODO.md "Graph clustering: user-facing granularity slider") adds
-/// a Coarse/Default/Fine slider overriding these defaults.
-fn louvain_params_for_library_size(n: usize) -> (f64, usize) {
-    let n = n.max(1) as f64;
-
-    // Resolution γ in modularity objective: Q = sum_ij [A_ij - γ*k_i*k_j/2m]*δ(c_i,c_j)
-    // Lower γ → fewer, larger communities. Linearly interpolated in ln(n)
-    // space, anchored at (n=900, γ=0.40) → ~8 communities on a mid-size
-    // library (visually distinguishable on a 2D graph at a glance). The
-    // upper anchor is (n=10k, γ=0.75) → ~20 communities.
-    //   n=200  → γ≈0.35 (clamped — very small library, big groups)
-    //   n=900  → γ≈0.40 (baseline — ~8 communities)
-    //   n=5k   → γ≈0.65
-    //   n=10k  → γ≈0.75 (target ~20)
-    //   n=50k  → γ≈0.98
-    let resolution = (n.ln() * 0.145 - 0.586).clamp(0.35, 1.0);
-
-    // min_cluster_size: post-merge floor, absorbs small communities into
-    // their nearest larger one. sqrt(n) — tuned alongside γ=0.40 so that
-    // at n=900 we land around 10 communities (the user-preferred sweet
-    // spot between visual clarity and coverage granularity). 1.5*sqrt(n)
-    // overshoots (7 communities — salmon bleeds into multiple regions).
-    //   n=200  → min=20 (clamped)
-    //   n=900  → min=29 (~10 communities)
-    //   n=5000 → min=71
-    //   n=10k  → min=100
-    //   n=50k  → min=150 (clamped)
-    let min_cluster_size = (n.sqrt() as usize).clamp(20, 150);
-
-    (resolution, min_cluster_size)
-}
-
-/// Minimum modularity improvement to continue iterating.
-const LOUVAIN_DELTA: f64 = 1e-4;
-
-/// Maximum move-and-reassign iterations per Louvain phase.
-const LOUVAIN_MAX_ITER: usize = 50;
-
-
-/// Minimum tracks a macro-genre must contain to get level-2 Louvain recursion.
-/// Smaller macros stay as a single community (leaf).
-const MACRO_RECURSE_MIN_SIZE: usize = 50;
+/// Minimum tracks a macro-genre must contain to get level-2 clustering.
+/// Smaller macros stay as a single community (leaf). Raised from 50 to 150
+/// because the prior threshold over-fragmented small macros — e.g. Trance
+/// with 73 tracks split into 6 sub-communities of ~9-18 tracks each, several
+/// of which fell below the post-merge min_size and became orphan fragments.
+/// 150 ensures recursion only fires for genuinely dominant macros where the
+/// sub-structure is real (e.g. a 680-track DnB mass splitting into 5-8
+/// liquid/neuro/techstep-shaped sub-communities).
+const MACRO_RECURSE_MIN_SIZE: usize = 150;
 
 /// Entry point: 2-level hierarchical clustering.
 ///
@@ -1142,12 +1096,14 @@ pub fn run_louvain_clustering(
             continue;
         }
 
-        // Run Louvain on whitened subset
-        let mut subset_pca: Vec<(i64, Vec<f32>)> = macro_indices.iter()
-            .map(|&i| (ids[i], sorted[i].1.clone()))
-            .collect();
-        apply_pca_whitening(&mut subset_pca, 1.0);
-        let sub_labels = cluster_subset(&subset_pca, positions);
+        // Run HDBSCAN on the macro's 2D positions (cluster in 2D space
+        // where t-SNE has already done variance-preserving separation).
+        // This gives visually coherent sub-communities — every sub-community
+        // is a contiguous 2D blob by construction. Louvain on k-NN PCA would
+        // find modularity-optimal sub-communities that can be spatially
+        // scattered.
+        let subset_ids: Vec<i64> = macro_indices.iter().map(|&i| ids[i]).collect();
+        let sub_labels = cluster_subset_hdbscan(&subset_ids, positions);
 
         // Collect unique sub-community ids (could be 1 if Louvain merged everything)
         let unique_subs: HashSet<usize> = sub_labels.iter().copied().collect();
@@ -1220,314 +1176,99 @@ pub fn run_louvain_clustering(
     }
 }
 
-/// Absorb communities smaller than `min_cluster_size` into their nearest
-/// surviving community by 2D centroid distance. Mutates node_to_comm in
-/// place. After this call every track is guaranteed to be in a community
-/// that meets the size floor (unless the whole library is too small).
-fn absorb_small_communities(
-    node_to_comm: &mut [usize],
-    ids: &[i64],
+/// Run HDBSCAN on a subset's 2D positions. Returns sub-community labels
+/// aligned with `subset_ids`. Noise points (label -1 from HDBSCAN) are
+/// absorbed into their nearest non-noise community by centroid distance —
+/// every track ends up assigned.
+///
+/// Clustering in 2D space gives visually coherent sub-communities: every
+/// sub-community is a contiguous 2D blob by construction. The 2D layout
+/// (t-SNE) has already done the dimensionality reduction work of preserving
+/// meaningful spatial structure; HDBSCAN just finds density peaks.
+fn cluster_subset_hdbscan(
+    subset_ids: &[i64],
     positions: &HashMap<i64, (f32, f32)>,
-    min_cluster_size: usize,
-) {
-    // Count sizes
-    let mut sizes: HashMap<usize, usize> = HashMap::new();
-    for &c in node_to_comm.iter() { *sizes.entry(c).or_default() += 1; }
+) -> Vec<usize> {
+    let m = subset_ids.len();
+    if m < 20 { return vec![0; m]; } // trivially one community
 
-    let large_comms: HashSet<usize> = sizes.iter()
-        .filter(|(_, &sz)| sz >= min_cluster_size)
-        .map(|(&c, _)| c)
+    // Extract 2D positions in subset order. Tracks without positions get
+    // placeholder (0,0) and will fall through to noise-absorb.
+    let coords: Vec<Vec<f64>> = subset_ids.iter()
+        .map(|id| {
+            let (x, y) = positions.get(id).copied().unwrap_or((0.0, 0.0));
+            vec![x as f64, y as f64]
+        })
         .collect();
 
-    if large_comms.is_empty() || large_comms.len() == sizes.len() { return; }
+    // Scale HDBSCAN params to subset size. Float sqrt / 2 gives a
+    // granularity that produces ~4-8 clusters for a 600-track subset and
+    // ~2-4 for a 150-track subset.
+    let min_cluster_size = ((m as f32).sqrt() as usize / 2).max(10).min(30);
+    let min_samples: usize = 5;
 
-    // Centroid of each large community
-    let mut centroids: HashMap<usize, (f32, f32, u32)> = HashMap::new();
-    for i in 0..node_to_comm.len() {
-        let c = node_to_comm[i];
-        if !large_comms.contains(&c) { continue; }
-        if let Some(&(x, y)) = positions.get(&ids[i]) {
-            let e = centroids.entry(c).or_insert((0.0, 0.0, 0));
+    log::debug!(
+        "[GRAPH/HDBSCAN/L2] subset n={}, min_cluster_size={}, min_samples={}",
+        m, min_cluster_size, min_samples,
+    );
+
+    let hp = hdbscan::HdbscanHyperParams::builder()
+        .min_cluster_size(min_cluster_size)
+        .min_samples(min_samples)
+        .build();
+    let clusterer = hdbscan::Hdbscan::new(&coords, hp);
+    let labels: Vec<i32> = match clusterer.cluster() {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("[GRAPH/HDBSCAN/L2] HDBSCAN failed: {} — treating subset as one community", e);
+            return vec![0; m];
+        }
+    };
+
+    // Build centroid map for non-noise communities
+    let mut sums: HashMap<i32, (f32, f32, u32)> = HashMap::new();
+    for (i, &c) in labels.iter().enumerate() {
+        if c < 0 { continue; }
+        if let Some(&(x, y)) = positions.get(&subset_ids[i]) {
+            let e = sums.entry(c).or_insert((0.0, 0.0, 0));
             e.0 += x; e.1 += y; e.2 += 1;
         }
     }
-    let centroid_map: HashMap<usize, (f32, f32)> = centroids.into_iter()
+    let centroids: HashMap<i32, (f32, f32)> = sums.into_iter()
         .filter_map(|(c, (sx, sy, n))| if n > 0 { Some((c, (sx / n as f32, sy / n as f32))) } else { None })
         .collect();
 
-    // Reassign every track in a small community to nearest large centroid
-    let mut absorbed = 0usize;
-    for i in 0..node_to_comm.len() {
-        if large_comms.contains(&node_to_comm[i]) { continue; }
-        let pos = match positions.get(&ids[i]) {
-            Some(&p) => p,
-            None => continue,
-        };
-        let mut best = (f32::INFINITY, node_to_comm[i]);
-        for (&c, &(cx, cy)) in &centroid_map {
-            let d2 = (pos.0 - cx).powi(2) + (pos.1 - cy).powi(2);
-            if d2 < best.0 { best = (d2, c); }
-        }
-        if best.1 != node_to_comm[i] {
-            node_to_comm[i] = best.1;
-            absorbed += 1;
-        }
+    if centroids.is_empty() {
+        // HDBSCAN found no clusters (all noise) — treat subset as one community
+        return vec![0; m];
     }
-    if absorbed > 0 {
-        log::info!("[GRAPH/LOUVAIN] Absorbed {} tracks from small communities into nearest large community", absorbed);
-    }
-}
 
-/// Run Louvain on a subset of PCA vectors. Returns a `Vec<usize>` aligned
-/// with `subset_pca` giving each track's sub-community id. Used for level-2
-/// hierarchical recursion.
-///
-/// Params scale with subset size (smaller subsets use smaller k, min_size).
-fn cluster_subset(
-    subset_pca: &[(i64, Vec<f32>)],
-    positions: &HashMap<i64, (f32, f32)>,
-) -> Vec<usize> {
-    let m = subset_pca.len();
-    if m < 20 { return vec![0; m]; } // trivially one community
-
-    // Sub-level params: same scaling formula but on subset size, with a
-    // smaller k to match the smaller graph (k=25 would over-couple a 200-
-    // node subset into one blob again).
-    let k = ((m as f32).sqrt() as usize).clamp(8, 20);
-    let (resolution, min_cluster_size) = louvain_params_for_library_size(m);
-
-    log::debug!(
-        "[GRAPH/LOUVAIN/L2] subset n={}, k={}, γ={:.2}, min_size={}",
-        m, k, resolution, min_cluster_size,
-    );
-
-    // Vectors are already L2-normalized + whitened by caller.
-    // Build k-NN graph.
-    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); m];
-    for i in 0..m {
-        let mut neighbors: Vec<(usize, f32)> = (0..m)
-            .filter(|&j| j != i)
-            .map(|j| {
-                let dot: f32 = subset_pca[i].1.iter().zip(&subset_pca[j].1)
-                    .map(|(a, b)| a * b).sum();
-                (j, dot.max(0.0))
+    // Assign each track: non-noise → its label; noise → nearest centroid
+    let mut noise_absorbed = 0usize;
+    let result: Vec<usize> = (0..m).map(|i| {
+        let c = labels[i];
+        if c >= 0 { return c as usize; }
+        noise_absorbed += 1;
+        let pos = positions.get(&subset_ids[i]).copied().unwrap_or((0.0, 0.0));
+        let nearest = centroids.iter()
+            .min_by(|a, b| {
+                let da = (pos.0 - a.1.0).powi(2) + (pos.1 - a.1.1).powi(2);
+                let db = (pos.0 - b.1.0).powi(2) + (pos.1 - b.1.1).powi(2);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             })
-            .collect();
-        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        neighbors.truncate(k);
-        adj[i] = neighbors;
-    }
-    // Symmetrize
-    for i in 0..m {
-        let cloned = adj[i].clone();
-        for (j, w) in cloned {
-            if !adj[j].iter().any(|&(x, _)| x == i) {
-                adj[j].push((i, w));
-            }
-        }
-    }
+            .map(|(c, _)| *c as usize)
+            .unwrap_or(0);
+        nearest
+    }).collect();
 
-    // Subset ids for absorb
-    let subset_ids: Vec<i64> = subset_pca.iter().map(|(id, _)| *id).collect();
-
-    // Run multi-level Louvain on subset
-    let mut sub_comms = louvain_multilevel(&adj, resolution);
-
-    // Absorb small sub-communities within subset
-    absorb_small_communities(&mut sub_comms, &subset_ids, positions, min_cluster_size);
-
-    sub_comms
-}
-
-/// Multi-level Louvain:
-///   1. Run phase 1 (move nodes between communities)
-///   2. Contract graph: each community becomes a super-node, inter-community
-///      edges accumulate into super-edges (same-community edges become self-loops)
-///   3. Run phase 1 on the contracted graph to merge super-nodes further
-///   4. Repeat until a phase produces no merging
-///
-/// Returns a `node_to_comm` vector with the FINAL (coarsest) community of each
-/// original node. Classic Louvain needs this to produce coarse communities —
-/// single-phase output tends to stall at ~20-30 communities regardless of
-/// resolution, because a track can only be moved, not merged at a higher level.
-fn louvain_multilevel(initial_adj: &[Vec<(usize, f32)>], resolution: f64) -> Vec<usize> {
-    let n = initial_adj.len();
-    let mut partition: Vec<usize> = (0..n).collect(); // original node → current community id
-    let mut current_adj: Vec<Vec<(usize, f32)>> = initial_adj.to_vec();
-    let mut level = 0usize;
-
-    loop {
-        let new_comms = louvain_optimize(&current_adj, resolution);
-
-        // Renumber to contiguous 0..K
-        let mut unique: Vec<usize> = new_comms.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        let n_new = unique.len();
-
-        if n_new == current_adj.len() {
-            // Phase produced no merging at this level — stop here
-            // (but still update partition in case the first level moved anything)
-            if level == 0 {
-                let renumber: HashMap<usize, usize> = unique.into_iter().enumerate()
-                    .map(|(new, old)| (old, new)).collect();
-                for c in partition.iter_mut() {
-                    *c = renumber[&new_comms[*c]];
-                }
-            }
-            break;
-        }
-
-        let renumber: HashMap<usize, usize> = unique.into_iter().enumerate()
-            .map(|(new, old)| (old, new)).collect();
-        let renumbered: Vec<usize> = new_comms.iter().map(|c| renumber[c]).collect();
-
-        // Apply this level's partition to the cumulative partition
-        for c in partition.iter_mut() {
-            *c = renumbered[*c];
-        }
-
-        log::info!(
-            "[GRAPH/LOUVAIN] Level {}: {} → {} communities",
-            level, current_adj.len(), n_new,
+    if noise_absorbed > 0 {
+        log::debug!(
+            "[GRAPH/HDBSCAN/L2] absorbed {} noise tracks into nearest community",
+            noise_absorbed,
         );
-
-        // Contract for the next level
-        current_adj = contract_graph(&current_adj, &renumbered, n_new);
-        level += 1;
-
-        if level >= 10 { break; } // safety cap on hierarchy depth
     }
 
-    partition
-}
-
-/// Build a super-graph where each node represents one community. Edges between
-/// communities sum their constituent edge weights. Self-loops (intra-community
-/// edges) are preserved because Louvain's modularity formula cares about them.
-fn contract_graph(
-    adj: &[Vec<(usize, f32)>],
-    partition: &[usize],
-    n_communities: usize,
-) -> Vec<Vec<(usize, f32)>> {
-    let mut edge_map: HashMap<(usize, usize), f32> = HashMap::new();
-    for i in 0..adj.len() {
-        let ci = partition[i];
-        for &(j, w) in &adj[i] {
-            let cj = partition[j];
-            *edge_map.entry((ci, cj)).or_default() += w;
-        }
-    }
-    let mut new_adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n_communities];
-    for ((ci, cj), w) in edge_map {
-        new_adj[ci].push((cj, w));
-    }
-    new_adj
-}
-
-/// Louvain phase-1 optimization: iterate moving nodes between neighboring
-/// communities to maximize modularity. Deterministic: iterates nodes in
-/// index order, breaks ties by lower community id.
-fn louvain_optimize(adj: &[Vec<(usize, f32)>], resolution: f64) -> Vec<usize> {
-    let n = adj.len();
-
-    // Total weight (sum of edge weights, counted once per undirected edge)
-    let mut m2 = 0.0f64; // 2m = sum of k_i
-    let mut k = vec![0.0f64; n];
-    for i in 0..n {
-        for &(_, w) in &adj[i] {
-            k[i] += w as f64;
-        }
-        m2 += k[i];
-    }
-    if m2 <= 0.0 { return (0..n).collect(); }
-
-    let mut node_to_comm: Vec<usize> = (0..n).collect();
-    let mut sum_tot: Vec<f64> = k.clone(); // initial: each community has one node
-
-    let mut last_modularity = f64::NEG_INFINITY;
-
-    for iter in 0..LOUVAIN_MAX_ITER {
-        // Modularity of current partition (rough check for early exit)
-        let modularity = compute_modularity(adj, &node_to_comm, &k, m2, resolution);
-        if modularity - last_modularity < LOUVAIN_DELTA && iter > 0 { break; }
-        last_modularity = modularity;
-
-        let mut moved = false;
-        for i in 0..n {
-            let current_comm = node_to_comm[i];
-
-            // sum of edge weights from i to each neighboring community
-            let mut w_to_comm: HashMap<usize, f64> = HashMap::new();
-            for &(j, w) in &adj[i] {
-                *w_to_comm.entry(node_to_comm[j]).or_default() += w as f64;
-            }
-
-            // Remove i from its current community when evaluating gain for
-            // staying vs leaving. Adjust sum_tot[current_comm] by -k[i] for
-            // the "node is temporarily orphaned" baseline.
-            let k_i = k[i];
-            sum_tot[current_comm] -= k_i;
-            let w_to_current = w_to_comm.get(&current_comm).copied().unwrap_or(0.0);
-
-            // Gain formula (undirected, with resolution parameter γ):
-            //   delta_Q(move i to C) = w_to_C - γ * k_i * sum_tot[C] / m
-            //   (m = m2/2 is total edge weight, γ < 1 favors larger communities)
-            let m = m2 / 2.0;
-            let mut best_comm = current_comm;
-            let mut best_gain = w_to_current - resolution * k_i * sum_tot[current_comm] / m;
-
-            for (&comm, &w_to) in &w_to_comm {
-                if comm == current_comm { continue; }
-                let gain = w_to - resolution * k_i * sum_tot[comm] / m;
-                if gain > best_gain || (gain == best_gain && comm < best_comm) {
-                    best_gain = gain;
-                    best_comm = comm;
-                }
-            }
-
-            // Re-add i to whichever community wins
-            sum_tot[best_comm] += k_i;
-            if best_comm != current_comm {
-                node_to_comm[i] = best_comm;
-                moved = true;
-            }
-        }
-
-        if !moved { break; }
-    }
-
-    node_to_comm
-}
-
-/// Modularity of a partition (with resolution γ):
-///   Q = (1/2m) * sum_ij [A_ij - γ * k_i*k_j/2m] * delta(c_i, c_j)
-fn compute_modularity(
-    adj: &[Vec<(usize, f32)>],
-    node_to_comm: &[usize],
-    k: &[f64],
-    m2: f64,
-    resolution: f64,
-) -> f64 {
-    if m2 <= 0.0 { return 0.0; }
-    let mut sum_in_per_comm: HashMap<usize, f64> = HashMap::new();
-    let mut k_per_comm: HashMap<usize, f64> = HashMap::new();
-    for i in 0..adj.len() {
-        *k_per_comm.entry(node_to_comm[i]).or_default() += k[i];
-        for &(j, w) in &adj[i] {
-            if node_to_comm[i] == node_to_comm[j] {
-                *sum_in_per_comm.entry(node_to_comm[i]).or_default() += w as f64;
-            }
-        }
-    }
-    let mut q = 0.0;
-    for (c, &s_in) in &sum_in_per_comm {
-        let k_c = k_per_comm.get(c).copied().unwrap_or(0.0);
-        // s_in here counts each internal edge twice (once from each endpoint),
-        // which matches the standard Q formula when divided by m2.
-        q += s_in / m2 - resolution * (k_c / m2).powi(2);
-    }
-    q
+    result
 }
 
 /// Shared color derivation (used by both HDBSCAN and Louvain paths).
