@@ -157,6 +157,8 @@ pub struct CollectionState {
     pub graph_normalize_vectors: bool,
     /// Graph layout algorithm (t-SNE or UMAP)
     pub graph_algorithm: mesh_core::graph_compute::GraphAlgorithm,
+    /// Community detection algorithm (HDBSCAN density-based or Louvain modularity-based)
+    pub clustering_algorithm: mesh_core::graph_compute::ClusteringAlgorithm,
     /// Custom suggestion weights [similarity, key, intensity] (sum to 1.0)
     pub suggestion_weights: [f32; 3],
     /// Key filter strictness index (0=Strict, 1=Relaxed, 2=Off)
@@ -294,6 +296,7 @@ impl Default for CollectionState {
             graph_building: false,
             graph_normalize_vectors: false,
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
+            clustering_algorithm: mesh_core::graph_compute::ClusteringAlgorithm::default(),
             suggestion_weights: [0.55, 0.25, 0.20],
             graph_key_filter_index: 0, // Strict by default
             pca_whitening_alpha: 0.0,

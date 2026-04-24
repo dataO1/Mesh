@@ -82,6 +82,33 @@ impl GraphAlgorithm {
     }
 }
 
+/// Community detection algorithm selection. HDBSCAN is density-based on the
+/// 2D layout; Louvain is modularity-based on a k-NN graph of PCA distances
+/// and handles dense continuous regions that HDBSCAN collapses into one
+/// mega-cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClusteringAlgorithm {
+    #[default]
+    Hdbscan,
+    Louvain,
+}
+
+impl ClusteringAlgorithm {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ClusteringAlgorithm::Hdbscan => "HDBSCAN",
+            ClusteringAlgorithm::Louvain => "Louvain",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            ClusteringAlgorithm::Hdbscan => ClusteringAlgorithm::Louvain,
+            ClusteringAlgorithm::Louvain => ClusteringAlgorithm::Hdbscan,
+        }
+    }
+}
+
 /// Collect PCA embeddings from multiple database sources, deduplicated by artist-title.
 ///
 /// Each source is a `(database, source_name)` pair. When the same track appears in
@@ -198,6 +225,7 @@ fn default_true() -> bool { true }
 pub fn graph_cache_key(
     pca_data: &[(i64, Vec<f32>)],
     algorithm: GraphAlgorithm,
+    clustering: ClusteringAlgorithm,
     normalize: bool,
     whitening_alpha: f32,
 ) -> String {
@@ -205,13 +233,10 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v5: retry attempts now vary both min_samples scales AND
-    // min_cluster_size; previously min_cluster_size=15 was absorbing real
-    // subgenres into the dominant mega-blob, collapsing 869 tracks into
-    // 2 communities.
+    // v6: clustering algorithm (hdbscan vs louvain) now in cache key.
     format!(
-        "v5_{:?}_norm{}_wh{:.2}_{:016x}",
-        algorithm, normalize as u8, whitening_alpha, hasher.finish()
+        "v6_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
 
@@ -222,6 +247,7 @@ pub fn graph_cache_key(
 pub fn run_consensus_clustering_cached(
     pca_data: &[(i64, Vec<f32>)],
     positions: &HashMap<i64, (f32, f32)>,
+    algorithm: ClusteringAlgorithm,
     cache_key: &str,
     db: Option<&DatabaseService>,
 ) -> ClusterResult {
@@ -258,7 +284,10 @@ pub fn run_consensus_clustering_cached(
         }
     }
 
-    let result = run_consensus_clustering(pca_data, positions);
+    let result = match algorithm {
+        ClusteringAlgorithm::Hdbscan => run_consensus_clustering(pca_data, positions),
+        ClusteringAlgorithm::Louvain => run_louvain_clustering(pca_data, positions),
+    };
 
     if let Some(db) = db {
         match serde_json::to_string(&result) {
@@ -282,7 +311,17 @@ pub fn compute_layout_cached(
     whitening_alpha: f32,
     db: Option<&DatabaseService>,
 ) -> HashMap<i64, (f32, f32)> {
-    let cache_key = graph_cache_key(pca_data, algorithm, normalize, whitening_alpha);
+    // Positions depend on layout settings only — NOT on clustering algorithm.
+    // Using the full clustering-aware key here would pointlessly invalidate
+    // the layout cache every time the user toggles HDBSCAN ↔ Louvain.
+    let mut ids: Vec<i64> = pca_data.iter().map(|(id, _)| *id).collect();
+    ids.sort();
+    let mut hasher = DefaultHasher::new();
+    ids.hash(&mut hasher);
+    let cache_key = format!(
+        "positions_v6_{:?}_norm{}_wh{:.2}_{:016x}",
+        algorithm, normalize as u8, whitening_alpha, hasher.finish()
+    );
 
     // Try cache
     if let Some(db) = db {
@@ -928,6 +967,298 @@ fn run_consensus_clustering_once(
     // gate_passed is a placeholder here — the outer retry loop overwrites it
     // based on whether this particular roll cleared the quality gate.
     ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default(), gate_passed: false }
+}
+
+// ============================================================================
+// Louvain community detection
+// ============================================================================
+//
+// Modularity-based community detection on a k-NN graph of PCA distances.
+// Unlike HDBSCAN (density-based, clusters on the 2D t-SNE layout), Louvain
+// works directly on graph structure — so a densely-connected region that
+// HDBSCAN would collapse into one mega-community can still be partitioned
+// if modularity optimization finds meaningful sub-communities.
+//
+// Reference: Blondel et al. 2008, "Fast unfolding of communities in large
+// networks", https://doi.org/10.1088/1742-5468/2008/10/P10008
+
+/// Number of nearest neighbors per node when building the k-NN graph. Small
+/// values make communities more fragmented, larger values coalesce them.
+const LOUVAIN_K_NEIGHBORS: usize = 15;
+
+/// Smallest community we'll emit. Smaller components get labeled noise (-1).
+const LOUVAIN_MIN_CLUSTER_SIZE: usize = 8;
+
+/// Minimum modularity improvement to continue iterating.
+const LOUVAIN_DELTA: f64 = 1e-4;
+
+/// Maximum move-and-reassign iterations per Louvain phase.
+const LOUVAIN_MAX_ITER: usize = 50;
+
+/// Entry point: Louvain community detection on the whitened PCA vectors.
+///
+/// Steps:
+///   1. L2-normalize PCA vectors (cosine distance metric).
+///   2. Build symmetric k-NN graph, edge weight = cosine similarity.
+///   3. Iterate Louvain modularity optimization until no node moves.
+///   4. Filter small communities → noise. Renumber by descending size.
+///   5. Derive colors from 2D cluster centroids.
+pub fn run_louvain_clustering(
+    pca_data: &[(i64, Vec<f32>)],
+    positions: &HashMap<i64, (f32, f32)>,
+) -> ClusterResult {
+    let n = pca_data.len();
+    if n < 10 {
+        return ClusterResult {
+            clusters: HashMap::new(),
+            confidence: HashMap::new(),
+            colors: HashMap::new(),
+            thresholds: CommunityThresholds::default(),
+            gate_passed: true,
+        };
+    }
+
+    // 1. Normalize + sort by track id for determinism
+    let mut sorted: Vec<(i64, Vec<f32>)> = pca_data.iter()
+        .map(|(id, v)| {
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-10);
+            let normed: Vec<f32> = v.iter().map(|x| x / norm).collect();
+            (*id, normed)
+        })
+        .collect();
+    sorted.sort_by_key(|(id, _)| *id);
+    let ids: Vec<i64> = sorted.iter().map(|(id, _)| *id).collect();
+
+    // 2. Build k-NN adjacency. Edge weight = max(cos_sim, 0) so no negatives.
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let mut neighbors: Vec<(usize, f32)> = (0..n)
+            .filter(|&j| j != i)
+            .map(|j| {
+                let dot: f32 = sorted[i].1.iter().zip(&sorted[j].1).map(|(a, b)| a * b).sum();
+                (j, dot.max(0.0))
+            })
+            .collect();
+        // Top-k by similarity (descending)
+        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        neighbors.truncate(LOUVAIN_K_NEIGHBORS);
+        adj[i] = neighbors;
+    }
+    // Symmetrize: if j is in adj[i], ensure i is in adj[j] with same weight
+    for i in 0..n {
+        let cloned = adj[i].clone();
+        for (j, w) in cloned {
+            if !adj[j].iter().any(|&(k, _)| k == i) {
+                adj[j].push((i, w));
+            }
+        }
+    }
+
+    log::info!("[GRAPH/LOUVAIN] Built k-NN graph on {} nodes, k={}", n, LOUVAIN_K_NEIGHBORS);
+
+    // 3. Run Louvain
+    let node_to_comm = louvain_optimize(&adj);
+
+    // 4. Count community sizes, filter small, renumber by descending size
+    let mut comm_counts: HashMap<usize, usize> = HashMap::new();
+    for &c in &node_to_comm { *comm_counts.entry(c).or_default() += 1; }
+
+    let mut comms_by_size: Vec<(usize, usize)> = comm_counts.into_iter()
+        .filter(|&(_, count)| count >= LOUVAIN_MIN_CLUSTER_SIZE)
+        .collect();
+    comms_by_size.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let mut new_idx: HashMap<usize, i32> = HashMap::new();
+    for (new_id, (old_id, _)) in comms_by_size.iter().enumerate() {
+        new_idx.insert(*old_id, new_id as i32);
+    }
+
+    let mut clusters: HashMap<i64, i32> = HashMap::with_capacity(n);
+    let mut confidence: HashMap<i64, f32> = HashMap::with_capacity(n);
+    for i in 0..n {
+        let cid = new_idx.get(&node_to_comm[i]).copied().unwrap_or(-1);
+        clusters.insert(ids[i], cid);
+        // Simple confidence proxy: 1.0 if in any community, 0.0 if filtered as noise.
+        // (Louvain doesn't produce a per-node modularity contribution that's cheap
+        // to compute, so we keep it boolean for now.)
+        confidence.insert(ids[i], if cid >= 0 { 1.0 } else { 0.0 });
+    }
+
+    // 5. Colors from 2D positions, same scheme as HDBSCAN path.
+    let colors = derive_cluster_colors(&clusters, positions);
+
+    let num_clusters = new_idx.len();
+    log::info!(
+        "[GRAPH/LOUVAIN] {} communities (filtered {} below min_size={}, {} tracks total)",
+        num_clusters, comm_counts_noise(&node_to_comm, &new_idx),
+        LOUVAIN_MIN_CLUSTER_SIZE, n,
+    );
+
+    // Gate: reject if the result looks as bad as the HDBSCAN collapse case.
+    // Louvain usually produces balanced communities so this is a safety net.
+    let (num, largest_frac, _) = {
+        let mut sizes: HashMap<i32, usize> = HashMap::new();
+        for &cid in clusters.values() {
+            if cid >= 0 { *sizes.entry(cid).or_default() += 1; }
+        }
+        let total_assigned: usize = sizes.values().sum();
+        let largest = sizes.values().copied().max().unwrap_or(0);
+        let largest_frac = if total_assigned > 0 {
+            largest as f32 / total_assigned as f32
+        } else { 0.0 };
+        (sizes.len(), largest_frac, 0.0f32)
+    };
+    let gate_passed = num >= MIN_COMMUNITIES_GATE && largest_frac <= MAX_LARGEST_FRACTION;
+
+    ClusterResult {
+        clusters,
+        confidence,
+        colors,
+        thresholds: CommunityThresholds::default(),
+        gate_passed,
+    }
+}
+
+fn comm_counts_noise(node_to_comm: &[usize], new_idx: &HashMap<usize, i32>) -> usize {
+    node_to_comm.iter().filter(|c| !new_idx.contains_key(c)).count()
+}
+
+/// Louvain phase-1 optimization: iterate moving nodes between neighboring
+/// communities to maximize modularity. Deterministic: iterates nodes in
+/// index order, breaks ties by lower community id.
+fn louvain_optimize(adj: &[Vec<(usize, f32)>]) -> Vec<usize> {
+    let n = adj.len();
+
+    // Total weight (sum of edge weights, counted once per undirected edge)
+    let mut m2 = 0.0f64; // 2m = sum of k_i
+    let mut k = vec![0.0f64; n];
+    for i in 0..n {
+        for &(_, w) in &adj[i] {
+            k[i] += w as f64;
+        }
+        m2 += k[i];
+    }
+    if m2 <= 0.0 { return (0..n).collect(); }
+
+    let mut node_to_comm: Vec<usize> = (0..n).collect();
+    let mut sum_tot: Vec<f64> = k.clone(); // initial: each community has one node
+
+    let mut last_modularity = f64::NEG_INFINITY;
+
+    for iter in 0..LOUVAIN_MAX_ITER {
+        // Modularity of current partition (rough check for early exit)
+        let modularity = compute_modularity(adj, &node_to_comm, &k, m2);
+        if modularity - last_modularity < LOUVAIN_DELTA && iter > 0 { break; }
+        last_modularity = modularity;
+
+        let mut moved = false;
+        for i in 0..n {
+            let current_comm = node_to_comm[i];
+
+            // sum of edge weights from i to each neighboring community
+            let mut w_to_comm: HashMap<usize, f64> = HashMap::new();
+            for &(j, w) in &adj[i] {
+                *w_to_comm.entry(node_to_comm[j]).or_default() += w as f64;
+            }
+
+            // Remove i from its current community when evaluating gain for
+            // staying vs leaving. Adjust sum_tot[current_comm] by -k[i] for
+            // the "node is temporarily orphaned" baseline.
+            let k_i = k[i];
+            sum_tot[current_comm] -= k_i;
+            let w_to_current = w_to_comm.get(&current_comm).copied().unwrap_or(0.0);
+
+            // Gain formula (undirected, simplified):
+            //   delta_Q(move i to C) = w_to_C - k_i * sum_tot[C] / m
+            //   (where m = m2/2 is total edge weight)
+            // "Best" comm is whichever has max gain (including current_comm itself).
+            let m = m2 / 2.0;
+            let mut best_comm = current_comm;
+            let mut best_gain = w_to_current - k_i * sum_tot[current_comm] / m;
+
+            for (&comm, &w_to) in &w_to_comm {
+                if comm == current_comm { continue; }
+                let gain = w_to - k_i * sum_tot[comm] / m;
+                if gain > best_gain || (gain == best_gain && comm < best_comm) {
+                    best_gain = gain;
+                    best_comm = comm;
+                }
+            }
+
+            // Re-add i to whichever community wins
+            sum_tot[best_comm] += k_i;
+            if best_comm != current_comm {
+                node_to_comm[i] = best_comm;
+                moved = true;
+            }
+        }
+
+        if !moved { break; }
+    }
+
+    node_to_comm
+}
+
+/// Modularity of a partition: Q = (1/2m) * sum_ij [A_ij - k_i*k_j/2m] * delta(c_i, c_j)
+fn compute_modularity(
+    adj: &[Vec<(usize, f32)>],
+    node_to_comm: &[usize],
+    k: &[f64],
+    m2: f64,
+) -> f64 {
+    if m2 <= 0.0 { return 0.0; }
+    let mut sum_in_per_comm: HashMap<usize, f64> = HashMap::new();
+    let mut k_per_comm: HashMap<usize, f64> = HashMap::new();
+    for i in 0..adj.len() {
+        *k_per_comm.entry(node_to_comm[i]).or_default() += k[i];
+        for &(j, w) in &adj[i] {
+            if node_to_comm[i] == node_to_comm[j] {
+                *sum_in_per_comm.entry(node_to_comm[i]).or_default() += w as f64;
+            }
+        }
+    }
+    let mut q = 0.0;
+    for (c, &s_in) in &sum_in_per_comm {
+        let k_c = k_per_comm.get(c).copied().unwrap_or(0.0);
+        // s_in here counts each internal edge twice (once from each endpoint),
+        // which matches the standard Q formula when divided by m2.
+        q += s_in / m2 - (k_c / m2).powi(2);
+    }
+    q
+}
+
+/// Shared color derivation (used by both HDBSCAN and Louvain paths).
+fn derive_cluster_colors(
+    clusters: &HashMap<i64, i32>,
+    positions: &HashMap<i64, (f32, f32)>,
+) -> HashMap<i32, [f32; 3]> {
+    let total_positions = positions.len() as f32;
+    let (global_cx, global_cy) = {
+        let (sx, sy) = positions.values()
+            .fold((0.0f32, 0.0f32), |(sx, sy), &(x, y)| (sx + x, sy + y));
+        if total_positions > 0.0 { (sx / total_positions, sy / total_positions) } else { (0.0, 0.0) }
+    };
+
+    // Gather per-cluster centroids
+    let mut sums: HashMap<i32, (f32, f32, u32)> = HashMap::new();
+    for (&id, &cid) in clusters {
+        if cid < 0 { continue; }
+        if let Some(&(x, y)) = positions.get(&id) {
+            let e = sums.entry(cid).or_insert((0.0, 0.0, 0));
+            e.0 += x; e.1 += y; e.2 += 1;
+        }
+    }
+
+    let mut colors = HashMap::new();
+    for (cid, (sx, sy, count)) in sums {
+        if count == 0 { continue; }
+        let cx = sx / count as f32;
+        let cy = sy / count as f32;
+        let angle = (cy - global_cy).atan2(cx - global_cx);
+        let hue = (angle.to_degrees() + 180.0) % 360.0;
+        colors.insert(cid, hsl_to_rgb(hue, 0.55, 0.55));
+    }
+    colors
 }
 
 /// Compute dynamic similarity thresholds as percentile ranks.

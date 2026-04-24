@@ -406,6 +406,8 @@ pub enum Message {
     GraphToggleNormalize(bool),
     /// Switch graph layout algorithm (t-SNE / UMAP)
     GraphSwitchAlgorithm,
+    /// Switch community detection algorithm (HDBSCAN / Louvain)
+    GraphSwitchClustering,
     /// Suggestion weight changed [similarity, key, intensity]
     GraphWeightsChanged([f32; 3]),
     /// Cycle key filter strictness (Strict/Relaxed/Off)

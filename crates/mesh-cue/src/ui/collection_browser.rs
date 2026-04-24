@@ -328,6 +328,11 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                         .on_press(Message::GraphSwitchAlgorithm)
                         .style(button::secondary)
                         .padding([2, 6]),
+                    Space::new().width(4.0),
+                    button(text(state.clustering_algorithm.display_name()).size(sz(10.0)))
+                        .on_press(Message::GraphSwitchClustering)
+                        .style(button::secondary)
+                        .padding([2, 6]),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center)

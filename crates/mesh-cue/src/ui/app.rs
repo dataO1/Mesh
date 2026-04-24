@@ -682,6 +682,11 @@ impl MeshCueApp {
                 self.collection.graph_state = None;
                 return self.handle_build_graph_edges();
             }
+            Message::GraphSwitchClustering => {
+                self.collection.clustering_algorithm = self.collection.clustering_algorithm.next();
+                self.collection.graph_state = None;
+                return self.handle_build_graph_edges();
+            }
             Message::GraphClusterSensitivity(_) => {} // deprecated — consensus clustering is auto
             Message::GraphTransitionReach(idx) => return self.handle_graph_transition_reach(idx),
             Message::GraphTable(table_msg) => {

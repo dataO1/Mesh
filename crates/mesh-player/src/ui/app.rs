@@ -2208,7 +2208,10 @@ pub fn build_graph_task(
                 // Use first source's DB for layout + cluster caching
                 let cache_db = sources.first().map(|(db, _)| db.as_ref());
                 let cache_key = graph_compute::graph_cache_key(
-                    &pca_data, graph_compute::GraphAlgorithm::Tsne, false, 0.0,
+                    &pca_data,
+                    graph_compute::GraphAlgorithm::Tsne,
+                    graph_compute::ClusteringAlgorithm::Hdbscan,
+                    false, 0.0,
                 );
                 let positions = graph_compute::compute_layout_cached(
                     &pca_data,
@@ -2218,7 +2221,11 @@ pub fn build_graph_task(
                     cache_db,
                 );
                 let cluster_result = graph_compute::run_consensus_clustering_cached(
-                    &pca_data, &positions, &cache_key, cache_db,
+                    &pca_data,
+                    &positions,
+                    graph_compute::ClusteringAlgorithm::Hdbscan,
+                    &cache_key,
+                    cache_db,
                 );
                 let thresholds = graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
