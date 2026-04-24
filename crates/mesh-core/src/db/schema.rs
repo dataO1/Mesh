@@ -435,6 +435,10 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // Aggression calibration: user pairwise comparison data
     create_aggression_calibration_pairs_relation(db)?;
 
+    // Calibration completion snapshot — prevents re-prompting on library
+    // restart once the user has finished calibrating this library state.
+    create_calibration_completion_relation(db)?;
+
     // Cached graph positions (t-SNE / UMAP) for deterministic communities
     create_graph_positions_relation(db)?;
     create_graph_clusters_relation(db)?;
@@ -975,6 +979,25 @@ fn create_pca_aggression_axis_relation(db: &DbInstance) -> Result<(), DbError> {
             id: Int =>
             weights: [Float],
             correlation: Float
+        }}
+    "#)
+}
+
+fn create_calibration_completion_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Snapshot of the library state at the moment the user finished
+    // calibration (either auto-stop or manual "Finish Early"). Used on
+    // subsequent launches to decide whether to re-prompt: if the library
+    // hasn't grown materially since finish, the coverage-check modal stays
+    // closed. Cleared by "Restart Aggression Calibration".
+    //
+    // id=0 (single-row relation), track_count and pair_count are the
+    // snapshot counts, finished_at is a UNIX timestamp for diagnostics.
+    run_schema(db, r#"
+        {:create calibration_completion {
+            id: Int =>
+            track_count: Int,
+            pair_count: Int,
+            finished_at: Int
         }}
     "#)
 }

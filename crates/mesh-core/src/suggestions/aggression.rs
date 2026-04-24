@@ -328,14 +328,16 @@ pub fn detect_uncovered_communities(
     // Coverage thresholds:
     // - SMALL communities (<30 tracks): need ≥3 calibrated tracks (absolute count)
     // - LARGE communities (≥30 tracks): need ≥10% coverage OR ≥5 calibrated tracks
-    // Old 15% threshold was too strict — with 5 reps per community, communities
-    // with >33 tracks could never be considered "covered".
-    let is_covered = |calibrated_count: usize, total: usize| -> bool {
-        if total < 30 {
-            calibrated_count >= 3
-        } else {
-            (calibrated_count as f32 / total as f32) >= 0.10 || calibrated_count >= 5
-        }
+    // Coverage rule: a community is "covered" if at least 3 of its tracks
+    // have appeared in calibration pairs. Matches the Phase 1 tier output
+    // (tier 3 skip-chain puts 3+ reps per sub-community; tier 2/4 add at
+    // least one more). The old 10% / >=5 rule was unreachable for large
+    // communities under the smaller hierarchical phase 1 — a 278-track DnB
+    // sub-community would have needed 28 calibrated tracks before being
+    // considered covered, which never happens on a typical calibration
+    // session.
+    let is_covered = |calibrated_count: usize, _total: usize| -> bool {
+        calibrated_count >= 3
     };
 
     // Compute centroids for calibrated communities (for distance check)

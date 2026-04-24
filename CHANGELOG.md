@@ -107,6 +107,26 @@ All notable changes to Mesh are documented in this file.
   interestingly from the Discogs prior, or there's a misclick worth
   investigating. Pure diagnostic; no behavior change.
 
+- **Calibration auto-stop now fires as early as ~15 answers** — The model
+  used to only check whether it had converged every 10 answers, and
+  needed 4 of those checkpoints before it would call "done" — meaning
+  the earliest auto-stop could happen was the 40th answer, even if the
+  model stopped improving at answer 15. Now the model re-trains on
+  every answer (which is cheap at our scale) and plateau detection
+  uses a sliding window of the last 10 accuracy points. Typical sessions
+  end at ~15–20 answers with a solidified scale.
+
+- **Calibration doesn't re-prompt after you finish it** — Previously,
+  after finishing calibration and re-opening mesh-cue, the modal would
+  sometimes re-appear asking you to continue because the system's
+  "community coverage" heuristic wanted more questions per community
+  than the shortened Phase 1 produces. Now a completion snapshot is
+  saved when you finish (auto-stop, Finish Early, or close the modal);
+  on the next launch, mesh-cue reads it and only re-prompts if the
+  library has grown by more than 5% or new calibration pairs have been
+  added externally. "Restart Aggression Calibration" still clears the
+  snapshot.
+
 ### Changed
 
 - **Calibration previews load much faster** — Each calibration question

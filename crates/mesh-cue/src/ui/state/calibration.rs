@@ -283,35 +283,48 @@ impl CalibrationState {
         self.phase_1_queue.len() + self.candidate_pool.len() + self.preloaded_pairs.len()
     }
 
-    /// Record a new accuracy measurement from a batch retrain. Keeps the last
-    /// 10 entries — enough lookback for plateau detection (need both a
-    /// "running max" baseline and a "recent" window).
+    /// Record a new accuracy measurement from a batch retrain. Retraining
+    /// now runs on every answer (not every 10), so the history grows fast —
+    /// keep up to 50 entries so the plateau detector has both a window and
+    /// a stable max to compare against.
     pub fn push_accuracy(&mut self, accuracy: f32) {
         self.model_accuracy = accuracy;
         self.accuracy_history.push(accuracy);
-        if self.accuracy_history.len() > 10 {
+        if self.accuracy_history.len() > 50 {
             self.accuracy_history.remove(0);
         }
     }
 
-    /// True when the model has stopped improving for several retrains.
+    /// True when the model has stopped improving over a sliding window of
+    /// the last `PLATEAU_WINDOW` answers, AND we have at least
+    /// `PLATEAU_MIN_ENTRIES` total accuracy points.
     ///
-    /// Definition: the last 3 retrain accuracies have not exceeded the running
-    /// maximum by more than 1.5%. This is robust to per-retrain noise (LOO
-    /// accuracy can swing several percent between batches even when the model
-    /// has stabilised) — what matters is whether NEW answers are pushing the
-    /// model to higher accuracy or not.
+    /// Definition: max accuracy across the last PLATEAU_WINDOW retrains
+    /// does not exceed the running max of all earlier retrains by more
+    /// than 1.5%. The window averages over per-answer retrain noise
+    /// (per-answer LOO is higher variance than the old 10-answer batch
+    /// LOO), while the earlier-max baseline remains stable.
+    ///
+    /// With rolling retrain (one accuracy point per answer), this lets
+    /// auto-stop fire at ~15-20 answers when the model has genuinely
+    /// converged, instead of the old minimum of 40.
     pub fn has_plateaued(&self) -> bool {
+        const PLATEAU_WINDOW: usize = 10;
+        const PLATEAU_MIN_ENTRIES: usize = 15;
+        const PLATEAU_TOLERANCE: f32 = 0.015;
+
         let n = self.accuracy_history.len();
-        if n < 4 { return false; }
-        // Running max over all but the last 3 entries
-        let prior_max = self.accuracy_history[..n - 3]
+        if n < PLATEAU_MIN_ENTRIES { return false; }
+        let window_start = n.saturating_sub(PLATEAU_WINDOW);
+        let prior_max = self.accuracy_history[..window_start]
             .iter()
             .cloned()
             .fold(f32::NEG_INFINITY, f32::max);
-        // None of the last 3 exceeded prior_max by 1.5%
-        let recent = &self.accuracy_history[n - 3..];
-        recent.iter().all(|&a| a <= prior_max + 0.015)
+        let recent_max = self.accuracy_history[window_start..]
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        recent_max <= prior_max + PLATEAU_TOLERANCE
     }
 
     /// Estimated total comparisons (phase 1 exact + phase 2 heuristic),
@@ -338,5 +351,62 @@ impl CalibrationState {
         let count = self.uncovered_communities.len();
         let total_tracks: usize = self.uncovered_communities.iter().map(|c| c.track_count).sum();
         (count, total_tracks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_history(history: &[f32]) -> CalibrationState {
+        let mut state = CalibrationState::default();
+        state.accuracy_history = history.to_vec();
+        state
+    }
+
+    #[test]
+    fn plateau_requires_min_15_entries() {
+        let state = with_history(&[0.8; 14]);
+        assert!(!state.has_plateaued(), "plateau should not fire with <15 entries");
+    }
+
+    #[test]
+    fn plateau_fires_when_recent_window_flat() {
+        // 16 entries: first 6 are low-accuracy early-calibration, last 10 plateau near 82%.
+        // prior_max over [0..6] = 0.80. recent_max over [6..16] = 0.83.
+        // 0.83 <= 0.80 + 0.015 → false... let me pick numbers that work.
+        // Try: prior = [0.70, 0.75, 0.80, 0.82, 0.83, 0.84] → prior_max = 0.84
+        // recent = [0.82, 0.81, 0.83, 0.82, 0.84, 0.82, 0.83, 0.81, 0.82, 0.83] → max = 0.84
+        // 0.84 <= 0.84 + 0.015 → true. Plateau!
+        let history: Vec<f32> = vec![
+            0.70, 0.75, 0.80, 0.82, 0.83, 0.84,
+            0.82, 0.81, 0.83, 0.82, 0.84, 0.82, 0.83, 0.81, 0.82, 0.83,
+        ];
+        let state = with_history(&history);
+        assert!(state.has_plateaued(), "plateau should fire when last 10 don't exceed earlier max");
+    }
+
+    #[test]
+    fn plateau_does_not_fire_if_still_improving() {
+        // 16 entries with accuracy still climbing in the recent window.
+        // prior_max over first 6 = 0.70, recent_max over last 10 = 0.85.
+        // 0.85 > 0.70 + 0.015 → not plateaued.
+        let history: Vec<f32> = vec![
+            0.50, 0.55, 0.60, 0.65, 0.68, 0.70,
+            0.72, 0.74, 0.76, 0.78, 0.80, 0.82, 0.83, 0.84, 0.85, 0.85,
+        ];
+        let state = with_history(&history);
+        assert!(!state.has_plateaued(), "plateau should not fire while accuracy is climbing");
+    }
+
+    #[test]
+    fn push_accuracy_caps_history_at_50() {
+        let mut state = CalibrationState::default();
+        for i in 0..70 {
+            state.push_accuracy(i as f32 * 0.01);
+        }
+        assert_eq!(state.accuracy_history.len(), 50, "history should cap at 50");
+        // Oldest 20 should be evicted. First remaining = 20 * 0.01 = 0.20.
+        assert!((state.accuracy_history[0] - 0.20).abs() < 1e-6);
     }
 }

@@ -1230,6 +1230,57 @@ impl DatabaseService {
         }))
     }
 
+    /// Store a "calibration complete" snapshot — the library state at the
+    /// moment the user finished (auto-stop or manual). Used on next launch
+    /// to skip the coverage re-prompt when the library hasn't materially
+    /// changed. Cleared by "Restart Aggression Calibration".
+    pub fn store_calibration_completion(
+        &self,
+        track_count: i64,
+        pair_count: i64,
+    ) -> Result<(), DbError> {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(0i64));
+        params.insert("track_count".to_string(), DataValue::from(track_count));
+        params.insert("pair_count".to_string(), DataValue::from(pair_count));
+        params.insert("finished_at".to_string(), DataValue::from(ts));
+        self.db.run_script(r#"
+            ?[id, track_count, pair_count, finished_at] <-
+                [[$id, $track_count, $pair_count, $finished_at]]
+            :put calibration_completion {id => track_count, pair_count, finished_at}
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Load the last calibration completion snapshot, if any.
+    /// Returns (track_count, pair_count, finished_at_unix_seconds).
+    pub fn get_calibration_completion(&self) -> Result<Option<(i64, i64, i64)>, DbError> {
+        let result = self.db.run_query(r#"
+            ?[track_count, pair_count, finished_at] :=
+                *calibration_completion{id: 0, track_count, pair_count, finished_at}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.first().and_then(|row| {
+            let tc = row[0].get_int()?;
+            let pc = row[1].get_int()?;
+            let ts = row[2].get_int()?;
+            Some((tc, pc, ts))
+        }))
+    }
+
+    /// Clear the stored calibration completion snapshot (e.g. when the user
+    /// invokes Restart Aggression Calibration).
+    pub fn clear_calibration_completion(&self) -> Result<(), DbError> {
+        self.db.run_script(r#"
+            ?[id] := *calibration_completion{id}
+            :rm calibration_completion {id}
+        "#, BTreeMap::new())?;
+        Ok(())
+    }
+
     // ========================================================================
     // Aggression Calibration Pairs
     // ========================================================================

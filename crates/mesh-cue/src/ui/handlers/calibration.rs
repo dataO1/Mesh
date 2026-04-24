@@ -28,6 +28,36 @@ impl MeshCueApp {
 
         let db = self.domain.db_arc();
 
+        // If the user previously finished calibration on a similar library
+        // state, don't re-prompt. "Similar" = library hasn't grown by more
+        // than LIBRARY_GROWTH_REPROMPT_PCT tracks since finish, and no new
+        // calibration pairs have been added externally. The snapshot is
+        // cleared by "Restart Aggression Calibration" (user explicitly
+        // asks for a do-over) or naturally overridden on meaningful growth.
+        const LIBRARY_GROWTH_REPROMPT_PCT: f32 = 0.05; // re-prompt if library grew by 5% or more
+        if let Ok(Some((stored_tracks, stored_pairs, ts))) = db.get_calibration_completion() {
+            let current_tracks = db.get_all_tracks().map(|t| t.len() as i64).unwrap_or(0);
+            let current_pairs = db.get_calibration_pair_count().unwrap_or(0) as i64;
+            let growth_pct = if stored_tracks > 0 {
+                (current_tracks - stored_tracks) as f32 / stored_tracks as f32
+            } else { 1.0 };
+            let pairs_unchanged = current_pairs == stored_pairs;
+            if pairs_unchanged && growth_pct.abs() < LIBRARY_GROWTH_REPROMPT_PCT {
+                log::info!(
+                    "[CALIBRATION] Skipping coverage prompt — user finished calibration at {} tracks / {} pairs (current: {}/{}, growth={:+.1}%, finished_ts={})",
+                    stored_tracks, stored_pairs, current_tracks, current_pairs,
+                    growth_pct * 100.0, ts,
+                );
+                return Task::none();
+            } else {
+                log::info!(
+                    "[CALIBRATION] Library changed since last finish ({} → {} tracks, {:+.1}%, pairs {} → {}) — re-running coverage check",
+                    stored_tracks, current_tracks, growth_pct * 100.0,
+                    stored_pairs, current_pairs,
+                );
+            }
+        }
+
         // Need community assignments from graph state
         let community_assignments: HashMap<i64, i32> = self.collection.graph_state
             .as_ref()
@@ -332,19 +362,22 @@ impl MeshCueApp {
             }
         }
 
-        // Batch retrain every 10 comparisons so the accuracy indicator
-        // updates at a reasonable frequency and plateau detection has signal.
+        // Rolling retrain: recompute the weights on every answer so the
+        // live accuracy indicator updates continuously and plateau
+        // detection has per-answer granularity. Learning is cheap at our
+        // scale (<100ms for ~500 pairs × 107 PCA dims × 50 epochs LOO);
+        // the old "every 10 answers" cadence meant auto-stop couldn't
+        // fire until at least the 40th answer regardless of how clearly
+        // the model had converged.
         let total_done = self.calibration.completed_count + self.calibration.total_historical;
-        if total_done > 0 && total_done % 10 == 0 {
+        if total_done > 0 {
             self.batch_retrain_weights();
+
             // Auto-stop on plateau, but ONLY after phase 1 is fully answered.
             // Phase 1 is the deterministic bootstrap that guarantees every
             // uncovered community gets its 5 representative tracks queried —
             // cutting it short leaves entire communities at 0% coverage,
             // which causes the next session to re-prompt for those communities.
-            // Phase 1 pairs are drained from the queue FIFO before phase 2
-            // pairs are picked, so completed_count >= phase_1_total means
-            // every phase 1 pair was answered.
             let phase_1_done = self.calibration.completed_count >= self.calibration.phase_1_total;
             if phase_1_done
                 && self.calibration.has_plateaued()
@@ -362,6 +395,8 @@ impl MeshCueApp {
                     let db = self.domain.db_arc();
                     let _ = db.store_aggression_weights(&self.calibration.weights, self.calibration.model_accuracy);
                 }
+                // Record snapshot so next launch doesn't re-prompt
+                self.store_calibration_completion_snapshot();
                 return Task::none();
             } else if self.calibration.has_plateaued() && !phase_1_done {
                 log::debug!(
@@ -485,6 +520,11 @@ impl MeshCueApp {
             }
         }
 
+        // Record the completion snapshot — the next mesh-cue launch reads
+        // this to decide whether to re-prompt for calibration. Skipped if
+        // the library hasn't materially grown since finish.
+        self.store_calibration_completion_snapshot();
+
         // Invalidate graph state so suggestions use new weights
         self.collection.graph_state = None;
         self.collection.graph_edges = None;
@@ -492,6 +532,23 @@ impl MeshCueApp {
 
         self.calibration.close();
         Task::none()
+    }
+
+    /// Capture the current library state (track count, pair count) into the
+    /// DB so the next session can decide whether to re-prompt. Called from
+    /// every "finish calibration" path (auto-stop, Finish Early, Close).
+    pub fn store_calibration_completion_snapshot(&self) {
+        let db = self.domain.db_arc();
+        let track_count = db.get_all_tracks().map(|t| t.len() as i64).unwrap_or(0);
+        let pair_count = db.get_calibration_pair_count().unwrap_or(0) as i64;
+        if let Err(e) = db.store_calibration_completion(track_count, pair_count) {
+            log::warn!("[CALIBRATION] Failed to store completion snapshot: {}", e);
+        } else {
+            log::info!(
+                "[CALIBRATION] Completion snapshot stored: {} tracks, {} pairs",
+                track_count, pair_count,
+            );
+        }
     }
 
     /// Handle "Reset All" — clear all calibration data.
@@ -537,10 +594,15 @@ impl MeshCueApp {
         if let Err(e) = db.clear_aggression_weights() {
             log::warn!("[CALIBRATION] Failed to clear aggression weights: {}", e);
         }
+        if let Err(e) = db.clear_calibration_completion() {
+            log::warn!("[CALIBRATION] Failed to clear completion snapshot: {}", e);
+        }
         self.calibration.weights.clear();
         self.calibration.model_accuracy = 0.0;
+        self.calibration.accuracy_history.clear();
         self.calibration.total_historical = 0;
         self.calibration.prompted_this_session = false;
+        self.calibration.completion_shown = false;
         self.calibration.close();
         self.collection.graph_suggestion_rows.clear();
         log::info!("[CALIBRATION] Restarted from scratch — pairs and weights cleared");
@@ -570,13 +632,28 @@ impl MeshCueApp {
         ) {
             self.calibration.weights = new_weights;
             self.calibration.push_accuracy(accuracy);
-            let plateau_note = if self.calibration.has_plateaued() { " [PLATEAUED]" } else { "" };
-            log::info!(
-                "[CALIBRATION] Batch retrain: accuracy={:.1}% (history: {:?}){}",
-                accuracy * 100.0,
-                self.calibration.accuracy_history.iter().map(|a| format!("{:.1}%", a * 100.0)).collect::<Vec<_>>(),
-                plateau_note,
-            );
+            // Retrain now runs on every answer (rolling). Log at info level
+            // only every 5 entries so the log stays readable; debug level
+            // has the full stream. Also emit a one-shot info line the
+            // first time the detector reports a plateau, since that's
+            // the gate for auto-stop.
+            let plateaued = self.calibration.has_plateaued();
+            let history_len = self.calibration.accuracy_history.len();
+            if history_len % 5 == 0 {
+                log::info!(
+                    "[CALIBRATION] Retrain @ {} entries: accuracy={:.1}%{}",
+                    history_len,
+                    accuracy * 100.0,
+                    if plateaued { " [PLATEAUED]" } else { "" },
+                );
+            } else {
+                log::debug!(
+                    "[CALIBRATION] Retrain @ {} entries: accuracy={:.1}%{}",
+                    history_len,
+                    accuracy * 100.0,
+                    if plateaued { " [PLATEAUED]" } else { "" },
+                );
+            }
         }
     }
 

@@ -751,6 +751,8 @@ impl MeshCueApp {
                             self.calibration.model_accuracy * 100.0,
                         );
                     }
+                    // Record completion snapshot so next launch doesn't re-prompt
+                    self.store_calibration_completion_snapshot();
                 }
                 self.calibration.close();
             }
