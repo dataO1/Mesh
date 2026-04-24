@@ -8,88 +8,81 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
-- **USB export carries learned aggression weights** — When exporting a
-  collection to USB, the local DJ's learned aggression weight vector is
-  copied into the USB's `pca_aggression_axis` row. Tools reading the USB
-  standalone (mesh-cue opening the USB DB, or mesh-player on a fresh
-  device with no local calibration) get a usable 1D intensity scale out
-  of the box. Calibration pairs are NOT exported — they're private
-  training data and would conflict with another user's calibration.
+- **Your aggression scale now travels on USB** — Once you've calibrated your
+  aggression scale in mesh-cue, exporting a collection to USB copies your
+  learned scale onto the stick. Plug that USB into another mesh device (or
+  a fresh mesh-player install) and your intensity-based suggestions work
+  immediately — no re-calibration needed. Your calibration answers
+  themselves stay private on your main machine; only the finished scale
+  travels.
 
-- **Per-source aggression scoring in mesh-player** — When playing tracks
-  from local + USB(s), each source's tracks are now projected via that
-  source's OWN learned weights (each source has its own PCA basis, so
-  using local weights for USB tracks was producing a meaningless
-  projection). Per-source percentile-rank within each collection makes
-  scores comparable across sources: a 0.85 from source A means "85th
-  percentile aggressive within A's calibrated context", same for B.
-  Fallback chain when a source has no weights: source-own → local proxy
-  (with mismatch warning) → skip aggression for that source.
+- **Multi-USB mixing respects each stick's own calibration** — When you
+  play from your local library plus one or more USBs at the same time,
+  mesh-player now scores each source's tracks against that source's own
+  calibration. A "high aggression" track from your USB and a "high
+  aggression" track from local are now genuinely comparable — before,
+  USB tracks were getting scored with the wrong ruler. If a USB has no
+  calibration of its own, mesh-player falls back to your local scale and
+  logs a warning.
 
-- **Aggression calibration: active learning + transitive closure** — Calibration
-  is now an adaptive loop instead of a fixed pre-planned queue. Phase 1
-  (deterministic): per uncovered community, pick 4 FPS edge tracks + 1 centroid
-  track, then ask 4 skip-chain questions (`e0→e2→centroid→e1→e3`). Transitive
-  closure over consistent answers implies all 10 intra-community pair orderings.
-  Phase 2 (dynamic): active learning picks the most informative pair from the
-  remaining pool, scoring by model uncertainty + transitive deduction filter +
-  diversity rotation. Cold-start (zero weights) ranks by PCA delta magnitude.
+- **Aggression calibration learns as you answer** — Calibration used to ask
+  a fixed list of pairs up front. It now adapts after every few answers:
+  it starts by covering every cluster in your library with a handful of
+  anchor questions, then switches to picking whichever remaining pair it's
+  currently least sure about. Short, consistent answer streaks let it
+  infer many pair orderings without asking you directly — so you answer
+  fewer questions for the same quality of scale.
 
-- **Plateau-based auto-stop with completion modal** — When the model stops
-  improving (last 3 retrains fail to exceed running max by >1.5%), calibration
-  automatically finishes and shows a "Calibration Complete" modal with the
-  final accuracy. Plateau detection is gated behind phase 1 completion so every
-  community gets its bootstrap coverage even if the user clicks randomly.
+- **Calibration stops on its own when it's done learning** — When the
+  model's accuracy stops improving across several rounds, calibration
+  automatically finishes and shows a "Calibration Complete" dialog with
+  your final accuracy. No more guessing when to hit "Finish". Auto-stop
+  waits until every cluster has its bootstrap coverage, so you always get
+  a complete scale even if you've been clicking quickly through the early
+  questions.
 
-- **Live model accuracy display** — Calibration modal shows current LOO
-  accuracy (rebuilt every 10 answers). Turns green with "✓ Converged"
-  hint when the model has stopped improving.
+- **Live accuracy indicator during calibration** — The calibration dialog
+  now shows how well the model is predicting your answers as you go. The
+  number turns green with a "✓ Converged" hint once it stops improving —
+  a visible signal that you're near the finish line.
 
-- **Restart Aggression Calibration** — New right-click menu option on the
-  Collection node. Reuses the delete-modal infrastructure via `DeleteTarget::Custom`
-  for confirmation. Clears stored pairs AND learned weights, then triggers a
-  fresh coverage check.
+- **"Restart Aggression Calibration" menu item** — Right-click your
+  Collection to wipe your calibration answers and learned scale and start
+  over. Useful if your taste has shifted, or if earlier sessions were
+  clicked through randomly and polluted the model.
 
-- **Cluster cache** — New `graph_clusters` DB relation caches the full
-  HDBSCAN result alongside `graph_positions`. Same cache_key → identical
-  communities across restarts (HDBSCAN itself is non-deterministic).
-
-- **Calibration coverage diagnostics** — `[COVERAGE]` log lines show
-  per-community pair count, threshold check, and the reason any community is
-  flagged as needing calibration. `[AGGRESSION]` and `[SCORING]` log lines
-  show whether weights loaded from DB and the final scoring weight breakdown.
-
-- **db-inspect calibration output** — Reports calibration pair count,
-  aggression axis dimensions, correlation, and weight stats.
+- **Stable cluster colors across restarts** — The similarity-graph cluster
+  colors and IDs no longer shuffle when you relaunch mesh-cue. Useful for
+  re-finding "that techno cluster over there" after a restart.
 
 ### Changed
 
-- **Faster calibration preview clips** — `extract_preview_clip` uses
-  `AudioFileReader::decode_region()` when the drop marker is known, decoding
-  only the ~16 bars needed instead of the full track (~80x less work).
+- **Calibration previews load much faster** — Each calibration question
+  now decodes only the ~16 bars around the drop instead of the whole
+  track. Previews start playing almost instantly.
 
-- **Calibration weights persist on close** — `CloseCalibration` (X button) now
-  retrains and saves weights before closing. Previously only `Finish Early` and
-  auto-stop saved weights, so X-ing out discarded all session learning.
+- **Closing the calibration window now keeps your progress** — Hitting X
+  used to discard everything you answered in that session. Closing now
+  saves the updated scale, same as "Finish Early" and auto-stop.
 
-- **Coverage threshold tiered by community size** — Replaced the flat 15%
-  threshold with: small communities (<30 tracks) need ≥3 calibrated tracks,
-  large communities need ≥10% coverage OR ≥5 calibrated. The flat 15%
-  permanently flagged any community with >33 tracks even after FPS bootstrap.
+- **Smarter "cluster is covered" rule** — A cluster is now considered
+  calibrated when it has enough answered tracks to actually represent it,
+  scaled to its size. Small clusters no longer get flagged as incomplete
+  forever; large ones no longer pass on token coverage.
 
-- **Realistic calibration estimate** — Modal shows `phase_1_exact + phase_2_heuristic`
-  (~`2 × num_communities`) instead of the candidate pool upper bound (which
-  could be 4500+). `~` prefix marks the value as an estimate; displayed total
-  grows past the estimate if the user keeps going.
+- **More realistic question-count estimate** — The calibration dialog's
+  estimate now reflects what you'll typically answer (~2 × number of
+  clusters), not the worst-case pool size. It's marked with "~" to make
+  clear it's a ballpark — you can keep going past it if you want.
 
-- **Deterministic graph clustering** — HDBSCAN input is now sorted by track
-  ID, and cluster IDs are assigned by descending size (then root index).
-  Stable communities across runs.
+- **Similarity graph communities are stable across runs** — Clusters now
+  come out identical each time you relaunch, so the same track lands in
+  the same cluster with the same color. Large clusters are also numbered
+  consistently (biggest = 0).
 
 - **Devshell slimmed down** — Removed PyTorch/Python/libtorch/distrobox/debuggers
   from the default shell (CI handles model conversion and packaging). Cuts
-  several minutes off `direnv allow` time. Items left commented out with notes
-  on when to re-enable.
+  several minutes off `direnv allow` time for devs building from source.
 
 - **Default audio buffer size 512 → 1024 frames** (~21ms latency). Avoids
   underruns on PipeWire-ALSA bridge with concurrent streams on newer Intel
@@ -97,65 +90,46 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
-- **Calibration pair count query** — `get_calibration_pair_count()` used a
-  CozoDB aggregation pattern (`count = count(id), *aggression_calibration_pairs{id}`)
-  that always returned 0. Pairs were saving correctly all along; only the
-  count query was broken. Fixed by using a separate aggregation rule.
+- **Calibration progress counter stuck at zero** — Your answers were being
+  saved correctly, but the number shown in the progress display always
+  read "0 answered". Now it reflects the real stored count.
 
-- **Concurrent preload duplicates** — When several preload tasks ran in
-  parallel they all saw the same `asked_pairs` set and picked the same
-  "best next pair" via active learning, decoding 3 copies of the same pair.
-  CalibrationState now tracks `in_flight_pair_ids` so subsequent calls
-  exclude pairs being decoded by other tasks.
+- **Same pair occasionally played in both previews** — When several
+  previews were preparing at once, they could pick the same "next best"
+  pair to ask, so you'd see the same question queued twice. Each in-flight
+  pair is now reserved for a single preview slot.
 
-- **Refinement asked the same pairs as initial calibration** — `plan_calibration_pairs`
-  accepted existing pairs but never used them to filter pair candidates.
-  Phase 1 now asks deterministic chain questions; phase 2's active learner
-  filters by both already-asked AND transitively-deducible pairs.
+- **Re-calibration asked the same questions as the first round** — If you
+  restarted or resumed calibration, the planner wasn't fully honouring the
+  pairs you'd already answered and could repeat them. It now filters out
+  already-answered pairs and any pair it can already deduce from your
+  previous answers.
 
-- **Auto-stop fired during phase 1** — Plateau detection could trigger before
-  phase 1 had queried every community's 5 reps, leaving some communities at
-  0% coverage and re-prompting on next session. Auto-stop is now gated behind
-  phase 1 completion.
+- **Calibration stopping too early and skipping clusters** — Auto-stop
+  could trigger before every cluster had its bootstrap questions, leaving
+  a few clusters uncalibrated and re-prompting you next session. Auto-stop
+  now waits until bootstrap coverage is complete.
 
-- **UTF-8 string slicing panics on non-ASCII track names** — Six locations
-  used `&str[..N]` byte-index slicing to truncate display names, which
-  panics when byte N falls inside a multi-byte UTF-8 character (e.g. `Ø`,
-  `é`, em-dashes, CJK, emoji). Crash was previously latent because all
-  imported track names were ASCII at the truncation boundary; an import
-  containing `"01. Julien Earle - Your Affection (FØREHAND Remix)"` made
-  it surface (`Ø` straddles byte 36–37, the truncation point). Switched
-  all six sites to char-based truncation via `chars().take(N).collect()`.
-  Affected files: `import_modal.rs`, `export_modal.rs`, `app.rs` (mesh-cue
-  reanalysis), `deck_view.rs` (mesh-player macro names ×2),
-  `deck_preset/view.rs`, `stem_preset/view.rs` (mesh-widgets).
-  Also tightened `parse_hex_color` to require ASCII (length-6 byte check
-  could otherwise pass for 5-char strings with one multi-byte char) and
-  replaced `&p[2..]` tilde-stripping in CLAP discovery with `strip_prefix`.
+- **Crash when importing tracks with accented or non-Latin characters in
+  the title** — Titles containing characters like `Ø`, `é`, em-dashes, or
+  CJK/emoji could crash the app at display time (a track named
+  `"… (FØREHAND Remix)"` was the trigger that surfaced this). Fixed in
+  all places that truncate long titles for display.
 
-- **Track import freezes with `mpg123_open_handle64` symbol error** —
-  Restored DT_RPATH (`--disable-new-dtags`) in mesh-cue's build.rs after
-  briefly switching to DT_RUNPATH. The DT_RUNPATH change made `pw-jack`
-  work but broke procspawn's transitive library resolution: libopenmpt
-  internally calls into libmpg123 and only DT_RPATH is searched for
-  transitive deps. Without it, libopenmpt resolves a different libmpg123
-  build (its own RPATH) that lacks the `_64` symbols, crashing the
-  Essentia subprocess during track import. Trade-off: mesh-cue can no
-  longer use `pw-jack` (RPATH wins over LD_LIBRARY_PATH), so JACK
-  connection fails and audio falls back to CPAL/ALSA. With the 1024-frame
-  buffer this is fine for editor-mode preview playback. mesh-player is
-  unaffected — it doesn't use procspawn so its build.rs doesn't set the
-  flag, RUNPATH applies, and `pw-jack` works as expected. See
-  `crates/mesh-cue/build.rs` file docs for the full explanation.
+- **Track import freezing with an `mpg123_open_handle64` error** — A
+  library-loading regression from the last release made the Essentia
+  analysis subprocess crash mid-import on some systems. Import now works
+  again. Side effect: mesh-cue no longer connects to JACK directly and
+  falls back to ALSA via PipeWire — in practice indistinguishable for
+  editor-mode preview playback. mesh-player is unaffected and continues
+  to use JACK normally. See `crates/mesh-cue/build.rs` for the gory
+  details.
 
-- **Default beat-jump/loop length silently shrank from 16 to 2 beats** — The
-  loop-length selector array grew from 7 options `[0.25..16]` to 8 options
-  `[0.125..16]`, but `DisplayConfig::default_loop_length_index` stored the
-  raw index, so an existing config with `index: 4` (= 4 beats in the old
-  array) resolved to 2 beats in the new array. Migrated to a self-describing
-  `default_loop_length_beats: f32` field with a legacy-index fallback that
-  looks up the old index against the old array. Existing configs now resolve
-  correctly without user action; new writes use the beat value directly.
+- **Default beat-jump / loop length silently shrank from 16 to 2 beats
+  after an update** — The loop-length menu gained a new 0.125-beat entry
+  at the top, which shifted everyone's saved default one slot down. Your
+  setting now migrates automatically to the correct beat value and is
+  stored self-descriptively so this can't happen again.
 
 - **patches/libpd-* setup** — Shellhook now downloads from crates.io directly
   instead of reading from the cargo registry, fixing the chicken-and-egg
