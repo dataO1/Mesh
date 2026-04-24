@@ -85,6 +85,22 @@ impl MeshCueApp {
                         .filter_map(|(t, v)| Some((t.id?, v.clone())))
                         .collect();
 
+                    // Load full Discogs genre labels per track for level-1
+                    // macro-genre mapping. Uses genre_scores[0].0 (full
+                    // "Super---Sub") rather than top_genre (sub-only) so we
+                    // can disambiguate e.g. "Rock---Hardcore" from
+                    // "Electronic---Hardcore".
+                    let mut genre_labels: HashMap<i64, String> = HashMap::new();
+                    for (track, _) in &all_pca {
+                        if let Some(id) = track.id {
+                            if let Ok(Some(ml)) = db.get_ml_analysis(id) {
+                                if let Some((full_label, _)) = ml.genre_scores.first() {
+                                    genre_labels.insert(id, full_label.clone());
+                                }
+                            }
+                        }
+                    }
+
                     // Apply partial PCA whitening before layout
                     mesh_core::graph_compute::apply_pca_whitening(&mut pca_data, whiten_alpha);
 
@@ -116,9 +132,10 @@ impl MeshCueApp {
                     );
 
                     // Run community detection (cached). Algorithm selectable:
-                    // HDBSCAN (density on 2D) or Louvain (modularity on k-NN of PCA).
+                    // HDBSCAN (density on 2D) or Louvain (genre-driven L1 +
+                    // modularity-based L2 on k-NN of PCA).
                     let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering_cached(
-                        &pca_data, &positions, clustering, &cache_key, Some(&db),
+                        &pca_data, &positions, &genre_labels, clustering, &cache_key, Some(&db),
                     );
                     cluster_result.thresholds = mesh_core::graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 

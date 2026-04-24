@@ -84,6 +84,7 @@ pub mod usb;
 pub mod db;
 pub mod suggestions;
 pub mod graph_compute;
+pub mod genre_map;
 pub mod services;
 pub mod export;
 pub mod preset_loader;

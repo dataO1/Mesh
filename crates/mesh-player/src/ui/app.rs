@@ -2205,6 +2205,24 @@ pub fn build_graph_task(
                     return None;
                 }
 
+                // Build full Discogs genre labels per track for level-1
+                // macro-genre mapping. Pulls from all source DBs (local + USB).
+                let mut genre_labels: std::collections::HashMap<i64, String> =
+                    std::collections::HashMap::new();
+                for (source_db, _) in &sources {
+                    if let Ok(tracks) = source_db.get_all_tracks() {
+                        for t in tracks {
+                            if let Some(id) = t.id {
+                                if let Ok(Some(ml)) = source_db.get_ml_analysis(id) {
+                                    if let Some((full_label, _)) = ml.genre_scores.first() {
+                                        genre_labels.entry(id).or_insert_with(|| full_label.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Use first source's DB for layout + cluster caching
                 let cache_db = sources.first().map(|(db, _)| db.as_ref());
                 let cache_key = graph_compute::graph_cache_key(
@@ -2223,6 +2241,7 @@ pub fn build_graph_task(
                 let cluster_result = graph_compute::run_consensus_clustering_cached(
                     &pca_data,
                     &positions,
+                    &genre_labels,
                     graph_compute::ClusteringAlgorithm::Louvain,
                     &cache_key,
                     cache_db,
