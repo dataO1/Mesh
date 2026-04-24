@@ -465,7 +465,7 @@ impl MeshCueApp {
                     loudness: self.domain.config().analysis.loudness.clone(),
                 },
                 display: ExportableDisplayConfig {
-                    default_loop_length_index: self.domain.config().display.default_loop_length_index,
+                    default_loop_length_index: self.domain.config().display.default_loop_length_index_in_current_array(),
                     default_zoom_bars: self.domain.config().display.zoom_bars,
                     grid_bars: self.domain.config().display.grid_bars,
                     stem_color_palette: "natural".to_string(),

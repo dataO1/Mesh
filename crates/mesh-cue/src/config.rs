@@ -73,8 +73,21 @@ pub struct DisplayConfig {
     pub zoom_bars: u32,
     /// Global BPM for playback (saved/restored between sessions)
     pub global_bpm: f64,
-    /// Default loop length index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
-    pub default_loop_length_index: usize,
+    /// Default loop length in beats (e.g. 0.25, 0.5, 1, 2, 4, 8, 16).
+    /// Stored as float so the value is self-describing — surviving any
+    /// future changes to LOOP_LENGTH_OPTIONS without silent migration bugs.
+    /// `None` triggers backward-compat fallback to the legacy index field.
+    pub default_loop_length_beats: Option<f32>,
+    /// LEGACY: previously used to look up beats in LOOP_LENGTH_OPTIONS.
+    /// Kept for backward compatibility with old configs. When 0.125 was
+    /// prepended to LOOP_LENGTH_OPTIONS, every existing user's stored index
+    /// silently shifted by one position (e.g. saved "16 beats" became "8").
+    /// Migration: if `default_loop_length_beats` is None, interpret this
+    /// index against the OLD array `[0.25, 0.5, 1, 2, 4, 8, 16]` (length 7)
+    /// to recover the user's original intent. New configs only write
+    /// `default_loop_length_beats`.
+    #[serde(skip_serializing)]
+    pub default_loop_length_index: Option<usize>,
     /// Active theme name (references a theme from theme.yaml)
     pub theme: String,
     /// UI font (requires restart to apply)
@@ -83,8 +96,13 @@ pub struct DisplayConfig {
     pub font_size: FontSize,
 }
 
-/// Loop length options in beats (1/8 beat to 16 beats)
+/// Loop length options in beats (1/8 beat to 16 beats).
+/// Index ordering matters — UI halve/double walks this array.
 pub const LOOP_LENGTH_OPTIONS: [f32; 8] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+
+/// Legacy 7-element array used by configs saved before 0.125 was prepended.
+/// Used only for backward-compat migration in `default_loop_length_beats()`.
+const LEGACY_LOOP_LENGTH_OPTIONS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
 
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -92,7 +110,8 @@ impl Default for DisplayConfig {
             grid_bars: 32,      // Default: red grid line every 32 beats (8 bars)
             zoom_bars: 8,       // Default zoomed waveform to 8 bars
             global_bpm: 128.0,  // Standard house/techno BPM
-            default_loop_length_index: 7,  // Default to 16 beats (index 7 in LOOP_LENGTH_OPTIONS)
+            default_loop_length_beats: Some(16.0),
+            default_loop_length_index: None,
             theme: "Mesh".to_string(),
             font: AppFont::default(), // Exo
             font_size: FontSize::default(), // Small
@@ -101,11 +120,30 @@ impl Default for DisplayConfig {
 }
 
 impl DisplayConfig {
-    /// Get the default loop length in beats
+    /// Get the default loop length in beats. Resolution order:
+    /// 1. `default_loop_length_beats` if set (new format)
+    /// 2. `default_loop_length_index` interpreted via legacy 7-element array
+    ///    (old format — before 0.125 was prepended)
+    /// 3. Fallback to 16 beats
     pub fn default_loop_length_beats(&self) -> f32 {
-        LOOP_LENGTH_OPTIONS.get(self.default_loop_length_index)
-            .copied()
-            .unwrap_or(4.0)
+        if let Some(beats) = self.default_loop_length_beats {
+            return beats;
+        }
+        if let Some(idx) = self.default_loop_length_index {
+            if let Some(&beats) = LEGACY_LOOP_LENGTH_OPTIONS.get(idx) {
+                return beats;
+            }
+        }
+        16.0
+    }
+
+    /// Get the index into LOOP_LENGTH_OPTIONS for the default loop length.
+    /// Used by code that needs to set the loop_length atomic by index.
+    pub fn default_loop_length_index_in_current_array(&self) -> usize {
+        let beats = self.default_loop_length_beats();
+        LOOP_LENGTH_OPTIONS.iter()
+            .position(|&b| (b - beats).abs() < 0.001)
+            .unwrap_or(7) // fallback to 16 beats
     }
 }
 

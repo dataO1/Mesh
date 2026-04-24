@@ -148,6 +148,15 @@ All notable changes to Mesh are documented in this file.
   flag, RUNPATH applies, and `pw-jack` works as expected. See
   `crates/mesh-cue/build.rs` file docs for the full explanation.
 
+- **Default beat-jump/loop length silently shrank from 16 to 2 beats** — The
+  loop-length selector array grew from 7 options `[0.25..16]` to 8 options
+  `[0.125..16]`, but `DisplayConfig::default_loop_length_index` stored the
+  raw index, so an existing config with `index: 4` (= 4 beats in the old
+  array) resolved to 2 beats in the new array. Migrated to a self-describing
+  `default_loop_length_beats: f32` field with a legacy-index fallback that
+  looks up the old index against the old array. Existing configs now resolve
+  correctly without user action; new writes use the beat value directly.
+
 - **patches/libpd-* setup** — Shellhook now downloads from crates.io directly
   instead of reading from the cargo registry, fixing the chicken-and-egg
   problem where `cargo fetch` requires the patches but the patches needed

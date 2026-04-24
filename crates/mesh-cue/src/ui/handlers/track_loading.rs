@@ -238,7 +238,7 @@ impl MeshCueApp {
                         self.audio.load_track(loaded_track);
                         self.audio.set_global_bpm(state.bpm);
                         self.audio
-                            .set_loop_length_index(self.domain.config().display.default_loop_length_index);
+                            .set_loop_length_index(self.domain.config().display.default_loop_length_index_in_current_array());
                     } else {
                         // Subsequent stems upgrade — just swap the buffer
                         self.audio.upgrade_stems(stems.clone(), duration);
@@ -362,7 +362,7 @@ impl MeshCueApp {
                     self.audio.load_track(loaded_track);
                     self.audio.set_global_bpm(state.bpm);
                     self.audio
-                        .set_loop_length_index(self.domain.config().display.default_loop_length_index);
+                        .set_loop_length_index(self.domain.config().display.default_loop_length_index_in_current_array());
                 }
             }
             Err(e) => {
