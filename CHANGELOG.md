@@ -118,12 +118,20 @@ All notable changes to Mesh are documented in this file.
   0% coverage and re-prompting on next session. Auto-stop is now gated behind
   phase 1 completion.
 
-- **JACK fallback failure on Linux** — mesh-cue's build.rs forced
-  `--disable-new-dtags` (DT_RPATH) for procspawn subprocess library
-  resolution, which made `pw-jack`'s `LD_LIBRARY_PATH` injection of
-  PipeWire-JACK ineffective (RPATH wins over LD_LIBRARY_PATH). Switched to
-  DT_RUNPATH; libessentia.so's own RPATH still handles transitive lookups
-  for procspawn.
+- **Track import freezes with `mpg123_open_handle64` symbol error** —
+  Restored DT_RPATH (`--disable-new-dtags`) in mesh-cue's build.rs after
+  briefly switching to DT_RUNPATH. The DT_RUNPATH change made `pw-jack`
+  work but broke procspawn's transitive library resolution: libopenmpt
+  internally calls into libmpg123 and only DT_RPATH is searched for
+  transitive deps. Without it, libopenmpt resolves a different libmpg123
+  build (its own RPATH) that lacks the `_64` symbols, crashing the
+  Essentia subprocess during track import. Trade-off: mesh-cue can no
+  longer use `pw-jack` (RPATH wins over LD_LIBRARY_PATH), so JACK
+  connection fails and audio falls back to CPAL/ALSA. With the 1024-frame
+  buffer this is fine for editor-mode preview playback. mesh-player is
+  unaffected — it doesn't use procspawn so its build.rs doesn't set the
+  flag, RUNPATH applies, and `pw-jack` works as expected. See
+  `crates/mesh-cue/build.rs` file docs for the full explanation.
 
 - **patches/libpd-* setup** — Shellhook now downloads from crates.io directly
   instead of reading from the cargo registry, fixing the chicken-and-egg
