@@ -233,9 +233,11 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v6: clustering algorithm (hdbscan vs louvain) now in cache key.
+    // v7: Louvain is now multi-level (previously single-phase), min_cluster_size
+    // raised to 35, and resolution lowered to 0.5 — needs a cache bust since
+    // the prior v6 cached single-phase results passed the gate and would stay.
     format!(
-        "v6_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v7_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
