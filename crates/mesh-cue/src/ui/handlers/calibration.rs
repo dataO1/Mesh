@@ -134,6 +134,18 @@ impl MeshCueApp {
             .filter_map(|(t, v)| Some((t.id?, v.clone())))
             .collect();
 
+        // Build full Discogs genre labels per track for tier-1/2/4 priors
+        // and the active learner's prior-gap factor. Uses genre_scores[0].0
+        // (full "Super---Sub" form) rather than top_genre (sub-only) so the
+        // mapping can disambiguate Rock---Hardcore from Electronic---Hardcore.
+        let genre_labels: HashMap<i64, String> = pca_data.keys()
+            .filter_map(|&id| {
+                db.get_ml_analysis(id).ok().flatten().and_then(|ml| {
+                    ml.genre_scores.first().map(|(full, _)| (id, full.clone()))
+                })
+            })
+            .collect();
+
         let existing_pairs = db.get_all_calibration_pairs().unwrap_or_default();
 
         let community_assignments: HashMap<i64, i32> = self.collection.graph_state
@@ -171,6 +183,7 @@ impl MeshCueApp {
         let plan = aggression::build_calibration_plan(
             &self.calibration.uncovered_communities,
             &pca_data,
+            &genre_labels,
             &anchor_refs,
             0, // unused — fixed at 2 edges + 1 centroid per community internally
         );
@@ -196,6 +209,7 @@ impl MeshCueApp {
         self.calibration.phase_1_total = plan.phase_1.len();
         self.calibration.candidate_pool = plan.phase_2;
         self.calibration.track_community = plan.track_community;
+        self.calibration.genre_labels = genre_labels;
         self.calibration.recent_communities.clear();
         self.calibration.total_pairs_planned = estimated_total;
         self.calibration.total_historical = existing_pairs.len();
@@ -265,6 +279,34 @@ impl MeshCueApp {
                     log::info!("[CALIBRATION] Stored pair id={} ({} vs {}, choice={}), total={}", id, track_a_id, track_b_id, choice, count);
                 }
                 Err(e) => log::warn!("[CALIBRATION] Failed to store pair: {}", e),
+            }
+
+            // Contradiction detection (Change C): when the user's answer
+            // disagrees with a strong genre-prior expectation, log a
+            // [CALIBRATION/SURPRISE] line. Either the user has taste that
+            // diverges from the Discogs prior (valid, high-signal training
+            // data) or they misclicked (worth investigating). Either way,
+            // the answer is more informative than a prior-consistent one.
+            // Pure diagnostic — no behaviour change.
+            if choice == 0 || choice == 1 {
+                let prior_a = self.calibration.genre_labels.get(&track_a_id)
+                    .map(|l| aggression::genre_aggression_score(l));
+                let prior_b = self.calibration.genre_labels.get(&track_b_id)
+                    .map(|l| aggression::genre_aggression_score(l));
+                if let (Some(pa), Some(pb)) = (prior_a, prior_b) {
+                    let gap = pa - pb;
+                    if gap.abs() > 0.2 {
+                        let expected_choice = if gap > 0.0 { 0 } else { 1 };
+                        if choice != expected_choice {
+                            log::info!(
+                                "[CALIBRATION/SURPRISE] Answer contradicts genre prior: user chose {}, prior expected {} (prior_a={:.2}, prior_b={:.2}, gap={:+.2})",
+                                if choice == 0 { "A" } else { "B" },
+                                if expected_choice == 0 { "A" } else { "B" },
+                                pa, pb, gap,
+                            );
+                        }
+                    }
+                }
             }
 
             // Online SGD step
@@ -647,6 +689,7 @@ impl MeshCueApp {
                 &self.calibration.weights,
                 &self.calibration.track_community,
                 &recent,
+                &self.calibration.genre_labels,
             )?
         };
 

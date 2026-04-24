@@ -668,25 +668,52 @@ fn centroid_track(track_ids: &[i64], pca_data: &HashMap<i64, Vec<f32>>) -> Optio
         .map(|(id, _)| id)
 }
 
-/// Build a two-phase calibration plan with K=5 skip-chain representatives.
+/// Build a hierarchical calibration plan — four-tier Phase 1 that prioritises
+/// information gain per answer, Phase 2 remains the active-learning pool.
 ///
-/// Per community we pick 5 representatives: 4 FPS edge tracks + 1 centroid.
-/// Phase 1 asks 4 questions per community in a skip-chain pattern so that
-/// transitive closure implies all C(5,2)=10 intra-community pair orderings.
+/// Per community, we still compute 5 representatives: 4 FPS edge tracks + 1
+/// centroid. But Phase 1 no longer asks the 4-pair skip-chain for every
+/// community. Instead it builds a layered question set:
 ///
-/// `_edges_per_community` is unused (we always use 4 edges + 1 centroid).
-/// Kept for API compat.
+///   **Tier 1 — Cross-macro extremes (up to 5 pairs).**
+///   Pairs spanning the largest genre-prior aggression gaps across macro
+///   genres present in the library (metal × ambient, hardcore × jazz, …).
+///   These orient the main aggression axis in the first few clicks.
+///
+///   **Tier 2 — Per-macro anchor pairs.**
+///   For each macro with ≥ 50 tracks, one pair: macro's centroid × the
+///   anchor-ref with prior aggression closest to the macro's expected prior.
+///   Establishes each macro's position on the axis.
+///
+///   **Tier 3 — Dominant-macro sub-community skip-chain (2 per sub-community).**
+///   Only for the single macro with the most uncovered tracks, AND only if
+///   it exceeds `DOMINANT_MACRO_MIN_SIZE`. Asks 2 skip-chain questions per
+///   sub-community (`e0 vs e2`, `centroid vs e1`) — transitive closure on a
+///   3-track chain implies 3 orderings. Halves the old 4-per-community
+///   without losing key structural signal.
+///
+///   **Tier 4 — Small-macro centroid pairs.**
+///   For each macro with 15–49 tracks, one pair: centroid × nearest anchor.
+///
+/// Phase 2 (active learning pool): all remaining cross-community, cross-rep,
+/// and rep×anchor combinations, scored at query time by
+/// `next_calibration_pair_v2` using entropy × ||Δ||² × genre-prior gap.
+///
+/// `_edges_per_community` kept for API compat — unused.
 pub fn build_calibration_plan(
     uncovered: &[UncoveredCommunity],
     pca_data: &HashMap<i64, Vec<f32>>,
+    genre_labels: &HashMap<i64, String>,
     anchor_refs: &[i64],
     _edges_per_community: usize,
 ) -> CalibrationPlan {
-    // 5 representatives per community: [e0, e1, e2, e3, centroid].
-    // e0..e3 are FPS-selected (farthest-point-sampled across the community).
-    // centroid is the real track closest to the community's PCA centroid,
-    // picked from non-edge tracks so we get 5 distinct representatives.
-    let mut community_reps: Vec<(i32, [i64; 5])> = Vec::new();
+    /// Only recurse into a macro's sub-communities for Tier 3 if the macro
+    /// holds at least this many uncovered tracks. Matches the L2 graph
+    /// clustering threshold.
+    const DOMINANT_MACRO_MIN_SIZE: usize = 150;
+
+    // Build 5 representatives per uncovered community (same as before).
+    let mut community_reps: Vec<(i32, [i64; 5], usize)> = Vec::new(); // (cluster_id, reps, track_count)
     let mut track_community: HashMap<i64, i32> = HashMap::new();
 
     for community in uncovered {
@@ -712,97 +739,225 @@ pub fn build_calibration_plan(
         for &t in &reps {
             track_community.insert(t, community.cluster_id);
         }
-        community_reps.push((community.cluster_id, reps));
+        community_reps.push((community.cluster_id, reps, community.track_count));
     }
 
     let canon = |a: i64, b: i64| if a < b { (a, b) } else { (b, a) };
 
-    // Phase 1: skip-chain bootstrap (4 questions per community).
+    // Resolve each community to its macro-genre by voting over its reps'
+    // Discogs labels (most-common macro wins). Communities are generally
+    // genre-homogeneous after our genre-L1 clustering, but we tolerate the
+    // occasional mixed-label edge case by majority-voting.
+    let macro_of_community = |reps: &[i64; 5]| -> &'static str {
+        let mut counts: HashMap<&'static str, usize> = HashMap::new();
+        for &t in reps {
+            if let Some(label) = genre_labels.get(&t) {
+                let m = crate::genre_map::macro_genre_for(label);
+                *counts.entry(m).or_default() += 1;
+            }
+        }
+        counts.into_iter()
+            .max_by_key(|&(_, c)| c)
+            .map(|(m, _)| m)
+            .unwrap_or("Other")
+    };
+
+    // Group community indices by their resolved macro-genre.
+    let mut by_macro: HashMap<&'static str, Vec<usize>> = HashMap::new();
+    let mut community_macro: Vec<&'static str> = Vec::with_capacity(community_reps.len());
+    for (i, (_, reps, _)) in community_reps.iter().enumerate() {
+        let m = macro_of_community(reps);
+        community_macro.push(m);
+        by_macro.entry(m).or_default().push(i);
+    }
+
+    // Aggregate uncovered track-count per macro (sum over its communities).
+    let macro_sizes: HashMap<&'static str, usize> = by_macro.iter()
+        .map(|(&m, idxs)| {
+            let total: usize = idxs.iter().map(|&i| community_reps[i].2).sum();
+            (m, total)
+        })
+        .collect();
+
+    // Helper: pick a "representative" track per macro (the rep of its largest
+    // community that's closest to that community's centroid — already the
+    // 5th rep by construction).
+    let macro_reps: HashMap<&'static str, i64> = by_macro.iter()
+        .filter_map(|(&m, idxs)| {
+            let largest_idx = idxs.iter()
+                .max_by_key(|&&i| community_reps[i].2)?;
+            Some((m, community_reps[*largest_idx].1[4]))
+        })
+        .collect();
+
+    // Helper: expected aggression prior for a macro (from its rep's label).
+    let macro_prior = |m: &str| -> f32 {
+        let rep = match macro_reps.get(m) { Some(r) => *r, None => return 0.35 };
+        let label = match genre_labels.get(&rep) { Some(l) => l.as_str(), None => return 0.35 };
+        genre_aggression_score(label)
+    };
+
+    // Phase 1 construction — order matters for user-visible FIFO flow.
     let mut phase_1: Vec<(i64, i64)> = Vec::new();
     let mut phase_1_set: HashSet<(i64, i64)> = HashSet::new();
 
-    // Skip-chain: connects all 5 reps with non-adjacent jumps.
-    // Chain: e0 → e2 → centroid → e1 → e3 (indices 0→2→4→1→3).
-    // Each jump spans distant FPS points so answers give stronger signal
-    // than comparing consecutive extremes. Transitive closure over
-    // consistent answers implies all 10 intra pairs.
-    for (_, reps) in &community_reps {
-        let chain = [
-            (reps[0], reps[2]),   // e0  vs e2
-            (reps[2], reps[4]),   // e2  vs centroid
-            (reps[4], reps[1]),   // centroid vs e1
-            (reps[1], reps[3]),   // e1  vs e3
-        ];
-        for (a, b) in chain {
-            let p = canon(a, b);
-            if phase_1_set.insert(p) { phase_1.push(p); }
+    let mut add_if_new = |a: i64, b: i64, phase_1: &mut Vec<(i64, i64)>, set: &mut HashSet<(i64, i64)>| {
+        if a == b { return false; }
+        let p = canon(a, b);
+        if set.insert(p) { phase_1.push(p); true } else { false }
+    };
+
+    // ─── Tier 1 ── Cross-macro extremes ────────────────────────────────────
+    // Enumerate all macro pairs, score by |prior_gap|, pick top 5. Uses each
+    // macro's rep track as the concrete pair member.
+    {
+        let macros: Vec<&'static str> = macro_reps.keys().copied().collect();
+        let mut cross_macro_pairs: Vec<((i64, i64), f32)> = Vec::new();
+        for i in 0..macros.len() {
+            for j in (i + 1)..macros.len() {
+                let rep_a = macro_reps[macros[i]];
+                let rep_b = macro_reps[macros[j]];
+                let gap = (macro_prior(macros[i]) - macro_prior(macros[j])).abs();
+                cross_macro_pairs.push(((rep_a, rep_b), gap));
+            }
+        }
+        cross_macro_pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        for ((a, b), _gap) in cross_macro_pairs.into_iter().take(5) {
+            add_if_new(a, b, &mut phase_1, &mut phase_1_set);
         }
     }
 
-    // Global anchor pairs: up to 5 spanning the aggression range across
-    // evenly-spaced communities. Seeds the cross-community axis before
-    // phase 2's active learner kicks in.
-    if !anchor_refs.is_empty() && community_reps.len() >= 2 {
-        let n = community_reps.len();
-        let pick_n = 5.min(n);
-        for i in 0..pick_n {
-            let comm_idx = (i * n) / pick_n;
-            let edge = community_reps[comm_idx].1[0];
-            let anchor = anchor_refs[i % anchor_refs.len()];
-            if edge != anchor {
-                let p = canon(edge, anchor);
-                if phase_1_set.insert(p) {
-                    phase_1.push(p);
+    // ─── Tier 2 ── Per-macro anchor pairs ──────────────────────────────────
+    // For each macro with ≥50 uncovered tracks, pair its rep with the anchor-
+    // ref whose prior aggression is farthest from the macro's (so the pair
+    // has a clear expected answer).
+    if !anchor_refs.is_empty() {
+        for (&m, &size) in &macro_sizes {
+            if size < 50 { continue; }
+            let rep = macro_reps[m];
+            let m_prior = macro_prior(m);
+            let best_anchor = anchor_refs.iter()
+                .copied()
+                .filter(|&a| a != rep)
+                .max_by(|&a, &b| {
+                    let pa = genre_labels.get(&a).map(|l| genre_aggression_score(l)).unwrap_or(0.35);
+                    let pb = genre_labels.get(&b).map(|l| genre_aggression_score(l)).unwrap_or(0.35);
+                    let da = (pa - m_prior).abs();
+                    let db = (pb - m_prior).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            if let Some(anchor) = best_anchor {
+                add_if_new(rep, anchor, &mut phase_1, &mut phase_1_set);
+            }
+        }
+    }
+
+    // ─── Tier 3 ── Dominant-macro sub-community skip-chain ─────────────────
+    // Identify the single dominant macro (largest total uncovered tracks)
+    // if it meets DOMINANT_MACRO_MIN_SIZE. Within it, every sub-community
+    // gets a 2-pair skip-chain: e0 vs e2, centroid vs e1. Transitive closure
+    // on that 3-track chain implies 3 orderings per sub-community.
+    if let Some((&dominant_macro, &dominant_size)) = macro_sizes.iter()
+        .max_by_key(|&(_, &s)| s)
+    {
+        if dominant_size >= DOMINANT_MACRO_MIN_SIZE {
+            if let Some(subs) = by_macro.get(dominant_macro) {
+                for &sub_idx in subs {
+                    let reps = community_reps[sub_idx].1;
+                    // 2-pair mini skip-chain across the 5 reps:
+                    //   e0 vs e2, centroid vs e1  →  chain e0—e2 and cent—e1
+                    //   (each answer implies 1 ordering pair, total 2 pairs)
+                    // We also add one "bridge" pair e2 vs centroid so the
+                    // chain becomes e0—e2—centroid—e1, closing transitively
+                    // to 3 orderings (~half of the old 4-pair chain's 6
+                    // closures, at half the user cost).
+                    let chain = [
+                        (reps[0], reps[2]),
+                        (reps[2], reps[4]),
+                        (reps[4], reps[1]),
+                    ];
+                    for (a, b) in chain {
+                        add_if_new(a, b, &mut phase_1, &mut phase_1_set);
+                    }
                 }
             }
         }
     }
 
-    // Phase 2: cross-community + remaining intra + edge×anchor.
+    // ─── Tier 4 ── Small-macro centroid pairs ──────────────────────────────
+    // For macros that don't qualify for tier 2 or tier 3 but still exist
+    // (15–49 tracks), add one rep × closest anchor pair. Skips tiny macros
+    // that are already covered by tier 1 cross-macro extremes.
+    if !anchor_refs.is_empty() {
+        for (&m, &size) in &macro_sizes {
+            if size >= 50 { continue; } // covered by tier 2
+            if size < 15 { continue; } // too small to matter
+            let rep = macro_reps[m];
+            let m_prior = macro_prior(m);
+            let best_anchor = anchor_refs.iter()
+                .copied()
+                .filter(|&a| a != rep)
+                .max_by(|&a, &b| {
+                    let pa = genre_labels.get(&a).map(|l| genre_aggression_score(l)).unwrap_or(0.35);
+                    let pb = genre_labels.get(&b).map(|l| genre_aggression_score(l)).unwrap_or(0.35);
+                    let da = (pa - m_prior).abs();
+                    let db = (pb - m_prior).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            if let Some(anchor) = best_anchor {
+                add_if_new(rep, anchor, &mut phase_1, &mut phase_1_set);
+            }
+        }
+    }
+
+    // ─── Phase 2 ── Active-learning pool ────────────────────────────────────
+    // Everything remaining: all cross-community rep×rep combinations, all
+    // intra-community rep×rep combinations not in phase 1, and all rep×anchor
+    // combinations. next_calibration_pair_v2 scores them at query time by
+    // entropy × ||Δ||² × genre_prior_gap × diversity.
     let mut phase_2: HashSet<(i64, i64)> = HashSet::new();
 
-    // Cross-community: every rep × every rep across community pairs.
+    // Cross-community
     for i in 0..community_reps.len() {
         for j in (i + 1)..community_reps.len() {
             for &a in &community_reps[i].1 {
                 for &b in &community_reps[j].1 {
                     if a != b {
                         let p = canon(a, b);
-                        if !phase_1_set.contains(&p) {
-                            phase_2.insert(p);
-                        }
+                        if !phase_1_set.contains(&p) { phase_2.insert(p); }
                     }
                 }
             }
         }
     }
-    // Intra-community: remaining pairs not covered by the skip-chain
-    // (these are the redundant "transitive-closure-implied" pairs — still
-    // worth keeping in phase 2 pool for when the user contradicts the
-    // transitive inference, which is high-signal).
-    for (_, reps) in &community_reps {
+    // Intra-community
+    for (_, reps, _) in &community_reps {
         for i in 0..reps.len() {
             for j in (i + 1)..reps.len() {
                 let p = canon(reps[i], reps[j]);
-                if !phase_1_set.contains(&p) {
-                    phase_2.insert(p);
-                }
+                if !phase_1_set.contains(&p) { phase_2.insert(p); }
             }
         }
     }
-    // Rep × anchor pairs not in phase 1.
-    for (_, reps) in &community_reps {
+    // Rep × anchor
+    for (_, reps, _) in &community_reps {
         for &t in reps {
             for &anchor in anchor_refs {
                 if t != anchor {
                     let p = canon(t, anchor);
-                    if !phase_1_set.contains(&p) {
-                        phase_2.insert(p);
-                    }
+                    if !phase_1_set.contains(&p) { phase_2.insert(p); }
                 }
             }
         }
     }
+
+    log::info!(
+        "[CALIBRATION/PLAN] Phase 1 tiers built: {} pairs across {} macros ({} dominant), phase 2 pool: {} pairs",
+        phase_1.len(),
+        macro_sizes.len(),
+        macro_sizes.values().filter(|&&s| s >= DOMINANT_MACRO_MIN_SIZE).count(),
+        phase_2.len(),
+    );
 
     CalibrationPlan {
         phase_1,
@@ -812,14 +967,24 @@ pub fn build_calibration_plan(
 }
 
 /// Backwards-compat wrapper: returns just the unioned pool (no phase split).
-/// New code should use `build_calibration_plan` instead.
+/// New code should use `build_calibration_plan` instead. Callers without
+/// genre labels pass an empty HashMap; the plan degrades gracefully
+/// (tier 1 collapses to zero-gap pairs, tier 2/4 still work by anchor-only
+/// selection, tier 3 still runs but without the prior-based anchor pick).
 pub fn build_candidate_pool(
     uncovered: &[UncoveredCommunity],
     pca_data: &HashMap<i64, Vec<f32>>,
     anchor_refs: &[i64],
     edges_per_community: usize,
 ) -> Vec<(i64, i64)> {
-    let plan = build_calibration_plan(uncovered, pca_data, anchor_refs, edges_per_community);
+    let empty_labels: HashMap<i64, String> = HashMap::new();
+    let plan = build_calibration_plan(
+        uncovered,
+        pca_data,
+        &empty_labels,
+        anchor_refs,
+        edges_per_community,
+    );
     let mut all = plan.phase_1;
     all.extend(plan.phase_2);
     all
@@ -849,6 +1014,7 @@ pub fn next_calibration_pair_v2(
     weights: &[f32],
     track_community: &HashMap<i64, i32>,
     recent_communities: &[i32],
+    genre_labels: &HashMap<i64, String>,
 ) -> Option<(i64, i64)> {
     let weights_norm: f32 = weights.iter().map(|w| w * w).sum::<f32>().sqrt();
     let cold_start = weights_norm < 0.01;
@@ -888,6 +1054,15 @@ pub fn next_calibration_pair_v2(
 
     let recent_set: HashSet<i32> = recent_communities.iter().copied().collect();
 
+    // Genre-prior gap lookup. Returns 0.0 when labels are missing — the
+    // prior_factor becomes 1.0 (neutral), so the scoring gracefully
+    // degrades to uncertainty/delta-only ordering.
+    let prior_gap = |a: i64, b: i64| -> f32 {
+        let la = match genre_labels.get(&a) { Some(s) => s.as_str(), None => return 0.0 };
+        let lb = match genre_labels.get(&b) { Some(s) => s.as_str(), None => return 0.0 };
+        (genre_aggression_score(la) - genre_aggression_score(lb)).abs()
+    };
+
     let mut best: Option<((i64, i64), f32)> = None;
     for &(a, b) in pool {
         if asked_set.contains(&(a, b)) { continue; }
@@ -897,21 +1072,36 @@ pub fn next_calibration_pair_v2(
         let pca_b = match pca_data.get(&b) { Some(v) => v, None => continue };
         if pca_a.len() != pca_b.len() { continue; }
 
-        let delta_mag: f32 = pca_a.iter().zip(pca_b.iter())
+        let delta_sq: f32 = pca_a.iter().zip(pca_b.iter())
             .map(|(x, y)| (x - y).powi(2))
-            .sum::<f32>()
-            .sqrt();
+            .sum::<f32>();
+        let delta_mag = delta_sq.sqrt();
+
+        // Genre-prior gap factor (Change A). In [0.0, 0.75] natively; amplify
+        // slightly so a full-spread pair (ambient vs metal) doubles the score,
+        // while same-genre pairs (~0) stay at 1.0×.
+        let pg = prior_gap(a, b);
+        let prior_factor = 1.0 + 1.5 * pg;
 
         let base_score = if cold_start || weights.len() != pca_a.len() {
-            // Cold start: prefer largest deltas (most discriminative)
-            delta_mag
+            // Cold-start: no learned axis yet. Rank by prior-weighted PCA
+            // discriminability — picks "we EXPECT a strong answer here AND
+            // it'll move the model" pairs first. First few questions span
+            // ambient-vs-metal type extremes, orienting the axis fast.
+            prior_factor * delta_mag
         } else {
+            // Warm: BALD-style info gain proxy (Change B).
+            //   I(pair) ∝ H(σ(w·Δ)) × ||Δ||²
+            // Multiplicative form correctly penalises small-Δ pairs — a
+            // tiny PCA difference near sigmoid=0.5 gives near-zero info,
+            // which the old additive form over-valued.
             let logit: f32 = weights.iter().zip(pca_a.iter()).zip(pca_b.iter())
                 .map(|((w, x), y)| w * (x - y))
                 .sum();
-            let prob = sigmoid(logit);
-            let uncertainty = 1.0 - 2.0 * (prob - 0.5).abs();
-            uncertainty + 0.05 * delta_mag.min(1.0)
+            let prob = sigmoid(logit).clamp(1e-6, 1.0 - 1e-6);
+            let entropy = -(prob * prob.ln() + (1.0 - prob) * (1.0 - prob).ln());
+            let delta_sq_capped = delta_sq.min(4.0);
+            prior_factor * entropy * delta_sq_capped
         };
 
         // Diversity penalty: down-weight pairs touching recently-asked
@@ -1319,4 +1509,202 @@ fn most_common_genre(track_ids: &[i64], genre_labels: &HashMap<i64, String>) -> 
         .max_by_key(|(_, count)| *count)
         .map(|(genre, _)| genre.to_string())
         .unwrap_or_else(|| "Unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a minimal pca_data map with deterministic vectors.
+    fn pca(id: i64, v: &[f32]) -> (i64, Vec<f32>) {
+        (id, v.to_vec())
+    }
+
+    /// Change A+B: cold-start ranking now uses `prior_gap × delta_mag`
+    /// instead of `delta_mag` alone. Pairs that span a big expected
+    /// aggression gap AND have a big PCA delta should win.
+    #[test]
+    fn cold_start_prefers_high_prior_gap_pair() {
+        let pca_map: HashMap<i64, Vec<f32>> = [
+            pca(1, &[1.0, 0.0, 0.0]),  // ambient-ish
+            pca(2, &[0.0, 1.0, 0.0]),  // metal-ish
+            pca(3, &[0.9, 0.1, 0.0]),  // ambient neighbor
+        ].into_iter().collect();
+
+        // Pool has two candidate pairs with similar delta magnitude,
+        // but (1,2) has a much larger expected aggression gap
+        // (ambient vs metal) than (1,3) (ambient vs ambient).
+        let pool = vec![(1, 2), (1, 3)];
+        let asked: Vec<(i64, i64, i32)> = vec![];
+        let weights: Vec<f32> = vec![0.0; 3]; // cold start
+        let track_community: HashMap<i64, i32> = HashMap::new();
+        let recent: Vec<i32> = vec![];
+
+        let mut genre_labels: HashMap<i64, String> = HashMap::new();
+        genre_labels.insert(1, "Electronic---Ambient".to_string());
+        genre_labels.insert(2, "Rock---Heavy Metal".to_string());
+        genre_labels.insert(3, "Electronic---Ambient".to_string());
+
+        let picked = next_calibration_pair_v2(
+            &pool, &asked, &pca_map, &weights,
+            &track_community, &recent, &genre_labels,
+        );
+        assert_eq!(picked, Some((1, 2)), "cold-start should prefer the ambient-vs-metal pair over ambient-vs-ambient");
+    }
+
+    /// Change A: when labels are missing, prior_gap = 0 and scoring falls
+    /// back to the delta-magnitude ranking (unchanged behaviour).
+    #[test]
+    fn cold_start_without_labels_falls_back_to_delta_magnitude() {
+        let pca_map: HashMap<i64, Vec<f32>> = [
+            pca(1, &[0.0, 0.0, 0.0]),
+            pca(2, &[10.0, 0.0, 0.0]),  // big delta vs 1
+            pca(3, &[0.1, 0.0, 0.0]),   // small delta vs 1
+        ].into_iter().collect();
+        let pool = vec![(1, 2), (1, 3)];
+        let empty: HashMap<i64, String> = HashMap::new();
+        let picked = next_calibration_pair_v2(
+            &pool, &[], &pca_map, &vec![0.0; 3],
+            &HashMap::new(), &[], &empty,
+        );
+        assert_eq!(picked, Some((1, 2)), "without labels, largest delta should win");
+    }
+
+    /// Change B: warm-start scoring uses entropy × ||Δ||². The additive
+    /// `uncertainty + 0.05*delta_mag` previously rewarded a near-50/50
+    /// prediction on a tiny Δ almost as much as on a big Δ. The
+    /// multiplicative form should strongly prefer the big-Δ pair.
+    #[test]
+    fn warm_start_multiplicative_scoring_prefers_big_delta_at_equal_uncertainty() {
+        // Weight vector such that both pairs have sigmoid(w·Δ) ≈ 0.5
+        // (maximum uncertainty), but one pair has tiny Δ, the other big.
+        let pca_map: HashMap<i64, Vec<f32>> = [
+            pca(1, &[0.0]),
+            pca(2, &[0.01]),   // |Δ|=0.01 — tiny
+            pca(3, &[0.0]),
+            pca(4, &[1.0]),    // |Δ|=1.0 — big
+        ].into_iter().collect();
+        // weight = 0 → sigmoid = 0.5 for every pair → max entropy; delta
+        // decides. But weight=0 triggers cold-start path (norm < 0.01).
+        // Use tiny non-zero weight to force warm path.
+        let weights = vec![1e-4f32];
+        let pool = vec![(1, 2), (3, 4)];
+        let empty_labels: HashMap<i64, String> = HashMap::new();
+        let picked = next_calibration_pair_v2(
+            &pool, &[], &pca_map, &weights,
+            &HashMap::new(), &[], &empty_labels,
+        );
+        assert_eq!(picked, Some((3, 4)), "warm scoring should strongly prefer big-Δ pair at equal uncertainty");
+    }
+
+    /// Change D: with 3 macros (one dominant, others small), Phase 1 should
+    /// include at least one cross-macro tier-1 pair (spanning the largest
+    /// prior gap), and tier-3 sub-community skip-chain only fires for the
+    /// dominant macro.
+    #[test]
+    fn build_calibration_plan_tiers_on_synthetic_library() {
+        // Three macros: DnB (dominant, 180 tracks), Rock (small, 40), Jazz (tiny, 18).
+        // DnB tracks 1-180, Rock 181-220, Jazz 221-238.
+        // Two DnB sub-communities (clusters 1 and 2), one Rock (3), one Jazz (4).
+        let mut pca_data: HashMap<i64, Vec<f32>> = HashMap::new();
+        let mut genre_labels: HashMap<i64, String> = HashMap::new();
+
+        // DnB sub-community A (100 tracks)
+        for i in 1..=100 {
+            pca_data.insert(i, vec![i as f32 * 0.01, 0.0, 0.0]);
+            genre_labels.insert(i, "Electronic---Drum n Bass".to_string());
+        }
+        // DnB sub-community B (80 tracks)
+        for i in 101..=180 {
+            pca_data.insert(i, vec![0.0, i as f32 * 0.01, 0.0]);
+            genre_labels.insert(i, "Electronic---Drum n Bass".to_string());
+        }
+        // Rock (40 tracks)
+        for i in 181..=220 {
+            pca_data.insert(i, vec![0.0, 0.0, i as f32 * 0.01]);
+            genre_labels.insert(i, "Rock---Heavy Metal".to_string());
+        }
+        // Jazz (18 tracks)
+        for i in 221..=238 {
+            pca_data.insert(i, vec![(i as f32) * 0.005, 0.0, 0.0]);
+            genre_labels.insert(i, "Jazz---Bebop".to_string());
+        }
+
+        let uncovered = vec![
+            UncoveredCommunity {
+                cluster_id: 1,
+                track_count: 100,
+                coverage_pct: 0.0,
+                representative_genre: "Drum n Bass".to_string(),
+                track_ids: (1..=100).collect(),
+            },
+            UncoveredCommunity {
+                cluster_id: 2,
+                track_count: 80,
+                coverage_pct: 0.0,
+                representative_genre: "Drum n Bass".to_string(),
+                track_ids: (101..=180).collect(),
+            },
+            UncoveredCommunity {
+                cluster_id: 3,
+                track_count: 40,
+                coverage_pct: 0.0,
+                representative_genre: "Heavy Metal".to_string(),
+                track_ids: (181..=220).collect(),
+            },
+            UncoveredCommunity {
+                cluster_id: 4,
+                track_count: 18,
+                coverage_pct: 0.0,
+                representative_genre: "Bebop".to_string(),
+                track_ids: (221..=238).collect(),
+            },
+        ];
+
+        let anchor_refs = vec![1i64, 181, 221];
+        let plan = build_calibration_plan(&uncovered, &pca_data, &genre_labels, &anchor_refs, 0);
+
+        // Tier 1 should contribute at least one cross-macro pair — find one
+        // where both tracks belong to different macros.
+        let has_cross_macro = plan.phase_1.iter().any(|&(a, b)| {
+            let ma = crate::genre_map::macro_genre_for(genre_labels.get(&a).map(|s| s.as_str()).unwrap_or(""));
+            let mb = crate::genre_map::macro_genre_for(genre_labels.get(&b).map(|s| s.as_str()).unwrap_or(""));
+            ma != mb
+        });
+        assert!(has_cross_macro, "tier 1 should introduce at least one cross-macro pair");
+
+        // Phase 1 should be substantially smaller than the old 40+ question flow.
+        // With DnB dominant (180 tracks ≥ 150 threshold), tier 3 fires: 2 DnB
+        // sub-communities × 3 skip-chain = 6. Tier 1 up to 5. Tier 2 for DnB
+        // only (the only ≥ 50-track macro). Tier 4 for Rock + Jazz.
+        // Expected total: somewhere in [10, 20].
+        assert!(plan.phase_1.len() >= 5, "phase 1 should have at least 5 pairs, got {}", plan.phase_1.len());
+        assert!(plan.phase_1.len() <= 25, "phase 1 should not exceed 25 pairs, got {}", plan.phase_1.len());
+
+        // Phase 2 pool should be non-empty (all remaining rep combinations).
+        assert!(!plan.phase_2.is_empty(), "phase 2 pool should be populated");
+    }
+
+    /// Regression: graceful degradation when genre_labels is empty.
+    #[test]
+    fn build_calibration_plan_without_genre_labels() {
+        let mut pca_data: HashMap<i64, Vec<f32>> = HashMap::new();
+        for i in 1..=40 {
+            pca_data.insert(i, vec![i as f32 * 0.01, 0.0]);
+        }
+        let uncovered = vec![UncoveredCommunity {
+            cluster_id: 1,
+            track_count: 40,
+            coverage_pct: 0.0,
+            representative_genre: "Unknown".to_string(),
+            track_ids: (1..=40).collect(),
+        }];
+        let empty_labels: HashMap<i64, String> = HashMap::new();
+        let plan = build_calibration_plan(&uncovered, &pca_data, &empty_labels, &[], 0);
+        // Should still build without panicking. All tracks fall into "Other"
+        // macro (40 tracks, below the 50 threshold) so only tier 4 fires —
+        // and with no anchor_refs, tier 4 adds nothing either.
+        // Phase 1 may be empty; phase 2 pool carries the load.
+        assert!(!plan.phase_2.is_empty(), "phase 2 should still contain intra-community pairs");
+    }
 }

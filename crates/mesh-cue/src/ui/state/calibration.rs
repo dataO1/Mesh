@@ -112,6 +112,11 @@ pub struct CalibrationState {
     /// Map: track_id → community_id. Used by the diversity heuristic so the
     /// active learner doesn't keep picking pairs from the same community.
     pub track_community: std::collections::HashMap<i64, i32>,
+    /// Map: track_id → full Discogs EffNet label ("Super---Sub").
+    /// Populated at plan time from each track's ml_analysis.genre_scores[0].
+    /// Used by the active learner to weight pair scores by prior aggression
+    /// gap, and by the answer handler to detect contradicting answers.
+    pub genre_labels: std::collections::HashMap<i64, String>,
     /// Communities asked about in the last few rounds (for diversity rotation).
     pub recent_communities: VecDeque<i32>,
     /// Initial phase sizes (frozen at plan time, used for progress display).
@@ -166,6 +171,7 @@ impl Default for CalibrationState {
             phase_1_total: 0,
             candidate_pool: Vec::new(),
             track_community: std::collections::HashMap::new(),
+            genre_labels: std::collections::HashMap::new(),
             recent_communities: VecDeque::new(),
             anchor_total: 0,
             intra_total: 0,

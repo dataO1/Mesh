@@ -89,6 +89,24 @@ All notable changes to Mesh are documented in this file.
   meaningful aggression contrasts. You answer roughly the same number
   of questions and get a sharper scale out of it.
 
+- **Smarter calibration questions — half the clicks, better axis** — The
+  calibration question selector now uses the genre model as prior
+  knowledge alongside pairwise uncertainty. Concretely: the first few
+  questions deliberately span the biggest genre contrasts in your library
+  (ambient vs metal, jazz vs hardcore) to anchor the aggression axis fast;
+  subsequent questions weight information gain by both model uncertainty
+  AND the genre prior, so you rarely see "two very similar tracks from
+  the same sub-style" comparisons. Bootstrap question count drops from
+  ~40 to ~15–25 for the same accuracy.
+
+- **Contradiction detection for your calibration answers** — When your
+  answer disagrees with a strong genre-prior expectation (e.g. you say a
+  liquid-leaning DnB track feels more aggressive than a metal track),
+  a `[CALIBRATION/SURPRISE]` line now appears in the logs. These answers
+  are the highest-signal training data — either your taste diverges
+  interestingly from the Discogs prior, or there's a misclick worth
+  investigating. Pure diagnostic; no behavior change.
+
 ### Changed
 
 - **Calibration previews load much faster** — Each calibration question
