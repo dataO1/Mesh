@@ -63,12 +63,15 @@ All notable changes to Mesh are documented in this file.
   communities, or one community swallowing more than half the library).
   Only a healthy roll gets cached.
 
-- **Clustering now runs on PCA vectors, not the 2D projection** — Previously
-  communities were detected from the 2D layout, which collapsed genuinely
-  distinct groups into visual blobs. Clustering on the full PCA embedding
-  preserves the separations the suggestion algorithm cares about, giving
-  more consistent and more meaningful subgenre groups (typically 12–15 for
-  a 900-track library). 2D positions are still used for cluster colors.
+- **Clustering now uses the t-SNE/UMAP 2D layout, not the raw PCA space** —
+  An earlier attempt to cluster in 128-D PCA space directly ran into the
+  curse of dimensionality: distances between all pairs compressed together,
+  HDBSCAN found only the very densest pockets, and most of the library got
+  labeled as noise (visible as ~3 colored clusters surrounded by dim grey
+  dots). t-SNE and UMAP are designed to pull similar tracks close and push
+  dissimilar ones apart, so clustering in the 2D layout gives HDBSCAN a
+  separation structure it can actually work with. The retry+gate logic
+  stays in place to recover from 2D's occasional collapse rolls.
 
 - **Cluster granularity is now fixed, not scaled to library size** — The
   minimum cluster size is a fixed 15 tracks regardless of whether your

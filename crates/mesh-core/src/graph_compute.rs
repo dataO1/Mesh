@@ -205,9 +205,11 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v2: clustering moved from 2D positions to PCA space + fixed min_cluster_size
+    // v3: clustering is back in 2D (128-D PCA clustering collapsed to 3
+    // communities + lots of noise via curse-of-dimensionality). Retry+gate
+    // stays in place to catch 2D's occasional collapse rolls.
     format!(
-        "v2_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v3_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -625,28 +627,34 @@ const MAX_CLUSTERING_ATTEMPTS: usize = 5;
 /// same granularity of distinction at a glance.
 const MIN_CLUSTER_SIZE: usize = 15;
 
-/// Multi-scale consensus clustering on high-dimensional PCA vectors.
+/// Multi-scale consensus clustering on the 2D t-SNE/UMAP projection.
 ///
-/// Clusters on the PCA embeddings directly (not the 2D projection), then
-/// uses the 2D positions only for deriving cluster colors. 2D projections
-/// collapse distinct communities into overlapping blobs; clustering in PCA
-/// space preserves the separation the suggestion algorithm actually cares
-/// about.
+/// We cluster in the 2D space, not in the high-dimensional PCA space. t-SNE
+/// and UMAP are explicitly designed to pull similar tracks close and push
+/// dissimilar ones apart, so the 2D layout already contains the separation
+/// structure we want communities to follow. Clustering in 128-D directly
+/// hits the curse of dimensionality — Euclidean distances become nearly
+/// uniform across pairs, HDBSCAN finds only the very densest pockets, and
+/// most of the library gets labeled as noise.
+///
+/// `pca_data` is accepted for API symmetry with `compute_layout_cached` but
+/// not used for clustering; it's kept so future enhancements (e.g.,
+/// clustering on a low-D PCA slice) don't require a signature change.
 ///
 /// Runs HDBSCAN at 7 different min_samples values and builds a co-occurrence
 /// matrix. Tracks that consistently cluster together (>= 70% of runs) are
 /// connected via union-find into robust communities.
 ///
-/// HDBSCAN has internal non-determinism; occasional rolls collapse the
-/// library into 1–3 mega-communities. We run up to MAX_CLUSTERING_ATTEMPTS
-/// rolls, accept the first that passes the quality gate, and fall back to
-/// the best-scoring roll if none pass.
+/// HDBSCAN has internal non-determinism; occasional rolls still collapse
+/// the library into 1–3 mega-communities even in 2D. We run up to
+/// MAX_CLUSTERING_ATTEMPTS rolls, accept the first that passes the quality
+/// gate, and fall back to the best-scoring roll if none pass.
 ///
 /// Cluster colors are derived from each community's average 2D position —
 /// mapped to a perceptual hue wheel. This produces deterministic colors
 /// that correlate with the visual layout.
 pub fn run_consensus_clustering(
-    pca_data: &[(i64, Vec<f32>)],
+    _pca_data: &[(i64, Vec<f32>)],
     positions: &HashMap<i64, (f32, f32)>,
 ) -> ClusterResult {
     let n = positions.len();
@@ -660,31 +668,12 @@ pub fn run_consensus_clustering(
         };
     }
 
-    // Intersect positions with pca_data — only tracks in both get clustered
-    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
-    let mut ids: Vec<i64> = positions.keys().copied()
-        .filter(|id| pca_map.contains_key(id))
-        .collect();
+    let mut ids: Vec<i64> = positions.keys().copied().collect();
     ids.sort();
-    if ids.len() < 10 {
-        log::warn!("[GRAPH] Not enough PCA vectors for clustering ({})", ids.len());
-        return ClusterResult {
-            clusters: HashMap::new(),
-            confidence: HashMap::new(),
-            colors: HashMap::new(),
-            thresholds: CommunityThresholds::default(),
-            gate_passed: true,
-        };
-    }
 
-    // L2-normalize PCA vectors so Euclidean distance ~ cosine distance.
-    // (HDBSCAN crate only exposes Euclidean/Manhattan/etc., not cosine.)
     let data: Vec<Vec<f64>> = ids.iter()
-        .map(|id| {
-            let v = pca_map[id];
-            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-10);
-            v.iter().map(|&x| (x / norm) as f64).collect()
-        })
+        .filter_map(|id| positions.get(id))
+        .map(|&(x, y)| vec![x as f64, y as f64])
         .collect();
 
     // Retry loop: keep the best-scoring attempt, return the first that passes
