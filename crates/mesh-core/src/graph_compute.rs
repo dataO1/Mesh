@@ -233,10 +233,11 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v11: min_cluster_size bumped from sqrt(n) to 1.5*sqrt(n) to absorb
-    // more of the smaller tail (γ=0.40 alone was leaving 10 communities).
+    // v12: min_cluster_size reverted to sqrt(n) — 1.5*sqrt(n) absorbed too
+    // aggressively (7 communities with visible mixed regions). 10 is the
+    // sweet spot for this library.
     format!(
-        "v11_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v12_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -1016,13 +1017,16 @@ fn louvain_params_for_library_size(n: usize) -> (f64, usize) {
     let resolution = (n.ln() * 0.145 - 0.586).clamp(0.35, 1.0);
 
     // min_cluster_size: post-merge floor, absorbs small communities into
-    // their nearest larger one. Grows as 1.5 * sqrt(n):
-    //   n=200  → min=30 (clamped)
-    //   n=900  → min=45 (absorbs the 29- and 42-track tail, giving ~8 communities)
-    //   n=5000 → min=106
-    //   n=10k  → min=150
-    //   n=50k  → min=200 (clamped)
-    let min_cluster_size = ((n.sqrt() * 1.5) as usize).clamp(30, 200);
+    // their nearest larger one. sqrt(n) — tuned alongside γ=0.40 so that
+    // at n=900 we land around 10 communities (the user-preferred sweet
+    // spot between visual clarity and coverage granularity). 1.5*sqrt(n)
+    // overshoots (7 communities — salmon bleeds into multiple regions).
+    //   n=200  → min=20 (clamped)
+    //   n=900  → min=29 (~10 communities)
+    //   n=5000 → min=71
+    //   n=10k  → min=100
+    //   n=50k  → min=150 (clamped)
+    let min_cluster_size = (n.sqrt() as usize).clamp(20, 150);
 
     (resolution, min_cluster_size)
 }
