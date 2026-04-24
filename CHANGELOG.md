@@ -55,32 +55,39 @@ All notable changes to Mesh are documented in this file.
   colors and IDs no longer shuffle when you relaunch mesh-cue. Useful for
   re-finding "that techno cluster over there" after a restart.
 
-- **More reliable community detection** — Occasionally clustering would roll
-  a pathological result (one giant community covering the whole library and
-  two small fragments) and then cache it for the session, wrecking
-  suggestions until the next library change. The graph now evaluates each
-  roll and retries up to 5 times if the result looks broken (fewer than 5
-  communities, or one community swallowing more than half the library).
-  Only a healthy roll gets cached.
+- **Communities now follow genre boundaries, not just sonic proximity** —
+  The similarity graph's top-level communities are now driven by the ML
+  model's detected genre tags (DnB / Techno / House / Trance / Hardcore /
+  Rock / Hip Hop / Jazz / Classical / …) rather than pure density
+  clustering on the audio embeddings. This was a persistent source of
+  weirdness: tracks that sounded similar in the ML embedding but belong
+  to genuinely different scenes (e.g. a liquid DnB track placed near a
+  melodic techno track because both are soft and harmonic) used to land
+  in the same community. Now they don't — genre membership is the first
+  thing the graph respects.
 
-- **Clustering now uses the t-SNE/UMAP 2D layout, not the raw PCA space** —
-  An earlier attempt to cluster in 128-D PCA space directly ran into the
-  curse of dimensionality: distances between all pairs compressed together,
-  HDBSCAN found only the very densest pockets, and most of the library got
-  labeled as noise (visible as ~3 colored clusters surrounded by dim grey
-  dots). t-SNE and UMAP are designed to pull similar tracks close and push
-  dissimilar ones apart, so clustering in the 2D layout gives HDBSCAN a
-  separation structure it can actually work with. The retry+gate logic
-  stays in place to recover from 2D's occasional collapse rolls.
+- **Sub-styles surface automatically inside your biggest genre(s)** —
+  Within any genre that dominates your library (150+ tracks), the graph
+  splits it into sub-communities by spatial density on the 2D layout.
+  A DnB-heavy library gets ~4–5 DnB sub-communities roughly corresponding
+  to liquid / neuro / techstep / jump-up / halftime, while smaller
+  genres in the same library stay as single well-defined communities.
+  Capped at 6 sub-styles per genre — no DJ thinks of DnB (or any genre)
+  as having more than about that many distinct vibes, and higher counts
+  tended to split along non-stylistic axes (production era, loudness).
 
-- **Cluster granularity is now fixed, not scaled to library size** — The
-  minimum cluster size no longer scales with library size. Instead each
-  retry attempt explores a different granularity (7 to 12 tracks) and the
-  first good-looking result wins. A fixed-and-large value (e.g. 15)
-  absorbs small subgenres into whatever mega-blob is nearby in the 2D
-  layout; a fixed-and-small value fragments the graph into noise. Varying
-  per attempt lets the gate pick the granularity that actually works for
-  your library.
+- **Every track gets assigned to a community** — Tracks that fall in
+  low-density regions used to show up as dim grey noise points, unusable
+  for community-aware suggestion scoring and invisible to aggression
+  calibration coverage. Those tracks now get merged into their nearest
+  sub-community, so the whole library participates in the system.
+
+- **Better aggression-scale calibration as a side effect** — Because
+  communities are more musically coherent (one genre, one sub-style, not
+  "these two tracks happened to land near each other in PCA space"),
+  calibration pairs drawn across communities expose the model to more
+  meaningful aggression contrasts. You answer roughly the same number
+  of questions and get a sharper scale out of it.
 
 ### Changed
 
