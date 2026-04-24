@@ -74,11 +74,13 @@ All notable changes to Mesh are documented in this file.
   stays in place to recover from 2D's occasional collapse rolls.
 
 - **Cluster granularity is now fixed, not scaled to library size** — The
-  minimum cluster size is a fixed 15 tracks regardless of whether your
-  library is 200 or 20,000 tracks. The graph is there to show rough
-  subgenres at a glance (liquid vs techstep vs neuro), not niches inside
-  them — and that level of distinction doesn't get coarser just because
-  you own more tracks.
+  minimum cluster size no longer scales with library size. Instead each
+  retry attempt explores a different granularity (7 to 12 tracks) and the
+  first good-looking result wins. A fixed-and-large value (e.g. 15)
+  absorbs small subgenres into whatever mega-blob is nearby in the 2D
+  layout; a fixed-and-small value fragments the graph into noise. Varying
+  per attempt lets the gate pick the granularity that actually works for
+  your library.
 
 ### Changed
 
