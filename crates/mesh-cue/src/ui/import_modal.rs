@@ -470,9 +470,13 @@ pub fn view_progress_bar(state: &ImportState) -> Option<Element<'static, Message
                 format!("{}/{}", completed, total)
             };
 
-            // Truncate track name if too long
-            let display_name = if current_track.len() > 40 {
-                format!("{}...", &current_track[..37])
+            // Truncate track name if too long.
+            // Use char count + iterator-based slicing — naïve byte slicing
+            // (`&s[..37]`) panics when byte 37 falls inside a multi-byte
+            // UTF-8 character (e.g. "FØREHAND" where Ø straddles the boundary).
+            let display_name = if current_track.chars().count() > 40 {
+                let truncated: String = current_track.chars().take(37).collect();
+                format!("{}...", truncated)
             } else {
                 current_track.clone()
             };

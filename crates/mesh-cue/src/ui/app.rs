@@ -1195,8 +1195,11 @@ impl MeshCueApp {
         let track_info = self.reanalysis_state.current_track
             .as_ref()
             .map(|name| {
-                if name.len() > 40 {
-                    format!("{}...", &name[..37])
+                // Char-based truncation — naïve byte slicing crashes on
+                // multi-byte UTF-8 chars at the boundary.
+                if name.chars().count() > 40 {
+                    let truncated: String = name.chars().take(37).collect();
+                    format!("{}...", truncated)
                 } else {
                     name.clone()
                 }

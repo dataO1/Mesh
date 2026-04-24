@@ -148,9 +148,11 @@ fn macro_knob(state: &StemPresetState, index: usize) -> Element<'_, StemPresetMe
     let value = state.macro_value(index);
     let name = state.macro_name(index);
 
-    // Truncate name if too long
-    let display_name = if name.len() > 6 {
-        format!("{}…", &name[..5])
+    // Truncate name if too long. Char-based — byte slicing crashes on
+    // multi-byte UTF-8 at the boundary.
+    let display_name = if name.chars().count() > 6 {
+        let head: String = name.chars().take(5).collect();
+        format!("{}…", head)
     } else {
         name.to_string()
     };

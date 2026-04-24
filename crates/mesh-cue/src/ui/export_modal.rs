@@ -797,9 +797,11 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
                 format!("{}/{}", tracks_complete, total_tracks)
             };
 
-            // Truncate filename if too long
-            let display_name = if current_track.len() > 40 {
-                format!("{}...", &current_track[..37])
+            // Truncate filename if too long. Use char-based slicing — naïve
+            // byte slicing panics on multi-byte UTF-8 chars at the boundary.
+            let display_name = if current_track.chars().count() > 40 {
+                let truncated: String = current_track.chars().take(37).collect();
+                format!("{}...", truncated)
             } else {
                 current_track.clone()
             };

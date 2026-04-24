@@ -118,6 +118,21 @@ All notable changes to Mesh are documented in this file.
   0% coverage and re-prompting on next session. Auto-stop is now gated behind
   phase 1 completion.
 
+- **UTF-8 string slicing panics on non-ASCII track names** — Six locations
+  used `&str[..N]` byte-index slicing to truncate display names, which
+  panics when byte N falls inside a multi-byte UTF-8 character (e.g. `Ø`,
+  `é`, em-dashes, CJK, emoji). Crash was previously latent because all
+  imported track names were ASCII at the truncation boundary; an import
+  containing `"01. Julien Earle - Your Affection (FØREHAND Remix)"` made
+  it surface (`Ø` straddles byte 36–37, the truncation point). Switched
+  all six sites to char-based truncation via `chars().take(N).collect()`.
+  Affected files: `import_modal.rs`, `export_modal.rs`, `app.rs` (mesh-cue
+  reanalysis), `deck_view.rs` (mesh-player macro names ×2),
+  `deck_preset/view.rs`, `stem_preset/view.rs` (mesh-widgets).
+  Also tightened `parse_hex_color` to require ASCII (length-6 byte check
+  could otherwise pass for 5-char strings with one multi-byte char) and
+  replaced `&p[2..]` tilde-stripping in CLAP discovery with `strip_prefix`.
+
 - **Track import freezes with `mpg123_open_handle64` symbol error** —
   Restored DT_RPATH (`--disable-new-dtags`) in mesh-cue's build.rs after
   briefly switching to DT_RUNPATH. The DT_RUNPATH change made `pw-jack`

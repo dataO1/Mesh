@@ -183,8 +183,10 @@ impl ClapDiscovery {
         CLAP_SEARCH_PATHS
             .iter()
             .filter_map(|p| {
-                if p.starts_with("~") {
-                    Some(home.join(&p[2..]))
+                // strip_prefix is safer than `&p[2..]` — naïve byte slicing
+                // would panic on `~` alone or `~user/...` style paths.
+                if let Some(rest) = p.strip_prefix("~/") {
+                    Some(home.join(rest))
                 } else {
                     Some(PathBuf::from(p))
                 }

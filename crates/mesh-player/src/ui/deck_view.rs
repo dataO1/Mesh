@@ -944,9 +944,11 @@ impl DeckView {
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
-                // Truncate name if too long
-                let display_name = if name.len() > 4 {
-                    format!("{}…", &name[..3])
+                // Truncate name if too long. Char-based — byte slicing
+                // crashes on multi-byte UTF-8 at the boundary.
+                let display_name = if name.chars().count() > 4 {
+                    let head: String = name.chars().take(3).collect();
+                    format!("{}…", head)
                 } else {
                     name.to_string()
                 };
@@ -1511,9 +1513,11 @@ impl DeckView {
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
-                // Truncate name if too long
-                let display_name = if name.len() > 3 {
-                    format!("{}…", &name[..2])
+                // Truncate name if too long. Char-based — byte slicing
+                // crashes on multi-byte UTF-8 at the boundary.
+                let display_name = if name.chars().count() > 3 {
+                    let head: String = name.chars().take(2).collect();
+                    format!("{}…", head)
                 } else {
                     name.to_string()
                 };
