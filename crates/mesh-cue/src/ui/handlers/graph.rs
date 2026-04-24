@@ -32,6 +32,7 @@ impl GraphBuildResult {
                 confidence: HashMap::new(),
                 colors: HashMap::new(),
                 thresholds: mesh_core::graph_compute::CommunityThresholds::default(),
+                gate_passed: true,
             },
             normalize: false,
             stem_colors: [Color::WHITE; 4],

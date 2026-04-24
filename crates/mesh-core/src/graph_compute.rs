@@ -183,7 +183,15 @@ pub struct ClusterResult {
     pub colors: HashMap<i32, [f32; 3]>,
     /// Dynamic thresholds derived from community distance statistics
     pub thresholds: CommunityThresholds,
+    /// True if this result passed the quality gate (enough communities,
+    /// no one community swallowing the library). False if we had to fall
+    /// back to best-of-N after exhausting retries. A false value tells
+    /// the cache loader "don't keep fighting this — we already tried".
+    #[serde(default = "default_true")]
+    pub gate_passed: bool,
 }
+
+fn default_true() -> bool { true }
 
 /// Compute a cache key for graph positions based on the track set and layout settings.
 /// Same tracks + same settings = same key = cached positions reused.
@@ -219,11 +227,24 @@ pub fn run_consensus_clustering_cached(
             Ok(Some(json)) => {
                 match serde_json::from_str::<ClusterResult>(&json) {
                     Ok(result) => {
-                        log::info!(
-                            "[GRAPH] Using cached clusters ({} tracks, {} unique clusters)",
-                            result.clusters.len(),
-                            result.colors.len(),
-                        );
+                        let (num, largest_frac, _) = grade_clustering(&result);
+                        // If gate_passed is true, the result was accepted by
+                        // the retry loop that wrote it — use it. If false, the
+                        // retry loop already tried its best-of-5 and accepted
+                        // a sub-gate result (probably genuinely homogeneous
+                        // data). Don't refight it every session — that would
+                        // burn 5 retries per launch forever.
+                        if result.gate_passed {
+                            log::info!(
+                                "[GRAPH] Using cached clusters ({} tracks, {} communities, largest={:.1}%, gate passed)",
+                                result.clusters.len(), num, largest_frac * 100.0,
+                            );
+                        } else {
+                            log::info!(
+                                "[GRAPH] Using cached clusters ({} tracks, {} communities, largest={:.1}%, gate was skipped — retry loop exhausted)",
+                                result.clusters.len(), num, largest_frac * 100.0,
+                            );
+                        }
                         return result;
                     }
                     Err(e) => log::warn!("[GRAPH] Cached cluster JSON parse failed: {}, recomputing", e),
@@ -635,6 +656,7 @@ pub fn run_consensus_clustering(
             confidence: HashMap::new(),
             colors: HashMap::new(),
             thresholds: CommunityThresholds::default(),
+            gate_passed: true,
         };
     }
 
@@ -651,6 +673,7 @@ pub fn run_consensus_clustering(
             confidence: HashMap::new(),
             colors: HashMap::new(),
             thresholds: CommunityThresholds::default(),
+            gate_passed: true,
         };
     }
 
@@ -668,7 +691,7 @@ pub fn run_consensus_clustering(
     // the gate. Best-of-N is the fallback if all attempts collapse.
     let mut best: Option<(ClusterResult, f32)> = None;
     for attempt in 1..=MAX_CLUSTERING_ATTEMPTS {
-        let result = run_consensus_clustering_once(&data, positions, &ids);
+        let mut result = run_consensus_clustering_once(&data, positions, &ids);
         let (num_communities, largest_frac, score) = grade_clustering(&result);
         log::info!(
             "[GRAPH] Clustering attempt {}/{}: {} communities, largest={:.1}%, score={:.2}",
@@ -677,6 +700,7 @@ pub fn run_consensus_clustering(
 
         if num_communities >= MIN_COMMUNITIES_GATE && largest_frac <= MAX_LARGEST_FRACTION {
             log::info!("[GRAPH] Gate passed on attempt {}", attempt);
+            result.gate_passed = true;
             return result;
         }
 
@@ -686,15 +710,18 @@ pub fn run_consensus_clustering(
     }
 
     log::warn!(
-        "[GRAPH] All {} attempts failed gate — using best-scoring roll",
+        "[GRAPH] All {} attempts failed gate — using best-scoring roll (data may genuinely be homogeneous)",
         MAX_CLUSTERING_ATTEMPTS,
     );
-    best.map(|(r, _)| r).unwrap_or_else(|| ClusterResult {
+    let mut fallback = best.map(|(r, _)| r).unwrap_or_else(|| ClusterResult {
         clusters: HashMap::new(),
         confidence: HashMap::new(),
         colors: HashMap::new(),
         thresholds: CommunityThresholds::default(),
-    })
+        gate_passed: false,
+    });
+    fallback.gate_passed = false;
+    fallback
 }
 
 /// Grade a clustering result. Returns (num_communities, largest_fraction, score).
@@ -747,6 +774,7 @@ fn run_consensus_clustering_once(
             confidence: ids.iter().map(|&id| (id, 0.0)).collect(),
             colors: HashMap::new(),
             thresholds: CommunityThresholds::default(),
+            gate_passed: false,
         };
     }
     let num_runs = all_labels.len();
@@ -884,7 +912,9 @@ fn run_consensus_clustering_once(
         num_clusters, num_runs, MIN_CLUSTER_SIZE, 70, n
     );
 
-    ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default() }
+    // gate_passed is a placeholder here — the outer retry loop overwrites it
+    // based on whether this particular roll cleared the quality gate.
+    ClusterResult { clusters, confidence, colors, thresholds: CommunityThresholds::default(), gate_passed: false }
 }
 
 /// Compute dynamic similarity thresholds as percentile ranks.
