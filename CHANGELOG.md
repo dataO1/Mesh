@@ -137,10 +137,12 @@ All notable changes to Mesh are documented in this file.
   used to discard everything you answered in that session. Closing now
   saves the updated scale, same as "Finish Early" and auto-stop.
 
-- **Smarter "cluster is covered" rule** — A cluster is now considered
-  calibrated when it has enough answered tracks to actually represent it,
-  scaled to its size. Small clusters no longer get flagged as incomplete
-  forever; large ones no longer pass on token coverage.
+- **Simpler "cluster is covered" rule** — A cluster is considered
+  calibrated once 3 of its tracks have appeared in calibration pairs,
+  regardless of the cluster's size. The previous rule ("10% or 5+ for
+  large clusters") was unreachable for big genre-dominant clusters under
+  the shorter hierarchical Phase 1, so they stayed "under-covered"
+  forever and kept triggering re-prompts even when the model was fine.
 
 - **More realistic question-count estimate** — The calibration dialog's
   estimate now reflects what you'll typically answer (~2 × number of
@@ -181,6 +183,15 @@ All notable changes to Mesh are documented in this file.
   could trigger before every cluster had its bootstrap questions, leaving
   a few clusters uncalibrated and re-prompting you next session. Auto-stop
   now waits until bootstrap coverage is complete.
+
+- **Graph tab showed "No PCA embeddings found" after similarity rebuild** —
+  When the similarity index finished rebuilding (after an import, a
+  reanalysis, or a manual rebuild), the graph state was invalidated but
+  not actually rebuilt until you manually switched tabs. If you were on
+  the Graph tab when the build finished, you'd see a misleading
+  "No PCA embeddings found" message. The graph now auto-rebuilds the
+  moment the similarity index is done, so you see the fresh layout
+  immediately.
 
 - **Crash when importing tracks with accented or non-Latin characters in
   the title** — Titles containing characters like `Ø`, `é`, em-dashes, or

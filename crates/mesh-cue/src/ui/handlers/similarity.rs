@@ -111,11 +111,14 @@ impl MeshCueApp {
         match result {
             Ok(()) => {
                 log::info!("[PCA] Similarity index build complete");
-                // Invalidate graph state so next Graph tab visit rebuilds
-                // with the new PCA embeddings (possibly different dimensionality)
+                // Invalidate graph state and rebuild immediately so the user
+                // doesn't land on a "No PCA embeddings found" screen while
+                // sitting on the Graph tab — the old behavior waited for a
+                // tab-switch to pick up the new embeddings.
                 self.collection.graph_state = None;
                 self.collection.graph_edges = None;
                 self.collection.graph_suggestion_rows.clear();
+                return self.handle_build_graph_edges();
             }
             Err(e) => log::error!("[PCA] Similarity index build failed: {}", e),
         }
