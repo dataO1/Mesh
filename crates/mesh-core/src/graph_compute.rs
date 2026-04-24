@@ -233,9 +233,10 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v9: Louvain γ formula recalibrated to hit ~10 communities at n=900.
+    // v10: Louvain γ recalibrated to target ~8 communities at n=900
+    // (visually distinguishable at a glance).
     format!(
-        "v9_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v10_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -1004,14 +1005,15 @@ fn louvain_params_for_library_size(n: usize) -> (f64, usize) {
 
     // Resolution γ in modularity objective: Q = sum_ij [A_ij - γ*k_i*k_j/2m]*δ(c_i,c_j)
     // Lower γ → fewer, larger communities. Linearly interpolated in ln(n)
-    // space, anchored at (n=900, γ=0.50) to match the hand-tuned baseline
-    // that produced 10 communities on a typical mid-size library:
-    //   n=200  → γ≈0.35 (clamped — very small library, favor big groups)
-    //   n=900  → γ≈0.50 (baseline — 10 communities)
-    //   n=5k   → γ≈0.75
-    //   n=10k  → γ≈0.85 (target ~25-30)
-    //   n=50k  → γ≈1.00 (clamped)
-    let resolution = (n.ln() * 0.145 - 0.486).clamp(0.35, 1.0);
+    // space, anchored at (n=900, γ=0.40) → ~8 communities on a mid-size
+    // library (visually distinguishable on a 2D graph at a glance). The
+    // upper anchor is (n=10k, γ=0.75) → ~20 communities.
+    //   n=200  → γ≈0.35 (clamped — very small library, big groups)
+    //   n=900  → γ≈0.40 (baseline — ~8 communities)
+    //   n=5k   → γ≈0.65
+    //   n=10k  → γ≈0.75 (target ~20)
+    //   n=50k  → γ≈0.98
+    let resolution = (n.ln() * 0.145 - 0.586).clamp(0.35, 1.0);
 
     // min_cluster_size: post-merge floor, absorbs small communities into
     // their nearest larger one. Grows roughly as sqrt(n) so it scales with
