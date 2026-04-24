@@ -484,48 +484,105 @@ pub fn query_suggestions(
     };
 
     // Step 4d: PCA aggression — project each track onto the aggression hyperplane.
-    // The weight vector (one correlation weight per PCA dimension) is computed at
-    // PCA build time from genre+mood proxy and stored in the DB.
-    let aggression_weights = sources.first()
+    //
+    // **Per-source projection** (matters for multi-source mesh-player):
+    // Each source has its own PCA basis (computed from its own data) and may
+    // have its own learned aggression weights. Components 7 in source A's PCA
+    // is NOT the same direction as component 7 in source B's PCA. Therefore
+    // we MUST project each source's tracks via that source's own weights.
+    //
+    // **Fallback chain** when a source has no weights:
+    //   1. Try the source's own weights → use them
+    //   2. Fall back to the local DB's weights (sources[0]) as a proxy
+    //      (acknowledged mismatch — local PCA basis ≠ this source's basis,
+    //       but produces a sane-ish projection vs no projection at all)
+    //   3. If neither has weights, that source's tracks get no aggression score
+    //
+    // **Cross-source comparability** is achieved by per-source percentile-rank.
+    // A 0.85 in source A means "85th percentile aggressive within A's own
+    // calibrated context"; same for B. Comparing 0.85 across sources is the
+    // honest interpretation: each track is ranked relative to its own collection.
+    let local_weights = sources.first()
         .and_then(|s| s.db.get_aggression_weights().ok().flatten());
     let mut aggression_map: HashMap<(usize, i64), f32> = HashMap::new();
+    let mut sources_with_weights = 0;
+    let mut sources_using_fallback = 0;
+    let mut sources_skipped = 0;
 
     log::info!(
-        "[AGGRESSION] Loaded weights from DB: {} (custom_weights={:?}, energy_bias={:.3})",
-        if aggression_weights.is_some() { "YES" } else { "NO (will fall back)" },
+        "[AGGRESSION] Local weights from DB: {} (custom_weights={:?}, energy_bias={:.3}, n_sources={})",
+        if local_weights.is_some() { "YES" } else { "NO" },
         suggestion_config.custom_weights,
         energy_bias,
+        sources.len(),
     );
-    if let Some((ref weights, combined_r)) = aggression_weights {
-        // Project each track's PCA vector onto the aggression axis
-        for (src_idx, source) in sources.iter().enumerate() {
+
+    for (src_idx, source) in sources.iter().enumerate() {
+        // Pick the most appropriate weights for this source's tracks
+        let source_own = source.db.get_aggression_weights().ok().flatten();
+        let (active_weights, used_fallback) = match (source_own, &local_weights) {
+            (Some(w), _) => (Some(w), false),
+            (None, Some(local)) if src_idx > 0 => {
+                // Non-local source has no weights — fall back to local's.
+                // Logs flag this as a mismatch the user should know about.
+                log::warn!(
+                    "[AGGRESSION] Source '{}' has no weights — falling back to local weights (PCA basis mismatch likely)",
+                    source.name,
+                );
+                (Some(local.clone()), true)
+            }
+            _ => (None, false),
+        };
+
+        if let Some((weights, _combined_r)) = active_weights {
+            if used_fallback { sources_using_fallback += 1; } else { sources_with_weights += 1; }
+
+            let mut source_scores: Vec<((usize, i64), f32)> = Vec::new();
             if let Ok(all_pca) = source.db.get_all_pca_with_tracks() {
                 for (track, pca_vec) in &all_pca {
                     if let Some(id) = track.id {
-                        let raw = crate::suggestions::aggression::project_aggression(&pca_vec, weights);
-                        aggression_map.insert((src_idx, id), raw);
+                        if pca_vec.len() == weights.len() {
+                            let raw = crate::suggestions::aggression::project_aggression(&pca_vec, &weights);
+                            source_scores.push(((src_idx, id), raw));
+                        }
                     }
                 }
             }
-        }
 
-        // Percentile-rank the aggression scores across all tracks
-        if aggression_map.len() >= 5 {
-            let mut ranked: Vec<((usize, i64), f32)> = aggression_map.iter()
-                .map(|(&k, &v)| (k, v))
-                .collect();
-            ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            let n = ranked.len().max(1) as f32;
-            for (rank, &(key, _)) in ranked.iter().enumerate() {
-                aggression_map.insert(key, rank as f32 / (n - 1.0).max(1.0));
+            // Percentile-rank WITHIN this source — each source's calibration
+            // is honored independently, then ranks are comparable globally.
+            if source_scores.len() >= 5 {
+                source_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                let n = source_scores.len() as f32;
+                for (rank, (key, _)) in source_scores.into_iter().enumerate() {
+                    aggression_map.insert(key, rank as f32 / (n - 1.0).max(1.0));
+                }
+            } else {
+                // Too few tracks to percentile-rank; store raw projections
+                for (key, score) in source_scores {
+                    aggression_map.insert(key, score);
+                }
             }
-        }
 
-        eprintln!("[AGGRESSION] {} dims, combined r={:.3}, {} tracks scored",
-            weights.len(), combined_r, aggression_map.len());
-    } else {
-        eprintln!("[AGGRESSION] No aggression weights found — build similarity index first");
+            log::info!(
+                "[AGGRESSION] Source '{}' (idx={}): scored {} tracks via {} weights",
+                source.name, src_idx,
+                aggression_map.iter().filter(|((s, _), _)| *s == src_idx).count(),
+                if used_fallback { "FALLBACK local" } else { "own" },
+            );
+        } else {
+            sources_skipped += 1;
+            log::info!(
+                "[AGGRESSION] Source '{}' (idx={}): SKIPPED (no weights available)",
+                source.name, src_idx,
+            );
+        }
     }
+
+    log::info!(
+        "[AGGRESSION] Summary: {} sources own-weights, {} fallback, {} skipped, {} total tracks scored",
+        sources_with_weights, sources_using_fallback, sources_skipped, aggression_map.len(),
+    );
 
     // Seed aggression (percentile-ranked)
     let avg_seed_aggression = {

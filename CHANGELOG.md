@@ -8,6 +8,24 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **USB export carries learned aggression weights** — When exporting a
+  collection to USB, the local DJ's learned aggression weight vector is
+  copied into the USB's `pca_aggression_axis` row. Tools reading the USB
+  standalone (mesh-cue opening the USB DB, or mesh-player on a fresh
+  device with no local calibration) get a usable 1D intensity scale out
+  of the box. Calibration pairs are NOT exported — they're private
+  training data and would conflict with another user's calibration.
+
+- **Per-source aggression scoring in mesh-player** — When playing tracks
+  from local + USB(s), each source's tracks are now projected via that
+  source's OWN learned weights (each source has its own PCA basis, so
+  using local weights for USB tracks was producing a meaningless
+  projection). Per-source percentile-rank within each collection makes
+  scores comparable across sources: a 0.85 from source A means "85th
+  percentile aggressive within A's calibrated context", same for B.
+  Fallback chain when a source has no weights: source-own → local proxy
+  (with mismatch warning) → skip aggression for that source.
+
 - **Aggression calibration: active learning + transitive closure** — Calibration
   is now an adaptive loop instead of a fixed pre-planned queue. Phase 1
   (deterministic): per uncovered community, pick 4 FPS edge tracks + 1 centroid

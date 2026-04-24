@@ -184,6 +184,36 @@ impl ExportService {
             };
 
             log::info!("[export] Phase 1 CozoDB open: {:.1}s", t_open.elapsed().as_secs_f64());
+
+            // Copy aggression weights to staging DB so the USB carries the
+            // local DJ's learned 1D intensity scale. This makes the USB
+            // self-contained for any tool reading it standalone (mesh-cue
+            // opening the USB DB, or mesh-player playing it on a fresh
+            // device with no local calibration).
+            //
+            // We deliberately do NOT export `aggression_calibration_pairs` —
+            // those are private training data and would conflict with another
+            // user's calibration if they import this USB into their library.
+            // The learned weights are the portable artifact; the pairs aren't.
+            match local_db.get_aggression_weights() {
+                Ok(Some((ref weights, correlation))) => {
+                    if let Err(e) = staging_db.store_aggression_weights(weights, correlation) {
+                        log::warn!("[export] Failed to copy aggression weights to USB: {}", e);
+                    } else {
+                        log::info!(
+                            "[export] Copied aggression weights to USB: {} dims, correlation={:.3}",
+                            weights.len(), correlation,
+                        );
+                    }
+                }
+                Ok(None) => {
+                    log::info!("[export] No aggression weights in local DB — USB will have no learned scale");
+                }
+                Err(e) => {
+                    log::warn!("[export] Failed to read local aggression weights: {}", e);
+                }
+            }
+
             log::info!("[export] Phase 1 (stage DB locally): {:.1}s", t_phase1.elapsed().as_secs_f64());
 
             // ================================================================
