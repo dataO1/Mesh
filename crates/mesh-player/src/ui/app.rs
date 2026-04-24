@@ -2205,7 +2205,15 @@ pub fn build_graph_task(
                     return None;
                 }
 
-                let positions = graph_compute::compute_tsne_layout(&pca_data, false);
+                // Use first source's DB for position caching
+                let cache_db = sources.first().map(|(db, _)| db.as_ref());
+                let positions = graph_compute::compute_layout_cached(
+                    &pca_data,
+                    graph_compute::GraphAlgorithm::Tsne,
+                    false,
+                    0.0,
+                    cache_db,
+                );
                 let cluster_result = graph_compute::run_consensus_clustering(&positions);
                 let thresholds = graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 

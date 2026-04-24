@@ -1,60 +1,58 @@
 # Development shell for mesh
-# Provides all tools needed for local development
+# Provides only what's needed for local cargo build/run/test
+# Heavy deps (PyTorch, libtorch, model conversion) are handled by CI
 { pkgs, common, rustToolchain }:
 
-let
-  # Python environment for ONNX model conversion (demucs PyTorch → ONNX)
-  pythonEnv = pkgs.python311.withPackages (ps: with ps; [
-    torch
-    numpy
-    librosa
-    onnxruntime
-    onnx
-    soundfile
-    tqdm
-  ]);
-in
+# Commented out: model conversion is handled by CI (release.yml build-models job)
+# Uncomment if you need to run `nix run .#convert-model` locally
+# let
+#   pythonEnv = pkgs.python311.withPackages (ps: with ps; [
+#     torch
+#     numpy
+#     librosa
+#     onnxruntime
+#     onnx
+#     soundfile
+#     tqdm
+#   ]);
+# in
 
 pkgs.mkShell {
   name = "mesh-dev-shell";
 
-  # mkShell properly adds all packages to PATH (unlike stdenv.mkDerivation)
   packages = common.buildInputs ++ [
     # Custom essentia library (built from source)
     common.essentia
   ] ++ common.essentiaDeps ++ (with pkgs; [
-    # Development tools
+    # Rust toolchain
     rustToolchain
     rust-analyzer
     cargo-watch
-    cargo-edit
-    cargo-expand
     cargo-release
     pkg-config
+
+    # C/C++ build tools (bindgen, essentia, libpd)
     cmake
     clang
     llvmPackages.libclang
-    gcc.cc  # For C++ stdlib
-    gnumake  # For libffi-sys build
+    gcc.cc
+    gnumake
     autoconf
     automake
     libtool
 
-    # Debugging
-    gdb
-    lldb
-
-    # Database inspection (CozoDB uses SQLite backend)
-    sqlite
-
-    # Package testing (requires podman on host, see shellHook)
-    distrobox
-
-    # GitHub CLI (embedded setup automation, release management)
+    # GitHub CLI
     gh
 
-    # Python for ONNX model conversion
-    pythonEnv
+    # Commented out: not needed for regular dev, adds minutes to shell build
+    # Uncomment individually if needed:
+    # cargo-edit       # `cargo add/rm` — handy but not essential
+    # cargo-expand     # macro expansion debugging
+    # gdb              # GNU debugger
+    # lldb             # LLVM debugger
+    # sqlite           # CozoDB database inspection
+    # distrobox        # container-based .deb testing (CI handles this)
+    # pythonEnv        # PyTorch/ONNX model conversion (CI handles this)
   ]);
 
   shellHook = ''
@@ -97,46 +95,37 @@ pkgs.mkShell {
     # Bindgen needs to know where C headers are (glibc + clang builtins)
     export BINDGEN_EXTRA_CLANG_ARGS="-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
 
-    # PD externals path (nn~ and others)
-    # nn-external will be built separately; for now just use local externals
-    export PD_EXTERNALS="./effects/pd/externals"
-
     # JACK settings
     export JACK_NO_AUDIO_RESERVATION=1
 
     # Setup patched crates (referenced by [patch.crates-io] in Cargo.toml)
+    # Downloads directly from crates.io to avoid chicken-and-egg with cargo fetch
     mkdir -p patches
 
-    # libpd-sys: 32-bit floats (required for nn~ external compatibility)
+    # libpd-sys: 32-bit floats (required for PD external compatibility)
     if [ ! -d "patches/libpd-sys" ]; then
       echo "Setting up libpd-sys patch for 32-bit float compatibility..."
-      LIBPD_SYS_SRC=$(find ~/.cargo/registry/src -name "libpd-sys-*" -type d 2>/dev/null | head -1)
-      if [ -n "$LIBPD_SYS_SRC" ]; then
-        cp -r "$LIBPD_SYS_SRC" patches/libpd-sys
-        sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
-        echo "  ✓ Patched libpd-sys for 32-bit floats"
-      else
-        echo "  ⚠ libpd-sys not found in cargo registry. Run 'cargo fetch' first."
-      fi
+      curl -sL https://crates.io/api/v1/crates/libpd-sys/0.3.4/download | tar xz -C patches
+      mv patches/libpd-sys-0.3.4 patches/libpd-sys
+      sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
+      echo "  ✓ Patched libpd-sys for 32-bit floats"
     fi
 
     # libpd-rs: c_char portability (i8 on x86_64, u8 on aarch64)
     if [ ! -d "patches/libpd-rs" ]; then
       echo "Setting up libpd-rs patch for c_char portability..."
-      LIBPD_RS_SRC=$(find ~/.cargo/registry/src -name "libpd-rs-*" -type d 2>/dev/null | head -1)
-      if [ -n "$LIBPD_RS_SRC" ]; then
-        cp -r "$LIBPD_RS_SRC" patches/libpd-rs
-        sed -i 's/\*const i8/\*const os::raw::c_char/g' patches/libpd-rs/src/functions/receive.rs
-        echo "  ✓ Patched libpd-rs for c_char portability"
-      else
-        echo "  ⚠ libpd-rs not found in cargo registry. Run 'cargo fetch' first."
-      fi
+      curl -sL https://crates.io/api/v1/crates/libpd-rs/0.2.0/download | tar xz -C patches
+      mv patches/libpd-rs-0.2.0 patches/libpd-rs
+      sed -i 's/\*const i8/\*const os::raw::c_char/g' patches/libpd-rs/src/functions/receive.rs
+      echo "  ✓ Patched libpd-rs for c_char portability"
     fi
 
-    # Torch library path (for nn~)
-    export LIBTORCH="${pkgs.libtorch-bin}"
-    export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"
-    export LIBTORCH_INCLUDE="${pkgs.libtorch-bin}/include"
+    # Commented out: libtorch for nn~ Pure Data external (nix run .#build-nn-tilde)
+    # nn~ is not built by CI — uncomment if you need to build it locally
+    # export LIBTORCH="${pkgs.libtorch-bin}"
+    # export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"
+    # export LIBTORCH_INCLUDE="${pkgs.libtorch-bin}/include"
+    # export PD_EXTERNALS="./effects/pd/externals"
 
     # Essentia library (built from source for mesh-cue)
     export PKG_CONFIG_PATH="${common.essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
@@ -177,35 +166,6 @@ pkgs.mkShell {
     echo "║  Nix packages read version from Cargo.toml automatically.            ║"
     echo "║                                                                      ║"
     echo "║  Dry run first:  cargo release patch --dry-run                       ║"
-    echo "║  All nix run apps:  see flake.nix apps section for full reference   ║"
-    echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  Test packages in container:                                         ║"
-    echo "║    distrobox assemble create        # Create test container          ║"
-    echo "║    distrobox enter mesh-ubuntu      # Enter and test (mesh-player)   ║"
-    echo "║    distrobox assemble rm            # Clean up when done             ║"
-    echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  PD Effects (Pure Data neural audio):                                ║"
-    echo "║    nix run .#build-nn-tilde         # Build nn~ external for RAVE    ║"
-    echo "║                                                                      ║"
-    echo "║  Effect structure (mesh-collection/effects/):                        ║"
-    echo "║    my-effect/                                                        ║"
-    echo "║      metadata.json    # Name, category, params, latency             ║"
-    echo "║      my-effect.pd     # PD patch (must match folder name)           ║"
-    echo "║    externals/         # Shared externals (nn~.pd_linux, etc.)       ║"
-    echo "║    models/            # Shared RAVE models (.ts files)              ║"
-    echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  BPM Accuracy Report:                                                ║"
-    echo "║    nix run .#bpm-report               # Export + scrape + report    ║"
-    echo "║    nix run .#bpm-report -- --limit 20 # Scrape only 20 new tracks  ║"
-    echo "║    nix run .#bpm-report -- --no-scrape  # Report from cached GT    ║"
-    echo "║  LUFS Comparison Report:                                             ║"
-    echo "║    cargo run -p mesh-core --bin lufs-report  # Drop vs integrated  ║"
-    echo "║  History Statistics:                                                ║"
-    echo "║    cargo run -p mesh-core --bin history-stats # Session play stats ║"
-    echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  Embedded (Orange Pi 5):                                              ║"
-    echo "║    nix run .#embedded-flash            # Download + flash SD image  ║"
-    echo "║    nix run .#embedded-flash /dev/sdX   # Flash to specific device   ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

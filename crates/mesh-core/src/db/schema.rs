@@ -435,6 +435,9 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // Aggression calibration: user pairwise comparison data
     create_aggression_calibration_pairs_relation(db)?;
 
+    // Cached graph positions (t-SNE / UMAP) for deterministic communities
+    create_graph_positions_relation(db)?;
+
     Ok(())
 }
 
@@ -987,6 +990,21 @@ fn create_aggression_calibration_pairs_relation(db: &DbInstance) -> Result<(), D
             track_b: Int,
             choice: Int,
             timestamp: Int
+        }}
+    "#)
+}
+
+fn create_graph_positions_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Cached 2D positions from t-SNE/UMAP layout.
+    // cache_key = hash of (sorted track IDs, algorithm, normalize, whitening).
+    // Reused across restarts for deterministic community detection.
+    // Invalidated when the track set or settings change (different cache_key).
+    run_schema(db, r#"
+        {:create graph_positions {
+            cache_key: String,
+            track_id: Int =>
+            x: Float,
+            y: Float
         }}
     "#)
 }

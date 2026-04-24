@@ -71,6 +71,29 @@ fn main() {
         }
     }
 
+    // --- aggression calibration ---
+    let pair_count = db.get_calibration_pair_count().unwrap_or(0);
+    println!("calibration_pairs:   {} rows", pair_count);
+
+    // Debug: check actual relation schema and raw data
+    let cozo = db.db().inner();
+    println!("  schema: {}", cozo.run_script_str("::columns aggression_calibration_pairs", "", false));
+    println!("  raw: {}", cozo.run_script_str(
+        "?[id, track_a, track_b, choice] := *aggression_calibration_pairs{id, track_a, track_b, choice} :limit 5", "", false,
+    ));
+
+    match db.get_aggression_weights() {
+        Ok(Some((weights, correlation))) => {
+            println!("aggression_axis:     {} dims, correlation={:.4}", weights.len(), correlation);
+            let nonzero = weights.iter().filter(|w| w.abs() > 1e-6).count();
+            let max_w = weights.iter().cloned().fold(0.0f32, f32::max);
+            let min_w = weights.iter().cloned().fold(0.0f32, f32::min);
+            println!("  nonzero_weights={nonzero}  range=[{min_w:.4}, {max_w:.4}]");
+        }
+        Ok(None) => println!("aggression_axis:     NOT COMPUTED"),
+        Err(e) => println!("aggression_axis:     ERROR: {e}"),
+    }
+
     // --- per-track embedding status ---
     println!("\nFirst 5 track IDs and their embedding status:");
     for track in tracks.iter().take(5) {

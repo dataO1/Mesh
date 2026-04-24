@@ -18,8 +18,10 @@ pub const MAX_BUFFER_SIZE: usize = 8192;
 pub const LOW_LATENCY_BUFFER_SIZES: [u32; 4] = [64, 128, 256, 512];
 
 /// Default buffer size when no preference is specified (frames)
-/// 512 frames is a safe default that works on most systems
-pub const DEFAULT_BUFFER_SIZE: u32 = 512;
+/// 1024 frames @ 48kHz = ~21ms — safe default for CPAL/ALSA without RT priority,
+/// avoids underruns on PipeWire-ALSA bridge with multiple concurrent streams
+/// (e.g. master + cue) on newer Intel ACE-style audio chips.
+pub const DEFAULT_BUFFER_SIZE: u32 = 1024;
 
 /// Default sample rate for the audio system (48kHz)
 /// This matches the rate at which tracks are stored, avoiding unnecessary resampling.

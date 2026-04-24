@@ -1,28 +1,19 @@
 //! Build script for mesh-cue
 //!
-//! Fixes for the procspawn subprocess library resolution:
+//! Force-links libopenmpt and libmpg123 so they appear in the binary's
+//! NEEDED list (not just transitively via Essentia → FFmpeg). This puts
+//! their symbols in the global resolution scope so the procspawn subprocess
+//! can resolve them via lazy PLT lookup.
 //!
-//! 1. Force-links libopenmpt and libmpg123 so they appear in the binary's
-//!    NEEDED list (not just transitively via Essentia → FFmpeg)
-//! 2. Adds their library dirs to RPATH via -rpath
-//! 3. Uses --disable-new-dtags to generate DT_RPATH instead of DT_RUNPATH
-//!
-//! The procspawn subprocess re-executes the binary. Without direct NEEDED
-//! entries, the transitive chain (Essentia → FFmpeg → libopenmpt → mpg123)
-//! can fail lazy PLT resolution in the subprocess on NixOS even though
-//! all libraries are loaded — the symbols aren't in the right resolution
-//! scope unless the binary directly depends on them.
+//! Uses DT_RUNPATH (the modern default) so pw-jack can override libjack
+//! via LD_LIBRARY_PATH at runtime. Transitive deps still resolve correctly
+//! because libessentia.so has its own RPATH set by Nix.
 
 fn main() {
-    // ELF-only linker flags for procspawn subprocess library resolution.
-    // These are Linux-specific (DT_RPATH, NEEDED entries) and must not be
-    // emitted when cross-compiling to Windows (MinGW ld doesn't support them).
+    // ELF-only linker flags. These are Linux-specific (DT_RPATH, NEEDED entries)
+    // and must not be emitted when cross-compiling to Windows.
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {
-        // Force DT_RPATH instead of DT_RUNPATH so paths are inherited by
-        // transitive dependencies in the procspawn subprocess
-        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
-
         // Force direct linkage to FFmpeg transitive deps — this adds them to
         // the binary's NEEDED list, ensuring they're loaded at startup and
         // their symbols are in the global resolution scope.

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use iced::Task;
 
-use mesh_core::audio_file::LoadedTrack;
+use mesh_core::audio_file::{AudioFileReader, LoadedTrack};
 use mesh_core::suggestions::aggression;
 use mesh_core::suggestions::UncoveredCommunity;
 
@@ -227,8 +227,12 @@ impl MeshCueApp {
             let track_a_id = pair.track_a.id;
             let track_b_id = pair.track_b.id;
 
-            if let Err(e) = db.store_calibration_pair(track_a_id, track_b_id, choice) {
-                log::warn!("[CALIBRATION] Failed to store pair: {}", e);
+            match db.store_calibration_pair(track_a_id, track_b_id, choice) {
+                Ok(id) => {
+                    let count = db.get_calibration_pair_count().unwrap_or(0);
+                    log::info!("[CALIBRATION] Stored pair id={} ({} vs {}, choice={}), total={}", id, track_a_id, track_b_id, choice, count);
+                }
+                Err(e) => log::warn!("[CALIBRATION] Failed to store pair: {}", e),
             }
 
             // Online SGD step
@@ -529,53 +533,79 @@ fn preload_pair(
     })
 }
 
-/// Decode a track's audio and extract a 64-bar clip around the drop.
+/// Decode a track's audio and extract a 16-bar clip around the drop.
+///
+/// When `drop_marker` is known, uses region-based decoding to only decode
+/// the ~16 bars needed instead of the entire track (10-20x faster).
+/// Falls back to full decode when drop position must be estimated.
 fn extract_preview_clip(
     path: &std::path::Path,
     bpm: Option<f64>,
     drop_marker: Option<i64>,
 ) -> Option<(Vec<f32>, u64)> {
-    let stems = LoadedTrack::load_stems(path).ok()?;
     let sample_rate = 48000u32;
-
-    // Mix all stems to interleaved stereo
-    let len = stems.vocals.len();
-    let mut mixed = Vec::with_capacity(len * 2);
-    for i in 0..len {
-        let v = &stems.vocals[i];
-        let d = &stems.drums[i];
-        let b = &stems.bass[i];
-        let o = &stems.other[i];
-        mixed.push(v.left + d.left + b.left + o.left);
-        mixed.push(v.right + d.right + b.right + o.right);
-    }
-
     let channels = 2u32;
-
-    // Determine drop position
-    let drop_sample = if let Some(marker) = drop_marker {
-        marker as u64
-    } else {
-        aggression::estimate_drop_sample(&mixed, sample_rate, channels)
-    };
-
-    // Compute 16-bar clip region (4 bars before drop, 12 after)
     let effective_bpm = bpm.unwrap_or(174.0);
-    let bar_samples = (60.0 / effective_bpm * 4.0 * sample_rate as f64) as usize;
-    let bars_before = 4 * bar_samples;
-    let bars_after = 12 * bar_samples;
+    let bar_frames = (60.0 / effective_bpm * 4.0 * sample_rate as f64) as usize;
+    let bars_before = 4 * bar_frames;
+    let bars_after = 12 * bar_frames;
 
-    let drop_interleaved = drop_sample as usize * channels as usize;
-    let start = drop_interleaved.saturating_sub(bars_before * channels as usize);
-    let end = (drop_interleaved + bars_after * channels as usize).min(mixed.len());
+    if let Some(marker) = drop_marker {
+        // Fast path: decode only the clip region
+        let drop_frame = marker as usize;
+        let region_start = drop_frame.saturating_sub(bars_before);
+        let region_end = drop_frame + bars_after;
+        let region_len = region_end - region_start;
 
-    if end <= start {
-        return Some((mixed, drop_sample));
+        let reader = AudioFileReader::open(path).ok()?;
+        let stems = reader.decode_region(region_start, region_len).ok()?;
+
+        let len = stems.vocals.len();
+        let mut clip = Vec::with_capacity(len * 2);
+        for i in 0..len {
+            let v = &stems.vocals[i];
+            let d = &stems.drums[i];
+            let b = &stems.bass[i];
+            let o = &stems.other[i];
+            clip.push(v.left + d.left + b.left + o.left);
+            clip.push(v.right + d.right + b.right + o.right);
+        }
+
+        apply_fade(&mut clip, sample_rate, channels);
+        Some((clip, marker as u64))
+    } else {
+        // Slow path: full decode needed to estimate drop position
+        let stems = LoadedTrack::load_stems(path).ok()?;
+
+        let len = stems.vocals.len();
+        let mut mixed = Vec::with_capacity(len * 2);
+        for i in 0..len {
+            let v = &stems.vocals[i];
+            let d = &stems.drums[i];
+            let b = &stems.bass[i];
+            let o = &stems.other[i];
+            mixed.push(v.left + d.left + b.left + o.left);
+            mixed.push(v.right + d.right + b.right + o.right);
+        }
+
+        let drop_sample = aggression::estimate_drop_sample(&mixed, sample_rate, channels);
+
+        let drop_interleaved = drop_sample as usize * channels as usize;
+        let start = drop_interleaved.saturating_sub(bars_before * channels as usize);
+        let end = (drop_interleaved + bars_after * channels as usize).min(mixed.len());
+
+        if end <= start {
+            return Some((mixed, drop_sample));
+        }
+
+        let mut clip = mixed[start..end].to_vec();
+        apply_fade(&mut clip, sample_rate, channels);
+        Some((clip, drop_sample))
     }
+}
 
-    let mut clip = mixed[start..end].to_vec();
-
-    // Apply 50ms fade-in and fade-out
+/// Apply 50ms fade-in and fade-out to an interleaved stereo buffer.
+fn apply_fade(clip: &mut [f32], sample_rate: u32, channels: u32) {
     let fade_samples = (sample_rate as f32 * 0.05) as usize * channels as usize;
     let clip_len = clip.len();
     for i in 0..fade_samples.min(clip_len) {
@@ -587,6 +617,4 @@ fn extract_preview_clip(
         let gain = i as f32 / fade_samples as f32;
         clip[idx] *= gain;
     }
-
-    Some((clip, drop_sample))
 }

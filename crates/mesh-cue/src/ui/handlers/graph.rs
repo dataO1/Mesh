@@ -103,8 +103,10 @@ impl MeshCueApp {
                     // Detect PCA dimensionality
                     let pca_dims = pca_data.first().map(|(_, v)| v.len()).unwrap_or(0);
 
-                    // Run layout algorithm
-                    let positions = mesh_core::graph_compute::compute_layout(&pca_data, algorithm, normalize);
+                    // Run layout algorithm (with DB caching for deterministic communities)
+                    let positions = mesh_core::graph_compute::compute_layout_cached(
+                        &pca_data, algorithm, normalize, whiten_alpha, Some(&db),
+                    );
 
                     // Run consensus clustering + compute community thresholds
                     let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);

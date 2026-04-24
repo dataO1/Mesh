@@ -4,6 +4,8 @@
 //! - **Consensus clustering**: Multi-scale HDBSCAN for robust community detection
 
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use crate::db::DatabaseService;
 
@@ -183,7 +185,76 @@ pub struct ClusterResult {
     pub thresholds: CommunityThresholds,
 }
 
-/// Dispatch to the selected layout algorithm.
+/// Compute a cache key for graph positions based on the track set and layout settings.
+/// Same tracks + same settings = same key = cached positions reused.
+pub fn graph_cache_key(
+    pca_data: &[(i64, Vec<f32>)],
+    algorithm: GraphAlgorithm,
+    normalize: bool,
+    whitening_alpha: f32,
+) -> String {
+    let mut ids: Vec<i64> = pca_data.iter().map(|(id, _)| *id).collect();
+    ids.sort();
+    let mut hasher = DefaultHasher::new();
+    ids.hash(&mut hasher);
+    format!(
+        "{:?}_norm{}_wh{:.2}_{:016x}",
+        algorithm, normalize as u8, whitening_alpha, hasher.finish()
+    )
+}
+
+/// Dispatch to the selected layout algorithm, with DB caching.
+/// Returns cached positions if available, otherwise computes fresh and stores.
+pub fn compute_layout_cached(
+    pca_data: &[(i64, Vec<f32>)],
+    algorithm: GraphAlgorithm,
+    normalize: bool,
+    whitening_alpha: f32,
+    db: Option<&DatabaseService>,
+) -> HashMap<i64, (f32, f32)> {
+    let cache_key = graph_cache_key(pca_data, algorithm, normalize, whitening_alpha);
+
+    // Try cache
+    if let Some(db) = db {
+        match db.get_graph_positions(&cache_key) {
+            Ok(Some(cached)) if cached.len() == pca_data.len() => {
+                log::info!(
+                    "[GRAPH] Using cached positions ({} tracks, key={})",
+                    cached.len(), &cache_key[..cache_key.len().min(40)]
+                );
+                return cached;
+            }
+            Ok(Some(cached)) => {
+                log::info!(
+                    "[GRAPH] Cache stale: {} cached vs {} current tracks",
+                    cached.len(), pca_data.len()
+                );
+            }
+            Ok(None) => {
+                log::info!("[GRAPH] No cached positions found, computing fresh layout");
+            }
+            Err(e) => {
+                log::warn!("[GRAPH] Cache read error: {}, computing fresh layout", e);
+            }
+        }
+    }
+
+    // Compute fresh
+    let positions = compute_layout(pca_data, algorithm, normalize);
+
+    // Store in cache
+    if let Some(db) = db {
+        if let Err(e) = db.store_graph_positions(&cache_key, &positions) {
+            log::warn!("[GRAPH] Failed to cache positions: {}", e);
+        } else {
+            log::info!("[GRAPH] Cached {} positions (key={})", positions.len(), &cache_key[..cache_key.len().min(40)]);
+        }
+    }
+
+    positions
+}
+
+/// Dispatch to the selected layout algorithm (uncached).
 pub fn compute_layout(
     pca_data: &[(i64, Vec<f32>)],
     algorithm: GraphAlgorithm,
@@ -488,7 +559,8 @@ pub fn run_consensus_clustering(
         };
     }
 
-    let ids: Vec<i64> = positions.keys().copied().collect();
+    let mut ids: Vec<i64> = positions.keys().copied().collect();
+    ids.sort();
     let data: Vec<Vec<f64>> = ids.iter()
         .filter_map(|id| positions.get(id))
         .map(|&(x, y)| vec![x as f64, y as f64])
@@ -572,11 +644,14 @@ pub fn run_consensus_clustering(
 
     let mut cluster_id_map: HashMap<usize, i32> = HashMap::new();
     let mut next_id = 0i32;
-    for (&root, &size) in &component_sizes {
-        if size >= min_cluster_size {
-            cluster_id_map.insert(root, next_id);
-            next_id += 1;
-        }
+    let mut roots_by_size: Vec<(usize, usize)> = component_sizes.iter()
+        .filter(|(_, &size)| size >= min_cluster_size)
+        .map(|(&root, &size)| (root, size))
+        .collect();
+    roots_by_size.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (root, _) in roots_by_size {
+        cluster_id_map.insert(root, next_id);
+        next_id += 1;
     }
 
     // Compute per-track confidence

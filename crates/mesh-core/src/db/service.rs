@@ -1274,7 +1274,8 @@ impl DatabaseService {
     /// Get the number of stored calibration pairs.
     pub fn get_calibration_pair_count(&self) -> Result<usize, DbError> {
         let result = self.db.run_query(r#"
-            ?[count] := count = count(id), *aggression_calibration_pairs{id}
+            ids[id] := *aggression_calibration_pairs{id}
+            ?[count(id)] := ids[id]
         "#, BTreeMap::new())?;
         Ok(result.rows.first()
             .and_then(|row| row[0].get_int())
@@ -1297,6 +1298,60 @@ impl DatabaseService {
             ?[id] := *aggression_calibration_pairs{id}
             :rm aggression_calibration_pairs {id}
         "#, BTreeMap::new())?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // Graph Position Cache
+    // ========================================================================
+
+    /// Get cached graph positions for the given cache key.
+    /// Returns None if no cache exists for this key.
+    pub fn get_graph_positions(&self, cache_key: &str) -> Result<Option<std::collections::HashMap<i64, (f32, f32)>>, DbError> {
+        use std::collections::HashMap;
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), DataValue::Str(cache_key.into()));
+
+        let result = self.db.run_query(r#"
+            ?[track_id, x, y] := *graph_positions{cache_key, track_id, x, y}, cache_key = $key
+        "#, params)?;
+
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+
+        let mut positions = HashMap::new();
+        for row in &result.rows {
+            if let (Some(id), Some(x), Some(y)) = (row[0].get_int(), row[1].get_float(), row[2].get_float()) {
+                positions.insert(id, (x as f32, y as f32));
+            }
+        }
+        Ok(Some(positions))
+    }
+
+    /// Store graph positions for the given cache key.
+    /// Clears any existing positions (all cache keys) before storing.
+    pub fn store_graph_positions(&self, cache_key: &str, positions: &std::collections::HashMap<i64, (f32, f32)>) -> Result<(), DbError> {
+        // Clear all existing cached positions
+        self.db.run_script(r#"
+            ?[cache_key, track_id] := *graph_positions{cache_key, track_id}
+            :rm graph_positions {cache_key, track_id}
+        "#, BTreeMap::new())?;
+
+        // Store new positions in batches
+        let batch_size = 500;
+        let entries: Vec<_> = positions.iter().collect();
+        for chunk in entries.chunks(batch_size) {
+            let rows: Vec<String> = chunk.iter()
+                .map(|(&id, &(x, y))| format!("[\"{}\", {}, {}, {}]", cache_key, id, x as f64, y as f64))
+                .collect();
+            let rows_str = rows.join(", ");
+            let script = format!(
+                "?[cache_key, track_id, x, y] <- [{}] :put graph_positions {{cache_key, track_id => x, y}}",
+                rows_str
+            );
+            self.db.run_script(&script, BTreeMap::new())?;
+        }
         Ok(())
     }
 
@@ -1779,9 +1834,9 @@ impl DatabaseService {
 
     /// Get the underlying MeshDb for advanced queries
     ///
-    /// This is `pub(crate)` - only accessible within mesh-core.
-    /// Domain code should use the methods above instead.
-    pub(crate) fn db(&self) -> &MeshDb {
+    /// Prefer the typed methods above for normal usage.
+    /// This is for diagnostics and advanced queries.
+    pub fn db(&self) -> &MeshDb {
         &self.db
     }
 }
