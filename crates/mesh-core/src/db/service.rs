@@ -1200,6 +1200,17 @@ impl DatabaseService {
         Ok(())
     }
 
+    /// Delete the stored PCA aggression weight vector. Used when restarting
+    /// calibration from scratch — next calibration session will start from
+    /// zero weights instead of the previously-learned ones.
+    pub fn clear_aggression_weights(&self) -> Result<(), DbError> {
+        self.db.run_script(r#"
+            ?[id] := *pca_aggression_axis{id}
+            :rm pca_aggression_axis {id}
+        "#, BTreeMap::new())?;
+        Ok(())
+    }
+
     /// Get the PCA aggression weight vector and combined correlation.
     /// Returns None if no weights have been computed yet.
     pub fn get_aggression_weights(&self) -> Result<Option<(Vec<f32>, f32)>, DbError> {
@@ -1327,6 +1338,37 @@ impl DatabaseService {
             }
         }
         Ok(Some(positions))
+    }
+
+    /// Get cached graph clustering JSON for the given cache key.
+    pub fn get_graph_clusters_json(&self, cache_key: &str) -> Result<Option<String>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), DataValue::Str(cache_key.into()));
+
+        let result = self.db.run_query(r#"
+            ?[data_json] := *graph_clusters{cache_key, data_json}, cache_key = $key
+        "#, params)?;
+
+        Ok(result.rows.first()
+            .and_then(|row| row[0].get_str().map(String::from)))
+    }
+
+    /// Store graph clustering JSON for the given cache key.
+    /// Clears any existing clusters (all cache keys) before storing.
+    pub fn store_graph_clusters_json(&self, cache_key: &str, json: &str) -> Result<(), DbError> {
+        self.db.run_script(r#"
+            ?[cache_key] := *graph_clusters{cache_key}
+            :rm graph_clusters {cache_key}
+        "#, BTreeMap::new())?;
+
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), DataValue::Str(cache_key.into()));
+        params.insert("json".to_string(), DataValue::Str(json.into()));
+        self.db.run_script(r#"
+            ?[cache_key, data_json] <- [[$key, $json]]
+            :put graph_clusters {cache_key => data_json}
+        "#, params)?;
+        Ok(())
     }
 
     /// Store graph positions for the given cache key.

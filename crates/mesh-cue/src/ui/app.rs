@@ -747,9 +747,11 @@ impl MeshCueApp {
             Message::CalibrationPairPreloaded(pair) => {
                 return self.handle_calibration_pair_preloaded(pair);
             }
-            Message::CalibrationPairPreloadFailed => {
-                // Decrement counter and try the next pair
+            Message::CalibrationPairPreloadFailed(a, b) => {
+                // Decrement counter, drop from in-flight, try the next pair
                 self.calibration.preloading_count = self.calibration.preloading_count.saturating_sub(1);
+                self.calibration.in_flight_pair_ids.remove(&(a, b));
+                self.calibration.in_flight_pair_ids.remove(&(b, a));
                 return self.preload_next_calibration_pair().unwrap_or(Task::none());
             }
             Message::CalibrationFinish => {
@@ -760,6 +762,12 @@ impl MeshCueApp {
             }
             Message::CalibrationBack => {
                 return self.handle_calibration_back();
+            }
+            Message::RestartCalibration => {
+                return self.handle_restart_calibration();
+            }
+            Message::ConfirmRestartCalibration => {
+                return self.handle_confirm_restart_calibration();
             }
         }
 

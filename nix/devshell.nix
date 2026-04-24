@@ -65,7 +65,7 @@ pkgs.mkShell {
     export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 
     # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
-    export RUST_LOG="warn,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
+    export RUST_LOG="warn,wgpu_hal=error,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
 
     # Library paths
     export LD_LIBRARY_PATH="${common.libraryPath}:$LD_LIBRARY_PATH"

@@ -115,6 +115,12 @@ impl MeshCueApp {
 
     /// Handle ConfirmDelete message
     pub fn handle_confirm_delete(&mut self) -> Task<Message> {
+        // Custom destructive actions just dispatch their embedded message
+        if let Some(DeleteTarget::Custom { confirm_message, .. }) = self.delete_state.target.clone() {
+            self.delete_state.complete();
+            return Task::done(*confirm_message);
+        }
+
         if let Some(ref target) = self.delete_state.target {
             log::info!("Executing delete: {:?}", target);
 
@@ -163,6 +169,9 @@ impl MeshCueApp {
                         log::error!("Failed to delete playlist: {:?}", e);
                     }
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
+                }
+                DeleteTarget::Custom { .. } => {
+                    // Handled at top of function — unreachable here.
                 }
             }
 

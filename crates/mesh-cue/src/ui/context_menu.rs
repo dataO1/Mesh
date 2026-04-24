@@ -201,6 +201,11 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                     "Build Similarity Index",
                     Message::BuildSimilarityIndex,
                 ),
+                menu_separator(),
+                menu_item_danger(
+                    "Restart Aggression Calibration",
+                    Message::RestartCalibration,
+                ),
             ]
         }
     };

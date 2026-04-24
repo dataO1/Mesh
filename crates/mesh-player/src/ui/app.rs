@@ -2205,8 +2205,11 @@ pub fn build_graph_task(
                     return None;
                 }
 
-                // Use first source's DB for position caching
+                // Use first source's DB for layout + cluster caching
                 let cache_db = sources.first().map(|(db, _)| db.as_ref());
+                let cache_key = graph_compute::graph_cache_key(
+                    &pca_data, graph_compute::GraphAlgorithm::Tsne, false, 0.0,
+                );
                 let positions = graph_compute::compute_layout_cached(
                     &pca_data,
                     graph_compute::GraphAlgorithm::Tsne,
@@ -2214,7 +2217,9 @@ pub fn build_graph_task(
                     0.0,
                     cache_db,
                 );
-                let cluster_result = graph_compute::run_consensus_clustering(&positions);
+                let cluster_result = graph_compute::run_consensus_clustering_cached(
+                    &positions, &cache_key, cache_db,
+                );
                 let thresholds = graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
                 Some(super::message::GraphData {

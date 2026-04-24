@@ -383,9 +383,13 @@ pub fn plan_calibration_pairs(
     calibration_pairs: &[(i64, i64, i32)],
 ) -> (Vec<(i64, i64)>, Vec<(i64, i64)>, Vec<(i64, i64)>) {
     let mut calibrated_ids: HashSet<i64> = HashSet::new();
+    let mut already_asked: HashSet<(i64, i64)> = HashSet::new();
     for &(a, b, _) in calibration_pairs {
         calibrated_ids.insert(a);
         calibrated_ids.insert(b);
+        // Track in both orders so we can skip duplicates regardless of direction
+        already_asked.insert((a, b));
+        already_asked.insert((b, a));
     }
 
     // Collect well-covered tracks with aggression scores for anchoring
@@ -435,8 +439,9 @@ pub fn plan_calibration_pairs(
     let mut intra_pairs = Vec::new();
     let mut boundary_pairs = Vec::new();
 
-    // Step 1: Find 3 edge tracks per community via farthest point sampling.
-    // Edges capture the extremes of variation within each cluster.
+    // Step 1: Find edge tracks per community via farthest point sampling.
+    // Sample more edges (6) than we need for pairs (3) so refinement rounds
+    // can pick fresh edges instead of repeating the same pairs.
     let mut community_edges: Vec<(i32, Vec<i64>)> = Vec::new();
 
     for community in uncovered {
@@ -447,7 +452,7 @@ pub fn plan_calibration_pairs(
 
         if tracks_with_pca.is_empty() { continue; }
 
-        let edges = farthest_point_sample(&tracks_with_pca, pca_data, 3);
+        let edges = farthest_point_sample(&tracks_with_pca, pca_data, 6);
         community_edges.push((community.cluster_id, edges));
     }
 
@@ -464,7 +469,16 @@ pub fn plan_calibration_pairs(
 
     // Create cross-community pairs: for each community, pair one edge against
     // an edge from the most distant community and one from the nearest.
+    // Skip pairs already in the user's history so refinement rounds get
+    // fresh comparisons instead of repeating the same pairs.
     let mut used_cross_pairs: HashSet<(i64, i64)> = HashSet::new();
+    let try_pair = |pair: (i64, i64), used: &HashSet<(i64, i64)>| -> bool {
+        !already_asked.contains(&pair)
+            && !already_asked.contains(&(pair.1, pair.0))
+            && !used.contains(&pair)
+            && !used.contains(&(pair.1, pair.0))
+    };
+
     for (idx, (_, edges)) in community_edges.iter().enumerate() {
         if edges.is_empty() { continue; }
         let this_centroid = community_centroids.iter()
@@ -488,26 +502,31 @@ pub fn plan_calibration_pairs(
             }
         }
 
-        // Pair first edge against farthest community's first edge
+        // Anchor (cross-community far): try edges in order until we find an unused pair
         if let Some((far_idx, _)) = best_far {
             let far_edges = &community_edges[far_idx].1;
-            if !far_edges.is_empty() {
-                let pair = (edges[0], far_edges[0]);
-                if !used_cross_pairs.contains(&pair) && !used_cross_pairs.contains(&(pair.1, pair.0)) {
-                    anchor_pairs.push(pair);
-                    used_cross_pairs.insert(pair);
+            'outer_far: for &my in edges {
+                for &theirs in far_edges {
+                    let pair = (my, theirs);
+                    if try_pair(pair, &used_cross_pairs) {
+                        anchor_pairs.push(pair);
+                        used_cross_pairs.insert(pair);
+                        break 'outer_far;
+                    }
                 }
             }
         }
-        // Pair second edge against nearest community's edge (boundary calibration)
+        // Boundary (cross-community near): same logic
         if let Some((near_idx, _)) = best_near {
             let near_edges = &community_edges[near_idx].1;
-            if edges.len() >= 2 && !near_edges.is_empty() {
-                let near_edge = near_edges.last().copied().unwrap_or(near_edges[0]);
-                let pair = (edges[1], near_edge);
-                if !used_cross_pairs.contains(&pair) && !used_cross_pairs.contains(&(pair.1, pair.0)) {
-                    boundary_pairs.push(pair);
-                    used_cross_pairs.insert(pair);
+            'outer_near: for &my in edges {
+                for &theirs in near_edges.iter().rev() {
+                    let pair = (my, theirs);
+                    if try_pair(pair, &used_cross_pairs) {
+                        boundary_pairs.push(pair);
+                        used_cross_pairs.insert(pair);
+                        break 'outer_near;
+                    }
                 }
             }
         }
@@ -516,24 +535,32 @@ pub fn plan_calibration_pairs(
     // Also pair edges against anchor reference tracks (if available)
     if !anchor_refs.is_empty() {
         for (_, edges) in &community_edges {
-            if let Some(&edge) = edges.last() {
+            for &edge in edges.iter().rev() {
                 let ref_id = anchor_refs[anchor_pairs.len() % anchor_refs.len()];
-                if edge != ref_id {
-                    anchor_pairs.push((edge, ref_id));
+                let pair = (edge, ref_id);
+                if edge != ref_id && try_pair(pair, &used_cross_pairs) {
+                    anchor_pairs.push(pair);
+                    used_cross_pairs.insert(pair);
+                    break;
                 }
             }
         }
     }
 
-    // Step 3: Intra-community pairs from edges.
-    // Pair the edges against each other within each community — these are
-    // the tracks with maximum internal spread.
+    // Step 3: Intra-community pairs from edges. Try multiple edge combinations
+    // and skip ones the user has already been asked.
     for (_, edges) in &community_edges {
-        if edges.len() >= 2 {
-            intra_pairs.push((edges[0], edges[1]));
-        }
-        if edges.len() >= 3 {
-            intra_pairs.push((edges[0], edges[2]));
+        let mut added = 0;
+        'intra: for i in 0..edges.len() {
+            for j in (i + 1)..edges.len() {
+                let pair = (edges[i], edges[j]);
+                if try_pair(pair, &used_cross_pairs) {
+                    intra_pairs.push(pair);
+                    used_cross_pairs.insert(pair);
+                    added += 1;
+                    if added >= 2 { break 'intra; }
+                }
+            }
         }
     }
 
@@ -549,23 +576,142 @@ pub fn plan_calibration_pairs(
     (anchor_pairs, intra_pairs, boundary_pairs)
 }
 
-/// Select the next most informative pair from remaining candidates using
-/// active learning (uncertainty sampling).
-pub fn select_next_pair(
-    candidates: &[(i64, i64)],
+/// Build a candidate pool of pairs from uncovered communities for active learning.
+///
+/// Returns ALL pairs combinations from farthest-point-sampled edge tracks
+/// across communities (cross-community + intra-community). The active learner
+/// (`next_calibration_pair`) picks the most informative pair from this pool
+/// after each user response.
+///
+/// Step 1 (deterministic): pick K representative "edge" tracks per community.
+/// Steps 2+ (dynamic): see `next_calibration_pair`.
+pub fn build_candidate_pool(
+    uncovered: &[UncoveredCommunity],
+    pca_data: &HashMap<i64, Vec<f32>>,
+    anchor_refs: &[i64],
+    edges_per_community: usize,
+) -> Vec<(i64, i64)> {
+    let mut community_edges: Vec<Vec<i64>> = Vec::new();
+    for community in uncovered {
+        let tracks_with_pca: Vec<i64> = community.track_ids.iter()
+            .filter(|id| pca_data.contains_key(id))
+            .copied()
+            .collect();
+        if tracks_with_pca.is_empty() { continue; }
+        community_edges.push(farthest_point_sample(&tracks_with_pca, pca_data, edges_per_community));
+    }
+
+    let mut pool: HashSet<(i64, i64)> = HashSet::new();
+    let canon = |a: i64, b: i64| if a < b { (a, b) } else { (b, a) };
+
+    // Cross-community pairs (all edge × edge across communities)
+    for i in 0..community_edges.len() {
+        for j in (i + 1)..community_edges.len() {
+            for &a in &community_edges[i] {
+                for &b in &community_edges[j] {
+                    if a != b { pool.insert(canon(a, b)); }
+                }
+            }
+        }
+    }
+    // Intra-community pairs (edges within same community)
+    for edges in &community_edges {
+        for i in 0..edges.len() {
+            for j in (i + 1)..edges.len() {
+                pool.insert(canon(edges[i], edges[j]));
+            }
+        }
+    }
+    // Anchor pairs (edges vs known anchor reference tracks)
+    for edges in &community_edges {
+        for &edge in edges {
+            for &anchor in anchor_refs {
+                if edge != anchor { pool.insert(canon(edge, anchor)); }
+            }
+        }
+    }
+
+    pool.into_iter().collect()
+}
+
+/// Select the next most informative pair from a candidate pool.
+///
+/// Filters:
+/// - Skips pairs already asked
+/// - Skips pairs whose ordering is transitively implied by prior answers
+///   (e.g., if A > B and B > C, skip A vs C — we already know the answer)
+///
+/// Among remaining pairs, picks the one where the model is most uncertain.
+/// Uncertainty = |sigmoid(w · delta) - 0.5| inverted (max uncertainty at 0.5).
+/// Tie-break by larger delta magnitude (more impact on weights when wrong).
+pub fn next_calibration_pair(
+    pool: &[(i64, i64)],
+    asked_pairs: &[(i64, i64, i32)],
     pca_data: &HashMap<i64, Vec<f32>>,
     weights: &[f32],
 ) -> Option<(i64, i64)> {
-    candidates.iter()
-        .filter_map(|&(a, b)| {
-            let pa = pca_data.get(&a)?;
-            let pb = pca_data.get(&b)?;
-            let delta: Vec<f32> = pa.iter().zip(pb.iter()).map(|(x, y)| x - y).collect();
-            let score = project_aggression(&delta, weights).abs();
-            Some(((a, b), score))
-        })
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(pair, _)| pair)
+    // Build directed graph for transitive closure of "more aggressive than"
+    // choice 0 = a > b, 1 = b > a, 2 = equal (treated as bidirectional)
+    let mut graph: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut asked_set: HashSet<(i64, i64)> = HashSet::new();
+    for &(a, b, choice) in asked_pairs {
+        asked_set.insert((a, b));
+        asked_set.insert((b, a));
+        match choice {
+            0 => { graph.entry(a).or_default().insert(b); }
+            1 => { graph.entry(b).or_default().insert(a); }
+            2 => {
+                graph.entry(a).or_default().insert(b);
+                graph.entry(b).or_default().insert(a);
+            }
+            _ => {}
+        }
+    }
+
+    let reachable = |start: i64, target: i64, graph: &HashMap<i64, HashSet<i64>>| -> bool {
+        if start == target { return true; }
+        let mut visited: HashSet<i64> = HashSet::new();
+        let mut stack: Vec<i64> = vec![start];
+        while let Some(node) = stack.pop() {
+            if !visited.insert(node) { continue; }
+            if let Some(neighbors) = graph.get(&node) {
+                for &n in neighbors {
+                    if n == target { return true; }
+                    stack.push(n);
+                }
+            }
+        }
+        false
+    };
+
+    let mut best: Option<((i64, i64), f32)> = None;
+    for &(a, b) in pool {
+        if asked_set.contains(&(a, b)) { continue; }
+        // Transitive: if relation is already deducible, skip
+        if reachable(a, b, &graph) || reachable(b, a, &graph) { continue; }
+
+        let pca_a = match pca_data.get(&a) { Some(v) => v, None => continue };
+        let pca_b = match pca_data.get(&b) { Some(v) => v, None => continue };
+        if pca_a.len() != pca_b.len() || pca_a.len() != weights.len() { continue; }
+
+        let logit: f32 = weights.iter().zip(pca_a.iter()).zip(pca_b.iter())
+            .map(|((w, x), y)| w * (x - y))
+            .sum();
+        let prob = sigmoid(logit);
+        let uncertainty = 1.0 - 2.0 * (prob - 0.5).abs();
+
+        // Magnitude tie-break: larger deltas have more learning impact
+        let delta_mag: f32 = pca_a.iter().zip(pca_b.iter())
+            .map(|(x, y)| (x - y).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        let score = uncertainty + 0.05 * delta_mag.min(1.0);
+
+        if best.is_none() || score > best.unwrap().1 {
+            best = Some(((a, b), score));
+        }
+    }
+    best.map(|(p, _)| p)
 }
 
 /// Learn aggression weights from stored pairwise comparisons via logistic regression.

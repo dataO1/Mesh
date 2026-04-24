@@ -445,12 +445,19 @@ pub enum Message {
     CalibrationPreviewToggle(CalibrationSide),
     /// A pre-loaded pair is ready from the background thread
     CalibrationPairPreloaded(Box<PreloadedPair>),
-    /// A pair failed to pre-load (decrement counter, try next)
-    CalibrationPairPreloadFailed,
+    /// A pair failed to pre-load (decrement counter, drop from in-flight, try next).
+    /// Carries the (track_a_id, track_b_id) so we can remove from the in-flight set.
+    CalibrationPairPreloadFailed(i64, i64),
     /// User pressed "Finish Early"
     CalibrationFinish,
     /// User pressed "Reset All" (clear calibration data)
     CalibrationReset,
     /// User pressed "Back" (undo last comparison)
     CalibrationBack,
+    /// Open confirmation modal for restarting calibration. Triggered from
+    /// the Collection right-click context menu.
+    RestartCalibration,
+    /// Confirmed: clear stored pairs AND learned weights, then trigger a
+    /// fresh coverage check. Dispatched after the user confirms in the modal.
+    ConfirmRestartCalibration,
 }

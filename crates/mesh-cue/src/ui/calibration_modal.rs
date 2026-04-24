@@ -47,7 +47,7 @@ fn view_explanation(state: &CalibrationState) -> Element<'_, Message> {
 
     let estimate = text(format!(
         "Estimated: ~{} comparisons (~{:.0} minutes)",
-        state.total_pairs_planned,
+        state.estimated_remaining(),
         state.estimated_minutes().max(1.0),
     )).size(sz(13.0)).color(Color::from_rgb(0.5, 0.5, 0.5));
 

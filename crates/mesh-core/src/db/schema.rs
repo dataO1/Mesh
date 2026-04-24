@@ -437,6 +437,7 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
 
     // Cached graph positions (t-SNE / UMAP) for deterministic communities
     create_graph_positions_relation(db)?;
+    create_graph_clusters_relation(db)?;
 
     Ok(())
 }
@@ -1005,6 +1006,20 @@ fn create_graph_positions_relation(db: &DbInstance) -> Result<(), DbError> {
             track_id: Int =>
             x: Float,
             y: Float
+        }}
+    "#)
+}
+
+fn create_graph_clusters_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Cached clustering result (clusters + confidence + colors + thresholds)
+    // serialized as JSON. Same cache_key as graph_positions.
+    // Required because HDBSCAN has internal non-determinism — even with
+    // identical positions, different runs can produce slightly different
+    // community counts. Caching the full result ensures stable communities.
+    run_schema(db, r#"
+        {:create graph_clusters {
+            cache_key: String =>
+            data_json: String
         }}
     "#)
 }

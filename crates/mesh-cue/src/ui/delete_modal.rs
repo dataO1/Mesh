@@ -28,6 +28,15 @@ pub enum DeleteTarget {
         playlist_name: String,
         playlist_id: NodeId,
     },
+    /// Generic destructive action (e.g., reset calibration). On confirm,
+    /// dispatches `confirm_message` for the actual work.
+    Custom {
+        title: String,
+        description: String,
+        warning: String,
+        confirm_label: String,
+        confirm_message: Box<Message>,
+    },
 }
 
 impl DeleteTarget {
@@ -42,6 +51,7 @@ impl DeleteTarget {
             DeleteTarget::PlaylistTracks { track_ids, .. } => track_ids.clone(),
             DeleteTarget::CollectionTracks { track_ids, .. } => track_ids.clone(),
             DeleteTarget::Playlist { playlist_id, .. } => vec![playlist_id.clone()],
+            DeleteTarget::Custom { .. } => Vec::new(),
         }
     }
 }
@@ -81,7 +91,11 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
         return Space::new().into();
     };
 
-    let title = text("Confirm Delete").size(sz(24.0));
+    let title_text = match target {
+        DeleteTarget::Custom { title, .. } => title.clone(),
+        _ => "Confirm Delete".to_string(),
+    };
+    let title = text(title_text).size(sz(24.0));
     let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::CancelDelete)
         .style(button::secondary);
@@ -125,6 +139,13 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
                 .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
             (desc, Vec::new(), warn)
         }
+        DeleteTarget::Custom { description, warning, .. } => {
+            let desc = text(description.clone()).size(sz(16.0));
+            let warn = text(warning.clone())
+                .size(sz(14.0))
+                .color(iced::Color::from_rgb(0.9, 0.2, 0.2));
+            (desc, Vec::new(), warn)
+        }
     };
 
     // List of items being deleted (for tracks)
@@ -159,14 +180,22 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
         .on_press(Message::CancelDelete)
         .style(button::secondary);
 
-    let delete_btn = if target.is_permanent() {
-        button(text("Delete Permanently"))
-            .on_press(Message::ConfirmDelete)
-            .style(button::danger)
-    } else {
-        button(text("Delete"))
-            .on_press(Message::ConfirmDelete)
-            .style(button::primary)
+    let delete_btn = match target {
+        DeleteTarget::Custom { confirm_label, .. } => {
+            button(text(confirm_label.clone()))
+                .on_press(Message::ConfirmDelete)
+                .style(button::danger)
+        }
+        _ if target.is_permanent() => {
+            button(text("Delete Permanently"))
+                .on_press(Message::ConfirmDelete)
+                .style(button::danger)
+        }
+        _ => {
+            button(text("Delete"))
+                .on_press(Message::ConfirmDelete)
+                .style(button::primary)
+        }
     };
 
     let actions = row![Space::new().width(Length::Fill), cancel_btn, delete_btn]

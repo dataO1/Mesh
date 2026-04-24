@@ -3,7 +3,7 @@
 //! Tracks the state of the pairwise comparison calibration modal,
 //! including pre-loaded audio clips, pair queue, and learned weights.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use mesh_core::suggestions::UncoveredCommunity;
 
 /// Which side of the comparison the user interacts with.
@@ -98,11 +98,13 @@ pub struct CalibrationState {
     pub current_pair: Option<PreloadedPair>,
     /// Pre-loaded pairs ready to display (target: 2 ahead)
     pub preloaded_pairs: VecDeque<PreloadedPair>,
-    /// Planned pairs not yet pre-loaded, organized by phase
-    pub pending_anchor: Vec<(i64, i64)>,
-    pub pending_intra: Vec<(i64, i64)>,
-    pub pending_boundary: Vec<(i64, i64)>,
-    /// Initial phase sizes (frozen at plan time, used for progress display)
+    /// Candidate pool of pairs (FPS-selected edge × edge from uncovered communities).
+    /// Active learning picks the most informative pair from this pool after each
+    /// response, filtered by transitive closure of already-answered pairs.
+    pub candidate_pool: Vec<(i64, i64)>,
+    /// Initial phase sizes (frozen at plan time, used for progress display).
+    /// Kept for backward compat with phase enum; with active learning, all pairs
+    /// are treated uniformly so we put the total in anchor_total.
     pub anchor_total: usize,
     pub intra_total: usize,
     pub boundary_total: usize,
@@ -124,6 +126,10 @@ pub struct CalibrationState {
     pub playing_side: Option<CalibrationSide>,
     /// Number of pairs preloading in background
     pub preloading_count: usize,
+    /// Pair IDs currently being preloaded (in flight). Used by the active
+    /// learner to avoid scheduling the same pair multiple times when several
+    /// preload tasks run concurrently.
+    pub in_flight_pair_ids: HashSet<(i64, i64)>,
     /// Whether the user has been shown the calibration prompt this session
     pub prompted_this_session: bool,
 }
@@ -136,9 +142,7 @@ impl Default for CalibrationState {
             phase: CalibrationPhase::Anchor { current: 0, total: 0 },
             current_pair: None,
             preloaded_pairs: VecDeque::new(),
-            pending_anchor: Vec::new(),
-            pending_intra: Vec::new(),
-            pending_boundary: Vec::new(),
+            candidate_pool: Vec::new(),
             anchor_total: 0,
             intra_total: 0,
             boundary_total: 0,
@@ -151,6 +155,7 @@ impl Default for CalibrationState {
             history: Vec::new(),
             playing_side: None,
             preloading_count: 0,
+            in_flight_pair_ids: HashSet::new(),
             prompted_this_session: false,
         }
     }
@@ -167,6 +172,7 @@ impl CalibrationState {
         self.preloaded_pairs.clear();
         self.playing_side = None;
         self.preloading_count = 0;
+        self.in_flight_pair_ids.clear();
     }
 
     /// Close the calibration modal and stop any playback.
@@ -176,10 +182,9 @@ impl CalibrationState {
         self.current_pair = None;
         self.preloaded_pairs.clear();
         self.history.clear();
-        self.pending_anchor.clear();
-        self.pending_intra.clear();
-        self.pending_boundary.clear();
+        self.candidate_pool.clear();
         self.preloading_count = 0;
+        self.in_flight_pair_ids.clear();
     }
 
     /// Advance to the next pair. Returns true if a pair was available.
@@ -229,28 +234,29 @@ impl CalibrationState {
         self.completed_count + self.total_historical >= 30
     }
 
-    /// Pop the next pending pair to pre-load, cycling through phases in order.
-    pub fn pop_next_pending(&mut self) -> Option<(i64, i64)> {
-        if let Some(pair) = self.pending_anchor.pop() {
-            Some(pair)
-        } else if let Some(pair) = self.pending_intra.pop() {
-            Some(pair)
-        } else {
-            self.pending_boundary.pop()
-        }
+    /// Total remaining pairs (estimate based on candidate pool minus completed).
+    pub fn remaining(&self) -> usize {
+        self.candidate_pool.len().saturating_sub(self.completed_count)
+            + self.preloaded_pairs.len()
     }
 
-    /// Total remaining pairs (pending + preloaded but not yet shown).
-    pub fn remaining(&self) -> usize {
-        self.pending_anchor.len()
-            + self.pending_intra.len()
-            + self.pending_boundary.len()
-            + self.preloaded_pairs.len()
+    /// Estimated number of comparisons the user will actually be asked.
+    ///
+    /// The candidate pool is an UPPER BOUND of all possible pair combinations
+    /// (~num_communities² × edges² pairs). Active learning + transitive closure
+    /// of 1D ordering means the user converges much faster — empirically
+    /// ~3 pairs per community plus a small constant.
+    pub fn estimated_remaining(&self) -> usize {
+        let n_communities = self.uncovered_communities.len();
+        // Heuristic: ~3 pairs per community + 15 anchors. Capped by pool size.
+        let predicted = 15 + n_communities * 3;
+        let total_estimate = predicted.min(self.candidate_pool.len());
+        total_estimate.saturating_sub(self.completed_count)
     }
 
     /// Estimate minutes remaining based on ~5 seconds per comparison.
     pub fn estimated_minutes(&self) -> f32 {
-        self.remaining() as f32 * 5.0 / 60.0
+        self.estimated_remaining() as f32 * 5.0 / 60.0
     }
 
     /// Summary of uncovered communities for the explanation screen.

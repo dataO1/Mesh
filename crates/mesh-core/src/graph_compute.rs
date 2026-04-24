@@ -146,7 +146,7 @@ pub struct TrackMeta {
 
 /// Dynamic similarity thresholds derived from actual community structure.
 /// Replaces the hardcoded target_distance/bell_width values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommunityThresholds {
     /// Tight: target distance stays within same community
     pub tight_target: f32,
@@ -171,7 +171,7 @@ impl Default for CommunityThresholds {
 }
 
 /// Result of consensus clustering.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClusterResult {
     /// Cluster assignments (track_id -> cluster_id, -1 = noise)
     pub clusters: HashMap<i64, i32>,
@@ -201,6 +201,50 @@ pub fn graph_cache_key(
         "{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, normalize as u8, whitening_alpha, hasher.finish()
     )
+}
+
+/// Run consensus clustering with DB caching keyed by `cache_key`.
+/// Returns cached ClusterResult if available, otherwise computes fresh and stores.
+/// HDBSCAN itself has internal non-determinism, so caching the full result
+/// is the only way to guarantee stable communities across restarts.
+pub fn run_consensus_clustering_cached(
+    positions: &HashMap<i64, (f32, f32)>,
+    cache_key: &str,
+    db: Option<&DatabaseService>,
+) -> ClusterResult {
+    if let Some(db) = db {
+        match db.get_graph_clusters_json(cache_key) {
+            Ok(Some(json)) => {
+                match serde_json::from_str::<ClusterResult>(&json) {
+                    Ok(result) => {
+                        log::info!(
+                            "[GRAPH] Using cached clusters ({} tracks, {} unique clusters)",
+                            result.clusters.len(),
+                            result.colors.len(),
+                        );
+                        return result;
+                    }
+                    Err(e) => log::warn!("[GRAPH] Cached cluster JSON parse failed: {}, recomputing", e),
+                }
+            }
+            Ok(None) => log::info!("[GRAPH] No cached clusters found, computing fresh"),
+            Err(e) => log::warn!("[GRAPH] Cluster cache read error: {}, recomputing", e),
+        }
+    }
+
+    let result = run_consensus_clustering(positions);
+
+    if let Some(db) = db {
+        match serde_json::to_string(&result) {
+            Ok(json) => {
+                if let Err(e) = db.store_graph_clusters_json(cache_key, &json) {
+                    log::warn!("[GRAPH] Failed to cache clusters: {}", e);
+                }
+            }
+            Err(e) => log::warn!("[GRAPH] Failed to serialize clusters: {}", e),
+        }
+    }
+    result
 }
 
 /// Dispatch to the selected layout algorithm, with DB caching.

@@ -3,7 +3,7 @@
 //! Manages the pairwise comparison flow: coverage detection, pair planning,
 //! audio clip pre-loading, user choice processing, and weight learning.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use iced::Task;
@@ -114,57 +114,82 @@ impl MeshCueApp {
     }
 
     /// Plan calibration pairs based on uncovered communities.
+    ///
+    /// Builds a candidate POOL of all interesting pairs (FPS-edge × FPS-edge
+    /// across communities, intra-community, vs anchor refs). The pool is fixed
+    /// for the session, but which pair to ask next is chosen dynamically by
+    /// `next_calibration_pair` after each user response — using active learning
+    /// (uncertainty sampling) plus transitive closure of already-known relations.
     fn plan_calibration_pairs(&mut self) {
         let db = self.domain.db_arc();
 
-        // Load current weights (or zeros if none)
         let weights = db.get_aggression_weights()
             .ok()
             .flatten()
             .map(|(w, _)| w)
             .unwrap_or_default();
 
-        // Load PCA data
         let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
         let pca_data: HashMap<i64, Vec<f32>> = all_pca.iter()
             .filter_map(|(t, v)| Some((t.id?, v.clone())))
             .collect();
 
-        // Load existing pairs
         let existing_pairs = db.get_all_calibration_pairs().unwrap_or_default();
-        let pair_tuples: Vec<(i64, i64, i32)> = existing_pairs.iter()
-            .map(|&(_, a, b, c, _)| (a, b, c))
-            .collect();
 
-        // Get community assignments
         let community_assignments: HashMap<i64, i32> = self.collection.graph_state
             .as_ref()
             .map(|gs| gs.clusters.iter().map(|(&k, &v)| (k, v)).collect())
             .unwrap_or_default();
 
         let current_weights = if weights.is_empty() {
-            // Create zero weights of the right dimensionality
             let dim = pca_data.values().next().map(|v| v.len()).unwrap_or(128);
             vec![0.0f32; dim]
         } else {
             weights.clone()
         };
 
-        let (anchor, intra, boundary) = aggression::plan_calibration_pairs(
+        // Pick anchor reference tracks: well-calibrated tracks spanning the
+        // aggression range. Fall back to PCA-projection-spanning tracks for
+        // first-time calibration.
+        let mut calibrated_ids: HashSet<i64> = HashSet::new();
+        for &(_, a, b, _, _) in &existing_pairs {
+            calibrated_ids.insert(a);
+            calibrated_ids.insert(b);
+        }
+        let mut covered_scored: Vec<(i64, f32)> = community_assignments.keys()
+            .filter(|id| calibrated_ids.contains(id))
+            .filter_map(|&id| pca_data.get(&id).map(|p| (id, aggression::project_aggression(p, &current_weights))))
+            .collect();
+        covered_scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let anchor_refs: Vec<i64> = if covered_scored.len() >= 3 {
+            let n = covered_scored.len();
+            vec![covered_scored[n / 4].0, covered_scored[n / 2].0, covered_scored[n * 3 / 4].0]
+        } else {
+            covered_scored.iter().map(|(id, _)| *id).collect()
+        };
+
+        let pool = aggression::build_candidate_pool(
             &self.calibration.uncovered_communities,
-            &community_assignments,
             &pca_data,
-            &current_weights,
-            &pair_tuples,
+            &anchor_refs,
+            6, // edges per community
         );
 
-        let total = anchor.len() + intra.len() + boundary.len();
-        self.calibration.anchor_total = anchor.len();
-        self.calibration.intra_total = intra.len();
-        self.calibration.boundary_total = boundary.len();
-        self.calibration.pending_anchor = anchor;
-        self.calibration.pending_intra = intra;
-        self.calibration.pending_boundary = boundary;
+        log::info!(
+            "[CALIBRATION] Built candidate pool: {} pairs from {} uncovered communities + {} anchor refs",
+            pool.len(),
+            self.calibration.uncovered_communities.len(),
+            anchor_refs.len(),
+        );
+
+        // Show all pool pairs as the planned total in the phase enum.
+        // With active learning, transitive closure may collapse this to fewer
+        // actually-asked pairs.
+        let total = pool.len();
+        self.calibration.anchor_total = total;
+        self.calibration.intra_total = 0;
+        self.calibration.boundary_total = 0;
+        self.calibration.candidate_pool = pool;
         self.calibration.total_pairs_planned = total;
         self.calibration.total_historical = existing_pairs.len();
         self.calibration.weights = current_weights;
@@ -267,6 +292,9 @@ impl MeshCueApp {
     /// Handle a pre-loaded pair arriving from the background thread.
     pub fn handle_calibration_pair_preloaded(&mut self, pair: Box<PreloadedPair>) -> Task<Message> {
         self.calibration.preloading_count = self.calibration.preloading_count.saturating_sub(1);
+        // Pair is no longer in flight — it's now in the queue
+        self.calibration.in_flight_pair_ids.remove(&(pair.track_a.id, pair.track_b.id));
+        self.calibration.in_flight_pair_ids.remove(&(pair.track_b.id, pair.track_a.id));
         log::info!("[CALIBRATION] Pair preloaded: '{}' vs '{}' (queue: {}, loading: {})",
             pair.track_a.title, pair.track_b.title,
             self.calibration.preloaded_pairs.len() + 1,
@@ -382,6 +410,49 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle "Restart Aggression Calibration" from collection context menu.
+    /// Opens a confirmation modal — actual work happens in
+    /// `handle_confirm_restart_calibration` after user confirms.
+    pub fn handle_restart_calibration(&mut self) -> Task<Message> {
+        self.context_menu_state.close();
+        let pair_count = self.domain.db_arc().get_calibration_pair_count().unwrap_or(0);
+        let has_weights = self.domain.db_arc()
+            .get_aggression_weights().ok().flatten().is_some();
+        self.delete_state.show(super::super::delete_modal::DeleteTarget::Custom {
+            title: "Restart Aggression Calibration".to_string(),
+            description: format!(
+                "Discard {} stored comparison{} and {}, then start fresh?",
+                pair_count,
+                if pair_count == 1 { "" } else { "s" },
+                if has_weights { "the learned aggression scale" } else { "no learned scale yet" },
+            ),
+            warning: "⚠ This permanently clears your training data and the learned model. Cannot be undone.".to_string(),
+            confirm_label: "Restart Calibration".to_string(),
+            confirm_message: Box::new(Message::ConfirmRestartCalibration),
+        });
+        Task::none()
+    }
+
+    /// Confirmed restart — clears pairs + weights, resets in-memory state,
+    /// triggers fresh coverage check.
+    pub fn handle_confirm_restart_calibration(&mut self) -> Task<Message> {
+        let db = self.domain.db_arc();
+        if let Err(e) = db.clear_calibration_pairs() {
+            log::warn!("[CALIBRATION] Failed to clear pairs: {}", e);
+        }
+        if let Err(e) = db.clear_aggression_weights() {
+            log::warn!("[CALIBRATION] Failed to clear aggression weights: {}", e);
+        }
+        self.calibration.weights.clear();
+        self.calibration.model_accuracy = 0.0;
+        self.calibration.total_historical = 0;
+        self.calibration.prompted_this_session = false;
+        self.calibration.close();
+        self.collection.graph_suggestion_rows.clear();
+        log::info!("[CALIBRATION] Restarted from scratch — pairs and weights cleared");
+        self.trigger_calibration_coverage_check()
+    }
+
     /// Batch retrain weights from ALL stored pairs.
     fn batch_retrain_weights(&mut self) {
         let db = self.domain.db_arc();
@@ -443,17 +514,67 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Pre-load the next pending pair in the background.
+    /// Pre-load the next pair in the background, picking the most informative
+    /// pair from the candidate pool via active learning (uncertainty + transitive
+    /// closure of already-known relations).
     pub fn preload_next_calibration_pair(&mut self) -> Option<Task<Message>> {
         // Don't pre-load more than 2 ahead
         if self.calibration.preloaded_pairs.len() + self.calibration.preloading_count >= 3 {
             return None;
         }
 
-        let (track_a_id, track_b_id) = self.calibration.pop_next_pending()?;
-        self.calibration.preloading_count += 1;
+        if self.calibration.candidate_pool.is_empty() {
+            return None;
+        }
 
         let db = self.domain.db_arc();
+
+        // Build set of pairs already in flight or shown:
+        //   - Currently being decoded by other preload tasks (in_flight_pair_ids)
+        //   - Already decoded and waiting in the queue (preloaded_pairs)
+        //   - Currently displayed to the user (current_pair)
+        // Without this, calling preload_next_calibration_pair() N times in a
+        // row picks the same "best" pair every time — N copies of the same pair.
+        let mut in_flight: HashSet<(i64, i64)> = HashSet::new();
+        for &(a, b) in &self.calibration.in_flight_pair_ids {
+            in_flight.insert((a, b));
+            in_flight.insert((b, a));
+        }
+        for p in &self.calibration.preloaded_pairs {
+            in_flight.insert((p.track_a.id, p.track_b.id));
+            in_flight.insert((p.track_b.id, p.track_a.id));
+        }
+        if let Some(ref p) = self.calibration.current_pair {
+            in_flight.insert((p.track_a.id, p.track_b.id));
+            in_flight.insert((p.track_b.id, p.track_a.id));
+        }
+
+        // Load current state for active learning
+        let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+        let pca_data: HashMap<i64, Vec<f32>> = all_pca.iter()
+            .filter_map(|(t, v)| Some((t.id?, v.clone())))
+            .collect();
+        let asked: Vec<(i64, i64, i32)> = db.get_all_calibration_pairs()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, a, b, c, _)| (a, b, c))
+            .collect();
+
+        // Filter pool to skip pairs already in flight
+        let pool: Vec<(i64, i64)> = self.calibration.candidate_pool.iter()
+            .filter(|p| !in_flight.contains(p) && !in_flight.contains(&(p.1, p.0)))
+            .copied()
+            .collect();
+
+        let (track_a_id, track_b_id) = aggression::next_calibration_pair(
+            &pool,
+            &asked,
+            &pca_data,
+            &self.calibration.weights,
+        )?;
+
+        self.calibration.preloading_count += 1;
+        self.calibration.in_flight_pair_ids.insert((track_a_id, track_b_id));
 
         Some(Task::perform(
             async move {
@@ -464,10 +585,10 @@ impl MeshCueApp {
                 .ok()
                 .flatten()
             },
-            |result| {
+            move |result| {
                 match result {
                     Some(pair) => Message::CalibrationPairPreloaded(Box::new(pair)),
-                    None => Message::CalibrationPairPreloadFailed,
+                    None => Message::CalibrationPairPreloadFailed(track_a_id, track_b_id),
                 }
             },
         ))

@@ -103,13 +103,21 @@ impl MeshCueApp {
                     // Detect PCA dimensionality
                     let pca_dims = pca_data.first().map(|(_, v)| v.len()).unwrap_or(0);
 
-                    // Run layout algorithm (with DB caching for deterministic communities)
+                    // Compute cache key once — used by both layout and clustering caches
+                    let cache_key = mesh_core::graph_compute::graph_cache_key(
+                        &pca_data, algorithm, normalize, whiten_alpha,
+                    );
+
+                    // Run layout algorithm (cached by cache_key)
                     let positions = mesh_core::graph_compute::compute_layout_cached(
                         &pca_data, algorithm, normalize, whiten_alpha, Some(&db),
                     );
 
-                    // Run consensus clustering + compute community thresholds
-                    let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering(&positions);
+                    // Run consensus clustering (also cached — HDBSCAN is non-deterministic
+                    // so caching the full result is the only way to keep communities stable)
+                    let mut cluster_result = mesh_core::graph_compute::run_consensus_clustering_cached(
+                        &positions, &cache_key, Some(&db),
+                    );
                     cluster_result.thresholds = mesh_core::graph_compute::compute_community_thresholds(&pca_data, &cluster_result.clusters);
 
                     (positions, track_meta, pca_dims, cluster_result, normalize, stem_colors)
