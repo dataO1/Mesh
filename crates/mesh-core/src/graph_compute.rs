@@ -233,11 +233,12 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
-    // v12: min_cluster_size reverted to sqrt(n) — 1.5*sqrt(n) absorbed too
-    // aggressively (7 communities with visible mixed regions). 10 is the
-    // sweet spot for this library.
+    // v13: hierarchical Louvain — macro-communities with >= 30% of library
+    // get re-clustered internally on their whitened PCA subset, surfacing
+    // sub-genre structure that was being squashed by the dominant inter-genre
+    // variance direction.
     format!(
-        "v12_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v13_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -1037,6 +1038,17 @@ const LOUVAIN_DELTA: f64 = 1e-4;
 /// Maximum move-and-reassign iterations per Louvain phase.
 const LOUVAIN_MAX_ITER: usize = 50;
 
+/// Hierarchical recursion: any macro-community that holds at least this
+/// fraction of the library gets re-clustered internally to surface subgenres.
+/// Fixed at 30% — smaller macro-communities are left as-is, because splitting
+/// e.g. a 100-track community into two 50-track sub-communities is rarely
+/// musically meaningful for a DJ at a glance.
+const MACRO_RECURSE_FRACTION: f64 = 0.30;
+
+/// Skip recursion if the subset's Louvain finds fewer than this many
+/// sub-communities — nothing to gain from "splitting" into 1.
+const SUB_MIN_COMMUNITY_COUNT: usize = 2;
+
 /// Entry point: Louvain community detection on the whitened PCA vectors.
 ///
 /// Steps:
@@ -1112,6 +1124,21 @@ pub fn run_louvain_clustering(
     // calibration coverage and suggestion scoring working for every track.
     absorb_small_communities(&mut node_to_comm, &ids, positions, min_cluster_size);
 
+    // 4b. Hierarchical recursion: for any macro-community with >= 30% of the
+    // library, re-cluster internally (one level deep only). Without this,
+    // continuous dense regions like DnB get swallowed into one community and
+    // their sub-genre structure (liquid / techstep / neuro) is lost because
+    // the dominant variance direction in the global PCA is "DnB vs techno",
+    // not "liquid vs neuro". Re-whitening the subset equalizes variance
+    // across dimensions and surfaces the intra-DnB signal.
+    recurse_into_macro_communities(
+        &mut node_to_comm,
+        &ids,
+        &sorted,
+        positions,
+        n,
+    );
+
     // 5. Renumber surviving communities by descending size, largest=0
     let mut comm_counts: HashMap<usize, usize> = HashMap::new();
     for &c in &node_to_comm { *comm_counts.entry(c).or_default() += 1; }
@@ -1139,7 +1166,7 @@ pub fn run_louvain_clustering(
 
     let num_clusters = new_idx.len();
     log::info!(
-        "[GRAPH/LOUVAIN] {} communities (k={}, min_size={}, resolution={:.2}, {} tracks — all assigned)",
+        "[GRAPH/LOUVAIN] {} leaf communities (k={}, min_size={}, resolution={:.2}, {} tracks — all assigned, hierarchy depth up to 2)",
         num_clusters, LOUVAIN_K_NEIGHBORS, min_cluster_size, resolution, n,
     );
 
@@ -1224,6 +1251,152 @@ fn absorb_small_communities(
     if absorbed > 0 {
         log::info!("[GRAPH/LOUVAIN] Absorbed {} tracks from small communities into nearest large community", absorbed);
     }
+}
+
+/// Level-2 recursion: for each macro-community holding ≥ 30% of the library,
+/// run Louvain internally on its whitened PCA subset. If the subset splits
+/// into ≥ 2 sub-communities, replace the macro's track assignments with
+/// fresh unique IDs (so the post-step renumbering will lay them out as leaf
+/// communities alongside the non-recursed macros).
+///
+/// - `sorted`: normalized PCA vectors already aligned with `ids` order (positions 0..n)
+/// - `positions`: 2D layout (same index space as `ids`)
+/// - `node_to_comm[i]` is the macro community id for track `ids[i]`
+fn recurse_into_macro_communities(
+    node_to_comm: &mut [usize],
+    ids: &[i64],
+    sorted: &[(i64, Vec<f32>)],
+    positions: &HashMap<i64, (f32, f32)>,
+    total_n: usize,
+) {
+    let recurse_threshold = (total_n as f64 * MACRO_RECURSE_FRACTION) as usize;
+
+    // Count macro sizes
+    let mut macro_sizes: HashMap<usize, usize> = HashMap::new();
+    for &c in node_to_comm.iter() { *macro_sizes.entry(c).or_default() += 1; }
+
+    // Stable iteration order: by macro id
+    let mut macros: Vec<(usize, usize)> = macro_sizes.into_iter().collect();
+    macros.sort_by_key(|&(id, _)| id);
+
+    // Pick fresh unique IDs starting well above any macro id so we don't collide
+    let max_macro_id = node_to_comm.iter().copied().max().unwrap_or(0);
+    let mut next_leaf_id = (max_macro_id + 1).max(total_n) + 1000;
+
+    for (macro_id, size) in macros {
+        if size < recurse_threshold {
+            continue;
+        }
+
+        // Collect indices within `ids`/`sorted`/`node_to_comm` arrays
+        let subset_positions: Vec<usize> = (0..node_to_comm.len())
+            .filter(|&i| node_to_comm[i] == macro_id)
+            .collect();
+
+        if subset_positions.len() < 30 {
+            // Too small to meaningfully split
+            continue;
+        }
+
+        // Extract subset's PCA vectors (already L2-normalized from the caller).
+        // We re-whiten them so that within this subset, the former "inter-genre"
+        // variance direction (nearly zero stddev now) stops dominating distances.
+        let mut subset_pca: Vec<(i64, Vec<f32>)> = subset_positions.iter()
+            .map(|&i| (ids[i], sorted[i].1.clone()))
+            .collect();
+        apply_pca_whitening(&mut subset_pca, 1.0);
+
+        // Run Louvain on the whitened subset
+        let sub_labels = cluster_subset(&subset_pca, positions);
+
+        let unique_subs: HashSet<usize> = sub_labels.iter().copied().collect();
+        if unique_subs.len() < SUB_MIN_COMMUNITY_COUNT {
+            log::info!(
+                "[GRAPH/LOUVAIN/L2] Macro {} ({} tracks): kept as-is ({} sub-community found)",
+                macro_id, size, unique_subs.len(),
+            );
+            continue;
+        }
+
+        // Map subset's sub-labels to fresh globally-unique IDs
+        let mut sub_to_leaf: HashMap<usize, usize> = HashMap::new();
+        for &sub in &unique_subs {
+            sub_to_leaf.insert(sub, next_leaf_id);
+            next_leaf_id += 1;
+        }
+
+        // Apply: every track in this macro gets its leaf-level id
+        for (subset_pos, &outer_i) in subset_positions.iter().enumerate() {
+            let sub = sub_labels[subset_pos];
+            node_to_comm[outer_i] = sub_to_leaf[&sub];
+        }
+
+        log::info!(
+            "[GRAPH/LOUVAIN/L2] Macro {} ({} tracks) → {} sub-communities",
+            macro_id, size, unique_subs.len(),
+        );
+    }
+}
+
+/// Run Louvain on a subset of PCA vectors. Returns a `Vec<usize>` aligned
+/// with `subset_pca` giving each track's sub-community id. Used for level-2
+/// hierarchical recursion.
+///
+/// Params scale with subset size (smaller subsets use smaller k, min_size).
+fn cluster_subset(
+    subset_pca: &[(i64, Vec<f32>)],
+    positions: &HashMap<i64, (f32, f32)>,
+) -> Vec<usize> {
+    let m = subset_pca.len();
+    if m < 20 { return vec![0; m]; } // trivially one community
+
+    // Sub-level params: same scaling formula but on subset size, with a
+    // smaller k to match the smaller graph (k=25 would over-couple a 200-
+    // node subset into one blob again).
+    let k = ((m as f32).sqrt() as usize).clamp(8, 20);
+    let (resolution, min_cluster_size) = louvain_params_for_library_size(m);
+
+    log::debug!(
+        "[GRAPH/LOUVAIN/L2] subset n={}, k={}, γ={:.2}, min_size={}",
+        m, k, resolution, min_cluster_size,
+    );
+
+    // Vectors are already L2-normalized + whitened by caller.
+    // Build k-NN graph.
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); m];
+    for i in 0..m {
+        let mut neighbors: Vec<(usize, f32)> = (0..m)
+            .filter(|&j| j != i)
+            .map(|j| {
+                let dot: f32 = subset_pca[i].1.iter().zip(&subset_pca[j].1)
+                    .map(|(a, b)| a * b).sum();
+                (j, dot.max(0.0))
+            })
+            .collect();
+        neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        neighbors.truncate(k);
+        adj[i] = neighbors;
+    }
+    // Symmetrize
+    for i in 0..m {
+        let cloned = adj[i].clone();
+        for (j, w) in cloned {
+            if !adj[j].iter().any(|&(x, _)| x == i) {
+                adj[j].push((i, w));
+            }
+        }
+    }
+
+    // Subset ids for absorb
+    let subset_ids: Vec<i64> = subset_pca.iter().map(|(id, _)| *id).collect();
+
+    // Run multi-level Louvain on subset
+    let mut sub_comms = louvain_multilevel(&adj, resolution);
+
+    // Absorb small sub-communities within subset
+    absorb_small_communities(&mut sub_comms, &subset_ids, positions, min_cluster_size);
+
+    sub_comms
 }
 
 /// Multi-level Louvain:
