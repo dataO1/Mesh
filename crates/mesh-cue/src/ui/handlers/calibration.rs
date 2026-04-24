@@ -182,15 +182,18 @@ impl MeshCueApp {
             anchor_refs.len(),
         );
 
-        // Show all pool pairs as the planned total in the phase enum.
-        // With active learning, transitive closure may collapse this to fewer
-        // actually-asked pairs.
-        let total = pool.len();
-        self.calibration.anchor_total = total;
+        // The candidate pool is an upper bound (every possible edge × edge pair).
+        // With active learning + transitive closure, the user only answers a
+        // small fraction. Use the realistic estimate (~3 pairs per community)
+        // for displayed totals so progress numbers stay meaningful.
+        let n_communities = self.calibration.uncovered_communities.len();
+        let estimated_total = (15 + n_communities * 3).min(pool.len());
+
+        self.calibration.anchor_total = estimated_total;
         self.calibration.intra_total = 0;
         self.calibration.boundary_total = 0;
         self.calibration.candidate_pool = pool;
-        self.calibration.total_pairs_planned = total;
+        self.calibration.total_pairs_planned = estimated_total;
         self.calibration.total_historical = existing_pairs.len();
         self.calibration.weights = current_weights;
     }

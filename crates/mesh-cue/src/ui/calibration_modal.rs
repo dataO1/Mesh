@@ -102,20 +102,24 @@ fn view_comparison(state: &CalibrationState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    // Phase + progress info
+    // Phase + progress info. Phase totals are capped by active-learning
+    // estimate so the displayed numbers stay sane.
     let (phase_current, phase_total) = state.phase.progress();
+    let phase_total_safe = phase_total.max(phase_current);
     let phase_label = text(format!(
-        "Phase {}: {} ({}/{})",
+        "Phase {}: {} ({}/~{})",
         state.phase.phase_number(),
         state.phase.label(),
         phase_current,
-        phase_total,
+        phase_total_safe,
     )).size(sz(12.0)).color(Color::from_rgb(0.5, 0.5, 0.5));
 
     let total_done = state.completed_count + state.total_historical;
-    let total_planned = state.total_pairs_planned + state.total_historical;
+    // Use estimate-based total. Bump up if user exceeds the estimate so we
+    // never show "12/8". The estimate is a heuristic, not a hard limit.
+    let total_planned = (state.total_pairs_planned + state.total_historical).max(total_done);
     let total_label = text(format!(
-        "Total: {}/{}",
+        "Total: {}/~{}",
         total_done, total_planned,
     )).size(sz(12.0)).color(Color::from_rgb(0.5, 0.5, 0.5));
 
