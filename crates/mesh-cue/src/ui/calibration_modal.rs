@@ -10,13 +10,64 @@ use iced::widget::{button, column, container, progress_bar, row, text, Space};
 use iced::{Alignment, Background, Border, Color, Element, Length};
 use mesh_widgets::sz;
 
-/// Render the calibration modal content (either explanation or comparison).
+/// Render the calibration modal content (explanation, comparison, or completion).
 pub fn view(state: &CalibrationState) -> Element<'_, Message> {
-    if state.explanation_shown {
+    if state.completion_shown {
+        view_completion(state)
+    } else if state.explanation_shown {
         view_explanation(state)
     } else {
         view_comparison(state)
     }
+}
+
+/// Completion screen shown when the model has plateaued (auto-stop).
+/// Mirrors the export modal's "done" state — single primary "Done" button
+/// to confirm and close. Weights are persisted before this view appears.
+fn view_completion(state: &CalibrationState) -> Element<'_, Message> {
+    let title = text("Calibration Complete").size(sz(22.0));
+    let close_btn = button(text("x").size(sz(18.0)))
+        .on_press(Message::CalibrationFinish)
+        .style(button::secondary);
+
+    let header = row![title, Space::new().width(Length::Fill), close_btn]
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+    let total_done = state.completed_count + state.total_historical;
+    let summary = text(format!(
+        "Your aggression scale has been trained on {} comparison{}.",
+        total_done,
+        if total_done == 1 { "" } else { "s" },
+    )).size(sz(14.0));
+
+    let accuracy = text(format!(
+        "Final model accuracy: {:.0}%",
+        state.model_accuracy * 100.0,
+    )).size(sz(16.0)).color(Color::from_rgb(0.3, 0.8, 0.4));
+
+    let plateau_note = text(
+        "✓ The model has converged — additional comparisons would not \
+         meaningfully improve the scale. Your suggestions will now use \
+         this calibration."
+    ).size(sz(12.0)).color(Color::from_rgb(0.6, 0.7, 0.9));
+
+    let done_btn = button(text("Done").size(sz(14.0)))
+        .on_press(Message::CalibrationFinish)
+        .style(button::primary)
+        .padding([8, 32]);
+
+    let actions = row![Space::new().width(Length::Fill), done_btn, Space::new().width(Length::Fill)]
+        .width(Length::Fill);
+
+    let body = column![header, summary, accuracy, plateau_note, actions]
+        .spacing(18)
+        .width(Length::Fixed(520.0));
+
+    container(body)
+        .padding(30)
+        .style(container::rounded_box)
+        .into()
 }
 
 /// Explanation screen shown before calibration starts.
@@ -202,12 +253,23 @@ fn view_comparison(state: &CalibrationState) -> Element<'_, Message> {
         .padding([6, 16]);
     bottom = bottom.push(cancel_btn);
 
-    // Accuracy display (if we have enough data)
+    // Accuracy display + plateau indicator. Rebuilt after each batch retrain
+    // (every 10 answers). Plateau = last 3 retrain accuracies within 2% of
+    // each other → prompts the user that more answers won't improve much.
     let accuracy_row: Element<'_, Message> = if state.model_accuracy > 0.0 && total_done >= 10 {
-        text(format!("Model accuracy: {:.0}%", state.model_accuracy * 100.0))
-            .size(sz(11.0))
-            .color(Color::from_rgb(0.5, 0.5, 0.5))
-            .into()
+        let plateaued = state.has_plateaued();
+        let (label_text, color) = if plateaued {
+            (
+                format!("Model accuracy: {:.0}% · ✓ Converged — good time to finish", state.model_accuracy * 100.0),
+                Color::from_rgb(0.3, 0.8, 0.4),
+            )
+        } else {
+            (
+                format!("Model accuracy: {:.0}%", state.model_accuracy * 100.0),
+                Color::from_rgb(0.6, 0.7, 0.9),
+            )
+        };
+        text(label_text).size(sz(11.0)).color(color).into()
     } else {
         Space::new().height(0).into()
     };

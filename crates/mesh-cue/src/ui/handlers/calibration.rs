@@ -168,31 +168,35 @@ impl MeshCueApp {
             covered_scored.iter().map(|(id, _)| *id).collect()
         };
 
-        let pool = aggression::build_candidate_pool(
+        let plan = aggression::build_calibration_plan(
             &self.calibration.uncovered_communities,
             &pca_data,
             &anchor_refs,
-            6, // edges per community
+            0, // unused — fixed at 2 edges + 1 centroid per community internally
         );
 
-        log::info!(
-            "[CALIBRATION] Built candidate pool: {} pairs from {} uncovered communities + {} anchor refs",
-            pool.len(),
-            self.calibration.uncovered_communities.len(),
-            anchor_refs.len(),
-        );
-
-        // The candidate pool is an upper bound (every possible edge × edge pair).
-        // With active learning + transitive closure, the user only answers a
-        // small fraction. Use the realistic estimate (~3 pairs per community)
-        // for displayed totals so progress numbers stay meaningful.
         let n_communities = self.calibration.uncovered_communities.len();
-        let estimated_total = (15 + n_communities * 3).min(pool.len());
+        log::info!(
+            "[CALIBRATION] Plan: {} phase-1 (deterministic) + {} phase-2 (active learning pool) from {} communities",
+            plan.phase_1.len(),
+            plan.phase_2.len(),
+            n_communities,
+        );
+
+        // Phase 1 has an EXACT count (deterministic). Phase 2 is heuristic.
+        // Estimate phase 2 needs ~num_communities cross-community pairs to
+        // pin down the global axis (transitive closure does the rest).
+        let phase_2_estimate = n_communities.max(5).min(plan.phase_2.len());
+        let estimated_total = plan.phase_1.len() + phase_2_estimate;
 
         self.calibration.anchor_total = estimated_total;
         self.calibration.intra_total = 0;
         self.calibration.boundary_total = 0;
-        self.calibration.candidate_pool = pool;
+        self.calibration.phase_1_queue = plan.phase_1.iter().copied().collect();
+        self.calibration.phase_1_total = plan.phase_1.len();
+        self.calibration.candidate_pool = plan.phase_2;
+        self.calibration.track_community = plan.track_community;
+        self.calibration.recent_communities.clear();
         self.calibration.total_pairs_planned = estimated_total;
         self.calibration.total_historical = existing_pairs.len();
         self.calibration.weights = current_weights;
@@ -272,12 +276,57 @@ impl MeshCueApp {
                     choice,
                 );
             }
+
+            // Track which communities this pair touched, so the diversity
+            // heuristic can rotate to other communities in upcoming rounds.
+            // Keep a sliding window of the last 4 community IDs.
+            for &id in &[track_a_id, track_b_id] {
+                if let Some(&community) = self.calibration.track_community.get(&id) {
+                    self.calibration.recent_communities.push_back(community);
+                    while self.calibration.recent_communities.len() > 4 {
+                        self.calibration.recent_communities.pop_front();
+                    }
+                }
+            }
         }
 
-        // Batch retrain every 20 comparisons
+        // Batch retrain every 10 comparisons so the accuracy indicator
+        // updates at a reasonable frequency and plateau detection has signal.
         let total_done = self.calibration.completed_count + self.calibration.total_historical;
-        if total_done > 0 && total_done % 20 == 0 {
+        if total_done > 0 && total_done % 10 == 0 {
             self.batch_retrain_weights();
+            // Auto-stop on plateau, but ONLY after phase 1 is fully answered.
+            // Phase 1 is the deterministic bootstrap that guarantees every
+            // uncovered community gets its 5 representative tracks queried —
+            // cutting it short leaves entire communities at 0% coverage,
+            // which causes the next session to re-prompt for those communities.
+            // Phase 1 pairs are drained from the queue FIFO before phase 2
+            // pairs are picked, so completed_count >= phase_1_total means
+            // every phase 1 pair was answered.
+            let phase_1_done = self.calibration.completed_count >= self.calibration.phase_1_total;
+            if phase_1_done
+                && self.calibration.has_plateaued()
+                && !self.calibration.completion_shown
+            {
+                log::info!(
+                    "[CALIBRATION] Plateau detected after {} comparisons (phase 1 complete) — auto-stopping",
+                    total_done,
+                );
+                self.calibration.completion_shown = true;
+                self.calibration.playing_side = None;
+                self.audio.pause();
+                // Persist the learned weights immediately
+                if !self.calibration.weights.is_empty() {
+                    let db = self.domain.db_arc();
+                    let _ = db.store_aggression_weights(&self.calibration.weights, self.calibration.model_accuracy);
+                }
+                return Task::none();
+            } else if self.calibration.has_plateaued() && !phase_1_done {
+                log::debug!(
+                    "[CALIBRATION] Plateau detected but phase 1 still has {} bootstrap pairs left — continuing",
+                    self.calibration.phase_1_queue.len(),
+                );
+            }
         }
 
         // Advance to next pair
@@ -457,7 +506,7 @@ impl MeshCueApp {
     }
 
     /// Batch retrain weights from ALL stored pairs.
-    fn batch_retrain_weights(&mut self) {
+    pub fn batch_retrain_weights(&mut self) {
         let db = self.domain.db_arc();
         let all_pairs = db.get_all_calibration_pairs().unwrap_or_default();
         if all_pairs.is_empty() { return; }
@@ -477,9 +526,15 @@ impl MeshCueApp {
             &pca_data,
             &self.calibration.weights,
         ) {
-            log::info!("[CALIBRATION] Batch retrain: accuracy={:.1}%", accuracy * 100.0);
             self.calibration.weights = new_weights;
-            self.calibration.model_accuracy = accuracy;
+            self.calibration.push_accuracy(accuracy);
+            let plateau_note = if self.calibration.has_plateaued() { " [PLATEAUED]" } else { "" };
+            log::info!(
+                "[CALIBRATION] Batch retrain: accuracy={:.1}% (history: {:?}){}",
+                accuracy * 100.0,
+                self.calibration.accuracy_history.iter().map(|a| format!("{:.1}%", a * 100.0)).collect::<Vec<_>>(),
+                plateau_note,
+            );
         }
     }
 
@@ -517,27 +572,20 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Pre-load the next pair in the background, picking the most informative
-    /// pair from the candidate pool via active learning (uncertainty + transitive
-    /// closure of already-known relations).
+    /// Pre-load the next pair in the background.
+    ///
+    /// Two-phase strategy:
+    /// - **Phase 1**: drain `phase_1_queue` FIFO (deterministic bootstrap pairs).
+    /// - **Phase 2**: once phase 1 is empty, pick from `candidate_pool` via
+    ///   active learning v2 (uncertainty + transitive closure + diversity).
     pub fn preload_next_calibration_pair(&mut self) -> Option<Task<Message>> {
-        // Don't pre-load more than 2 ahead
         if self.calibration.preloaded_pairs.len() + self.calibration.preloading_count >= 3 {
-            return None;
-        }
-
-        if self.calibration.candidate_pool.is_empty() {
             return None;
         }
 
         let db = self.domain.db_arc();
 
-        // Build set of pairs already in flight or shown:
-        //   - Currently being decoded by other preload tasks (in_flight_pair_ids)
-        //   - Already decoded and waiting in the queue (preloaded_pairs)
-        //   - Currently displayed to the user (current_pair)
-        // Without this, calling preload_next_calibration_pair() N times in a
-        // row picks the same "best" pair every time — N copies of the same pair.
+        // Build in-flight exclusion set
         let mut in_flight: HashSet<(i64, i64)> = HashSet::new();
         for &(a, b) in &self.calibration.in_flight_pair_ids {
             in_flight.insert((a, b));
@@ -552,29 +600,55 @@ impl MeshCueApp {
             in_flight.insert((p.track_b.id, p.track_a.id));
         }
 
-        // Load current state for active learning
-        let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-        let pca_data: HashMap<i64, Vec<f32>> = all_pca.iter()
-            .filter_map(|(t, v)| Some((t.id?, v.clone())))
-            .collect();
-        let asked: Vec<(i64, i64, i32)> = db.get_all_calibration_pairs()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_, a, b, c, _)| (a, b, c))
-            .collect();
+        // Phase 1 first: drain FIFO, skipping any pair already in flight.
+        let phase_1_pick = {
+            let mut found = None;
+            let mut idx = 0;
+            while idx < self.calibration.phase_1_queue.len() {
+                let p = self.calibration.phase_1_queue[idx];
+                if !in_flight.contains(&p) && !in_flight.contains(&(p.1, p.0)) {
+                    found = Some(self.calibration.phase_1_queue.remove(idx).unwrap());
+                    break;
+                }
+                idx += 1;
+            }
+            found
+        };
 
-        // Filter pool to skip pairs already in flight
-        let pool: Vec<(i64, i64)> = self.calibration.candidate_pool.iter()
-            .filter(|p| !in_flight.contains(p) && !in_flight.contains(&(p.1, p.0)))
-            .copied()
-            .collect();
+        let (track_a_id, track_b_id) = if let Some(p) = phase_1_pick {
+            p
+        } else {
+            // Phase 2: active learning over the pool.
+            if self.calibration.candidate_pool.is_empty() {
+                return None;
+            }
 
-        let (track_a_id, track_b_id) = aggression::next_calibration_pair(
-            &pool,
-            &asked,
-            &pca_data,
-            &self.calibration.weights,
-        )?;
+            let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
+            let pca_data: HashMap<i64, Vec<f32>> = all_pca.iter()
+                .filter_map(|(t, v)| Some((t.id?, v.clone())))
+                .collect();
+            let asked: Vec<(i64, i64, i32)> = db.get_all_calibration_pairs()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, a, b, c, _)| (a, b, c))
+                .collect();
+
+            let pool: Vec<(i64, i64)> = self.calibration.candidate_pool.iter()
+                .filter(|p| !in_flight.contains(p) && !in_flight.contains(&(p.1, p.0)))
+                .copied()
+                .collect();
+
+            let recent: Vec<i32> = self.calibration.recent_communities.iter().copied().collect();
+
+            aggression::next_calibration_pair_v2(
+                &pool,
+                &asked,
+                &pca_data,
+                &self.calibration.weights,
+                &self.calibration.track_community,
+                &recent,
+            )?
+        };
 
         self.calibration.preloading_count += 1;
         self.calibration.in_flight_pair_ids.insert((track_a_id, track_b_id));

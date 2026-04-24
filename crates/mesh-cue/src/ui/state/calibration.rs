@@ -98,10 +98,22 @@ pub struct CalibrationState {
     pub current_pair: Option<PreloadedPair>,
     /// Pre-loaded pairs ready to display (target: 2 ahead)
     pub preloaded_pairs: VecDeque<PreloadedPair>,
-    /// Candidate pool of pairs (FPS-selected edge × edge from uncovered communities).
-    /// Active learning picks the most informative pair from this pool after each
-    /// response, filtered by transitive closure of already-answered pairs.
+    /// Phase 1 (deterministic, asked first FIFO): bootstrap pairs that
+    /// guarantee broad coverage — one intra per community + a few anchor
+    /// pairs across the global aggression range.
+    pub phase_1_queue: VecDeque<(i64, i64)>,
+    /// Original phase 1 size (frozen at plan time). Used so estimated_remaining
+    /// can compute "phase 2 done = completed - phase_1_original" without
+    /// losing track as the queue drains.
+    pub phase_1_total: usize,
+    /// Phase 2 pool (active learning picks from here once phase 1 is exhausted).
+    /// All cross-community + remaining intra + edge-vs-anchor combinations.
     pub candidate_pool: Vec<(i64, i64)>,
+    /// Map: track_id → community_id. Used by the diversity heuristic so the
+    /// active learner doesn't keep picking pairs from the same community.
+    pub track_community: std::collections::HashMap<i64, i32>,
+    /// Communities asked about in the last few rounds (for diversity rotation).
+    pub recent_communities: VecDeque<i32>,
     /// Initial phase sizes (frozen at plan time, used for progress display).
     /// Kept for backward compat with phase enum; with active learning, all pairs
     /// are treated uniformly so we put the total in anchor_total.
@@ -118,6 +130,10 @@ pub struct CalibrationState {
     pub weights: Vec<f32>,
     /// Leave-one-out accuracy from last batch retrain
     pub model_accuracy: f32,
+    /// History of accuracies from recent batch retrains (most recent last).
+    /// Used for plateau detection — when the last 3 entries are within a small
+    /// threshold, the model has converged and we nudge the user to finish.
+    pub accuracy_history: Vec<f32>,
     /// Communities flagged for calibration
     pub uncovered_communities: Vec<UncoveredCommunity>,
     /// Previous pairs for undo (most recent last)
@@ -132,6 +148,10 @@ pub struct CalibrationState {
     pub in_flight_pair_ids: HashSet<(i64, i64)>,
     /// Whether the user has been shown the calibration prompt this session
     pub prompted_this_session: bool,
+    /// Set true once auto-stop fires (plateau detected). Switches the modal
+    /// into a "completion" state — comparison UI hidden, summary shown,
+    /// single "Done" button persists weights and closes.
+    pub completion_shown: bool,
 }
 
 impl Default for CalibrationState {
@@ -142,7 +162,11 @@ impl Default for CalibrationState {
             phase: CalibrationPhase::Anchor { current: 0, total: 0 },
             current_pair: None,
             preloaded_pairs: VecDeque::new(),
+            phase_1_queue: VecDeque::new(),
+            phase_1_total: 0,
             candidate_pool: Vec::new(),
+            track_community: std::collections::HashMap::new(),
+            recent_communities: VecDeque::new(),
             anchor_total: 0,
             intra_total: 0,
             boundary_total: 0,
@@ -151,12 +175,14 @@ impl Default for CalibrationState {
             total_historical: 0,
             weights: Vec::new(),
             model_accuracy: 0.0,
+            accuracy_history: Vec::new(),
             uncovered_communities: Vec::new(),
             history: Vec::new(),
             playing_side: None,
             preloading_count: 0,
             in_flight_pair_ids: HashSet::new(),
             prompted_this_session: false,
+            completion_shown: false,
         }
     }
 }
@@ -173,6 +199,9 @@ impl CalibrationState {
         self.playing_side = None;
         self.preloading_count = 0;
         self.in_flight_pair_ids.clear();
+        self.accuracy_history.clear();
+        self.model_accuracy = 0.0;
+        self.completion_shown = false;
     }
 
     /// Close the calibration modal and stop any playback.
@@ -182,9 +211,16 @@ impl CalibrationState {
         self.current_pair = None;
         self.preloaded_pairs.clear();
         self.history.clear();
+        self.phase_1_queue.clear();
+        self.phase_1_total = 0;
         self.candidate_pool.clear();
+        self.track_community.clear();
+        self.recent_communities.clear();
         self.preloading_count = 0;
         self.in_flight_pair_ids.clear();
+        self.accuracy_history.clear();
+        self.model_accuracy = 0.0;
+        self.completion_shown = false;
     }
 
     /// Advance to the next pair. Returns true if a pair was available.
@@ -234,24 +270,56 @@ impl CalibrationState {
         self.completed_count + self.total_historical >= 30
     }
 
-    /// Total remaining pairs (estimate based on candidate pool minus completed).
+    /// Total remaining pairs to potentially ask. Phase 1 has an exact count
+    /// (queue size); phase 2 is the candidate pool (active learning will pick
+    /// far fewer than this — see `estimated_remaining` for the realistic count).
     pub fn remaining(&self) -> usize {
-        self.candidate_pool.len().saturating_sub(self.completed_count)
-            + self.preloaded_pairs.len()
+        self.phase_1_queue.len() + self.candidate_pool.len() + self.preloaded_pairs.len()
     }
 
-    /// Estimated number of comparisons the user will actually be asked.
+    /// Record a new accuracy measurement from a batch retrain. Keeps the last
+    /// 10 entries — enough lookback for plateau detection (need both a
+    /// "running max" baseline and a "recent" window).
+    pub fn push_accuracy(&mut self, accuracy: f32) {
+        self.model_accuracy = accuracy;
+        self.accuracy_history.push(accuracy);
+        if self.accuracy_history.len() > 10 {
+            self.accuracy_history.remove(0);
+        }
+    }
+
+    /// True when the model has stopped improving for several retrains.
     ///
-    /// The candidate pool is an UPPER BOUND of all possible pair combinations
-    /// (~num_communities² × edges² pairs). Active learning + transitive closure
-    /// of 1D ordering means the user converges much faster — empirically
-    /// ~3 pairs per community plus a small constant.
-    pub fn estimated_remaining(&self) -> usize {
+    /// Definition: the last 3 retrain accuracies have not exceeded the running
+    /// maximum by more than 1.5%. This is robust to per-retrain noise (LOO
+    /// accuracy can swing several percent between batches even when the model
+    /// has stabilised) — what matters is whether NEW answers are pushing the
+    /// model to higher accuracy or not.
+    pub fn has_plateaued(&self) -> bool {
+        let n = self.accuracy_history.len();
+        if n < 4 { return false; }
+        // Running max over all but the last 3 entries
+        let prior_max = self.accuracy_history[..n - 3]
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        // None of the last 3 exceeded prior_max by 1.5%
+        let recent = &self.accuracy_history[n - 3..];
+        recent.iter().all(|&a| a <= prior_max + 0.015)
+    }
+
+    /// Estimated total comparisons (phase 1 exact + phase 2 heuristic),
+    /// independent of progress. Used for the initial modal estimate.
+    pub fn estimated_total(&self) -> usize {
         let n_communities = self.uncovered_communities.len();
-        // Heuristic: ~3 pairs per community + 15 anchors. Capped by pool size.
-        let predicted = 15 + n_communities * 3;
-        let total_estimate = predicted.min(self.candidate_pool.len());
-        total_estimate.saturating_sub(self.completed_count)
+        let phase_2_heuristic = n_communities.max(5).min(self.candidate_pool.len());
+        self.phase_1_total + phase_2_heuristic
+    }
+
+    /// Estimated remaining comparisons after the user's current progress.
+    /// = estimated_total - completed_count, clamped to >= 0.
+    pub fn estimated_remaining(&self) -> usize {
+        self.estimated_total().saturating_sub(self.completed_count)
     }
 
     /// Estimate minutes remaining based on ~5 seconds per comparison.

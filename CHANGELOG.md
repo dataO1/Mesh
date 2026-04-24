@@ -4,6 +4,116 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Aggression calibration: active learning + transitive closure** — Calibration
+  is now an adaptive loop instead of a fixed pre-planned queue. Phase 1
+  (deterministic): per uncovered community, pick 4 FPS edge tracks + 1 centroid
+  track, then ask 4 skip-chain questions (`e0→e2→centroid→e1→e3`). Transitive
+  closure over consistent answers implies all 10 intra-community pair orderings.
+  Phase 2 (dynamic): active learning picks the most informative pair from the
+  remaining pool, scoring by model uncertainty + transitive deduction filter +
+  diversity rotation. Cold-start (zero weights) ranks by PCA delta magnitude.
+
+- **Plateau-based auto-stop with completion modal** — When the model stops
+  improving (last 3 retrains fail to exceed running max by >1.5%), calibration
+  automatically finishes and shows a "Calibration Complete" modal with the
+  final accuracy. Plateau detection is gated behind phase 1 completion so every
+  community gets its bootstrap coverage even if the user clicks randomly.
+
+- **Live model accuracy display** — Calibration modal shows current LOO
+  accuracy (rebuilt every 10 answers). Turns green with "✓ Converged"
+  hint when the model has stopped improving.
+
+- **Restart Aggression Calibration** — New right-click menu option on the
+  Collection node. Reuses the delete-modal infrastructure via `DeleteTarget::Custom`
+  for confirmation. Clears stored pairs AND learned weights, then triggers a
+  fresh coverage check.
+
+- **Cluster cache** — New `graph_clusters` DB relation caches the full
+  HDBSCAN result alongside `graph_positions`. Same cache_key → identical
+  communities across restarts (HDBSCAN itself is non-deterministic).
+
+- **Calibration coverage diagnostics** — `[COVERAGE]` log lines show
+  per-community pair count, threshold check, and the reason any community is
+  flagged as needing calibration. `[AGGRESSION]` and `[SCORING]` log lines
+  show whether weights loaded from DB and the final scoring weight breakdown.
+
+- **db-inspect calibration output** — Reports calibration pair count,
+  aggression axis dimensions, correlation, and weight stats.
+
+### Changed
+
+- **Faster calibration preview clips** — `extract_preview_clip` uses
+  `AudioFileReader::decode_region()` when the drop marker is known, decoding
+  only the ~16 bars needed instead of the full track (~80x less work).
+
+- **Calibration weights persist on close** — `CloseCalibration` (X button) now
+  retrains and saves weights before closing. Previously only `Finish Early` and
+  auto-stop saved weights, so X-ing out discarded all session learning.
+
+- **Coverage threshold tiered by community size** — Replaced the flat 15%
+  threshold with: small communities (<30 tracks) need ≥3 calibrated tracks,
+  large communities need ≥10% coverage OR ≥5 calibrated. The flat 15%
+  permanently flagged any community with >33 tracks even after FPS bootstrap.
+
+- **Realistic calibration estimate** — Modal shows `phase_1_exact + phase_2_heuristic`
+  (~`2 × num_communities`) instead of the candidate pool upper bound (which
+  could be 4500+). `~` prefix marks the value as an estimate; displayed total
+  grows past the estimate if the user keeps going.
+
+- **Deterministic graph clustering** — HDBSCAN input is now sorted by track
+  ID, and cluster IDs are assigned by descending size (then root index).
+  Stable communities across runs.
+
+- **Devshell slimmed down** — Removed PyTorch/Python/libtorch/distrobox/debuggers
+  from the default shell (CI handles model conversion and packaging). Cuts
+  several minutes off `direnv allow` time. Items left commented out with notes
+  on when to re-enable.
+
+- **Default audio buffer size 512 → 1024 frames** (~21ms latency). Avoids
+  underruns on PipeWire-ALSA bridge with concurrent streams on newer Intel
+  ACE-style audio chips.
+
+### Fixed
+
+- **Calibration pair count query** — `get_calibration_pair_count()` used a
+  CozoDB aggregation pattern (`count = count(id), *aggression_calibration_pairs{id}`)
+  that always returned 0. Pairs were saving correctly all along; only the
+  count query was broken. Fixed by using a separate aggregation rule.
+
+- **Concurrent preload duplicates** — When several preload tasks ran in
+  parallel they all saw the same `asked_pairs` set and picked the same
+  "best next pair" via active learning, decoding 3 copies of the same pair.
+  CalibrationState now tracks `in_flight_pair_ids` so subsequent calls
+  exclude pairs being decoded by other tasks.
+
+- **Refinement asked the same pairs as initial calibration** — `plan_calibration_pairs`
+  accepted existing pairs but never used them to filter pair candidates.
+  Phase 1 now asks deterministic chain questions; phase 2's active learner
+  filters by both already-asked AND transitively-deducible pairs.
+
+- **Auto-stop fired during phase 1** — Plateau detection could trigger before
+  phase 1 had queried every community's 5 reps, leaving some communities at
+  0% coverage and re-prompting on next session. Auto-stop is now gated behind
+  phase 1 completion.
+
+- **JACK fallback failure on Linux** — mesh-cue's build.rs forced
+  `--disable-new-dtags` (DT_RPATH) for procspawn subprocess library
+  resolution, which made `pw-jack`'s `LD_LIBRARY_PATH` injection of
+  PipeWire-JACK ineffective (RPATH wins over LD_LIBRARY_PATH). Switched to
+  DT_RUNPATH; libessentia.so's own RPATH still handles transitive lookups
+  for procspawn.
+
+- **patches/libpd-* setup** — Shellhook now downloads from crates.io directly
+  instead of reading from the cargo registry, fixing the chicken-and-egg
+  problem where `cargo fetch` requires the patches but the patches needed
+  `cargo fetch`.
+
+---
+
 ## [0.9.13]
 
 ### Added

@@ -490,6 +490,12 @@ pub fn query_suggestions(
         .and_then(|s| s.db.get_aggression_weights().ok().flatten());
     let mut aggression_map: HashMap<(usize, i64), f32> = HashMap::new();
 
+    log::info!(
+        "[AGGRESSION] Loaded weights from DB: {} (custom_weights={:?}, energy_bias={:.3})",
+        if aggression_weights.is_some() { "YES" } else { "NO (will fall back)" },
+        suggestion_config.custom_weights,
+        energy_bias,
+    );
     if let Some((ref weights, combined_r)) = aggression_weights {
         // Project each track's PCA vector onto the aggression axis
         for (src_idx, source) in sources.iter().enumerate() {
@@ -575,6 +581,10 @@ pub fn query_suggestions(
             (w_vector, 0.25, w_aggr)
         }
     };
+    log::info!(
+        "[SCORING] Final weights: similarity={:.3}, key={:.3}, aggression={:.3} (custom={:?})",
+        w_vector, w_key, w_aggr, suggestion_config.custom_weights.is_some(),
+    );
     let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
     // Stem penalty weights (only at center, subtracted from score)
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };

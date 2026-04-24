@@ -727,6 +727,26 @@ impl MeshCueApp {
                 if self.calibration.playing_side.is_some() {
                     self.audio.pause();
                 }
+                // CRITICAL: save weights before closing! Pairs are persisted
+                // per-answer but weights only get computed via batch retrain.
+                // Without this, X-ing out of the modal discards all the
+                // learned model state (we'd have pairs but no aggression axis).
+                if !self.calibration.weights.is_empty() {
+                    let db = self.domain.db_arc();
+                    self.batch_retrain_weights(); // final retrain for fresh weights
+                    if let Err(e) = db.store_aggression_weights(
+                        &self.calibration.weights,
+                        self.calibration.model_accuracy,
+                    ) {
+                        log::warn!("[CALIBRATION] Failed to persist weights on close: {}", e);
+                    } else {
+                        log::info!(
+                            "[CALIBRATION] Persisted weights on close: {} dims, accuracy={:.1}%",
+                            self.calibration.weights.len(),
+                            self.calibration.model_accuracy * 100.0,
+                        );
+                    }
+                }
                 self.calibration.close();
             }
             Message::CalibrationStart => {

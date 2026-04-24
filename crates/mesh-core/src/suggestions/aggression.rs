@@ -309,6 +309,12 @@ pub fn detect_uncovered_communities(
         calibrated_ids.insert(a);
         calibrated_ids.insert(b);
     }
+    log::info!(
+        "[COVERAGE] Input: {} pairs, {} unique calibrated track IDs, {} community assignments",
+        calibration_pairs.len(),
+        calibrated_ids.len(),
+        community_assignments.len(),
+    );
 
     // Group tracks by community
     let mut communities: HashMap<i32, Vec<i64>> = HashMap::new();
@@ -317,39 +323,77 @@ pub fn detect_uncovered_communities(
             communities.entry(cluster_id).or_default().push(track_id);
         }
     }
+    log::info!("[COVERAGE] {} non-noise communities found", communities.len());
+
+    // Coverage thresholds:
+    // - SMALL communities (<30 tracks): need ≥3 calibrated tracks (absolute count)
+    // - LARGE communities (≥30 tracks): need ≥10% coverage OR ≥5 calibrated tracks
+    // Old 15% threshold was too strict — with 5 reps per community, communities
+    // with >33 tracks could never be considered "covered".
+    let is_covered = |calibrated_count: usize, total: usize| -> bool {
+        if total < 30 {
+            calibrated_count >= 3
+        } else {
+            (calibrated_count as f32 / total as f32) >= 0.10 || calibrated_count >= 5
+        }
+    };
 
     // Compute centroids for calibrated communities (for distance check)
-    let mut calibrated_centroids: Vec<Vec<f32>> = Vec::new();
-    for (_, track_ids) in &communities {
+    let mut calibrated_centroids: Vec<(i32, Vec<f32>)> = Vec::new();
+    for (cluster_id, track_ids) in &communities {
         let calibrated_count = track_ids.iter().filter(|id| calibrated_ids.contains(id)).count();
-        let coverage = calibrated_count as f32 / track_ids.len().max(1) as f32;
-        if coverage >= 0.15 {
+        if is_covered(calibrated_count, track_ids.len()) {
             if let Some(centroid) = compute_centroid(track_ids, pca_data) {
-                calibrated_centroids.push(centroid);
+                calibrated_centroids.push((*cluster_id, centroid));
             }
         }
     }
+    log::info!(
+        "[COVERAGE] {} communities pass coverage threshold (used as anchor centroids)",
+        calibrated_centroids.len(),
+    );
 
     let mut uncovered = Vec::new();
+    let mut skipped_too_small = 0;
     for (&cluster_id, track_ids) in &communities {
-        if track_ids.len() < 15 { continue; }
+        if track_ids.len() < 15 {
+            skipped_too_small += 1;
+            continue;
+        }
 
         let calibrated_count = track_ids.iter().filter(|id| calibrated_ids.contains(id)).count();
         let coverage_pct = calibrated_count as f32 / track_ids.len() as f32;
+        let coverage_ok = is_covered(calibrated_count, track_ids.len());
 
-        let mut needs_calibration = coverage_pct < 0.15;
+        let mut needs_calibration = !coverage_ok;
+        let mut reason = if needs_calibration {
+            format!("low coverage: {}/{} = {:.1}%", calibrated_count, track_ids.len(), coverage_pct * 100.0)
+        } else {
+            String::new()
+        };
 
         // Also flag if centroid is distant from all calibrated centroids
         if !needs_calibration && !calibrated_centroids.is_empty() {
             if let Some(centroid) = compute_centroid(track_ids, pca_data) {
-                let min_sim = calibrated_centroids.iter()
-                    .map(|c| cosine_similarity(&centroid, c))
+                let max_sim = calibrated_centroids.iter()
+                    .map(|(_, c)| cosine_similarity(&centroid, c))
                     .fold(f32::NEG_INFINITY, f32::max);
-                if min_sim < 0.3 {
+                if max_sim < 0.3 {
                     needs_calibration = true;
+                    reason = format!("centroid too far from any calibrated community (max_sim={:.3} < 0.3)", max_sim);
                 }
             }
         }
+
+        log::debug!(
+            "[COVERAGE] community {}: {} tracks, {} calibrated ({:.1}%), needs_cal={} ({})",
+            cluster_id,
+            track_ids.len(),
+            calibrated_count,
+            coverage_pct * 100.0,
+            needs_calibration,
+            if reason.is_empty() { "covered".to_string() } else { reason.clone() },
+        );
 
         if needs_calibration {
             // Find most common genre label for this community
@@ -363,6 +407,12 @@ pub fn detect_uncovered_communities(
             });
         }
     }
+
+    log::info!(
+        "[COVERAGE] Result: {} uncovered communities (skipped {} too-small <15 tracks)",
+        uncovered.len(),
+        skipped_too_small,
+    );
 
     // Sort by track count descending (largest uncovered communities first)
     uncovered.sort_by(|a, b| b.track_count.cmp(&a.track_count));
@@ -576,62 +626,203 @@ pub fn plan_calibration_pairs(
     (anchor_pairs, intra_pairs, boundary_pairs)
 }
 
-/// Build a candidate pool of pairs from uncovered communities for active learning.
+/// Two-phase calibration plan returned by `build_calibration_plan`.
 ///
-/// Returns ALL pairs combinations from farthest-point-sampled edge tracks
-/// across communities (cross-community + intra-community). The active learner
-/// (`next_calibration_pair`) picks the most informative pair from this pool
-/// after each user response.
+/// **Representatives per community (K=5 skip-chain):**
+/// - 4 FPS edge tracks (captures spread across the community)
+/// - 1 centroid track (real track closest to PCA centroid, not already an edge)
 ///
-/// Step 1 (deterministic): pick K representative "edge" tracks per community.
-/// Steps 2+ (dynamic): see `next_calibration_pair`.
+/// **Phase 1** (fixed, deterministic, asked first FIFO): skip-chain bootstrap.
+/// For 5 representatives arranged as `[e0, e1, e2, e3, centroid]` we ask:
+///   `e0 vs e2`, `e2 vs centroid`, `centroid vs e1`, `e1 vs e3`
+/// This creates a connected chain `e0—e2—centroid—e1—e3` across all 5 reps
+/// with 4 questions. Transitive closure over consistent answers implies all
+/// C(5,2)=10 pair orderings. Skip-chain (non-adjacent jumps) gives stronger
+/// per-answer signal than comparing consecutive FPS extremes. Plus a few
+/// global anchor pairs to seed the cross-community axis.
+///
+/// **Phase 2** (dynamic, active learning): cross-community + remaining intra.
+/// `next_calibration_pair_v2` picks adaptively using uncertainty + transitive
+/// closure + diversity rotation.
+pub struct CalibrationPlan {
+    /// Bootstrap pairs to ask FIFO before active learning kicks in.
+    pub phase_1: Vec<(i64, i64)>,
+    /// Pool for active learning (everything not in phase 1).
+    pub phase_2: Vec<(i64, i64)>,
+    /// Map: track_id → community_id. Used by the diversity heuristic to avoid
+    /// asking about the same community in consecutive rounds.
+    pub track_community: HashMap<i64, i32>,
+}
+
+/// Pick the real track in `track_ids` whose PCA vector is closest to the
+/// centroid of the set. Returns the typical/most-representative member.
+fn centroid_track(track_ids: &[i64], pca_data: &HashMap<i64, Vec<f32>>) -> Option<i64> {
+    let centroid = compute_centroid(track_ids, pca_data)?;
+    track_ids.iter()
+        .filter_map(|&id| pca_data.get(&id).map(|v| (id, v)))
+        .min_by(|a, b| {
+            let da = euclidean_dist_sq(a.1, &centroid);
+            let db = euclidean_dist_sq(b.1, &centroid);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(id, _)| id)
+}
+
+/// Build a two-phase calibration plan with K=5 skip-chain representatives.
+///
+/// Per community we pick 5 representatives: 4 FPS edge tracks + 1 centroid.
+/// Phase 1 asks 4 questions per community in a skip-chain pattern so that
+/// transitive closure implies all C(5,2)=10 intra-community pair orderings.
+///
+/// `_edges_per_community` is unused (we always use 4 edges + 1 centroid).
+/// Kept for API compat.
+pub fn build_calibration_plan(
+    uncovered: &[UncoveredCommunity],
+    pca_data: &HashMap<i64, Vec<f32>>,
+    anchor_refs: &[i64],
+    _edges_per_community: usize,
+) -> CalibrationPlan {
+    // 5 representatives per community: [e0, e1, e2, e3, centroid].
+    // e0..e3 are FPS-selected (farthest-point-sampled across the community).
+    // centroid is the real track closest to the community's PCA centroid,
+    // picked from non-edge tracks so we get 5 distinct representatives.
+    let mut community_reps: Vec<(i32, [i64; 5])> = Vec::new();
+    let mut track_community: HashMap<i64, i32> = HashMap::new();
+
+    for community in uncovered {
+        let tracks_with_pca: Vec<i64> = community.track_ids.iter()
+            .filter(|id| pca_data.contains_key(id))
+            .copied()
+            .collect();
+        if tracks_with_pca.len() < 5 { continue; }
+
+        let edges = farthest_point_sample(&tracks_with_pca, pca_data, 4);
+        if edges.len() < 4 { continue; }
+
+        let non_edge: Vec<i64> = tracks_with_pca.iter()
+            .filter(|id| !edges.contains(id))
+            .copied()
+            .collect();
+        let cent = match centroid_track(&non_edge, pca_data) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        let reps = [edges[0], edges[1], edges[2], edges[3], cent];
+        for &t in &reps {
+            track_community.insert(t, community.cluster_id);
+        }
+        community_reps.push((community.cluster_id, reps));
+    }
+
+    let canon = |a: i64, b: i64| if a < b { (a, b) } else { (b, a) };
+
+    // Phase 1: skip-chain bootstrap (4 questions per community).
+    let mut phase_1: Vec<(i64, i64)> = Vec::new();
+    let mut phase_1_set: HashSet<(i64, i64)> = HashSet::new();
+
+    // Skip-chain: connects all 5 reps with non-adjacent jumps.
+    // Chain: e0 → e2 → centroid → e1 → e3 (indices 0→2→4→1→3).
+    // Each jump spans distant FPS points so answers give stronger signal
+    // than comparing consecutive extremes. Transitive closure over
+    // consistent answers implies all 10 intra pairs.
+    for (_, reps) in &community_reps {
+        let chain = [
+            (reps[0], reps[2]),   // e0  vs e2
+            (reps[2], reps[4]),   // e2  vs centroid
+            (reps[4], reps[1]),   // centroid vs e1
+            (reps[1], reps[3]),   // e1  vs e3
+        ];
+        for (a, b) in chain {
+            let p = canon(a, b);
+            if phase_1_set.insert(p) { phase_1.push(p); }
+        }
+    }
+
+    // Global anchor pairs: up to 5 spanning the aggression range across
+    // evenly-spaced communities. Seeds the cross-community axis before
+    // phase 2's active learner kicks in.
+    if !anchor_refs.is_empty() && community_reps.len() >= 2 {
+        let n = community_reps.len();
+        let pick_n = 5.min(n);
+        for i in 0..pick_n {
+            let comm_idx = (i * n) / pick_n;
+            let edge = community_reps[comm_idx].1[0];
+            let anchor = anchor_refs[i % anchor_refs.len()];
+            if edge != anchor {
+                let p = canon(edge, anchor);
+                if phase_1_set.insert(p) {
+                    phase_1.push(p);
+                }
+            }
+        }
+    }
+
+    // Phase 2: cross-community + remaining intra + edge×anchor.
+    let mut phase_2: HashSet<(i64, i64)> = HashSet::new();
+
+    // Cross-community: every rep × every rep across community pairs.
+    for i in 0..community_reps.len() {
+        for j in (i + 1)..community_reps.len() {
+            for &a in &community_reps[i].1 {
+                for &b in &community_reps[j].1 {
+                    if a != b {
+                        let p = canon(a, b);
+                        if !phase_1_set.contains(&p) {
+                            phase_2.insert(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Intra-community: remaining pairs not covered by the skip-chain
+    // (these are the redundant "transitive-closure-implied" pairs — still
+    // worth keeping in phase 2 pool for when the user contradicts the
+    // transitive inference, which is high-signal).
+    for (_, reps) in &community_reps {
+        for i in 0..reps.len() {
+            for j in (i + 1)..reps.len() {
+                let p = canon(reps[i], reps[j]);
+                if !phase_1_set.contains(&p) {
+                    phase_2.insert(p);
+                }
+            }
+        }
+    }
+    // Rep × anchor pairs not in phase 1.
+    for (_, reps) in &community_reps {
+        for &t in reps {
+            for &anchor in anchor_refs {
+                if t != anchor {
+                    let p = canon(t, anchor);
+                    if !phase_1_set.contains(&p) {
+                        phase_2.insert(p);
+                    }
+                }
+            }
+        }
+    }
+
+    CalibrationPlan {
+        phase_1,
+        phase_2: phase_2.into_iter().collect(),
+        track_community,
+    }
+}
+
+/// Backwards-compat wrapper: returns just the unioned pool (no phase split).
+/// New code should use `build_calibration_plan` instead.
 pub fn build_candidate_pool(
     uncovered: &[UncoveredCommunity],
     pca_data: &HashMap<i64, Vec<f32>>,
     anchor_refs: &[i64],
     edges_per_community: usize,
 ) -> Vec<(i64, i64)> {
-    let mut community_edges: Vec<Vec<i64>> = Vec::new();
-    for community in uncovered {
-        let tracks_with_pca: Vec<i64> = community.track_ids.iter()
-            .filter(|id| pca_data.contains_key(id))
-            .copied()
-            .collect();
-        if tracks_with_pca.is_empty() { continue; }
-        community_edges.push(farthest_point_sample(&tracks_with_pca, pca_data, edges_per_community));
-    }
-
-    let mut pool: HashSet<(i64, i64)> = HashSet::new();
-    let canon = |a: i64, b: i64| if a < b { (a, b) } else { (b, a) };
-
-    // Cross-community pairs (all edge × edge across communities)
-    for i in 0..community_edges.len() {
-        for j in (i + 1)..community_edges.len() {
-            for &a in &community_edges[i] {
-                for &b in &community_edges[j] {
-                    if a != b { pool.insert(canon(a, b)); }
-                }
-            }
-        }
-    }
-    // Intra-community pairs (edges within same community)
-    for edges in &community_edges {
-        for i in 0..edges.len() {
-            for j in (i + 1)..edges.len() {
-                pool.insert(canon(edges[i], edges[j]));
-            }
-        }
-    }
-    // Anchor pairs (edges vs known anchor reference tracks)
-    for edges in &community_edges {
-        for &edge in edges {
-            for &anchor in anchor_refs {
-                if edge != anchor { pool.insert(canon(edge, anchor)); }
-            }
-        }
-    }
-
-    pool.into_iter().collect()
+    let plan = build_calibration_plan(uncovered, pca_data, anchor_refs, edges_per_community);
+    let mut all = plan.phase_1;
+    all.extend(plan.phase_2);
+    all
 }
 
 /// Select the next most informative pair from a candidate pool.
@@ -641,9 +832,111 @@ pub fn build_candidate_pool(
 /// - Skips pairs whose ordering is transitively implied by prior answers
 ///   (e.g., if A > B and B > C, skip A vs C — we already know the answer)
 ///
-/// Among remaining pairs, picks the one where the model is most uncertain.
-/// Uncertainty = |sigmoid(w · delta) - 0.5| inverted (max uncertainty at 0.5).
-/// Tie-break by larger delta magnitude (more impact on weights when wrong).
+/// Scoring depends on model state:
+/// - **Cold-start** (weight magnitude near zero): rank by PCA delta magnitude
+///   only. With zero weights, sigmoid is always 0.5 so uncertainty carries no
+///   signal. Largest-delta pairs are the most discriminative.
+/// - **Warm**: rank by uncertainty (closeness to sigmoid=0.5), tie-break by
+///   delta magnitude.
+///
+/// Diversity: when `track_community` and `recent_communities` are provided, a
+/// small penalty discourages picking pairs that touch communities asked about
+/// in the last few rounds — prevents dwelling on one region of the graph.
+pub fn next_calibration_pair_v2(
+    pool: &[(i64, i64)],
+    asked_pairs: &[(i64, i64, i32)],
+    pca_data: &HashMap<i64, Vec<f32>>,
+    weights: &[f32],
+    track_community: &HashMap<i64, i32>,
+    recent_communities: &[i32],
+) -> Option<(i64, i64)> {
+    let weights_norm: f32 = weights.iter().map(|w| w * w).sum::<f32>().sqrt();
+    let cold_start = weights_norm < 0.01;
+
+    // Build directed graph for transitive closure
+    let mut graph: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut asked_set: HashSet<(i64, i64)> = HashSet::new();
+    for &(a, b, choice) in asked_pairs {
+        asked_set.insert((a, b));
+        asked_set.insert((b, a));
+        match choice {
+            0 => { graph.entry(a).or_default().insert(b); }
+            1 => { graph.entry(b).or_default().insert(a); }
+            2 => {
+                graph.entry(a).or_default().insert(b);
+                graph.entry(b).or_default().insert(a);
+            }
+            _ => {}
+        }
+    }
+
+    let reachable = |start: i64, target: i64, graph: &HashMap<i64, HashSet<i64>>| -> bool {
+        if start == target { return true; }
+        let mut visited: HashSet<i64> = HashSet::new();
+        let mut stack: Vec<i64> = vec![start];
+        while let Some(node) = stack.pop() {
+            if !visited.insert(node) { continue; }
+            if let Some(neighbors) = graph.get(&node) {
+                for &n in neighbors {
+                    if n == target { return true; }
+                    stack.push(n);
+                }
+            }
+        }
+        false
+    };
+
+    let recent_set: HashSet<i32> = recent_communities.iter().copied().collect();
+
+    let mut best: Option<((i64, i64), f32)> = None;
+    for &(a, b) in pool {
+        if asked_set.contains(&(a, b)) { continue; }
+        if reachable(a, b, &graph) || reachable(b, a, &graph) { continue; }
+
+        let pca_a = match pca_data.get(&a) { Some(v) => v, None => continue };
+        let pca_b = match pca_data.get(&b) { Some(v) => v, None => continue };
+        if pca_a.len() != pca_b.len() { continue; }
+
+        let delta_mag: f32 = pca_a.iter().zip(pca_b.iter())
+            .map(|(x, y)| (x - y).powi(2))
+            .sum::<f32>()
+            .sqrt();
+
+        let base_score = if cold_start || weights.len() != pca_a.len() {
+            // Cold start: prefer largest deltas (most discriminative)
+            delta_mag
+        } else {
+            let logit: f32 = weights.iter().zip(pca_a.iter()).zip(pca_b.iter())
+                .map(|((w, x), y)| w * (x - y))
+                .sum();
+            let prob = sigmoid(logit);
+            let uncertainty = 1.0 - 2.0 * (prob - 0.5).abs();
+            uncertainty + 0.05 * delta_mag.min(1.0)
+        };
+
+        // Diversity penalty: down-weight pairs touching recently-asked
+        // communities so the user gets variety instead of dwelling on one
+        // region. Each touched-recent community costs 15% of the score.
+        let comm_a = track_community.get(&a);
+        let comm_b = track_community.get(&b);
+        let mut diversity_factor: f32 = 1.0;
+        if let Some(&c) = comm_a {
+            if recent_set.contains(&c) { diversity_factor *= 0.85; }
+        }
+        if let Some(&c) = comm_b {
+            if recent_set.contains(&c) { diversity_factor *= 0.85; }
+        }
+        let score = base_score * diversity_factor;
+
+        if best.is_none() || score > best.unwrap().1 {
+            best = Some(((a, b), score));
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Backwards-compat wrapper without diversity/cold-start logic.
+/// Prefer `next_calibration_pair_v2`.
 pub fn next_calibration_pair(
     pool: &[(i64, i64)],
     asked_pairs: &[(i64, i64, i32)],
