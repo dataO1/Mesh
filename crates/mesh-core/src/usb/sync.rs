@@ -722,12 +722,20 @@ fn stem_links_equal(a: &[StemLink], b: &[StemLink]) -> bool {
 pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPlan {
     let mut plan = SyncPlan::default();
 
-    // Tracks to copy or update: compare local vs USB
+    // Tracks to copy or update: compare local vs USB.
+    //
+    // Match is by filename + size only. WAV files in the mesh collection are
+    // immutable once imported, so filename equality is essentially a content
+    // match; size is kept as a cheap defensive check against truncated/
+    // corrupted copies. mtime is intentionally NOT compared — it gets reset
+    // by any non-mtime-preserving copy (`cp` without `-p`, GUI drag-drop,
+    // most backup restores), which would mass-flag every track for re-copy
+    // after a host migration.
     for (filename, local_info) in &local.tracks {
         match usb.tracks.get(filename) {
             Some(usb_info) => {
-                if local_info.size != usb_info.size || local_info.mtime > usb_info.mtime {
-                    // Audio content changed → full copy
+                if local_info.size != usb_info.size {
+                    // Size mismatch: USB copy likely truncated/corrupt → full copy
                     plan.total_bytes += local_info.size;
                     plan.tracks_to_copy.push(TrackCopy {
                         source: local_info.path.clone(),
@@ -735,7 +743,7 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
                         size: local_info.size,
                     });
                 } else if metadata_differs(local_info, usb_info) {
-                    // Only metadata changed → metadata-only sync (no WAV copy)
+                    // Same audio file, different metadata → metadata-only sync
                     plan.tracks_to_update.push(filename.clone());
                 }
             }
@@ -1082,7 +1090,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sync_plan_mtime_newer() {
+    fn test_build_sync_plan_mtime_newer_does_not_trigger_copy() {
+        // mtime is intentionally ignored — a newer local mtime alone (e.g. from
+        // a non-mtime-preserving copy after host migration) must NOT cause a
+        // re-copy if filename and size still match.
         use std::time::Duration;
 
         let old_mtime = SystemTime::now() - Duration::from_secs(60);
@@ -1101,7 +1112,7 @@ mod tests {
         );
 
         let plan = build_sync_plan(&local, &usb);
-        assert_eq!(plan.tracks_to_copy.len(), 1);
+        assert_eq!(plan.tracks_to_copy.len(), 0);
     }
 
     #[test]
