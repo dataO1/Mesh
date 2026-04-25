@@ -1071,11 +1071,15 @@ where
         // Uses the same `bpm` variable as the window computation above,
         // so the grid always matches the window sizing (even at 120 BPM fallback).
         let (grid_step, first_beat) = if overview.beat_markers.len() > 1 {
-            // Use analyzed beat grid (normalized positions 0.0-1.0)
+            // Use analyzed beat grid (normalized positions 0.0-1.0).
+            // first_beat = the user-anchored downbeat (beat_markers[beat_anchor_idx]),
+            // not beat_markers[0]. Lets the shader extend gridlines in both
+            // directions from the anchor while red lands on the anchor itself.
             let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
             let avg_interval = total_span as f32 / (overview.beat_markers.len() - 1) as f32;
-            let first = *overview.beat_markers.first().unwrap() as f32;
-            (avg_interval, first)
+            let anchor_idx = overview.beat_anchor_idx.min(overview.beat_markers.len() - 1);
+            let anchor = overview.beat_markers[anchor_idx] as f32;
+            (avg_interval, anchor)
         } else if bpm > 0.0 && dur_f64 > 0.0 {
             // Fallback: procedural grid from BPM when beat_markers empty/single
             let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
@@ -1619,12 +1623,13 @@ where
             None => (0.0, 0.0, 0.0),
         };
 
-        // Beat grid
+        // Beat grid — first_beat = user-anchored downbeat (see WaveformProgram).
         let (grid_step, first_beat) = if overview.beat_markers.len() > 1 {
             let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
             let avg_interval = total_span as f32 / (overview.beat_markers.len() - 1) as f32;
-            let first = *overview.beat_markers.first().unwrap() as f32;
-            (avg_interval, first)
+            let anchor_idx = overview.beat_anchor_idx.min(overview.beat_markers.len() - 1);
+            let anchor = overview.beat_markers[anchor_idx] as f32;
+            (avg_interval, anchor)
         } else if bpm > 0.0 && dur_f64 > 0.0 {
             let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
             let grid_step_norm = (samples_per_beat / dur_f64) as f32;

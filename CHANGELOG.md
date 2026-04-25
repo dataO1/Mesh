@@ -8,6 +8,12 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Phrase highlight every 4th red bar marker on the overview waveform** —
+  Every 4th red bar is now drawn in the active theme's vocal-stem colour
+  (green in all built-in themes), giving a clear at-a-glance reference for
+  phrase boundaries (typically 16 bars / 32 beats). Frequency follows your
+  Grid Density setting; pixel width matches the red bar.
+
 - **Your aggression scale now travels on USB** — Once you've calibrated your
   aggression scale in mesh-cue, exporting a collection to USB copies your
   learned scale onto the stick. Plug that USB into another mesh device (or
@@ -163,6 +169,39 @@ All notable changes to Mesh are documented in this file.
   ACE-style audio chips.
 
 ### Fixed
+
+- **Fullscreen freezes on high-refresh displays** — Mesh would periodically
+  freeze in fullscreen with `Error Timeout when presenting surface` plus a
+  flood of subscription channel errors. The per-frame UI tick was bound to
+  the compositor's vsync rate, so on >120 Hz monitors a single slow GPU
+  present would back up the event queue and trigger a feedback loop. The
+  tick is now capped at 120 Hz with a fixed timer, decoupled from present
+  rate. Also flipped the default present mode from `auto_vsync` (which
+  prefers Mailbox) to `fifo` in the wrappers and devshell — Fifo is more
+  forgiving across GPU/driver combos during fullscreen transitions.
+
+- **Beat-grid downbeat-align placed red markers in the wrong spot when Grid
+  Density wasn't 4** — Pressing the downbeat-align button in mesh-cue
+  (`I` by default) anchored the grid every 4 beats internally, but the
+  overview waveform draws a red marker every `grid_bars` beats (settings-
+  driven, default 32). With Grid Density 8/16/32/64, the playhead-anchored
+  downbeat ended up between two reds, off by a fixed multiple of 4 beats.
+  Anchoring now uses the same `grid_bars` period, so the red lands exactly
+  under the cursor whatever Grid Density you've chosen.
+
+- **Beat grid had no markers and no beat-jump targets before the first
+  downbeat** — After pressing the downbeat-align button, the regenerated
+  grid started at the user-anchored downbeat, leaving the section before
+  it without gridlines and unreachable for beat-jump/snap. The grid is
+  now backfilled all the way to the start of the track, and the overview
+  shader anchors red markers to the user's downbeat (not array index 0)
+  so the alignment stays correct in both directions.
+
+- **Beat-nudge after downbeat-align reverted the grid** — Nudge was reading
+  the array's first beat (now near sample 0 after backfill) instead of the
+  user-anchored downbeat, so each nudge re-anchored to the start of the
+  track and the visible markers snapped back. Nudge now operates on the
+  saved anchor.
 
 - **Calibration progress counter stuck at zero** — Your answers were being
   saved correctly, but the number shown in the progress display always

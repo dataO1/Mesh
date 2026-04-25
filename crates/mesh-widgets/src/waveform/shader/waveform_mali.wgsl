@@ -234,14 +234,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let mf = fract(bp / mi);
         let mt = px_in_source / (grid_step * mi);
         let ma = select(0.5, 0.35, is_overview);
-        if ((mf < mt || mf > 1.0 - mt) && bp > -0.5) {
+
+        // Phrase highlight: overview only, every 4th red bar marker.
+        // Reuses the vocals stem color (green across all built-in themes).
+        // Phrase fires only WHERE a red bar fires AND the rounded bar index is a
+        // multiple of 4. Integer round + modulo is stable in both directions of
+        // the anchor (no fract() drift on a 4×-wider period). Same pixel width
+        // as red, both pre- and post-anchor.
+        let red_hit = mf < mt || mf > 1.0 - mt;
+        let bar_idx = i32(round(bp / mi));
+        let phrase_hit = is_overview && red_hit && (bar_idx % 4 == 0);
+
+        if (phrase_hit) {
+            color = mix(color, u.stem_color_0.rgb, 0.9);
+        } else if (red_hit) {
             color = mix(color, vec3<f32>(1.0, 0.3, 0.3), ma);
         } else {
             let ni = select(1.0, grid_beats / 4.0, is_overview);
             let nf = fract(bp / ni);
             let nt = px_in_source / (grid_step * ni);
             let na = select(0.3, 0.18, is_overview);
-            if ((nf < nt || nf > 1.0 - nt) && bp > -0.5) {
+            if (nf < nt || nf > 1.0 - nt) {
                 color = mix(color, vec3<f32>(0.3, 0.3, 0.3), na);
             }
         }

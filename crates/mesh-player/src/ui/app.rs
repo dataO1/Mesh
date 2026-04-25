@@ -1617,8 +1617,12 @@ impl MeshApp {
         };
 
         Subscription::batch([
-            // Update UI synced to display refresh rate (60Hz, 120Hz, etc.)
-            iced::window::frames().map(|_| Message::Tick),
+            // Update UI capped at 120Hz. Was iced::window::frames() (vsync-locked),
+            // but on >120Hz displays in fullscreen the resulting Tick rate could
+            // saturate iced's subscription channels when a wgpu present timed out,
+            // triggering a TrySendError storm and a freeze cascade. Fixed-rate
+            // timer is steadier; ~8.3ms = 120Hz, matches typical refresh rates.
+            time::every(std::time::Duration::from_millis(8)).map(|_| Message::Tick),
             // Background track load results (delivered as messages, no polling needed)
             mpsc_subscription(self.domain.track_loader_result_receiver())
                 .map(|result| Message::TrackLoaded(TrackLoadedMsg(Arc::new(result)))),

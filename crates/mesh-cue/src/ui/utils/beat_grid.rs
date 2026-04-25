@@ -21,29 +21,21 @@ pub fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
         return;
     }
 
-    // Use f64 for samples-per-bar to avoid truncation in wrapping bounds
-    let samples_per_beat_f64 = SAMPLE_RATE_F64 * 60.0 / state.bpm;
-    let samples_per_bar = (samples_per_beat_f64 * 4.0).round() as i64;
-
-    // Get current first beat
-    let first_beat = state.beat_grid[0] as i64;
-
-    // Apply delta
-    let mut new_first_beat = first_beat + delta_samples;
-
-    // Wrap around one bar if out of bounds
-    if new_first_beat < 0 {
-        new_first_beat += samples_per_bar;
-    } else if new_first_beat >= samples_per_bar {
-        new_first_beat -= samples_per_bar;
+    // Nudge operates on the user-anchored downbeat (state.first_beat_sample),
+    // NOT state.beat_grid[0] — after backfill, beat_grid[0] is a beat near
+    // sample 0, not the user's anchor.
+    let new_anchor_i64 = (state.first_beat_sample as i64).saturating_add(delta_samples);
+    if new_anchor_i64 < 0 {
+        return;
     }
+    let new_anchor = new_anchor_i64 as u64;
 
-    // Regenerate beat grid from new first beat
-    let new_first_beat = new_first_beat as u64;
-    state.beat_grid = regenerate_beat_grid(new_first_beat, state.bpm, state.duration_samples);
+    // Regenerate beat grid from new anchor
+    let (beats, anchor_idx) = regenerate_beat_grid(new_anchor, state.bpm, state.duration_samples);
+    state.beat_grid = beats;
 
     // Update waveform displays
-    update_waveform_beat_grid(state);
+    update_waveform_beat_grid(state, anchor_idx);
 
     // Note: Caller is responsible for propagating beat grid to deck via
     // audio.set_beat_grid() so snapping operations use the updated grid.
@@ -52,19 +44,48 @@ pub fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
     state.modified = true;
 }
 
-/// Regenerate beat grid from a first beat position, BPM, and track duration.
+/// Regenerate beat grid from an anchor downbeat, BPM, and track duration.
 ///
-/// Delegates to mesh-core's `BeatGrid::regenerate()` which uses f64 accumulation
-/// to prevent truncation drift (±0.5 samples max error vs cumulative drift with
-/// integer accumulation).
-pub fn regenerate_beat_grid(first_beat: u64, bpm: f64, duration_samples: u64) -> Vec<u64> {
-    BeatGrid::regenerate(first_beat, bpm, duration_samples).beats
+/// Backfills beats before the anchor so `beats[0]` lies in `[0, samples_per_beat)`.
+/// This lets beat-jump and snap reach pre-anchor positions. Returns
+/// `(beats, anchor_idx)` where `anchor_idx` is the position of the user's
+/// chosen downbeat within the returned Vec.
+///
+/// Uses f64 accumulation to prevent truncation drift (±0.5 samples max error
+/// regardless of beat count).
+pub fn regenerate_beat_grid(anchor_sample: u64, bpm: f64, duration_samples: u64) -> (Vec<u64>, usize) {
+    if bpm <= 0.0 || duration_samples == 0 {
+        return (Vec::new(), 0);
+    }
+    let spb = SAMPLE_RATE_F64 * 60.0 / bpm;
+    if spb <= 0.0 {
+        return (Vec::new(), 0);
+    }
+    // Walk backward from the anchor by whole beats until in [0, spb).
+    let mut start = anchor_sample as f64;
+    let mut anchor_idx: usize = 0;
+    while start > spb {
+        start -= spb;
+        anchor_idx += 1;
+    }
+    let effective_first_beat = start.round() as u64;
+    let beats = BeatGrid::regenerate(effective_first_beat, bpm, duration_samples).beats;
+    (beats, anchor_idx)
 }
 
-/// Update waveform beat grid markers after grid modification
-pub fn update_waveform_beat_grid(state: &mut LoadedTrackState) {
+/// Update waveform beat grid markers after grid modification.
+///
+/// `anchor_idx` is the index in `state.beat_grid` of the user's anchored
+/// downbeat. The shader uses this index to align red and phrase markers.
+pub fn update_waveform_beat_grid(state: &mut LoadedTrackState, anchor_idx: usize) {
     // Update zoomed view (uses sample positions directly)
     state.combined_waveform.zoomed.set_beat_grid(state.beat_grid.clone());
+
+    // Persist the user-anchored downbeat on LoadedTrackState so it round-trips
+    // through save (BeatGrid.first_beat_sample) and reload.
+    if let Some(&anchor_pos) = state.beat_grid.get(anchor_idx) {
+        state.first_beat_sample = anchor_pos;
+    }
 
     // Update overview (uses normalized positions 0.0-1.0)
     if state.duration_samples > 0 {
@@ -72,6 +93,8 @@ pub fn update_waveform_beat_grid(state: &mut LoadedTrackState) {
             .iter()
             .map(|&pos| pos as f64 / state.duration_samples as f64)
             .collect();
+        let max_idx = state.combined_waveform.overview.beat_markers.len().saturating_sub(1);
+        state.combined_waveform.overview.beat_anchor_idx = anchor_idx.min(max_idx);
     }
 }
 

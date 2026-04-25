@@ -410,6 +410,10 @@ pub struct OverviewState {
     pub cue_position: Option<f64>,
     /// Beat grid positions (normalized 0.0 to 1.0)
     pub beat_markers: Vec<f64>,
+    /// Index into `beat_markers` of the user-anchored downbeat. The shader uses
+    /// `beat_markers[beat_anchor_idx]` as the reference for red/phrase markers,
+    /// so beats before the anchor still render but red lines align to the anchor.
+    pub beat_anchor_idx: usize,
     /// Cue point markers
     pub cue_markers: Vec<CueMarker>,
     /// Track duration in samples
@@ -455,6 +459,25 @@ pub struct OverviewState {
     pub linked_highres_buffer: Option<PeakBuffer>,
 }
 
+/// Find the index of the beat in `beats` closest to `anchor_sample`.
+/// Returns 0 when the grid is empty or the anchor is None.
+fn anchor_idx_from_beats(beats: &[u64], anchor_sample: Option<u64>) -> usize {
+    let Some(anchor) = anchor_sample else { return 0; };
+    if beats.is_empty() { return 0; }
+    match beats.binary_search(&anchor) {
+        Ok(i) => i,
+        Err(i) => {
+            if i == 0 { 0 }
+            else if i >= beats.len() { beats.len() - 1 }
+            else {
+                let before = beats[i - 1];
+                let after = beats[i];
+                if anchor - before <= after - anchor { i - 1 } else { i }
+            }
+        }
+    }
+}
+
 impl OverviewState {
     /// Create a new empty waveform state
     pub fn new() -> Self {
@@ -464,6 +487,7 @@ impl OverviewState {
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
+            beat_anchor_idx: 0,
             cue_markers: Vec::new(),
             duration_samples: 0,
             has_track: false,
@@ -540,6 +564,7 @@ impl OverviewState {
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
+            beat_anchor_idx: 0,
             cue_markers,
             duration_samples,
             has_track: true,
@@ -574,12 +599,18 @@ impl OverviewState {
             Vec::new()
         };
 
+        let beat_anchor_idx = anchor_idx_from_beats(
+            &metadata.beat_grid.beats,
+            metadata.beat_grid.first_beat_sample,
+        );
+
         Self {
             shared_overview: None,
             shared_highres: None,
             position: 0.0,
             cue_position: None,
             beat_markers,
+            beat_anchor_idx,
             cue_markers,
             duration_samples,
             has_track: true,
@@ -608,6 +639,7 @@ impl OverviewState {
         stems: &StemBuffers,
         cue_points: &[CuePoint],
         beat_grid: &[u64],
+        first_beat_sample: Option<u64>,
         bpm: f64,
         screen_width: u32,
         quality_level: u8,
@@ -636,6 +668,7 @@ impl OverviewState {
                 .iter()
                 .map(|&pos| pos as f64 / duration_samples as f64)
                 .collect();
+            self.beat_anchor_idx = anchor_idx_from_beats(beat_grid, first_beat_sample);
 
             // Update cue markers with correct normalized positions
             self.cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
@@ -684,6 +717,11 @@ impl OverviewState {
             .map(|&pos| pos as f64 / duration_samples as f64)
             .collect();
 
+        let beat_anchor_idx = anchor_idx_from_beats(
+            &track.metadata.beat_grid.beats,
+            track.metadata.beat_grid.first_beat_sample,
+        );
+
         let cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
 
         log::debug!(
@@ -702,6 +740,7 @@ impl OverviewState {
             position: 0.0,
             cue_position: None,
             beat_markers,
+            beat_anchor_idx,
             cue_markers,
             duration_samples,
             has_track: true,

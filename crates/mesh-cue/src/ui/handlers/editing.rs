@@ -25,23 +25,17 @@ impl MeshCueApp {
             if !state.beat_grid.is_empty() && state.duration_samples > 0 {
                 let playhead = state.playhead_position();
 
-                // Find the index of the beat nearest to the playhead
-                let (anchor_idx, anchor_pos) = find_nearest_beat_with_index(&state.beat_grid, playhead);
-
-                // Calculate new samples per beat (f64 to avoid truncation drift)
-                let new_spb_f64 = mesh_core::types::SAMPLE_RATE as f64 * 60.0 / bpm;
-
-                // Calculate new first beat position, keeping anchor beat fixed
-                // new_first_beat = anchor_pos - (anchor_idx * new_samples_per_beat)
-                let new_first_beat = (anchor_pos as f64 - anchor_idx as f64 * new_spb_f64).round().max(0.0) as u64;
+                // The beat nearest to the playhead becomes the new anchor downbeat.
+                let (_old_idx, anchor_pos) = find_nearest_beat_with_index(&state.beat_grid, playhead);
 
                 log::debug!(
-                    "BPM change {:.2} → {:.2}: anchor beat {} at {} (playhead {}), new first beat {}",
-                    old_bpm, bpm, anchor_idx, anchor_pos, playhead, new_first_beat
+                    "BPM change {:.2} → {:.2}: anchor at {} (playhead {})",
+                    old_bpm, bpm, anchor_pos, playhead
                 );
 
-                state.beat_grid = regenerate_beat_grid(new_first_beat, bpm, state.duration_samples);
-                update_waveform_beat_grid(state);
+                let (beats, anchor_idx) = regenerate_beat_grid(anchor_pos, bpm, state.duration_samples);
+                state.beat_grid = beats;
+                update_waveform_beat_grid(state, anchor_idx);
 
                 // Propagate to deck so snapping uses updated grid
                 self.audio.set_beat_grid(state.beat_grid.clone());
@@ -169,7 +163,7 @@ impl MeshCueApp {
                 state.bpm,
                 &state.key,
                 state.drop_marker,
-                state.beat_grid.first().copied().unwrap_or(0),
+                state.first_beat_sample,
                 &state.cue_points,
                 &state.saved_loops,
                 &state.stem_links,
@@ -420,24 +414,19 @@ impl MeshCueApp {
             }
 
             let playhead = state.playhead_position();
-            let spb_f64 = mesh_core::types::SAMPLE_RATE as f64 * 60.0 / state.bpm;
-            let samples_per_bar = (spb_f64 * 4.0).round() as u64;
 
-            // Calculate first beat position at start of file such that
-            // a downbeat (bar boundary) aligns with the playhead.
-            // Using samples_per_bar ensures the playhead lands on beat 0
-            // of a bar, not beat 1/2/3 — the shader draws red lines every
-            // 4 beats from beat_markers[0].
-            let first_beat = playhead % samples_per_bar;
-
+            // The playhead itself is the new anchor downbeat. regenerate_beat_grid
+            // backfills beats before the anchor so beat-jump and snap reach the
+            // start of the track. The shader uses beat_anchor_idx to align red and
+            // phrase markers to this anchor regardless of grid_bars.
             log::debug!(
-                "Aligning beat grid: playhead {} -> first_beat {} (BPM: {:.2}, samples_per_beat: {:.2})",
-                playhead, first_beat, state.bpm, spb_f64
+                "Aligning beat grid: anchor = playhead {} (BPM: {:.2})",
+                playhead, state.bpm
             );
 
-            // Regenerate beat grid starting from the calculated first beat
-            state.beat_grid = regenerate_beat_grid(first_beat, state.bpm, state.duration_samples);
-            update_waveform_beat_grid(state);
+            let (beats, anchor_idx) = regenerate_beat_grid(playhead, state.bpm, state.duration_samples);
+            state.beat_grid = beats;
+            update_waveform_beat_grid(state, anchor_idx);
 
             // Propagate to deck so snapping uses updated grid
             self.audio.set_beat_grid(state.beat_grid.clone());

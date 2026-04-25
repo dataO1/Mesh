@@ -276,7 +276,7 @@ impl MeshCueApp {
                     state.bpm,
                     &state.key,
                     state.drop_marker,
-                    state.beat_grid.first().copied().unwrap_or(0),
+                    state.first_beat_sample,
                     &state.cue_points,
                     &state.saved_loops,
                     &state.stem_links,
@@ -1087,14 +1087,15 @@ impl MeshCueApp {
                 Arc::new(std::sync::Mutex::new(Some(result)))
             )));
 
-        // Update UI synced to display refresh rate (60Hz, 120Hz, etc.)
-        // Using window::frames() instead of time::every() eliminates bursty waveform
-        // movement — the tick fires exactly when the compositor needs a new frame.
+        // Update UI capped at 120Hz. Previously iced::window::frames() (vsync-locked),
+        // but on >120Hz displays in fullscreen the Tick rate could saturate iced's
+        // subscription channels when a wgpu present timed out, triggering a
+        // TrySendError storm and a freeze cascade. Fixed timer at ~8.3ms = 120Hz.
         iced::Subscription::batch([
             keyboard_sub,
             mouse_sub,
             effects_editor_mouse_sub,
-            iced::window::frames().map(|_| Message::Tick),
+            iced::time::every(std::time::Duration::from_millis(8)).map(|_| Message::Tick),
             linked_stem_sub,
             usb_sub,
             learning_sub,

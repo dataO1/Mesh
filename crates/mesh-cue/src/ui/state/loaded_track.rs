@@ -34,8 +34,11 @@ pub struct LoadedTrackState {
     pub bpm: f64,
     /// Modified key (user override)
     pub key: String,
-    /// Beat grid from metadata
+    /// Beat grid from metadata (may be backfilled to start near sample 0)
     pub beat_grid: Vec<u64>,
+    /// User-anchored downbeat sample position. Saved to metadata as
+    /// `BeatGrid.first_beat_sample`; rendering uses it to align red markers.
+    pub first_beat_sample: u64,
     /// Drop marker sample position (for linked stem alignment)
     pub drop_marker: Option<u64>,
     /// Track's integrated LUFS (for gain matching with linked stems)

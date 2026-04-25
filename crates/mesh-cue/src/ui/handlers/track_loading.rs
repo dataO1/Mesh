@@ -51,6 +51,11 @@ impl MeshCueApp {
                 let key = metadata.key.clone().unwrap_or_else(|| "?".to_string());
                 let cue_points = metadata.cue_points.clone();
                 let beat_grid = metadata.beat_grid.beats.clone();
+                // User-anchored downbeat. Falls back to first beat in grid (legacy
+                // tracks where beat_grid[0] was the anchor) or 0 if no grid yet.
+                let first_beat_sample = metadata.beat_grid.first_beat_sample
+                    .or_else(|| beat_grid.first().copied())
+                    .unwrap_or(0);
 
                 // Compute duration from metadata (available from DB) so markers render immediately
                 let duration_samples = metadata.duration_seconds
@@ -99,6 +104,7 @@ impl MeshCueApp {
                     bpm,
                     key,
                     beat_grid,
+                    first_beat_sample,
                     drop_marker: metadata.drop_marker,
                     lufs: metadata.lufs,
                     stem_links: metadata.stem_links.clone(),
@@ -223,7 +229,7 @@ impl MeshCueApp {
                                 duration_seconds: Some(duration_seconds),
                                 beat_grid: BeatGrid {
                                     beats: state.beat_grid.clone(),
-                                    first_beat_sample: state.beat_grid.first().copied(),
+                                    first_beat_sample: Some(state.first_beat_sample),
                                 },
                                 cue_points: state.cue_points.clone(),
                                 saved_loops: state.saved_loops.clone(),
@@ -311,10 +317,11 @@ impl MeshCueApp {
                     let quality_level: u8 = 0;
                     let bpm = state.bpm;
                     let screen_width: u32 = 1920;
+                    let first_beat_sample = Some(state.first_beat_sample);
                     state
                         .combined_waveform
                         .overview
-                        .set_stems(&stems, &state.cue_points, &state.beat_grid, bpm, screen_width, quality_level);
+                        .set_stems(&stems, &state.cue_points, &state.beat_grid, first_beat_sample, bpm, screen_width, quality_level);
 
                     // Initialize zoomed waveform with stem data
                     state.combined_waveform.zoomed.set_duration(duration_samples);
@@ -343,7 +350,7 @@ impl MeshCueApp {
                             duration_seconds: Some(duration_seconds),
                             beat_grid: BeatGrid {
                                 beats: state.beat_grid.clone(),
-                                first_beat_sample: state.beat_grid.first().copied(),
+                                first_beat_sample: Some(state.first_beat_sample),
                             },
                             cue_points: state.cue_points.clone(),
                             saved_loops: state.saved_loops.clone(),
