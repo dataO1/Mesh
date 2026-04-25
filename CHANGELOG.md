@@ -170,6 +170,38 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Similarity graph collapsed to one giant blob on libraries dominated by a
+  single genre** — When 70%+ of your library belonged to one macro genre
+  (e.g. mostly DnB), Louvain's L2 sub-community split would collapse that
+  macro into 2 chunks at the default density and bake that bad result into
+  the cluster cache permanently. Mesh-player now sweeps progressively finer
+  L2 HDBSCAN parameters at compute time, accepting the first attempt that
+  passes the quality gate (≥5 communities, largest ≤50%). On a typical
+  DnB-heavy library that means dropping the per-bin floor until DnB splits
+  into 5–6 sub-communities. The good result is then cached and reused
+  across launches; only changes to your track set trigger another sweep.
+  Also fixed: degenerate cluster results from older builds (gate-skipped
+  giant blobs) are now discarded on cache read so they can't haunt new
+  launches.
+
+- **Mesh-player similarity graph stayed empty on USB-only setups** — On a
+  device with no local collection (e.g., the embedded image), the graph
+  would never render. The startup graph build saw zero PCA tracks (local
+  DB empty, USB DB not yet registered), returned `None`, and left the
+  in-flight flag stuck so the rebuild that fires when the USB device
+  registers was silently dropped. The flag is now cleared on the empty
+  path, so the USB-mount-triggered rebuild actually runs.
+
+- **Suggestion-list playlist pills missing on USB-only setups** — Suggested
+  tracks showed no playlist labels (or only the active playlist's label,
+  since the suggestion engine biases toward the playlist you're browsing)
+  when running mesh-player against a single USB stick. Fixed with a
+  fallback in the per-track membership lookup: the existing path-based
+  attribution stays in place when it works (preserving correctness on
+  multi-source desktop setups), but suggestions whose collection-root path
+  filter doesn't match any source now fall back to looking up the track id
+  across all sources' memberships.
+
 - **Fullscreen freezes on high-refresh displays** — Mesh would periodically
   freeze in fullscreen with `Error Timeout when presenting surface` plus a
   flood of subscription channel errors. The per-frame UI tick was bound to

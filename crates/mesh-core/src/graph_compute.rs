@@ -248,8 +248,6 @@ pub fn graph_cache_key(
 
 /// Run consensus clustering with DB caching keyed by `cache_key`.
 /// Returns cached ClusterResult if available, otherwise computes fresh and stores.
-/// HDBSCAN itself has internal non-determinism, so caching the full result
-/// is the only way to guarantee stable communities across restarts.
 pub fn run_consensus_clustering_cached(
     pca_data: &[(i64, Vec<f32>)],
     positions: &HashMap<i64, (f32, f32)>,
@@ -293,7 +291,64 @@ pub fn run_consensus_clustering_cached(
 
     let result = match algorithm {
         ClusteringAlgorithm::Hdbscan => run_consensus_clustering(pca_data, positions),
-        ClusteringAlgorithm::Louvain => run_louvain_clustering(pca_data, positions, genre_labels),
+        ClusteringAlgorithm::Louvain => {
+            // Sweep L2 HDBSCAN parameters until the overall clustering passes
+            // the quality gate (≥ MIN_COMMUNITIES_GATE communities AND largest
+            // ≤ MAX_LARGEST_FRACTION). Smaller sqrt_factor / min_samples =>
+            // finer L2 splits => more sub-communities. On libraries with a
+            // dominant macro (e.g. 74%-DnB), the default (0.8, 5) often
+            // collapses the macro to 2 sub-communities and fails the gate;
+            // smaller values rescue that case.
+            const ATTEMPTS: &[(f32, usize)] = &[
+                (0.8, 5),  // default — what mesh-cue typically used
+                (0.6, 5),
+                (0.5, 4),
+                (0.4, 4),
+                (0.3, 3),
+                (0.25, 3),
+                (0.2, 3),
+                (0.15, 2),
+                (0.1, 2),
+            ];
+            let mut best: Option<(ClusterResult, f32)> = None;
+            let mut chosen: Option<ClusterResult> = None;
+            for (idx, &(factor, samples)) in ATTEMPTS.iter().enumerate() {
+                let r = run_louvain_clustering_with_l2(
+                    pca_data, positions, genre_labels, factor, samples,
+                );
+                let (num, largest_frac, score) = grade_clustering(&r);
+                log::info!(
+                    "[GRAPH/LOUVAIN/RETRY] Attempt {}/{} (l2_factor={:.2}, l2_min_samples={}): {} communities, largest={:.1}%, score={:.2}",
+                    idx + 1, ATTEMPTS.len(), factor, samples,
+                    num, largest_frac * 100.0, score,
+                );
+                if num >= MIN_COMMUNITIES_GATE && largest_frac <= MAX_LARGEST_FRACTION {
+                    log::info!("[GRAPH/LOUVAIN/RETRY] Gate passed on attempt {}", idx + 1);
+                    let mut accepted = r;
+                    accepted.gate_passed = true;
+                    chosen = Some(accepted);
+                    break;
+                }
+                if best.as_ref().map_or(true, |(_, s)| score > *s) {
+                    best = Some((r, score));
+                }
+            }
+            chosen.unwrap_or_else(|| {
+                log::warn!(
+                    "[GRAPH/LOUVAIN/RETRY] All {} attempts failed gate — using best-scoring result",
+                    ATTEMPTS.len(),
+                );
+                let mut fb = best.map(|(r, _)| r).unwrap_or_else(|| ClusterResult {
+                    clusters: HashMap::new(),
+                    confidence: HashMap::new(),
+                    colors: HashMap::new(),
+                    thresholds: CommunityThresholds::default(),
+                    gate_passed: false,
+                });
+                fb.gate_passed = false;
+                fb
+            })
+        }
     };
 
     if let Some(db) = db {
@@ -1017,6 +1072,17 @@ pub fn run_louvain_clustering(
     positions: &HashMap<i64, (f32, f32)>,
     genre_labels: &HashMap<i64, String>,
 ) -> ClusterResult {
+    run_louvain_clustering_with_l2(pca_data, positions, genre_labels, 0.8, 5)
+}
+
+/// Variant of `run_louvain_clustering` accepting L2 HDBSCAN parameter overrides.
+pub fn run_louvain_clustering_with_l2(
+    pca_data: &[(i64, Vec<f32>)],
+    positions: &HashMap<i64, (f32, f32)>,
+    genre_labels: &HashMap<i64, String>,
+    l2_sqrt_factor: f32,
+    l2_min_samples: usize,
+) -> ClusterResult {
     let n = pca_data.len();
     if n < 10 {
         return ClusterResult {
@@ -1105,7 +1171,9 @@ pub fn run_louvain_clustering(
         // find modularity-optimal sub-communities that can be spatially
         // scattered.
         let subset_ids: Vec<i64> = macro_indices.iter().map(|&i| ids[i]).collect();
-        let sub_labels = cluster_subset_hdbscan(&subset_ids, positions);
+        let sub_labels = cluster_subset_hdbscan_with_params(
+            &subset_ids, positions, l2_sqrt_factor, l2_min_samples,
+        );
 
         // Collect unique sub-community ids (could be 1 if Louvain merged everything)
         let unique_subs: HashSet<usize> = sub_labels.iter().copied().collect();
@@ -1191,6 +1259,18 @@ fn cluster_subset_hdbscan(
     subset_ids: &[i64],
     positions: &HashMap<i64, (f32, f32)>,
 ) -> Vec<usize> {
+    cluster_subset_hdbscan_with_params(subset_ids, positions, 0.8, 5)
+}
+
+/// Variant accepting tunable L2 HDBSCAN parameters. Used by the retry loop in
+/// `run_consensus_clustering_cached` to vary the granularity until the overall
+/// clustering passes the quality gate.
+fn cluster_subset_hdbscan_with_params(
+    subset_ids: &[i64],
+    positions: &HashMap<i64, (f32, f32)>,
+    sqrt_factor: f32,
+    min_samples: usize,
+) -> Vec<usize> {
     let m = subset_ids.len();
     if m < 20 { return vec![0; m]; } // trivially one community
 
@@ -1203,24 +1283,19 @@ fn cluster_subset_hdbscan(
         })
         .collect();
 
-    // Scale HDBSCAN min_cluster_size to subset size. `sqrt(m) * 0.8`
-    // targets ~4-5 sub-communities per dominant macro, which matches the
-    // typical "4-5 commonly recognised sub-styles" across most DJ genres
-    // (DnB: liquid/neuro/techstep/jump-up; techno: minimal/melodic/hard/acid;
-    // house: deep/tech/progressive/classic; etc.). Genre-agnostic because
-    // it only depends on count, not on the genre label.
+    // Scale HDBSCAN min_cluster_size to subset size. Default `sqrt_factor=0.8`
+    // targets ~4-5 sub-communities per dominant macro. Smaller factors find
+    // finer structure (more, smaller sub-communities) — used by retry loop.
     //
-    //   m=150  → 10 (clamped to 15 floor) → ~3 sub-communities
-    //   m=680  → 21 → ~4-5 (DnB sweet spot)
-    //   m=2000 → 36 → ~5-6
-    //   m=5000 → 50 (clamped) → ~6 (capped)
+    //   m=680, factor=0.8 → 21 (default)
+    //   m=680, factor=0.5 → 13 → clamped to 15 floor
+    //   m=680, factor=0.3 → 7  → clamped to 5 floor (retry)
     //
     // A hard ceiling of MAX_SUB_COMMUNITIES is applied after clustering:
     // more than 6 sub-communities per macro doesn't match how DJs think
     // about sub-styles regardless of library size.
-    let min_cluster_size = ((m as f32).sqrt() * 0.8) as usize;
-    let min_cluster_size = min_cluster_size.clamp(15, 50);
-    let min_samples: usize = 5;
+    let min_cluster_size = ((m as f32).sqrt() * sqrt_factor) as usize;
+    let min_cluster_size = min_cluster_size.clamp(5, 50);
     const MAX_SUB_COMMUNITIES: usize = 6;
 
     log::debug!(
