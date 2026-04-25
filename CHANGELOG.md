@@ -170,6 +170,19 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Suggestion list collapsed near the Drop and Peak ends of the intention
+  slider** — Sliding toward the extremes used to wipe the suggestion list
+  down to a handful of entries (or empty), with a sharp cut between the
+  cool/drop and rise/peak zones. Two causes: a hard 0.45 minimum-match
+  filter dropped anything whose final score fell below threshold, and the
+  aggression-reward curve was an asymmetric narrow tent with a "wrong
+  direction" cliff that drove most candidates to zero at full slider. The
+  minimum-match filter is gone (the list is still capped and sorted by
+  score, so the top 8 always surface), and the aggression reward is now a
+  symmetric linear tent around the slider target with a soft floor of 0.25
+  and a width that shrinks from 0.60 at center to 0.18 at the extremes —
+  picky where the slider is decisive, generous where it's relaxed.
+
 - **Similarity graph collapsed to one giant blob on libraries dominated by a
   single genre** — When 70%+ of your library belonged to one macro genre
   (e.g. mostly DnB), Louvain's L2 sub-community split would collapse that

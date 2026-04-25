@@ -375,31 +375,25 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
 ///
 /// At center (bias=0): returns 1.0 for all tracks (no aggression influence).
 /// The aggression weight is linearly introduced by the caller based on |bias|.
-pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, intensity_reach: f32) -> f32 {
-    let bias_abs = energy_bias.abs();
-    if bias_abs < 0.01 { return 1.0; } // center: no aggression preference
+pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, _intensity_reach: f32) -> f32 {
+    const W_MAX: f32 = 0.60;   // tent half-width at center
+    const W_MIN: f32 = 0.18;   // tent half-width at full extreme
+    const FLOOR: f32 = 0.25;   // soft floor for off-target tracks
 
-    let is_peak = energy_bias > 0.0;
+    let bias_abs = energy_bias.abs().min(1.0);
 
     // Target: slider interpolates from seed toward library extreme
-    let target = if is_peak {
+    let target = if energy_bias >= 0.0 {
         seed_aggr + (1.0 - seed_aggr) * bias_abs   // center: seed, full peak: 1.0
     } else {
         seed_aggr * (1.0 - bias_abs)                 // center: seed, full drop: 0.0
     };
 
-    // One-sided: wrong direction from seed = hard penalty
-    let delta = if is_peak { cand_aggr - seed_aggr } else { seed_aggr - cand_aggr };
+    // Symmetric linear tent: width shrinks as |bias| grows
+    let width = W_MAX + (W_MIN - W_MAX) * bias_abs;
+    let tent = (1.0 - (cand_aggr - target).abs() / width).max(0.0);
 
-    if delta < 0.0 {
-        // Wrong direction: sharp linear penalty
-        (1.0 + delta * 2.0).max(0.0)
-    } else {
-        // Right direction: reward based on distance from target
-        let width = intensity_reach.max(0.10);
-        let target_delta = (cand_aggr - target).abs();
-        (1.0 - target_delta / width).max(0.0)
-    }
+    FLOOR + (1.0 - FLOOR) * tent
 }
 
 /// Per-component intensity reward: weighted Euclidean distance between ranked component vectors.

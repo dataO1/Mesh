@@ -554,12 +554,9 @@ fn split_suggestions(
     all: Vec<SuggestedTrack>,
     playlist_paths: Option<&HashSet<String>>,
 ) -> (Vec<SuggestedTrack>, Vec<SuggestedTrack>) {
-    const SCORE_THRESHOLD: f32 = 0.45; // only show tracks above 45% match
-    const MAX_TOTAL: usize = 50;       // hard cap to avoid UI overflow
+    const MAX_TOTAL: usize = 50;
 
-    // Filter by score threshold
     let filtered: Vec<SuggestedTrack> = all.into_iter()
-        .filter(|s| s.score >= SCORE_THRESHOLD)
         .take(MAX_TOTAL)
         .collect();
 
