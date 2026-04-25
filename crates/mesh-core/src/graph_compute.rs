@@ -233,12 +233,15 @@ pub fn graph_cache_key(
     ids.sort();
     let mut hasher = DefaultHasher::new();
     ids.hash(&mut hasher);
+    // v18: same algo as v17. Bump forces a one-time recompute for users whose
+    // v17 cache held a gate-skipped (degenerate) clustering — see the
+    // gate-skipped invalidation in `run_consensus_clustering_cached`.
     // v17: HDBSCAN-L2 min_cluster_size (sqrt(m)*0.8, clamp [15, 50]) +
     // hard cap of 6 sub-communities per macro. Matches typical sub-style
     // counts across DJ genres. Clusters above the cap merge into nearest
     // surviving centroid via the noise-absorb path.
     format!(
-        "v17_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
+        "v18_{:?}_{:?}_norm{}_wh{:.2}_{:016x}",
         algorithm, clustering, normalize as u8, whitening_alpha, hasher.finish()
     )
 }
@@ -261,24 +264,24 @@ pub fn run_consensus_clustering_cached(
                 match serde_json::from_str::<ClusterResult>(&json) {
                     Ok(result) => {
                         let (num, largest_frac, _) = grade_clustering(&result);
-                        // If gate_passed is true, the result was accepted by
-                        // the retry loop that wrote it — use it. If false, the
-                        // retry loop already tried its best-of-5 and accepted
-                        // a sub-gate result (probably genuinely homogeneous
-                        // data). Don't refight it every session — that would
-                        // burn 5 retries per launch forever.
                         if result.gate_passed {
                             log::info!(
                                 "[GRAPH] Using cached clusters ({} tracks, {} communities, largest={:.1}%, gate passed)",
                                 result.clusters.len(), num, largest_frac * 100.0,
                             );
+                            return result;
                         } else {
-                            log::info!(
-                                "[GRAPH] Using cached clusters ({} tracks, {} communities, largest={:.1}%, gate was skipped — retry loop exhausted)",
+                            // Gate was skipped — retry loop exhausted at write
+                            // time. Don't trust the cached degenerate result:
+                            // refight with a fresh seed each launch. The cost
+                            // is one cluster recompute per session; the win is
+                            // we eventually escape "unlucky seed" lock-in.
+                            log::warn!(
+                                "[GRAPH] Discarding cached clusters ({} tracks, {} communities, largest={:.1}%, gate had been skipped) — recomputing",
                                 result.clusters.len(), num, largest_frac * 100.0,
                             );
+                            // Fall through to recompute below.
                         }
-                        return result;
                     }
                     Err(e) => log::warn!("[GRAPH] Cached cluster JSON parse failed: {}, recomputing", e),
                 }

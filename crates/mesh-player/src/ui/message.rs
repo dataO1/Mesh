@@ -191,6 +191,12 @@ pub enum Message {
 
     /// Background t-SNE + clustering completed — graph data ready for display
     GraphDataReady(Arc<GraphData>),
+
+    /// Background graph build returned no result (e.g. <10 PCA tracks at startup).
+    /// Used to reset the `graph_building` guard so a later RebuildGraph (e.g. when
+    /// a USB source comes online with PCA data) can actually run instead of being
+    /// dropped at the guard.
+    GraphBuildEmpty,
 }
 
 /// Graph layout data computed in the background at startup.

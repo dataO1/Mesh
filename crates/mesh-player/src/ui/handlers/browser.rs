@@ -491,21 +491,49 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
             // Playlist tracks get a lenient key threshold via preferred_paths.
             let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref(), blend_query_vec, false)?;
 
-            // Attach per-track playlist memberships via a single reverse-lookup query per source
-            for src in &sources {
-                match src.db.get_all_playlist_memberships() {
-                    Ok(memberships) => {
-                        for s in &mut all {
-                            if let Some(id) = s.track.id {
-                                if s.track.path.starts_with(&src.collection_root) {
-                                    if let Some(names) = memberships.get(&id) {
-                                        s.playlists = names.clone();
-                                    }
-                                }
-                            }
+            // Attach per-track playlist memberships.
+            //
+            // Fetch each source's memberships once (1 query per source).
+            // First pass: claim suggestions whose path lives under a source's
+            // collection_root and that source has memberships for the id.
+            // Second pass (fallback): for any suggestion still without
+            // memberships, look it up by id across all sources and take the
+            // first match. Needed because the path-filter alone fails on some
+            // setups (e.g., USB-only embedded mode) where path canonicalisation
+            // between query_suggestions and this loop diverges in subtle ways.
+            // Cross-source ID collisions are essentially nonexistent in
+            // practice (track ids are timestamp/hash-based, not autoincrement),
+            // so the fallback is safe.
+            let source_memberships: Vec<HashMap<i64, Vec<String>>> = sources.iter()
+                .map(|src| match src.db.get_all_playlist_memberships() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::warn!("Failed to load playlist memberships from '{}': {}", src.name, e);
+                        HashMap::new()
+                    }
+                })
+                .collect();
+
+            for s in &mut all {
+                let Some(id) = s.track.id else { continue };
+
+                let mut matched = false;
+                for (idx, src) in sources.iter().enumerate() {
+                    if s.track.path.starts_with(&src.collection_root) {
+                        if let Some(names) = source_memberships[idx].get(&id) {
+                            s.playlists = names.clone();
+                            matched = true;
+                            break;
                         }
                     }
-                    Err(e) => log::warn!("Failed to load playlist memberships: {}", e),
+                }
+                if !matched {
+                    for mems in &source_memberships {
+                        if let Some(names) = mems.get(&id) {
+                            s.playlists = names.clone();
+                            break;
+                        }
+                    }
                 }
             }
 

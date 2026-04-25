@@ -760,6 +760,15 @@ impl MeshApp {
                 self.collection_browser.graph_building = true;
                 build_graph_task(sources)
             }
+            Message::GraphBuildEmpty => {
+                // Build returned no graph (typically: <10 PCA tracks across all
+                // sources at startup, before USB DBs have been registered).
+                // Clear the in-flight flag so a later RebuildGraph triggered by
+                // USB-mount events can actually run.
+                self.collection_browser.graph_building = false;
+                log::debug!("[GRAPH] Build empty — flag cleared, awaiting more sources");
+                Task::none()
+            }
         }
     }
 
@@ -2267,7 +2276,10 @@ pub fn build_graph_task(
         },
         |data: Option<super::message::GraphData>| match data {
             Some(d) => Message::GraphDataReady(std::sync::Arc::new(d)),
-            None => Message::RefreshResourceStats, // no-op
+            // Empty result: clear graph_building so the next RebuildGraph
+            // (e.g. when a USB source is registered after startup) actually runs
+            // instead of being dropped at the `if graph_building` guard.
+            None => Message::GraphBuildEmpty,
         },
     )
 }
