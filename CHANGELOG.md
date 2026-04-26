@@ -177,6 +177,21 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Krumhansl scoring no longer drops EnergyBoost / SemitoneUp candidates
+  before scoring** — In Krumhansl mode, transitions like EnergyBoost
+  (whole-tone same-mode) and SemitoneUp had probe-tone correlations
+  that go negative (~−0.12 and ~−0.34 respectively). The harmonic-floor
+  filter, calibrated for Camelot's hand-tuned `[0.03, 1.00]` tier scale,
+  was applied to those negative-clamped-to-0.02 values and unconditionally
+  removed those candidates from the pool — meaning the slider's full-peak
+  focal aimed at the EnergyBoost zone but found nothing there. The filter
+  now uses the model-independent `TransitionType` classification for the
+  Strict / Relaxed / Off check (so the same set of transition types is
+  accepted regardless of model), and the model toggle only changes the
+  scoring axis, not the gating logic. EnergyBoost candidates now reach
+  perfect 1.0 scores at full peak under Krumhansl too, just as they
+  always did in Camelot.
+
 - **Key strictness now controls how far the slider commits at extremes** —
   Previously, the Strict / Relaxed / Off preset only controlled which
   transitions were filtered out before scoring. The slider's full-peak

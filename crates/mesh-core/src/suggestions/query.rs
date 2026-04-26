@@ -679,16 +679,17 @@ pub fn query_suggestions(
             // ranking, not gating, so the slider can never push a track across the
             // filter threshold (which previously caused a synchronized cell-cliff
             // when neutral-direction transitions all crossed the threshold together).
-            let harmonic_base = match key_scoring_model {
-                KeyScoringModel::Camelot => base_score(best_tt),
-                KeyScoringModel::Krumhansl => seed_keys.iter()
-                    .filter_map(|sk| {
-                        track.key.as_deref()
-                            .and_then(MusicalKey::parse)
-                            .map(|ck| krumhansl_base_score(sk, &ck))
-                    })
-                    .fold(0.0_f32, f32::max),
-            };
+            // Filter on TransitionType-derived base, regardless of scoring model.
+            // The Strict / Relaxed / Off preset is a *categorical* strictness
+            // intent — "what kinds of transitions am I willing to consider" —
+            // not a threshold on a model-specific correlation scale. The scoring
+            // model (Camelot tiers vs Krumhansl correlations) only affects the
+            // X-axis of the ring reward, not gating. This avoids the bug where
+            // Krumhansl's negative same-mode-non-fifth correlations (whole tone
+            // ≈ -0.12, semitone ≈ -0.34) collapsed to 0.02 via the krumhansl
+            // floor and got culled, removing the EnergyBoost / SemitoneUp
+            // candidates the slider's focal aims for.
+            let harmonic_base = base_score(best_tt);
             let is_preferred = preferred_paths.map_or(false, |pp| {
                 let p = track.path.to_string_lossy();
                 pp.contains(p.as_ref())
