@@ -682,13 +682,44 @@ pub fn reward_color(reward: f32) -> &'static str {
     else { TAG_COLOR_POOR }
 }
 
-/// Color a key transition tag by its inherent harmonic quality (base_score).
-/// Uses the same thresholds as the energy arc ribbon for visual consistency.
+/// Color a key transition tag by *layer-safety*, not raw harmonic distance.
+///
+/// The colour answers a different question from `base_score`: "can I play this
+/// candidate on top of the seed for several bars without dissonance?" rather
+/// than "how harmonically distant is this transition?" Some transitions (Mood
+/// Lift / Darken — the relative pair) are actually safer for layering than
+/// the base_score tier values would suggest, while others (Energy Boost /
+/// Cool — whole-tone) are riskier than a 0.50 base would imply.
+///
+/// Three tiers:
+/// - GREEN  — safe to layer (≥6/7 shared scale notes, no mode-third clash).
+/// - ORANGE — transition only (mode flip or whole-tone — playable as a fade,
+///            but sustained layering muddies the harmony).
+/// - RED    — dangerous transition (semitone, far-step, tritone — high
+///            voice-leading dissonance; quick swap only).
 pub fn transition_color(tt: TransitionType) -> &'static str {
-    let bs = base_score(tt);
-    if bs >= 0.80 { TAG_COLOR_GOOD }
-    else if bs >= 0.40 { TAG_COLOR_MODERATE }
-    else { TAG_COLOR_POOR }
+    match tt {
+        // Safe to layer: full or near-full scale-note overlap.
+        TransitionType::SameKey
+        | TransitionType::AdjacentUp
+        | TransitionType::AdjacentDown
+        | TransitionType::MoodLift
+        | TransitionType::MoodDarken => TAG_COLOR_GOOD,
+
+        // Transition-only: cross-mode adjacent or whole-tone same-mode —
+        // workable as a fade, risky as a sustained layer.
+        TransitionType::DiagonalUp
+        | TransitionType::DiagonalDown
+        | TransitionType::EnergyBoost
+        | TransitionType::EnergyCool => TAG_COLOR_MODERATE,
+
+        // Dangerous: high voice-leading dissonance, transition only.
+        TransitionType::SemitoneUp
+        | TransitionType::SemitoneDown
+        | TransitionType::FarStep(_)
+        | TransitionType::FarCross(_)
+        | TransitionType::Tritone => TAG_COLOR_POOR,
+    }
 }
 
 /// Color a tag by penalty quality (legacy, for reason tags that still use penalty framing).

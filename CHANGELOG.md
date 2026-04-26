@@ -177,6 +177,25 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Key transition pill colours now reflect layer-safety, not raw distance** —
+  Previously the green / orange / red colour of the key transition pill
+  was driven by a threshold on the harmonic-base tier value, which
+  collapsed Mood Lift, Diagonal, and Energy Boost all into the same
+  "moderate" colour bucket. The colour now answers a more useful
+  question: "can I play this candidate on top of the seed for several
+  bars without harmonic clash?"
+    🟢 Green (safe to layer): Same Key, Adjacent (P5 up/down), Mood Lift,
+       Mood Darken (relative pair) — these share 6–7 of 7 scale notes
+       and are layer-safe staples of DJ practice.
+    🟠 Orange (transition only): Diagonal (cross-mode adjacent), Energy
+       Boost / Cool (whole tone same mode) — workable as a fade, but
+       sustained layering muddies the harmony.
+    🔴 Red (dangerous): Semitone, Far Step, Far Cross, Tritone — high
+       voice-leading dissonance; transition only and even then risky.
+  Mood Lift and Mood Darken move from "moderate" to "safe to layer";
+  Diagonal moves from "safe" down to "transition only"; Energy Boost
+  / Cool stay in the middle tier; everything else is unchanged.
+
 - **Mesh-cue graph view default suggestion weights now equal-strict** — The
   graph view's three suggestion weight sliders defaulted to (0.55, 0.25,
   0.20) (similarity, key, intensity), which under the new geometric-mean
