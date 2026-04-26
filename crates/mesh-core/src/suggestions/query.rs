@@ -898,7 +898,7 @@ pub fn query_suggestions(
         // readers can correlate scoring outcomes with the active config.
         eprintln!(
             "[SUGGESTIONS] Params: weights={} bias={:+.2} | reach: sim_target={:.3} aggr_target=seed{:+.3} | \
-             bells: sim σ=0.12 aggr σ=0.15 p=3 | floors: sim=0.20 key=0.20 aggr=0.25 | \
+             bells: sim σ=0.18 aggr σ=0.22 p=3 | floors: sim=0.20 key=0.20 aggr=0.25 | \
              balance: thr=0.40 scale=0.7+0.3·b | filter: harmonic_floor={:.2} blended_thr={:.2} | \
              mode={:?} key_filter={:?}",
             w, energy_bias, sim_target, aggr_target_offset,

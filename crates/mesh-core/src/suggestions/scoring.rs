@@ -475,7 +475,7 @@ pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, inten
     // falloff once you're past the shoulder. SIGMA sized so the bell is
     // generous enough that "near the focal" candidates aren't crushed by
     // the downstream geometric-mean balance gate.
-    const SIGMA: f32 = 0.15;   // bell width (was 0.10 — widened)
+    const SIGMA: f32 = 0.22;   // bell width (was 0.15 — widened)
     const POW:   f32 = 3.0;    // shoulder steepness; >2 = wider top + steeper sides
     const FLOOR: f32 = 0.25;   // soft floor for off-target tracks
 
@@ -510,7 +510,7 @@ pub fn similarity_reward(hnsw_dist: f32, energy_bias: f32, reach: f32) -> f32 {
     // strict, so the per-axis bells need to be generous enough to keep
     // good candidates from getting crushed.
     const CENTER_RADIUS: f32 = 0.05; // small fixed radius at center
-    const SIGMA: f32 = 0.12;         // bell width (was 0.08 — widened)
+    const SIGMA: f32 = 0.18;         // bell width (was 0.12 — widened)
     const POW:   f32 = 3.0;          // shoulder steepness
     const FLOOR: f32 = 0.20;         // soft floor for off-target tracks
 
@@ -1370,39 +1370,39 @@ mod tests {
 
     #[test]
     fn test_aggression_reward_bell_shape_wider_top_steeper_shoulder() {
-        // Bell curve (σ=0.15): track at the focal scores 1.0; near-focal
+        // Bell curve (σ=0.22): track at the focal scores 1.0; near-focal
         // tracks score high; mid-distance tracks moderate; far-off tracks
         // approach the floor.
         let seed = 0.50_f32;
         let bias = 0.0_f32; // centre — focal at seed
         let center = aggression_reward(0.50, seed, bias, 0.25);
         let near   = aggression_reward(0.55, seed, bias, 0.25); // ±0.05 from focal
-        let mid    = aggression_reward(0.65, seed, bias, 0.25); // ±0.15 from focal
-        let far    = aggression_reward(0.80, seed, bias, 0.25); // ±0.30 from focal
+        let mid    = aggression_reward(0.72, seed, bias, 0.25); // ±0.22 from focal
+        let far    = aggression_reward(0.85, seed, bias, 0.25); // ±0.35 from focal
 
         assert!(center > 0.99, "centre = focal → 1.0: {center}");
         assert!(near   > 0.95, "near (±0.05) should still score ≥0.95: {near}");
-        assert!(mid    > 0.40 && mid < 0.65,
-            "mid (±0.15) should be in mid-range: {mid}");
-        assert!(far    < 0.30, "far (±0.30) should be near floor: {far}");
+        assert!(mid    > 0.40 && mid < 0.70,
+            "mid (±0.22) should be in mid-range: {mid}");
+        assert!(far    < 0.30, "far (±0.35) should be near floor: {far}");
         assert!(far    >= 0.25 - 1e-4, "floor must hold at 0.25: {far}");
     }
 
     #[test]
     fn test_similarity_reward_bell_shape_wider_top_steeper_shoulder() {
-        // Bell curve (σ=0.12) for the similarity ring.
+        // Bell curve (σ=0.18) for the similarity ring.
         let bias = 0.0_f32;
         let reach = 0.20;
         let center = similarity_reward(0.05, bias, reach); // at focal
         let near   = similarity_reward(0.08, bias, reach); // +0.03 from focal
-        let mid    = similarity_reward(0.17, bias, reach); // +0.12 from focal
-        let far    = similarity_reward(0.30, bias, reach); // +0.25 from focal
+        let mid    = similarity_reward(0.23, bias, reach); // +0.18 from focal
+        let far    = similarity_reward(0.40, bias, reach); // +0.35 from focal
 
         assert!(center > 0.99, "centre = focal → 1.0: {center}");
         assert!(near   > 0.95, "near (±0.03) ≥0.95: {near}");
-        assert!(mid    > 0.40 && mid < 0.65,
-            "mid (±0.12) in mid range: {mid}");
-        assert!(far    < 0.25, "far (±0.25) near floor: {far}");
+        assert!(mid    > 0.40 && mid < 0.70,
+            "mid (±0.18) in mid range: {mid}");
+        assert!(far    < 0.25, "far (±0.35) near floor: {far}");
         assert!(far    >= 0.20 - 1e-4, "floor must hold at 0.20: {far}");
     }
 
