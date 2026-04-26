@@ -177,6 +177,22 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Similarity and aggression rings now use a wider rounded bell with a
+  steeper shoulder** — Previously, both rings used a sharp linear tent:
+  the score peaked at the focal point and fell off linearly until
+  hitting a hard cliff at the half-width edge. The "≥0.80 score" zone
+  was narrow (~±0.04 for similarity, ~±0.05 for aggression), and tracks
+  just outside the cliff snapped to the soft floor. Both rings now use
+  a generalised-Gaussian bell (`exp(−(|d|/σ)³)`) with a rounded apex
+  that stays above 0.80 across a meaningfully wider zone (~±0.05 for
+  similarity, ~±0.07 for aggression — roughly **30–40% wider** than
+  before), then accelerates downward into the soft floor without a
+  cliff. The slider's directional intent still matters: tracks well
+  outside the bell drop **faster** than they used to, so off-target
+  candidates are suppressed harder. Net effect: more tracks that are
+  genuinely "near the focal point" score 0.85–0.95, instead of being
+  brittle around a single perfect-target sweet spot.
+
 - **Key transition pill colours now reflect layer-safety, not raw distance** —
   Previously the green / orange / red colour of the key transition pill
   was driven by a threshold on the harmonic-base tier value, which

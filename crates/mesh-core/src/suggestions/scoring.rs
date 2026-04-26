@@ -470,7 +470,12 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
 /// At center (bias=0): returns 1.0 for all tracks (no aggression influence).
 /// The aggression weight is linearly introduced by the caller based on |bias|.
 pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, intensity_reach: f32) -> f32 {
-    const WIDTH: f32 = 0.20;   // constant tent half-width (ring thickness)
+    // Generalised Gaussian (sub-linear shoulder): rounded peak with a wider
+    // high-reward zone than a linear tent, but a faster (super-linear)
+    // falloff once you're past the shoulder. SIGMA sized to ~40% of the
+    // Open-preset reach so the bell is proportional to the axis scale.
+    const SIGMA: f32 = 0.10;   // bell width
+    const POW:   f32 = 3.0;    // shoulder steepness; >2 = wider top + steeper sides
     const FLOOR: f32 = 0.25;   // soft floor for off-target tracks
 
     let bias_abs = energy_bias.abs().min(1.0);
@@ -480,8 +485,9 @@ pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, inten
     // Center: target = seed (radius 0). Full extreme: target = seed ± reach.
     let target = (seed_aggr + energy_bias.signum() * reach * bias_abs).clamp(0.0, 1.0);
 
-    let tent = (1.0 - (cand_aggr - target).abs() / WIDTH).max(0.0);
-    FLOOR + (1.0 - FLOOR) * tent
+    let delta = (cand_aggr - target).abs();
+    let bell = (-(delta / SIGMA).powf(POW)).exp();
+    FLOOR + (1.0 - FLOOR) * bell
 }
 
 /// PCA similarity reward — ring in percentile-rank distance space around the seed.
@@ -496,14 +502,20 @@ pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, inten
 /// - `energy_bias`: slider position [-1, 1]; only `|bias|` matters here (distance is unsigned)
 /// - `reach`: target ring radius at full slider (Tight=0.15, Medium=0.25, Open=0.40)
 pub fn similarity_reward(hnsw_dist: f32, energy_bias: f32, reach: f32) -> f32 {
+    // Generalised Gaussian bell: rounded peak with wider high-reward zone
+    // than a linear tent, but a faster (super-linear) falloff once past
+    // the shoulder. SIGMA sized to ~40% of the Open-preset reach so the
+    // bell is proportional to the axis scale (max reach ≈ 0.20).
     const CENTER_RADIUS: f32 = 0.05; // small fixed radius at center
-    const WIDTH: f32 = 0.15;         // constant ring thickness
+    const SIGMA: f32 = 0.08;         // bell width
+    const POW:   f32 = 3.0;          // shoulder steepness
     const FLOOR: f32 = 0.20;         // soft floor for off-target tracks
 
     let bias_abs = energy_bias.abs().min(1.0);
     let target = CENTER_RADIUS + (reach - CENTER_RADIUS) * bias_abs;
-    let tent = (1.0 - (hnsw_dist - target).abs() / WIDTH).max(0.0);
-    FLOOR + (1.0 - FLOOR) * tent
+    let delta = (hnsw_dist - target).abs();
+    let bell = (-(delta / SIGMA).powf(POW)).exp();
+    FLOOR + (1.0 - FLOOR) * bell
 }
 
 /// Per-component intensity reward: weighted Euclidean distance between ranked component vectors.
@@ -1351,6 +1363,44 @@ mod tests {
         let plus = similarity_reward(0.30, 0.7, 0.40);
         let minus = similarity_reward(0.30, -0.7, 0.40);
         assert!((plus - minus).abs() < 1e-6, "symmetric in sign: {plus} vs {minus}");
+    }
+
+    #[test]
+    fn test_aggression_reward_bell_shape_wider_top_steeper_shoulder() {
+        // Bell curve: track at the focal scores 1.0; near-focal tracks score
+        // higher than a linear tent would; far-off tracks drop faster than
+        // a Gaussian would.
+        let seed = 0.50_f32;
+        let bias = 0.0_f32; // centre — focal at seed
+        let center = aggression_reward(0.50, seed, bias, 0.25);
+        let near   = aggression_reward(0.55, seed, bias, 0.25); // ±0.05 from focal
+        let edge   = aggression_reward(0.60, seed, bias, 0.25); // ±0.10 from focal
+        let far    = aggression_reward(0.70, seed, bias, 0.25); // ±0.20 from focal
+
+        assert!(center > 0.99, "centre = focal → 1.0: {center}");
+        assert!(near   > 0.85, "near (±0.05) should still score ≥0.85: {near}");
+        assert!(edge   > 0.45 && edge < 0.65,
+            "edge (±0.10) should be in mid-range: {edge}");
+        assert!(far    < 0.30, "far (±0.20) should be near floor: {far}");
+        assert!(far    >= 0.25 - 1e-4, "floor must hold at 0.25: {far}");
+    }
+
+    #[test]
+    fn test_similarity_reward_bell_shape_wider_top_steeper_shoulder() {
+        // Same shape test but for the similarity ring.
+        let bias = 0.0_f32;
+        let reach = 0.20;
+        let center = similarity_reward(0.05, bias, reach); // at focal
+        let near   = similarity_reward(0.08, bias, reach); // +0.03 from focal
+        let edge   = similarity_reward(0.13, bias, reach); // +0.08 from focal
+        let far    = similarity_reward(0.25, bias, reach); // +0.20 from focal
+
+        assert!(center > 0.99, "centre = focal → 1.0: {center}");
+        assert!(near   > 0.85, "near (±0.03) ≥0.85: {near}");
+        assert!(edge   > 0.40 && edge < 0.65,
+            "edge (±0.08) in mid range: {edge}");
+        assert!(far    < 0.25, "far (±0.20) near floor: {far}");
+        assert!(far    >= 0.20 - 1e-4, "floor must hold at 0.20: {far}");
     }
 
     #[test]
