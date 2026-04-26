@@ -783,12 +783,15 @@ pub fn query_suggestions(
             // geometric mean drops sharply — a single floor-bound dimension
             // can no longer be carried by the others.
             //
-            // Balance gate: scales the geometric mean by 0.5 + 0.5 · min_adj/0.6,
-            // clamped at 1.0. Tracks with ALL adjusted components ≥ 0.6 get
+            // Balance gate: scales the geometric mean by
+            // 0.7 + 0.3 · min_adj/BALANCE_THRESHOLD, clamped at 1.0.
+            // Tracks with ALL adjusted components ≥ BALANCE_THRESHOLD get
             // the full score; tracks with any weak dim get scaled down by up
-            // to 50%.
+            // to 30% (was 50% — softened so single-weak-dim candidates aren't
+            // crushed as hard). Threshold also lowered (0.6 → 0.4) so the
+            // "fully balanced" bar is a bit more achievable.
             const EPS: f32 = 0.05;
-            const BALANCE_THRESHOLD: f32 = 0.6;
+            const BALANCE_THRESHOLD: f32 = 0.4;
             const SIM_FLOOR:  f32 = 0.20;
             const KEY_FLOOR:  f32 = 0.20;
             const AGGR_FLOOR: f32 = 0.25;
@@ -809,7 +812,9 @@ pub fn query_suggestions(
 
             let min_adj = v_adj.min(k_adj).min(i_adj);
             let balance = (min_adj / BALANCE_THRESHOLD).clamp(0.0, 1.0);
-            let balance_scale = 0.5 + 0.5 * balance;
+            // Softened: max 30% scale-down (was 50%) so a single weak dim
+            // doesn't crater an otherwise-strong candidate.
+            let balance_scale = 0.7 + 0.3 * balance;
 
             let core = geo * balance_scale;
 
