@@ -23,6 +23,11 @@ pub struct SuggestionConfig {
     pub harmonic_floor: f32,
     /// Minimum energy-blended key score required (key filter layer 2).
     pub blended_threshold: f32,
+    /// Key strictness preset (Strict / Relaxed / Off). In addition to controlling
+    /// the harmonic_floor filter, this also controls how far the key-ring focal
+    /// point reaches at full slider: Strict → EnergyBoost zone, Relaxed/Off →
+    /// SemitoneUp zone.
+    pub key_filter: super::config::SuggestionKeyFilter,
     /// Enable stem complement penalty (clashing vocals/lead reduce score).
     pub stem_complement: bool,
     /// Target distance for the transition bell curve at extreme slider.
@@ -53,6 +58,7 @@ impl SuggestionConfig {
             blend_crossover: blend_mode.crossover(),
             harmonic_floor,
             blended_threshold,
+            key_filter,
             stem_complement,
             transition_target: transition_reach.target_distance(community_thresholds),
             transition_width: transition_reach.bell_width(community_thresholds),
@@ -659,7 +665,7 @@ pub fn query_suggestions(
                         .iter()
                         .map(|sk| {
                             let tt = classify_transition(sk, &ck);
-                            let score = key_transition_score(sk, &ck, energy_bias, key_scoring_model);
+                            let score = key_ring_reward(sk, &ck, energy_bias, key_scoring_model, suggestion_config.key_filter);
                             (score, tt)
                         })
                         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))

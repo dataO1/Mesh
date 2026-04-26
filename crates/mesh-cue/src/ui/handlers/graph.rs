@@ -451,6 +451,7 @@ impl MeshCueApp {
             blend_crossover: SuggestionBlendMode::Balanced.crossover(),
             harmonic_floor,
             blended_threshold,
+            key_filter,
             stem_complement: false,
             transition_target: reach.target_distance(self.collection.community_thresholds.as_ref()),
             transition_width: reach.bell_width(self.collection.community_thresholds.as_ref()),

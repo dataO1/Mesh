@@ -266,7 +266,8 @@ pub fn key_transition_score(
     energy_bias: f32,
     model: KeyScoringModel,
 ) -> f32 {
-    key_ring_reward(seed_key, cand_key, energy_bias, model)
+    // Backwards-compatible wrapper: defaults to Strict strictness.
+    key_ring_reward(seed_key, cand_key, energy_bias, model, super::config::SuggestionKeyFilter::Strict)
 }
 
 /// 2D ring reward on the (harmonic, direction) plane.
@@ -276,25 +277,34 @@ pub fn key_transition_score(
 /// - `d ∈ [-1, +1]` is energy direction from the curated `transition_energy_direction`
 ///   table — `+1` strong lift, `0` neutral, `-1` strong drop.
 ///
-/// The slider sweeps a focal point through this plane:
-/// - At centre: focal = `(1.00, 0.0)` — same key, neutral.
-/// - At full peak/drop: focal = `(h_archetype_peak, ±0.50)` — anchored to wherever the
-///   model places the canonical EnergyBoost / EnergyCool transition, so the
-///   prototypical "perfect peak" candidate scores exactly 1.0 in both models.
+/// The slider sweeps a focal point along a diagonal through this plane:
+/// - At centre: focal = `(1.00, 0.0)` — SameKey, neutral.
+/// - At full peak/drop: focal = the (h, d) of the canonical "max-commitment"
+///   transition for the current `key_filter` strictness preset:
+///     • Strict   → EnergyBoost / EnergyCool   (h≈0.50, d=±0.50)
+///     • Relaxed  → SemitoneUp / SemitoneDown  (h≈0.20, d=+0.70 / -0.50)
+///     • Off      → same as Relaxed
 ///
-/// Reward is a soft tent on 2D distance to the focal point. No saturation knee,
-/// no synchronized cohort cliffs — the slider only slides the focal point linearly.
+/// This makes the strictness preset semantically meaningful in two ways:
+/// (1) the harmonic_floor filter is stricter for stricter presets, AND (2) the
+/// focal trajectory is more conservative for stricter presets — so a Strict
+/// user sees their "perfect peak" land on EnergyBoost (clean fifth-up), while
+/// a Relaxed user sees it land on SemitoneUp (committed pitch lift).
+///
+/// Reward is a soft tent on 2D distance to the focal point. WIDTH expands with
+/// |bias| so directionally-aligned but less-extreme moves stay in the ring at
+/// slider extremes.
 pub fn key_ring_reward(
     seed_key: &MusicalKey,
     cand_key: &MusicalKey,
     energy_bias: f32,
     model: KeyScoringModel,
+    key_filter: super::config::SuggestionKeyFilter,
 ) -> f32 {
+    use super::config::SuggestionKeyFilter;
+
     // WIDTH expands with |bias| so Adjacent / Mood / Diagonal transitions
-    // remain inside the ring at slider extremes. At centre the ring is
-    // narrow (focused on near-key transitions); at extremes it widens to
-    // catch directionally-aligned but less-extreme moves like AdjacentUp,
-    // DiagonalUp, MoodLift — which are still musically useful at peak.
+    // remain inside the ring at slider extremes.
     const WIDTH_CENTER: f32 = 0.50;
     const WIDTH_EXTREME: f32 = 0.70;
     const FLOOR: f32 = 0.20;
@@ -310,27 +320,28 @@ pub fn key_ring_reward(
     // Y axis: energy direction — always the curated table value (perceptually tuned).
     let cand_d = transition_energy_direction(classify_transition(seed_key, cand_key));
 
-    // Focal point: slides linearly toward the (h, d) coordinates of the canonical
-    // EnergyBoost / EnergyCool transition in the *current model's* coordinate
-    // system, so the perfect peak/drop candidate normalises to score 1.0 in both
-    // models. In Camelot the archetype lands at h=0.50 (tier value); in Krumhansl
-    // it lands at the model's own correlation for "+2 same-mode" — read from the
-    // matrix and rotation-invariant within mode.
-    let h_archetype_peak = match model {
-        KeyScoringModel::Camelot => base_score(if seed_key.minor {
-            TransitionType::EnergyCool // same h as EnergyBoost (0.50)
-        } else {
-            TransitionType::EnergyBoost
-        }),
-        KeyScoringModel::Krumhansl => {
-            let mode_offset = if seed_key.minor { 12 } else { 0 };
-            let s_idx = seed_key.root as usize + mode_offset;
-            let c_idx = (seed_key.root as usize + 2) % 12 + mode_offset;
-            KRUMHANSL_MATRIX[s_idx][c_idx].max(0.02)
-        }
+    // Pick the canonical transition the focal aims at at full slider, based on
+    // direction (peak vs drop) and key strictness preset.
+    let target_tt = match (energy_bias >= 0.0, key_filter) {
+        (true,  SuggestionKeyFilter::Strict) => TransitionType::EnergyBoost,
+        (false, SuggestionKeyFilter::Strict) => TransitionType::EnergyCool,
+        (true,  _)                           => TransitionType::SemitoneUp,
+        (false, _)                           => TransitionType::SemitoneDown,
     };
-    let focal_h = 1.0 + (h_archetype_peak - 1.0) * bias_abs;
-    let focal_d = 0.5 * energy_bias;
+
+    // h coordinate of the canonical target — model-dependent (Camelot tier vs
+    // Krumhansl matrix correlation for the matching chromatic offset).
+    let h_archetype = match model {
+        KeyScoringModel::Camelot => base_score(target_tt),
+        KeyScoringModel::Krumhansl => krumhansl_h_for_archetype(seed_key, target_tt),
+    };
+    // d coordinate of the canonical target — the curated table value.
+    let d_archetype = transition_energy_direction(target_tt);
+
+    // Focal point slides linearly from (1.0, 0.0) at centre to (h_archetype,
+    // d_archetype) at full slider in the chosen direction.
+    let focal_h = 1.0 + (h_archetype - 1.0) * bias_abs;
+    let focal_d = d_archetype * bias_abs;
 
     let dh = cand_h - focal_h;
     let dd = cand_d - focal_d;
@@ -339,6 +350,34 @@ pub fn key_ring_reward(
     let width = WIDTH_CENTER + (WIDTH_EXTREME - WIDTH_CENTER) * bias_abs;
     let tent = (1.0 - dist / width).max(0.0);
     FLOOR + (1.0 - FLOOR) * tent
+}
+
+/// Krumhansl matrix correlation for the canonical chromatic offset of a given
+/// archetype `TransitionType`, relative to `seed`. Used to anchor the key-ring
+/// focal point's h-coordinate at full slider — so the perfect "max-commitment"
+/// transition for the active strictness preset normalises to score 1.0 in
+/// Krumhansl mode just as it does in Camelot mode.
+fn krumhansl_h_for_archetype(seed: &MusicalKey, tt: TransitionType) -> f32 {
+    let mode_offset = if seed.minor { 12 } else { 0 };
+    let s_idx = seed.root as usize + mode_offset;
+    // Each archetype maps to a specific chromatic offset (mod 12).
+    // Camelot wheel step is 7 semitones per step; classify_transition wraps
+    // signed steps to [-6, +6]. The chromatic offsets here mirror the
+    // intervals the corresponding TransitionType represents.
+    let chromatic_offset: i32 = match tt {
+        TransitionType::SameKey       => 0,
+        TransitionType::AdjacentUp    => 7,    // +1 fifth = +7 semitones
+        TransitionType::AdjacentDown  => 5,    // -1 fifth = -7 semitones = +5
+        TransitionType::EnergyBoost   => 2,    // +2 fifths = +14 = +2 semitones
+        TransitionType::EnergyCool    => 10,   // -2 fifths = -14 = +10 semitones (mod 12)
+        TransitionType::SemitoneUp    => 1,    // +1 semitone (Camelot step -5)
+        TransitionType::SemitoneDown  => 11,   // -1 semitone (Camelot step +5)
+        TransitionType::Tritone       => 6,
+        // Cross-mode and far-step archetypes: fall back to base_score.
+        _ => return base_score(tt),
+    };
+    let c_idx = (seed.root as usize + chromatic_offset as usize) % 12 + mode_offset;
+    KRUMHANSL_MATRIX[s_idx][c_idx].max(0.02)
 }
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
@@ -815,6 +854,7 @@ mod tests {
     // ─── Key Transition Score (Camelot model) ─────────────────────────
 
     const CAM: KeyScoringModel = KeyScoringModel::Camelot;
+    const KF_STRICT: super::super::config::SuggestionKeyFilter = super::super::config::SuggestionKeyFilter::Strict;
 
     // ─── 2D Ring Reward (key_ring_reward) ────────────────────────────────
     // Tests the new 2D ring scoring: focal point slides on the
@@ -909,9 +949,9 @@ mod tests {
         let gm = MusicalKey::parse("Gm").unwrap(); // EnergyCool  (-2 same mode)
 
         for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
-            let same  = key_ring_reward(&am, &am, 0.0,  model);
-            let boost = key_ring_reward(&am, &bm, 1.0,  model);
-            let cool  = key_ring_reward(&am, &gm, -1.0, model);
+            let same  = key_ring_reward(&am, &am, 0.0,  model, KF_STRICT);
+            let boost = key_ring_reward(&am, &bm, 1.0,  model, KF_STRICT);
+            let cool  = key_ring_reward(&am, &gm, -1.0, model, KF_STRICT);
             assert!(same > 0.99,  "{model:?}: SameKey at centre must be 1.0: {same}");
             assert!(boost > 0.99, "{model:?}: EnergyBoost at full peak must be 1.0: {boost}");
             assert!(cool > 0.99,  "{model:?}: EnergyCool at full drop must be 1.0: {cool}");
@@ -932,7 +972,7 @@ mod tests {
         ];
         for (cand_str, label) in candidates {
             let cand = MusicalKey::parse(cand_str).unwrap();
-            let s = key_ring_reward(&am, &cand, 0.0, CAM);
+            let s = key_ring_reward(&am, &cand, 0.0, CAM, KF_STRICT);
             assert!(s < 0.30,
                 "{label} ({cand_str}) at centre should be ~floor: got {s}");
         }
@@ -944,8 +984,8 @@ mod tests {
         let am = MusicalKey::parse("Am").unwrap();
         let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown
         let em = MusicalKey::parse("Em").unwrap(); // AdjacentUp (wrong direction)
-        let down = key_ring_reward(&am, &dm, -0.5, CAM);
-        let up   = key_ring_reward(&am, &em, -0.5, CAM);
+        let down = key_ring_reward(&am, &dm, -0.5, CAM, KF_STRICT);
+        let up   = key_ring_reward(&am, &em, -0.5, CAM, KF_STRICT);
         assert!(down > up, "Mid-drop: AdjacentDown beats AdjacentUp: {down} vs {up}");
         assert!(down > 0.70, "AdjacentDown near focal at mid-drop: {down}");
     }
@@ -955,8 +995,8 @@ mod tests {
         let am = MusicalKey::parse("Am").unwrap();
         let bm = MusicalKey::parse("Bm").unwrap(); // EnergyBoost (+0.5)
         let gm = MusicalKey::parse("Gm").unwrap(); // EnergyCool  (-0.5)
-        let cool  = key_ring_reward(&am, &gm, -1.0, CAM);
-        let boost = key_ring_reward(&am, &bm, -1.0, CAM);
+        let cool  = key_ring_reward(&am, &gm, -1.0, CAM, KF_STRICT);
+        let boost = key_ring_reward(&am, &bm, -1.0, CAM, KF_STRICT);
         assert!(cool > boost,
             "Full drop: EnergyCool beats EnergyBoost: {cool} vs {boost}");
         assert!(cool > 0.99, "EnergyCool at full drop = focal exact: {cool}");
@@ -976,8 +1016,8 @@ mod tests {
             for (up_str, down_str) in pairs {
                 let up = MusicalKey::parse(up_str).unwrap();
                 let down = MusicalKey::parse(down_str).unwrap();
-                let peak = key_ring_reward(&am, &up,    bias, CAM);
-                let drop = key_ring_reward(&am, &down, -bias, CAM);
+                let peak = key_ring_reward(&am, &up,    bias, CAM, KF_STRICT);
+                let drop = key_ring_reward(&am, &down, -bias, CAM, KF_STRICT);
                 assert!((peak - drop).abs() < 1e-4,
                     "Symmetric @ bias={bias}: {up_str} @+={peak} vs {down_str} @-={drop}");
             }
@@ -990,10 +1030,10 @@ mod tests {
         // Score should monotonically decrease as the focal pulls away.
         let am = MusicalKey::parse("Am").unwrap();
         let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown
-        let mut prev = key_ring_reward(&am, &dm, 0.0, CAM);
+        let mut prev = key_ring_reward(&am, &dm, 0.0, CAM, KF_STRICT);
         for i in 1..=20 {
             let bias = i as f32 / 20.0;
-            let s = key_ring_reward(&am, &dm, bias, CAM);
+            let s = key_ring_reward(&am, &dm, bias, CAM, KF_STRICT);
             assert!(s <= prev + 1e-4,
                 "AdjacentDown should not increase as bias→peak: bias={bias} s={s} prev={prev}");
             prev = s;
@@ -1010,7 +1050,7 @@ mod tests {
         let scores: Vec<f32> = (0..=20)
             .map(|i| {
                 let bias = i as f32 / 20.0;
-                key_ring_reward(&am, &bbm, bias, CAM)
+                key_ring_reward(&am, &bbm, bias, CAM, KF_STRICT)
             })
             .collect();
         let peak_score = scores.iter().cloned().fold(0.0_f32, f32::max);
@@ -1030,8 +1070,8 @@ mod tests {
         let gm = MusicalKey::parse("Gm").unwrap(); // AdjacentUp from Cm
         for &bias in &[-1.0_f32, -0.5, 0.0, 0.5, 1.0] {
             for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
-                let s1 = key_ring_reward(&am, &em, bias, model);
-                let s2 = key_ring_reward(&cm, &gm, bias, model);
+                let s1 = key_ring_reward(&am, &em, bias, model, KF_STRICT);
+                let s2 = key_ring_reward(&cm, &gm, bias, model, KF_STRICT);
                 assert!((s1 - s2).abs() < 1e-3,
                     "Seed independence broken at bias={bias} model={model:?}: {s1} vs {s2}");
             }
@@ -1045,9 +1085,9 @@ mod tests {
         let d = MusicalKey::parse("D").unwrap(); // EnergyBoost (+2 major-major)
         let bb = MusicalKey::parse("Bb").unwrap(); // EnergyCool (-2 major-major)
         for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
-            let same  = key_ring_reward(&c, &c,  0.0,  model);
-            let boost = key_ring_reward(&c, &d,  1.0,  model);
-            let cool  = key_ring_reward(&c, &bb, -1.0, model);
+            let same  = key_ring_reward(&c, &c,  0.0,  model, KF_STRICT);
+            let boost = key_ring_reward(&c, &d,  1.0,  model, KF_STRICT);
+            let cool  = key_ring_reward(&c, &bb, -1.0, model, KF_STRICT);
             assert!(same > 0.99,  "{model:?} major SameKey: {same}");
             assert!(boost > 0.99, "{model:?} major EnergyBoost peak: {boost}");
             assert!(cool > 0.99,  "{model:?} major EnergyCool drop: {cool}");
@@ -1063,12 +1103,62 @@ mod tests {
         for i in -20..=20 {
             let bias = i as f32 / 20.0;
             for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
-                let s = key_ring_reward(&c, &fs, bias, model);
+                let s = key_ring_reward(&c, &fs, bias, model, KF_STRICT);
                 assert!(s >= 0.20 - 1e-6,
                     "Floor breached at bias={bias} model={model:?}: {s}");
                 assert!(s <= 1.0 + 1e-6, "Score above 1.0 at bias={bias}: {s}");
             }
         }
+    }
+
+    #[test]
+    fn test_key_ring_strictness_changes_focal_endpoint() {
+        // Strict + full peak: EnergyBoost is the canonical perfect match → 1.0.
+        // Relaxed + full peak: SemitoneUp is the canonical perfect match → 1.0.
+        let am  = MusicalKey::parse("Am").unwrap();
+        let bm  = MusicalKey::parse("Bm").unwrap();   // EnergyBoost (+2 same-mode)
+        let bbm = MusicalKey::parse("Bbm").unwrap();  // SemitoneUp (+1 same-mode)
+        let kf_strict  = super::super::config::SuggestionKeyFilter::Strict;
+        let kf_relaxed = super::super::config::SuggestionKeyFilter::Relaxed;
+
+        // Strict: EnergyBoost hits 1.0 at full peak, SemitoneUp lower.
+        let strict_boost = key_ring_reward(&am, &bm,  1.0, CAM, kf_strict);
+        let strict_semi  = key_ring_reward(&am, &bbm, 1.0, CAM, kf_strict);
+        assert!(strict_boost > 0.99,
+            "Strict + full peak → EnergyBoost is canonical: {strict_boost}");
+        assert!(strict_semi < strict_boost,
+            "Strict + full peak → SemitoneUp scores below EnergyBoost: {strict_semi} vs {strict_boost}");
+
+        // Relaxed: SemitoneUp hits 1.0 at full peak, EnergyBoost lower.
+        let relaxed_boost = key_ring_reward(&am, &bm,  1.0, CAM, kf_relaxed);
+        let relaxed_semi  = key_ring_reward(&am, &bbm, 1.0, CAM, kf_relaxed);
+        assert!(relaxed_semi > 0.99,
+            "Relaxed + full peak → SemitoneUp is canonical: {relaxed_semi}");
+        assert!(relaxed_boost < relaxed_semi,
+            "Relaxed + full peak → EnergyBoost scores below SemitoneUp: {relaxed_boost} vs {relaxed_semi}");
+
+        // Centre is identical in both modes (same focal at (1.0, 0.0)).
+        let strict_centre  = key_ring_reward(&am, &am, 0.0, CAM, kf_strict);
+        let relaxed_centre = key_ring_reward(&am, &am, 0.0, CAM, kf_relaxed);
+        assert!((strict_centre - relaxed_centre).abs() < 1e-4,
+            "Centre is strictness-independent: {strict_centre} vs {relaxed_centre}");
+    }
+
+    #[test]
+    fn test_key_ring_relaxed_peak_passes_through_energy_boost() {
+        // Under Relaxed, the focal_d trajectory ends at +0.70 (SemitoneUp).
+        // Halfway through that trajectory (bias ≈ 0.71), focal_d ≈ +0.50,
+        // which lands EXACTLY on EnergyBoost's d-coordinate. So EnergyBoost
+        // briefly scores higher mid-slider than at full slider — the slider
+        // is "useful" across its whole range instead of saturating.
+        let am = MusicalKey::parse("Am").unwrap();
+        let bm = MusicalKey::parse("Bm").unwrap(); // EnergyBoost
+        let kf_relaxed = super::super::config::SuggestionKeyFilter::Relaxed;
+
+        let mid_score   = key_ring_reward(&am, &bm, 0.71, CAM, kf_relaxed);
+        let full_score  = key_ring_reward(&am, &bm, 1.00, CAM, kf_relaxed);
+        assert!(mid_score > full_score,
+            "Relaxed: EnergyBoost peaks mid-slider for Relaxed reach (0.71 ≈ {mid_score}, 1.0 ≈ {full_score})");
     }
 
     #[test]

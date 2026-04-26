@@ -177,6 +177,28 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Key strictness now controls how far the slider commits at extremes** —
+  Previously, the Strict / Relaxed / Off preset only controlled which
+  transitions were filtered out before scoring. The slider's full-peak
+  target was hardcoded to the EnergyBoost zone in all three modes — so
+  Strict + full peak was filtering out exactly the high-direction
+  transitions (SemitoneUp, FarStep) that the slider's focal would have
+  rewarded if they'd been allowed in. The result: empty/poor results at
+  extremes for libraries that didn't have many EnergyBoost partners
+  relative to the seed. The strictness preset now also controls how far
+  out the slider's focal point reaches at full slider:
+    • Strict   → full peak focuses on **EnergyBoost / EnergyCool**
+                 (clean fifth-up two-step)
+    • Relaxed  → full peak focuses on **SemitoneUp / SemitoneDown**
+                 (committed pitch-lift). EnergyBoost briefly scores
+                 perfectly at mid-slider (~75%), then the focal moves
+                 past it as the slider continues toward full peak.
+    • Off      → same trajectory as Relaxed.
+  This aligns the slider's intent with the user's chosen risk
+  tolerance: a Strict user gets harmonic-conservative perfect matches,
+  a Relaxed user gets a slider with more "throw" that commits to bigger
+  energy moves at full extension.
+
 - **Key ring widens at slider extremes** — Previously, when the slider
   was pushed all the way to Drop or Peak, the key reward zone was
   narrow enough that only the most extreme directional transitions
