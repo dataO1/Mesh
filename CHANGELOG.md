@@ -170,6 +170,23 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Intention slider felt snappy near the Drop and Peak ends, not linear** —
+  Past about 60% slider travel the suggestions stopped moving and collapsed
+  back onto the seed's own playlist / community. Two compounding causes:
+  the similarity reward crossfaded `similarity → transition_reward` via
+  `blend_t / crossover`, which saturated at the crossover point and froze
+  the vector component at a fixed target distance for the remaining 40% of
+  slider travel; and the reward weights themselves were functions of
+  `|bias|` (aggression weight ramped 0 → 0.20, similarity weight ramped
+  down, coplay and stem-penalty weights faded out toward extremes), so what
+  each component "valued" changed alongside its target. Now the weights
+  are constant (similarity 0.45, key 0.25, aggression 0.20, coplay 0.07,
+  stem penalties 0.08 / 0.05) and the similarity component is a single
+  ring whose centre slides linearly from a small fixed radius (0.05) at
+  centre to the configured reach (Tight 0.15 / Medium 0.25 / Open 0.40)
+  at full slider — matching how aggression already worked. Pure linear
+  interpolation across the slider with no saturation knee.
+
 - **Suggestion list collapsed near the Drop and Peak ends of the intention
   slider** — Sliding toward the extremes used to wipe the suggestion list
   down to a handful of entries (or empty), with a sharp cut between the

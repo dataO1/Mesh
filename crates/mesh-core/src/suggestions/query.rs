@@ -612,57 +612,25 @@ pub fn query_suggestions(
     // Step 5: Reward-based scoring (higher = better match)
     // ════════════════════════════════════════════════════════════════════════
     //
-    // Center: similarity + key dominate (aggression has zero weight).
-    // Extremes: aggression linearly introduced, similarity reduced.
-    //
-    // ┌────────────────────────────────────────────────────────────────────┐
-    // │ Component     │ Center weight │ Extreme weight │ Behavior         │
-    // ├───────────────┼───────────────┼────────────────┼──────────────────┤
-    // │ Similarity    │ 0.55          │ 0.40           │ Genre coherence  │
-    // │ Key compat.   │ 0.25          │ 0.25           │ Harmonic + dir.  │
-    // │ Aggression    │ 0.00          │ 0.20           │ PCA direction    │
-    // │ Co-play       │ 0.07          │ 0.00           │ History bonus    │
-    // │ Stem penalty  │ -0.13         │ 0.00           │ Layering only    │
-    // └────────────────────────────────────────────────────────────────────┘
+    // Weights are constant across the slider — the slider only shifts each
+    // component's internal target (similarity ring radius, aggression ring
+    // target, key energy-direction blend). That gives a perfectly linear
+    // motion from center → drop / peak with no saturation knees.
 
     let bias_abs = energy_bias.abs();
     let (w_vector, w_key, w_aggr) = match suggestion_config.custom_weights {
-        Some([ws, wk, wi]) => {
-            // Custom weights: use directly (user explicitly controls the balance)
-            (ws, wk, wi)
-        }
-        None => {
-            // Default weights: aggression linearly introduced from 0 at center to 0.20 at extremes
-            let w_aggr = 0.20 * bias_abs;
-            let w_vector = 0.55 - w_aggr * 0.5; // reduce similarity to make room
-            (w_vector, 0.25, w_aggr)
-        }
+        Some([ws, wk, wi]) => (ws, wk, wi),
+        None => (0.45, 0.25, 0.20),
     };
+    let w_coplay = 0.07;
+    let w_vocal_pen = if suggestion_config.stem_complement { 0.08 } else { 0.0 };
+    let w_other_pen = if suggestion_config.stem_complement { 0.05 } else { 0.0 };
     log::info!(
-        "[SCORING] Final weights: similarity={:.3}, key={:.3}, aggression={:.3} (custom={:?})",
-        w_vector, w_key, w_aggr, suggestion_config.custom_weights.is_some(),
+        "[SCORING] Final weights: similarity={:.3}, key={:.3}, aggression={:.3}, coplay={:.3} (custom={:?})",
+        w_vector, w_key, w_aggr, w_coplay, suggestion_config.custom_weights.is_some(),
     );
-    let w_coplay      = 0.07 * (1.0 - bias_abs);           // 0.07 center → 0.00 extreme
-    // Stem penalty weights (only at center, subtracted from score)
-    let w_vocal_pen = if suggestion_config.stem_complement { 0.08 * (1.0 - bias_abs) } else { 0.0 };
-    let w_other_pen = if suggestion_config.stem_complement { 0.05 * (1.0 - bias_abs) } else { 0.0 };
 
     // Distances are already percentile-rank normalized to [0, 1]
-
-    // Precompute transition reward as percentile-rank of deviation from target.
-    // This replaces the Gaussian bell curve which had poor resolution near the peak.
-    // Each track's |percentile_rank - target| is ranked, giving uniform [0, 1] spread.
-    let target = suggestion_config.transition_target;
-    let transition_rewards: HashMap<(usize, i64), f32> = {
-        let mut deviations: Vec<((usize, i64), f32)> = candidates.iter()
-            .map(|(&key, (_, dist))| (key, (*dist - target).abs()))
-            .collect();
-        deviations.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        let n_cand = deviations.len().max(1) as f32;
-        deviations.iter().enumerate()
-            .map(|(rank, &(key, _))| (key, 1.0 - rank as f32 / (n_cand - 1.0).max(1.0)))
-            .collect()
-    };
 
     let source_names: HashMap<usize, &str> = sources.iter().enumerate()
         .map(|(i, s)| (i, s.name.as_str()))
@@ -717,21 +685,17 @@ pub fn query_suggestions(
             // No separate key_dir component needed — it's already incorporated.
             let key_reward = best_key_score;
 
-            // ── Aggression reward (PCA-based, only at extremes) ──
+            // ── Aggression reward (PCA aggression-axis ring) ──
             let cand_aggr = track.id
                 .and_then(|id| aggression_map.get(&(src_idx, id)).copied())
                 .unwrap_or(0.5);
             let aggr_reward = aggression_reward(cand_aggr, avg_seed_aggression, energy_bias, suggestion_config.intensity_reach);
 
-            // ── Vector similarity reward ──
-            // hnsw_dist is already percentile-rank normalized [0, 1]
-            // Center: similarity → high reward (1 - percentile_rank).
-            // Extremes: transition reward from deviation-rank (closest to target = best).
-            let norm_dist = hnsw_dist; // already [0, 1] from percentile rank
-            let similarity = 1.0 - norm_dist;
-            let transition_reward = transition_rewards.get(&(src_idx, track_id)).copied().unwrap_or(0.5);
-            let blend_t = (bias_abs / suggestion_config.blend_crossover).clamp(0.0, 1.0);
-            let vec_reward = similarity * (1.0 - blend_t) + transition_reward * blend_t;
+            // ── Vector similarity reward (PCA distance ring) ──
+            // Single ring whose target distance slides linearly from a small fixed
+            // radius at center to the configured `transition_target` at full slider.
+            // hnsw_dist is already percentile-rank normalised to [0, 1].
+            let vec_reward = similarity_reward(hnsw_dist, energy_bias, suggestion_config.transition_target);
 
             // ── Co-play reward ──
             // Proven follow-ups get a boost. No history = 0 reward (not a penalty).
@@ -762,9 +726,10 @@ pub fn query_suggestions(
             let is_proven_followup = coplay >= 0.3;
 
             let energy_delta = cand_aggr - avg_seed_aggression;
+            let raw_similarity = 1.0 - hnsw_dist;
             let mut reason_tags = generate_reason_tags(
                 best_tt,
-                similarity,
+                raw_similarity,
                 energy_delta,
                 vocal_comp, other_comp,
                 w_vocal_pen, w_other_pen,
@@ -804,7 +769,12 @@ pub fn query_suggestions(
             Some([ws, wk, wi]) => format!("S={:.2} K={:.2} A={:.2}", ws, wk, wi),
             None => "default".to_string(),
         };
-        eprintln!("[SUGGESTIONS] Top results (weights: {}, energy_bias={:.2}, w_aggr_eff={:.2}):", w, energy_bias, w_aggr);
+        let sim_target = 0.05 + (suggestion_config.transition_target - 0.05) * bias_abs;
+        let aggr_target_offset = energy_bias.signum() * suggestion_config.intensity_reach * bias_abs;
+        eprintln!(
+            "[SUGGESTIONS] Top results (weights: {}, bias={:.2}, sim_target={:.2}, aggr_target=seed{:+.2}):",
+            w, energy_bias, sim_target, aggr_target_offset,
+        );
         for (i, s) in suggestions.iter().take(10).enumerate() {
             let id_key = s.track.id.map(|id| (0usize, id));
             let aggr = id_key.and_then(|k| aggression_map.get(&k).copied()).unwrap_or(-1.0);

@@ -375,24 +375,40 @@ pub fn intensity_penalty(cand_intensity: f32, seed_intensity: f32, energy_bias: 
 ///
 /// At center (bias=0): returns 1.0 for all tracks (no aggression influence).
 /// The aggression weight is linearly introduced by the caller based on |bias|.
-pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, _intensity_reach: f32) -> f32 {
-    const W_MAX: f32 = 0.60;   // tent half-width at center
-    const W_MIN: f32 = 0.18;   // tent half-width at full extreme
+pub fn aggression_reward(cand_aggr: f32, seed_aggr: f32, energy_bias: f32, intensity_reach: f32) -> f32 {
+    const WIDTH: f32 = 0.20;   // constant tent half-width (ring thickness)
     const FLOOR: f32 = 0.25;   // soft floor for off-target tracks
 
     let bias_abs = energy_bias.abs().min(1.0);
+    let reach = intensity_reach.max(0.05);
 
-    // Target: slider interpolates from seed toward library extreme
-    let target = if energy_bias >= 0.0 {
-        seed_aggr + (1.0 - seed_aggr) * bias_abs   // center: seed, full peak: 1.0
-    } else {
-        seed_aggr * (1.0 - bias_abs)                 // center: seed, full drop: 0.0
-    };
+    // Ring radius: slider shifts target away from seed, capped by reach.
+    // Center: target = seed (radius 0). Full extreme: target = seed ± reach.
+    let target = (seed_aggr + energy_bias.signum() * reach * bias_abs).clamp(0.0, 1.0);
 
-    // Symmetric linear tent: width shrinks as |bias| grows
-    let width = W_MAX + (W_MIN - W_MAX) * bias_abs;
-    let tent = (1.0 - (cand_aggr - target).abs() / width).max(0.0);
+    let tent = (1.0 - (cand_aggr - target).abs() / WIDTH).max(0.0);
+    FLOOR + (1.0 - FLOOR) * tent
+}
 
+/// PCA similarity reward — ring in percentile-rank distance space around the seed.
+///
+/// At center, the ring sits at a small fixed radius from the seed (similar but
+/// not identical). As the slider moves toward peak or drop, the ring's radius
+/// slides linearly toward `reach` (the configured transition target distance),
+/// letting the user dial controlled dissimilarity. Width and floor are constant
+/// so the shape doesn't change with the slider — only the centre slides.
+///
+/// - `hnsw_dist`: percentile-rank normalised PCA distance to seed [0, 1]
+/// - `energy_bias`: slider position [-1, 1]; only `|bias|` matters here (distance is unsigned)
+/// - `reach`: target ring radius at full slider (Tight=0.15, Medium=0.25, Open=0.40)
+pub fn similarity_reward(hnsw_dist: f32, energy_bias: f32, reach: f32) -> f32 {
+    const CENTER_RADIUS: f32 = 0.05; // small fixed radius at center
+    const WIDTH: f32 = 0.15;         // constant ring thickness
+    const FLOOR: f32 = 0.20;         // soft floor for off-target tracks
+
+    let bias_abs = energy_bias.abs().min(1.0);
+    let target = CENTER_RADIUS + (reach - CENTER_RADIUS) * bias_abs;
+    let tent = (1.0 - (hnsw_dist - target).abs() / WIDTH).max(0.0);
     FLOOR + (1.0 - FLOOR) * tent
 }
 
@@ -996,6 +1012,44 @@ mod tests {
         let krumhansl = key_transition_score(&am, &c, 0.0, KeyScoringModel::Krumhansl);
         assert!(camelot > 0.5, "Camelot Am→C should be high: {camelot}");
         assert!(krumhansl > 0.5, "Krumhansl Am→C should be high: {krumhansl}");
+    }
+
+    #[test]
+    fn test_similarity_reward_center_targets_small_radius() {
+        // At center the ring sits at CENTER_RADIUS = 0.05, width 0.15.
+        // A track at distance 0.05 should peak; far-off tracks land on the floor.
+        let peak = similarity_reward(0.05, 0.0, 0.40);
+        let floor = similarity_reward(0.50, 0.0, 0.40);
+        assert!(peak > 0.95, "center peak should be near 1.0: {peak}");
+        assert!(floor < 0.25, "far track should be near floor 0.20: {floor}");
+        assert!(floor >= 0.20, "soft floor should hold at 0.20: {floor}");
+    }
+
+    #[test]
+    fn test_similarity_reward_extreme_shifts_to_reach() {
+        // At full slider with reach=0.40, the ring centre slides to 0.40.
+        let peak_extreme = similarity_reward(0.40, 1.0, 0.40);
+        let center_extreme = similarity_reward(0.05, 1.0, 0.40);
+        assert!(peak_extreme > 0.95, "extreme should peak at reach: {peak_extreme}");
+        assert!(center_extreme < peak_extreme, "near-seed should score below ring at extreme: {center_extreme} vs {peak_extreme}");
+    }
+
+    #[test]
+    fn test_similarity_reward_symmetric_in_bias_sign() {
+        // Distance is unsigned, so peak (+0.7) and drop (-0.7) score identically.
+        let plus = similarity_reward(0.30, 0.7, 0.40);
+        let minus = similarity_reward(0.30, -0.7, 0.40);
+        assert!((plus - minus).abs() < 1e-6, "symmetric in sign: {plus} vs {minus}");
+    }
+
+    #[test]
+    fn test_similarity_reward_tight_reach_still_moves() {
+        // Tight reach=0.15 must still produce visible movement from centre to extreme.
+        let center = similarity_reward(0.05, 0.0, 0.15); // peak at 0.05
+        let extreme = similarity_reward(0.05, 1.0, 0.15); // ring shifted to 0.15
+        assert!(center > extreme, "centre should outrank near-seed track at extreme: {center} vs {extreme}");
+        let extreme_at_target = similarity_reward(0.15, 1.0, 0.15);
+        assert!(extreme_at_target > extreme, "ring shift should reward target distance at extreme: {extreme_at_target} vs {extreme}");
     }
 
 }
