@@ -177,6 +177,20 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Suggestion list could be polluted by tracks that scored low on one
+  dimension but high on others** — Previously, a track with a poor
+  vector-similarity match (e.g. 20%) but excellent key compatibility
+  (95%) and intensity match (100%) could end up in the top of the
+  suggestion list because the high scores compensated for the low one
+  via the weighted average. The combination is now non-compensatory:
+  any single dimension landing at or near its soft floor (vector,
+  key, or intensity) heavily penalises the overall score, even if the
+  other two dimensions are perfect. Tracks that excel on all three
+  dimensions stay at the top; tracks that lean heavily on one or two
+  fall toward the back. Tuning the weights still controls the relative
+  importance of each dimension, but a low score in any individual
+  dimension can no longer be "carried" by the others.
+
 - **Intention slider now scores key transitions smoothly across its
   entire range** — Previously, sliding toward Drop or Peak past about
   70% travel could cull whole groups of harmonically-similar tracks at

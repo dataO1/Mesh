@@ -725,10 +725,51 @@ pub fn query_suggestions(
             let vocal_clash = 1.0 - vocal_comp;
             let other_clash = 1.0 - other_comp;
 
-            // ── Final score: sum of rewards minus stem penalties ──
-            let score = (w_vector    * vec_reward
-                + w_key       * key_reward
-                + w_aggr      * aggr_reward
+            // ── Final score: non-compensatory aggregation ──
+            // Weighted geometric mean of floor-subtracted components, scaled by
+            // a min-component balance gate. Tracks where ANY of the three core
+            // dimensions (similarity, key, aggression) sits at its soft floor
+            // get heavily penalised — preventing the "two strong dims compensate
+            // for one weak dim" overpowering that arithmetic averaging produced.
+            //
+            // Floor-subtraction: maps [floor, 1.0] → [0, 1.0] (with ε to keep
+            // strictly positive). At-floor values become near-zero, so the
+            // geometric mean drops sharply — a single floor-bound dimension
+            // can no longer be carried by the others.
+            //
+            // Balance gate: scales the geometric mean by 0.5 + 0.5 · min_adj/0.6,
+            // clamped at 1.0. Tracks with ALL adjusted components ≥ 0.6 get
+            // the full score; tracks with any weak dim get scaled down by up
+            // to 50%.
+            const EPS: f32 = 0.05;
+            const BALANCE_THRESHOLD: f32 = 0.6;
+            const SIM_FLOOR:  f32 = 0.20;
+            const KEY_FLOOR:  f32 = 0.20;
+            const AGGR_FLOOR: f32 = 0.25;
+            let floor_sub = |x: f32, floor: f32| -> f32 {
+                ((x - floor + EPS).max(0.0) / (1.0 - floor + EPS)).clamp(0.0, 1.0)
+            };
+            let v_adj = floor_sub(vec_reward,  SIM_FLOOR);
+            let k_adj = floor_sub(key_reward,  KEY_FLOOR);
+            let i_adj = floor_sub(aggr_reward, AGGR_FLOOR);
+
+            let weight_sum = w_vector + w_key + w_aggr;
+            let nv = w_vector / weight_sum;
+            let nk = w_key    / weight_sum;
+            let na = w_aggr   / weight_sum;
+            let geo = v_adj.max(1e-6).powf(nv)
+                    * k_adj.max(1e-6).powf(nk)
+                    * i_adj.max(1e-6).powf(na);
+
+            let min_adj = v_adj.min(k_adj).min(i_adj);
+            let balance = (min_adj / BALANCE_THRESHOLD).clamp(0.0, 1.0);
+            let balance_scale = 0.5 + 0.5 * balance;
+
+            let core = geo * balance_scale;
+
+            // Co-play bonus and stem penalties remain additive — they're auxiliary
+            // signals (history bonus, layering safeguard), not core compatibility.
+            let score = (core
                 + w_coplay    * coplay_reward
                 - w_vocal_pen * vocal_clash
                 - w_other_pen * other_clash)
