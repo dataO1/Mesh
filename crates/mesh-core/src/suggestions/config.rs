@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyScoringModel {
-    /// Camelot wheel distance with hand-tuned transition scores
-    #[default]
+    /// Camelot wheel distance with hand-tuned transition scores (legacy categorical
+    /// tiers — kept for users who prefer DJ-curated values; produces plateau ties).
     Camelot,
-    /// Krumhansl-Kessler probe-tone profile correlations
+    /// Krumhansl-Kessler probe-tone profile correlations + continuous interval-based
+    /// energy direction. Smooth gradient, every key pair lands at a unique score.
+    #[default]
     Krumhansl,
 }
 

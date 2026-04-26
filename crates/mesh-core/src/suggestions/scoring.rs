@@ -183,6 +183,32 @@ pub fn transition_energy_direction(tt: TransitionType) -> f32 {
     }
 }
 
+/// Continuous energy direction in [-1, +1] from raw key positions on the Camelot wheel.
+///
+/// Replaces the discrete `transition_energy_direction(TransitionType)` lookup so
+/// every key pair lands at a unique direction value (modulo true ties). Combined
+/// with the continuous Krumhansl harmonic base, this eliminates the categorical
+/// plateaus where many tracks share an identical key score and cross the filter
+/// threshold simultaneously.
+///
+/// Direction = signed circular step on the 12-position wheel mapped to [-1, +1],
+/// plus a mode-change shift (+0.15 for minor→major brightening, -0.15 for
+/// major→minor darkening). Tritone (±6) returns 0.0 — chaotic, not directional.
+pub fn key_direction_continuous(seed: &MusicalKey, cand: &MusicalKey) -> f32 {
+    let (s_pos, _) = seed.camelot();
+    let (c_pos, _) = cand.camelot();
+    let raw = (c_pos as i32) - (s_pos as i32);
+    let step = if raw > 6 { raw - 12 } else if raw < -6 { raw + 12 } else { raw };
+    if step.abs() == 6 { return 0.0; } // Tritone: neutral
+    let dir = (step as f32) / 5.0;     // -5/5 .. +6/5 → wider than ±1, then clamped
+    let mode_shift = match (seed.minor, cand.minor) {
+        (true, false) =>  0.15,  // minor → major: brightening
+        (false, true) => -0.15,  // major → minor: darkening
+        _             =>  0.0,
+    };
+    (dir + mode_shift).clamp(-1.0, 1.0)
+}
+
 // ─── Krumhansl-Kessler Perceptual Key Distance ──────────────────────
 
 /// Krumhansl-Kessler probe-tone profiles (Krumhansl & Kessler, 1982).
@@ -266,15 +292,19 @@ pub fn key_transition_score(
     energy_bias: f32,
     model: KeyScoringModel,
 ) -> f32 {
-    let tt = classify_transition(seed_key, cand_key);
     let base = match model {
-        KeyScoringModel::Camelot => base_score(tt),
+        KeyScoringModel::Camelot => base_score(classify_transition(seed_key, cand_key)),
         KeyScoringModel::Krumhansl => krumhansl_base_score(seed_key, cand_key),
     };
 
     // Energy-direction score: how well the transition aligns with the fader.
-    // 1.0 = perfectly aligned, 0.0 = fully opposing.
-    let energy_dir = transition_energy_direction(tt);
+    // Krumhansl mode uses the continuous interval-based direction so every key
+    // pair has a unique value; Camelot mode keeps the discrete table for
+    // backwards-compatible tier behaviour.
+    let energy_dir = match model {
+        KeyScoringModel::Camelot => transition_energy_direction(classify_transition(seed_key, cand_key)),
+        KeyScoringModel::Krumhansl => key_direction_continuous(seed_key, cand_key),
+    };
     let energy_score = (energy_dir * energy_bias.signum() + 1.0) / 2.0;
 
     // Blend: interpolation from harmonic (center) to energy (extremes).
@@ -1040,6 +1070,41 @@ mod tests {
         let plus = similarity_reward(0.30, 0.7, 0.40);
         let minus = similarity_reward(0.30, -0.7, 0.40);
         assert!((plus - minus).abs() < 1e-6, "symmetric in sign: {plus} vs {minus}");
+    }
+
+    #[test]
+    fn test_key_direction_continuous_neutral_at_same_key() {
+        let am = MusicalKey::parse("Am").unwrap();
+        assert!(key_direction_continuous(&am, &am).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_key_direction_continuous_signed_step() {
+        // Camelot: Am=8A, Em=9A (+1 step CW). Adjacent up should be small positive.
+        let am = MusicalKey::parse("Am").unwrap();
+        let em = MusicalKey::parse("Em").unwrap();
+        let dir = key_direction_continuous(&am, &em);
+        assert!(dir > 0.0 && dir < 0.5, "Adjacent up should be modest positive: {dir}");
+
+        // Reverse: Em → Am should be the negation (modulo mode-shift, both minor here).
+        let rev = key_direction_continuous(&em, &am);
+        assert!(rev < 0.0 && (dir + rev).abs() < 1e-6, "minor↔minor reverse should negate: {dir} vs {rev}");
+    }
+
+    #[test]
+    fn test_key_direction_continuous_tritone_neutral() {
+        let c  = MusicalKey::parse("C").unwrap();
+        let fs = MusicalKey::parse("F#").unwrap();
+        assert!(key_direction_continuous(&c, &fs).abs() < 1e-6, "Tritone should be neutral");
+    }
+
+    #[test]
+    fn test_key_direction_continuous_mode_shift() {
+        // Same Camelot position, different mode: Am=8A, C=8B → minor→major brightens.
+        let am = MusicalKey::parse("Am").unwrap();
+        let c  = MusicalKey::parse("C").unwrap();
+        assert!(key_direction_continuous(&am, &c)  >  0.0, "minor→major should brighten");
+        assert!(key_direction_continuous(&c, &am)  <  0.0, "major→minor should darken");
     }
 
     #[test]

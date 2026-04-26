@@ -170,6 +170,26 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Suggestion list could collapse mid-slider on key-uniform libraries** —
+  Even after the centre/peak weights were frozen and the similarity ring
+  made linear, the harmonic key filter still produced a hidden cliff: the
+  filter tested the energy-blended `best_key_score` against a fixed
+  threshold, but that score's harmonic component is multiplied by
+  `(1 − |bias|).max(0.25)`, so as the slider moved toward the extremes
+  many transitions whose harmonic match was perfect (Same Key in
+  particular, with neutral energy direction) got pushed below the
+  threshold all at once and were culled as a cohort. Two changes: (1) the
+  filter now tests `harmonic_base` only — the bias-independent harmonic
+  compatibility — so the user-controlled "Strict / Relaxed / Off" preset
+  governs harmonic strictness purely, and the slider can never push a
+  track across the threshold; the energy-blended score still drives
+  ranking. (2) The default key-scoring model is now Krumhansl-Kessler
+  perceptual correlations + a continuous interval-based energy direction,
+  so every key pair lands at a unique score instead of one of ~12
+  categorical tiers — slider movement now re-orders tracks one-by-one
+  instead of in synchronized cohorts. Camelot's hand-tuned tier model
+  remains available as an option for users who prefer DJ-curated values.
+
 - **Intention slider felt snappy near the Drop and Peak ends, not linear** —
   Past about 60% slider travel the suggestions stopped moving and collapsed
   back onto the seed's own playlist / community. Two compounding causes:

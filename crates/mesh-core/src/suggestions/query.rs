@@ -661,21 +661,32 @@ pub fn query_suggestions(
                 })
                 .unwrap_or((0.3, TransitionType::FarStep(6)));
 
-            // Dual-layer harmonic filter
-            let harmonic_base = base_score(best_tt);
-            if harmonic_base < suggestion_config.harmonic_floor {
-                return None;
-            }
+            // Harmonic filter: gate on bias-independent harmonic compatibility only.
+            // The "Strict / Relaxed / Off" preset controls how restrictive harmonic
+            // matching must be; the energy-blended `best_key_score` is then used for
+            // ranking, not gating, so the slider can never push a track across the
+            // filter threshold (which previously caused a synchronized cell-cliff
+            // when neutral-direction transitions all crossed the threshold together).
+            let harmonic_base = match key_scoring_model {
+                KeyScoringModel::Camelot => base_score(best_tt),
+                KeyScoringModel::Krumhansl => seed_keys.iter()
+                    .filter_map(|sk| {
+                        track.key.as_deref()
+                            .and_then(MusicalKey::parse)
+                            .map(|ck| krumhansl_base_score(sk, &ck))
+                    })
+                    .fold(0.0_f32, f32::max),
+            };
             let is_preferred = preferred_paths.map_or(false, |pp| {
                 let p = track.path.to_string_lossy();
                 pp.contains(p.as_ref())
             });
-            let effective_threshold = if is_preferred {
-                suggestion_config.blended_threshold * 0.5
+            let effective_floor = if is_preferred {
+                suggestion_config.harmonic_floor * 0.5
             } else {
-                suggestion_config.blended_threshold
+                suggestion_config.harmonic_floor
             };
-            if best_key_score < effective_threshold {
+            if harmonic_base < effective_floor {
                 return None;
             }
 
