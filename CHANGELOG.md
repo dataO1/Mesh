@@ -8,6 +8,13 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Mesh-cue graph view: key-scoring model toggle** — A new "Model"
+  button in the graph controls row cycles between Krumhansl (continuous
+  perceptual correlations, default) and Camelot (DJ-curated categorical
+  tiers). Lets you A/B the two scoring models on the same seed and see
+  the suggestion list update live. Sits next to the existing Reach,
+  Key (strictness), and Norm toggles.
+
 - **Phrase highlight every 4th red bar marker on the overview waveform** —
   Every 4th red bar is now drawn in the active theme's vocal-stem colour
   (green in all built-in themes), giving a clear at-a-glance reference for

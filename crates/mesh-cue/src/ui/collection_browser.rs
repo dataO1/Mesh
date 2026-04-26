@@ -314,6 +314,17 @@ fn view_graph<'a>(state: &'a CollectionState) -> Element<'a, Message> {
                             .padding([2, 6])
                     },
                     Space::new().width(4.0),
+                    text("Model").size(sz(10.0)),
+                    {
+                        let idx = state.graph_key_scoring_model_index;
+                        let labels = ["Krum", "Camelot"];
+                        let label = labels[idx.min(1)];
+                        button(text(label).size(sz(10.0)))
+                            .on_press(Message::GraphCycleKeyScoringModel)
+                            .style(button::secondary)
+                            .padding([2, 6])
+                    },
+                    Space::new().width(4.0),
                     text(format!("W:{:.1}", state.pca_whitening_alpha)).size(sz(10.0)),
                     slider(0.0..=1.0, state.pca_whitening_alpha, Message::GraphWhiteningAlpha)
                         .step(0.1)

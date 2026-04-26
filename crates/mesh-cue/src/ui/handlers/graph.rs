@@ -444,6 +444,8 @@ impl MeshCueApp {
         let reach_idx = state.transition_reach_index;
         let reach = SuggestionTransitionReach::ALL[reach_idx.min(2)];
         let key_filter = SuggestionKeyFilter::ALL[self.collection.graph_key_filter_index.min(2)];
+        let key_scoring_model = [KeyScoringModel::Krumhansl, KeyScoringModel::Camelot]
+            [self.collection.graph_key_scoring_model_index.min(1)];
         let (harmonic_floor, blended_threshold) = key_filter.thresholds();
         let config = SuggestionConfig {
             blend_crossover: SuggestionBlendMode::Balanced.crossover(),
@@ -479,7 +481,7 @@ impl MeshCueApp {
                         &sources,
                         vec![seed_path],
                         energy_direction,
-                        KeyScoringModel::Camelot,
+                        key_scoring_model,
                         config,
                         10_000,     // per_seed_limit (unused — brute-force scores all tracks)
                         usize::MAX, // total_limit — don't truncate, we need all scores
