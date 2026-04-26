@@ -177,6 +177,18 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Default suggestion weights now treat all three dimensions equally**
+  — With the new non-compensatory scoring, weight values act as
+  *strictness exponents* (higher weight = a low score on that dimension
+  hurts more) rather than contribution shares. The default has been
+  rebalanced from `(similarity 0.45, key 0.25, intensity 0.20)` to
+  `(1/3, 1/3, 1/3)` so all three dimensions are weighted with equal
+  strictness out of the box. If you'd previously tuned the weights for
+  the old arithmetic-average scoring, you may want to revisit them — a
+  *low* weight now means "this dimension is allowed to be weaker", which
+  is the opposite of the intent the slider used to express. Custom
+  weights are still respected exactly.
+
 - **Suggestion list could be polluted by tracks that scored low on one
   dimension but high on others** — Previously, a track with a poor
   vector-similarity match (e.g. 20%) but excellent key compatibility

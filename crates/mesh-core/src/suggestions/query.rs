@@ -618,9 +618,15 @@ pub fn query_suggestions(
     // motion from center → drop / peak with no saturation knees.
 
     let bias_abs = energy_bias.abs();
+    // Weights are now strictness exponents in the weighted geometric mean
+    // (higher weight = floor values on that dimension hurt the final score
+    // more), not contribution shares. Default to equal-strictness — "all
+    // three components matter equally" — which reflects the non-compensatory
+    // intent of the new aggregator. Users can tune to express which axis
+    // should be the strictest via custom_weights.
     let (w_vector, w_key, w_aggr) = match suggestion_config.custom_weights {
         Some([ws, wk, wi]) => (ws, wk, wi),
-        None => (0.45, 0.25, 0.20),
+        None => (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
     };
     let w_coplay = 0.07;
     let w_vocal_pen = if suggestion_config.stem_complement { 0.08 } else { 0.0 };
