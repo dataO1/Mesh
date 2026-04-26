@@ -177,6 +177,26 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Mesh-cue graph view default suggestion weights now equal-strict** — The
+  graph view's three suggestion weight sliders defaulted to (0.55, 0.25,
+  0.20) (similarity, key, intensity), which under the new geometric-mean
+  scoring meant similarity was the strictest dimension. Default is now
+  (1/3, 1/3, 1/3) so all three dimensions are weighted equally out of
+  the box, matching the player's default. The "use custom weights"
+  detection threshold was updated correspondingly.
+
+- **Reach presets halved across the board** — The Tight / Medium / Open
+  reach values controlled both the similarity ring's target distance
+  and the aggression ring's target shift. Both have been halved for a
+  more conservative slider "throw" — at full slider, Tight now reaches
+  percentile-rank distance 0.075 (was 0.15), Medium 0.125 (was 0.25),
+  Open 0.20 (was 0.40); aggression target shift Tight 0.075 (was 0.15),
+  Medium 0.15 (was 0.30), Open 0.25 (was 0.50). The slider's full-extreme
+  position now commits to a smaller energy-direction nudge, leaving
+  more room for the user to dial intent. Dynamic community-threshold
+  reach values are also scaled by 0.5 so the halving is consistent
+  regardless of whether your library uses static or dynamic reach.
+
 - **Krumhansl scoring no longer drops EnergyBoost / SemitoneUp candidates
   before scoring** — In Krumhansl mode, transitions like EnergyBoost
   (whole-tone same-mode) and SemitoneUp had probe-tone correlations

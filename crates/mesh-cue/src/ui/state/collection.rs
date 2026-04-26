@@ -299,7 +299,7 @@ impl Default for CollectionState {
             graph_normalize_vectors: false,
             graph_algorithm: mesh_core::graph_compute::GraphAlgorithm::default(),
             clustering_algorithm: mesh_core::graph_compute::ClusteringAlgorithm::default(),
-            suggestion_weights: [0.55, 0.25, 0.20],
+            suggestion_weights: [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
             graph_key_filter_index: 0, // Strict by default
             graph_key_scoring_model_index: 0, // Krumhansl by default
             pca_whitening_alpha: 0.0,

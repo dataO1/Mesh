@@ -118,7 +118,13 @@ impl SuggestionTransitionReach {
     /// Target normalized distance for the transition bell curve.
     /// Uses dynamic thresholds if available, otherwise falls back to hardcoded defaults.
     pub fn target_distance(self, dynamic: Option<&crate::graph_compute::CommunityThresholds>) -> f32 {
-        match dynamic {
+        // Reach values were halved to give the slider a more conservative
+        // "throw" — Tight now reaches percentile-rank distance 0.075 from
+        // seed at full slider, Medium 0.125, Open 0.20. The dynamic
+        // community-threshold values are also scaled by 0.5 so the same
+        // halving applies regardless of whether dynamic thresholds are
+        // available.
+        let raw = match dynamic {
             Some(t) => match self {
                 SuggestionTransitionReach::Tight  => t.tight_target,
                 SuggestionTransitionReach::Medium => t.medium_target,
@@ -129,16 +135,19 @@ impl SuggestionTransitionReach {
                 SuggestionTransitionReach::Medium => 0.25,
                 SuggestionTransitionReach::Open   => 0.40,
             },
-        }
+        };
+        raw * 0.5
     }
 
     /// Target intensity shift at full peak/drop slider.
-    /// Expressed as percentile-rank delta from seed (e.g., 0.15 = shift 15% of the library range).
+    /// Expressed as percentile-rank delta from seed.
+    /// Halved from the previous values (Tight 0.15→0.075, Medium 0.30→0.15,
+    /// Open 0.50→0.25) for a more conservative slider commitment.
     pub fn intensity_reach(self) -> f32 {
         match self {
-            SuggestionTransitionReach::Tight  => 0.15,
-            SuggestionTransitionReach::Medium => 0.30,
-            SuggestionTransitionReach::Open   => 0.50,
+            SuggestionTransitionReach::Tight  => 0.075,
+            SuggestionTransitionReach::Medium => 0.15,
+            SuggestionTransitionReach::Open   => 0.25,
         }
     }
 
