@@ -182,19 +182,20 @@ All notable changes to Mesh are documented in this file.
   surprisingly low overall percentages because the bells were narrow
   enough that few candidates landed near the focal, and the balance
   gate then halved the score for any track with a single weak
-  dimension. Two changes:
-    • **Similarity bell**: σ widened from 0.08 → **0.12** — the ≥0.80
-      zone widens from ±0.053 to ±0.080 (about 50% more candidates
-      pass per query).
-    • **Aggression bell**: σ widened from 0.10 → **0.15** — the ≥0.80
-      zone widens from ±0.068 to ±0.100 (similar increase).
+  dimension. Three changes:
+    • **Similarity bell**: σ widened from 0.08 → **0.18** — the ≥0.80
+      zone roughly triples in width.
+    • **Aggression bell**: σ widened from 0.10 → **0.22** — same scale
+      increase.
     • **Balance gate softened**: maximum penalty for a single weak
       dimension reduced from −50% to **−30%**, and the "fully balanced"
       threshold lowered from 0.6 → 0.4. A track with two strong
       dimensions and one weak now keeps more of its earned score.
-  Net effect: more tracks display in the 60%–90% range instead of being
-  flattened toward 30%–50%, while the system still favours candidates
-  that are strong on *all three* dimensions.
+  Net effect: a much larger neighbourhood around the slider's focal
+  point earns 0.85+ on each axis, the geometric mean has more material
+  to combine, and the suggestion list now displays more tracks in the
+  60%–90% range instead of being flattened toward 30%–50%. The system
+  still favours candidates that are strong on *all three* dimensions.
 
 - **Playlist-split suggestions now compute each list separately instead
   of post-filtering** — When playlist-split mode was enabled, the
