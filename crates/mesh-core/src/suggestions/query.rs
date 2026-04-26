@@ -93,6 +93,19 @@ pub struct ComponentScores {
     pub other_complement: f32,
     /// Classified transition type for this candidate
     pub transition_type: TransitionType,
+    // ─── Aggregator internals (populated when emit_components=true) ───
+    /// Floor-subtracted similarity component (input to geometric mean)
+    pub v_adj: f32,
+    /// Floor-subtracted key component
+    pub k_adj: f32,
+    /// Floor-subtracted aggression component
+    pub i_adj: f32,
+    /// Weighted geometric mean of (v_adj, k_adj, i_adj) — pre balance gate
+    pub geo_mean: f32,
+    /// Min of (v_adj, k_adj, i_adj) — drives the balance gate
+    pub min_adj: f32,
+    /// Balance gate scale factor applied on top of geo_mean
+    pub balance_scale: f32,
 }
 
 /// A suggested track with its computed score (lower = better match)
@@ -854,6 +867,12 @@ pub fn query_suggestions(
                     vocal_complement: vocal_comp,
                     other_complement: other_comp,
                     transition_type: best_tt,
+                    v_adj,
+                    k_adj,
+                    i_adj,
+                    geo_mean: geo,
+                    min_adj,
+                    balance_scale,
                 })
             } else {
                 None
@@ -866,29 +885,119 @@ pub fn query_suggestions(
     // Step 6: Sort DESCENDING (higher score = better match) and limit
     suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Diagnostic: top 10 suggestion breakdown
+    // ── Diagnostic: scoring parameters, distribution, top-10 breakdown ──
     {
         let w = match suggestion_config.custom_weights {
             Some([ws, wk, wi]) => format!("S={:.2} K={:.2} A={:.2}", ws, wk, wi),
-            None => "default".to_string(),
+            None => "default(1/3,1/3,1/3)".to_string(),
         };
         let sim_target = 0.05 + (suggestion_config.transition_target - 0.05) * bias_abs;
         let aggr_target_offset = energy_bias.signum() * suggestion_config.intensity_reach * bias_abs;
+
+        // Parameter dump — surfaces all knobs we might want to tune so log
+        // readers can correlate scoring outcomes with the active config.
         eprintln!(
-            "[SUGGESTIONS] Top results (weights: {}, bias={:.2}, sim_target={:.2}, aggr_target=seed{:+.2}):",
+            "[SUGGESTIONS] Params: weights={} bias={:+.2} | reach: sim_target={:.3} aggr_target=seed{:+.3} | \
+             bells: sim σ=0.12 aggr σ=0.15 p=3 | floors: sim=0.20 key=0.20 aggr=0.25 | \
+             balance: thr=0.40 scale=0.7+0.3·b | filter: harmonic_floor={:.2} blended_thr={:.2} | \
+             mode={:?} key_filter={:?}",
+            w, energy_bias, sim_target, aggr_target_offset,
+            suggestion_config.harmonic_floor,
+            suggestion_config.blended_threshold,
+            key_scoring_model,
+            suggestion_config.key_filter,
+        );
+
+        // Distribution stats: how is the score landscape shaped?
+        let n = suggestions.len();
+        if n > 0 {
+            let mut all_scores: Vec<f32> = suggestions.iter().map(|s| s.score).collect();
+            all_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let p = |q: f32| all_scores[((n as f32 - 1.0) * q).round() as usize];
+            let pct_above = |t: f32| 100.0 * all_scores.iter().filter(|&&s| s >= t).count() as f32 / n as f32;
+            eprintln!(
+                "[SUGGESTIONS] Score distribution (n={}): min={:.3} p25={:.3} median={:.3} p75={:.3} p90={:.3} max={:.3} | \
+                 above 0.5: {:.0}% | above 0.7: {:.0}% | above 0.9: {:.0}%",
+                n, all_scores[0], p(0.25), p(0.50), p(0.75), p(0.90), all_scores[n - 1],
+                pct_above(0.5), pct_above(0.7), pct_above(0.9),
+            );
+
+            // Per-component distribution stats (only available with emit_components)
+            if suggestions.iter().any(|s| s.component_scores.is_some()) {
+                let comp_stats = |extract: fn(&ComponentScores) -> f32| -> (f32, f32, f32, f32) {
+                    let mut vals: Vec<f32> = suggestions.iter()
+                        .filter_map(|s| s.component_scores.as_ref().map(extract))
+                        .collect();
+                    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let n = vals.len();
+                    if n == 0 { return (0.0, 0.0, 0.0, 0.0); }
+                    let mean: f32 = vals.iter().sum::<f32>() / n as f32;
+                    (vals[0], vals[n / 2], vals[n - 1], mean)
+                };
+                let (vmin, vmed, vmax, vmean) = comp_stats(|c| c.hnsw_component);
+                let (kmin, kmed, kmax, kmean) = comp_stats(|c| c.key_score);
+                let (amin, amed, amax, amean) = comp_stats(|c| c.intensity_penalty);
+                let count_above = |extract: fn(&ComponentScores) -> f32, t: f32| -> usize {
+                    suggestions.iter()
+                        .filter_map(|s| s.component_scores.as_ref().map(extract))
+                        .filter(|&v| v >= t).count()
+                };
+                eprintln!(
+                    "[SUGGESTIONS] Component vec : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    vmin, vmed, vmax, vmean,
+                    count_above(|c| c.hnsw_component, 0.5),
+                    count_above(|c| c.hnsw_component, 0.8),
+                );
+                eprintln!(
+                    "[SUGGESTIONS] Component key : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    kmin, kmed, kmax, kmean,
+                    count_above(|c| c.key_score, 0.5),
+                    count_above(|c| c.key_score, 0.8),
+                );
+                eprintln!(
+                    "[SUGGESTIONS] Component aggr: min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    amin, amed, amax, amean,
+                    count_above(|c| c.intensity_penalty, 0.5),
+                    count_above(|c| c.intensity_penalty, 0.8),
+                );
+                // "All three good" cohort: this is the population the geometric
+                // mean treats as actually-balanced
+                let triple_05 = suggestions.iter()
+                    .filter_map(|s| s.component_scores.as_ref())
+                    .filter(|c| c.hnsw_component >= 0.5 && c.key_score >= 0.5 && c.intensity_penalty >= 0.5)
+                    .count();
+                let triple_08 = suggestions.iter()
+                    .filter_map(|s| s.component_scores.as_ref())
+                    .filter(|c| c.hnsw_component >= 0.8 && c.key_score >= 0.8 && c.intensity_penalty >= 0.8)
+                    .count();
+                eprintln!(
+                    "[SUGGESTIONS] Balanced cohort: all three ≥0.5: {} | all three ≥0.8: {}",
+                    triple_05, triple_08,
+                );
+            }
+        }
+
+        eprintln!(
+            "[SUGGESTIONS] Top 10 (weights: {}, bias={:+.2}, sim_target={:.3}, aggr_target=seed{:+.3}):",
             w, energy_bias, sim_target, aggr_target_offset,
         );
         for (i, s) in suggestions.iter().take(10).enumerate() {
             let id_key = s.track.id.map(|id| (0usize, id));
-            let aggr = id_key.and_then(|k| aggression_map.get(&k).copied()).unwrap_or(-1.0);
+            let aggr_pct = id_key.and_then(|k| aggression_map.get(&k).copied()).unwrap_or(-1.0);
             let breakdown = if let Some(cs) = &s.component_scores {
-                format!("vec={:.3} key={:.3} aggr={:.3} cop={:.3}",
-                    cs.hnsw_component, cs.key_score, cs.intensity_penalty, cs.coplay_score)
+                // Full geometric-mean breakdown so we can see exactly why
+                // a track scored what it scored.
+                format!(
+                    "vec={:.2} key={:.2} aggr={:.2} | adj=({:.2},{:.2},{:.2}) min={:.2} | geo={:.2} bal_scale={:.2}",
+                    cs.hnsw_component, cs.key_score, cs.intensity_penalty,
+                    cs.v_adj, cs.k_adj, cs.i_adj, cs.min_adj,
+                    cs.geo_mean, cs.balance_scale,
+                )
             } else {
-                format!("aggr_rwd={:.3}", aggression_reward(aggr, avg_seed_aggression, energy_bias, suggestion_config.intensity_reach))
+                format!("aggr_rwd={:.3}", aggression_reward(aggr_pct, avg_seed_aggression, energy_bias, suggestion_config.intensity_reach))
             };
-            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} aggr={:.3} {} | {}",
-                i + 1, s.score, aggr, breakdown, s.track.title);
+            eprintln!("[SUGGESTIONS] #{:>2} score={:.3} aggr_pct={:.3} {} | {}",
+                i + 1, s.score, aggr_pct, breakdown, s.track.title);
         }
     }
 

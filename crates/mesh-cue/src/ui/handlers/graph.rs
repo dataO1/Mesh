@@ -597,6 +597,81 @@ impl MeshCueApp {
                 "[GRAPH STATS] top {} suggestion score threshold: {:.3} | library nodes: {} | scored tracks: {}",
                 SUGGESTION_HIGHLIGHT_LIMIT, threshold, total_nodes, n
             );
+
+            // ── Per-component breakdown (only when emit_components=true) ──
+            // Surfaces vec/key/aggr score distributions and "all three good"
+            // cohort counts so we can tell whether the bell widths and
+            // balance-gate parameters are letting through enough candidates.
+            let comps: Vec<&mesh_core::suggestions::query::ComponentScores> =
+                suggestions.iter().filter_map(|s| s.component_scores.as_ref()).collect();
+            if !comps.is_empty() {
+                let stats = |extract: fn(&mesh_core::suggestions::query::ComponentScores) -> f32| -> (f32, f32, f32, f32) {
+                    let mut vals: Vec<f32> = comps.iter().map(|c| extract(c)).collect();
+                    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let cn = vals.len();
+                    let mean: f32 = vals.iter().sum::<f32>() / cn as f32;
+                    (vals[0], vals[cn / 2], vals[cn - 1], mean)
+                };
+                let count_above = |extract: fn(&mesh_core::suggestions::query::ComponentScores) -> f32, t: f32| -> usize {
+                    comps.iter().filter(|c| extract(c) >= t).count()
+                };
+                let (vmin, vmed, vmax, vmean) = stats(|c| c.hnsw_component);
+                let (kmin, kmed, kmax, kmean) = stats(|c| c.key_score);
+                let (amin, amed, amax, amean) = stats(|c| c.intensity_penalty);
+                log::info!(
+                    "[GRAPH STATS] vec component  : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    vmin, vmed, vmax, vmean,
+                    count_above(|c| c.hnsw_component, 0.5),
+                    count_above(|c| c.hnsw_component, 0.8),
+                );
+                log::info!(
+                    "[GRAPH STATS] key component  : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    kmin, kmed, kmax, kmean,
+                    count_above(|c| c.key_score, 0.5),
+                    count_above(|c| c.key_score, 0.8),
+                );
+                log::info!(
+                    "[GRAPH STATS] aggr component : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.5: {} | ≥0.8: {}",
+                    amin, amed, amax, amean,
+                    count_above(|c| c.intensity_penalty, 0.5),
+                    count_above(|c| c.intensity_penalty, 0.8),
+                );
+                let triple_05 = comps.iter()
+                    .filter(|c| c.hnsw_component >= 0.5 && c.key_score >= 0.5 && c.intensity_penalty >= 0.5)
+                    .count();
+                let triple_08 = comps.iter()
+                    .filter(|c| c.hnsw_component >= 0.8 && c.key_score >= 0.8 && c.intensity_penalty >= 0.8)
+                    .count();
+                log::info!(
+                    "[GRAPH STATS] balanced cohort: all three ≥0.5: {} | all three ≥0.8: {}",
+                    triple_05, triple_08,
+                );
+
+                // Aggregator internals: how the geometric mean treats the
+                // population. min_adj distribution shows how many tracks land
+                // in the balance-gate's "punished" region.
+                let (mvmin, mvmed, mvmax, mvmean) = stats(|c| c.min_adj);
+                log::info!(
+                    "[GRAPH STATS] min_adj (gate) : min={:.3} med={:.3} max={:.3} mean={:.3} | ≥0.4 (full scale): {} / {}",
+                    mvmin, mvmed, mvmax, mvmean,
+                    count_above(|c| c.min_adj, 0.4),
+                    comps.len(),
+                );
+
+                // Top-3 full breakdown for at-a-glance inspection
+                for (i, s) in suggestions.iter().take(3).enumerate() {
+                    if let Some(cs) = &s.component_scores {
+                        log::info!(
+                            "[GRAPH STATS] top#{} score={:.3} | vec={:.2} key={:.2} aggr={:.2} | adj=({:.2},{:.2},{:.2}) min={:.2} | geo={:.2} bal_scale={:.2} | {}",
+                            i + 1, s.score,
+                            cs.hnsw_component, cs.key_score, cs.intensity_penalty,
+                            cs.v_adj, cs.k_adj, cs.i_adj, cs.min_adj,
+                            cs.geo_mean, cs.balance_scale,
+                            s.track.title,
+                        );
+                    }
+                }
+            }
         }
         // ── End diagnostic ──────────────────────────────────────────────
 
