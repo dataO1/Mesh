@@ -911,6 +911,159 @@ mod tests {
         }
     }
 
+    // ─── 2D ring: extended coverage ─────────────────────────────────
+
+    #[test]
+    fn test_key_ring_centre_excludes_far_keys() {
+        // At centre, focal = (1.0, 0.0). Tritone, far-step, semitone moves
+        // are all far from the focal and should land at the soft floor.
+        let am = MusicalKey::parse("Am").unwrap();
+        let candidates = [
+            ("Ebm", "tritone"),                // distance 0.90
+            ("Bbm", "semitone via wrap"),      // h=0.20, distance ~0.85
+            ("F#m", "FarStep +3"),             // h=0.25, distance ~0.75
+        ];
+        for (cand_str, label) in candidates {
+            let cand = MusicalKey::parse(cand_str).unwrap();
+            let s = key_ring_reward(&am, &cand, 0.0, CAM);
+            assert!(s < 0.30,
+                "{label} ({cand_str}) at centre should be ~floor: got {s}");
+        }
+    }
+
+    #[test]
+    fn test_key_ring_mid_drop_lands_on_adjacent_down() {
+        // |bias|=0.5: focal = (0.75, -0.25). AdjacentDown (0.85, -0.20) is closest.
+        let am = MusicalKey::parse("Am").unwrap();
+        let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown
+        let em = MusicalKey::parse("Em").unwrap(); // AdjacentUp (wrong direction)
+        let down = key_ring_reward(&am, &dm, -0.5, CAM);
+        let up   = key_ring_reward(&am, &em, -0.5, CAM);
+        assert!(down > up, "Mid-drop: AdjacentDown beats AdjacentUp: {down} vs {up}");
+        assert!(down > 0.70, "AdjacentDown near focal at mid-drop: {down}");
+    }
+
+    #[test]
+    fn test_key_ring_drop_prefers_down_over_up() {
+        let am = MusicalKey::parse("Am").unwrap();
+        let bm = MusicalKey::parse("Bm").unwrap(); // EnergyBoost (+0.5)
+        let gm = MusicalKey::parse("Gm").unwrap(); // EnergyCool  (-0.5)
+        let cool  = key_ring_reward(&am, &gm, -1.0, CAM);
+        let boost = key_ring_reward(&am, &bm, -1.0, CAM);
+        assert!(cool > boost,
+            "Full drop: EnergyCool beats EnergyBoost: {cool} vs {boost}");
+        assert!(cool > 0.99, "EnergyCool at full drop = focal exact: {cool}");
+        assert!(boost < 0.30, "EnergyBoost (wrong direction) at full drop ~floor: {boost}");
+    }
+
+    #[test]
+    fn test_key_ring_drop_peak_perfectly_symmetric() {
+        // For every same-mode transition, the score at +bias should equal the
+        // score at -bias when measured against the seed's mirror transition.
+        let am = MusicalKey::parse("Am").unwrap();
+        let pairs = [
+            ("Em", "Dm"),  // AdjacentUp / AdjacentDown
+            ("Bm", "Gm"),  // EnergyBoost / EnergyCool
+        ];
+        for &bias in &[0.3_f32, 0.5, 0.7, 1.0] {
+            for (up_str, down_str) in pairs {
+                let up = MusicalKey::parse(up_str).unwrap();
+                let down = MusicalKey::parse(down_str).unwrap();
+                let peak = key_ring_reward(&am, &up,    bias, CAM);
+                let drop = key_ring_reward(&am, &down, -bias, CAM);
+                assert!((peak - drop).abs() < 1e-4,
+                    "Symmetric @ bias={bias}: {up_str} @+={peak} vs {down_str} @-={drop}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_key_ring_score_nonincreasing_for_wrong_direction_at_peak() {
+        // Walk the slider 0 → +1 with AdjacentDown (wrong direction at peak).
+        // Score should monotonically decrease as the focal pulls away.
+        let am = MusicalKey::parse("Am").unwrap();
+        let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown
+        let mut prev = key_ring_reward(&am, &dm, 0.0, CAM);
+        for i in 1..=20 {
+            let bias = i as f32 / 20.0;
+            let s = key_ring_reward(&am, &dm, bias, CAM);
+            assert!(s <= prev + 1e-4,
+                "AdjacentDown should not increase as bias→peak: bias={bias} s={s} prev={prev}");
+            prev = s;
+        }
+    }
+
+    #[test]
+    fn test_key_ring_score_nondecreasing_then_decreasing_for_strong_lift() {
+        // SemitoneUp (h≈0.20, d=+0.70) is at the corner: very directional but
+        // harmonically distant. Its score should peak somewhere mid-way through
+        // the slider (when focal_d ≈ 0.7) and not at the extremes.
+        let am = MusicalKey::parse("Am").unwrap();
+        let bbm = MusicalKey::parse("Bbm").unwrap(); // SemitoneUp
+        let scores: Vec<f32> = (0..=20)
+            .map(|i| {
+                let bias = i as f32 / 20.0;
+                key_ring_reward(&am, &bbm, bias, CAM)
+            })
+            .collect();
+        let peak_score = scores.iter().cloned().fold(0.0_f32, f32::max);
+        assert!(peak_score > scores[0],
+            "SemitoneUp should score higher off-centre than at centre: peak={peak_score} centre={}", scores[0]);
+    }
+
+    #[test]
+    fn test_key_ring_seed_independence_for_same_transition_type() {
+        // Two minor seeds (Am, Cm), each measured against their own AdjacentUp.
+        // Both should get the same score at every slider position because
+        // Camelot tiers are rotation-invariant, and Krumhansl is too within a
+        // mode pair.
+        let am = MusicalKey::parse("Am").unwrap();
+        let cm = MusicalKey::parse("Cm").unwrap();
+        let em = MusicalKey::parse("Em").unwrap(); // AdjacentUp from Am
+        let gm = MusicalKey::parse("Gm").unwrap(); // AdjacentUp from Cm
+        for &bias in &[-1.0_f32, -0.5, 0.0, 0.5, 1.0] {
+            for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
+                let s1 = key_ring_reward(&am, &em, bias, model);
+                let s2 = key_ring_reward(&cm, &gm, bias, model);
+                assert!((s1 - s2).abs() < 1e-3,
+                    "Seed independence broken at bias={bias} model={model:?}: {s1} vs {s2}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_key_ring_major_seed_works_too() {
+        // Major seeds: confirm SameKey at centre and EnergyBoost at peak still hit 1.0.
+        let c = MusicalKey::parse("C").unwrap();
+        let d = MusicalKey::parse("D").unwrap(); // EnergyBoost (+2 major-major)
+        let bb = MusicalKey::parse("Bb").unwrap(); // EnergyCool (-2 major-major)
+        for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
+            let same  = key_ring_reward(&c, &c,  0.0,  model);
+            let boost = key_ring_reward(&c, &d,  1.0,  model);
+            let cool  = key_ring_reward(&c, &bb, -1.0, model);
+            assert!(same > 0.99,  "{model:?} major SameKey: {same}");
+            assert!(boost > 0.99, "{model:?} major EnergyBoost peak: {boost}");
+            assert!(cool > 0.99,  "{model:?} major EnergyCool drop: {cool}");
+        }
+    }
+
+    #[test]
+    fn test_key_ring_floor_holds_at_extreme_distance() {
+        // The reward must never drop below the soft floor of 0.20, even for
+        // the worst possible (h, d) combinations against any focal.
+        let c  = MusicalKey::parse("C").unwrap();
+        let fs = MusicalKey::parse("F#").unwrap(); // major-major tritone
+        for i in -20..=20 {
+            let bias = i as f32 / 20.0;
+            for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
+                let s = key_ring_reward(&c, &fs, bias, model);
+                assert!(s >= 0.20 - 1e-6,
+                    "Floor breached at bias={bias} model={model:?}: {s}");
+                assert!(s <= 1.0 + 1e-6, "Score above 1.0 at bias={bias}: {s}");
+            }
+        }
+    }
+
     #[test]
     fn test_key_ring_continuity_no_cliff() {
         // Score should change smoothly with small slider movements — no jumps > 0.15
