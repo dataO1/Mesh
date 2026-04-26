@@ -177,6 +177,22 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Key ring widens at slider extremes** — Previously, when the slider
+  was pushed all the way to Drop or Peak, the key reward zone was
+  narrow enough that only the most extreme directional transitions
+  (EnergyBoost, EnergyCool) could really score well. On seeds whose
+  library doesn't contain many of those exact transitions, the
+  suggestion list ended up dominated by tracks that scored near the
+  floor on the key dimension — which combined with the new
+  non-compensatory final score made full-slider results feel barren.
+  The key reward zone now widens from 0.50 at centre to 0.70 at full
+  slider, so Adjacent / Diagonal / Mood-Lift / Mood-Darken transitions
+  remain musically usable contributions even at the extremes. The
+  canonical "perfect" transition (EnergyBoost / EnergyCool) still hits
+  the focal exactly and scores 1.0; the difference is that the
+  surrounding "near-perfect" transitions stay closer to full score
+  instead of falling to floor.
+
 - **Default suggestion weights now treat all three dimensions equally**
   — With the new non-compensatory scoring, weight values act as
   *strictness exponents* (higher weight = a low score on that dimension

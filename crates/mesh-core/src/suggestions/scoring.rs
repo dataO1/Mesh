@@ -290,7 +290,13 @@ pub fn key_ring_reward(
     energy_bias: f32,
     model: KeyScoringModel,
 ) -> f32 {
-    const WIDTH: f32 = 0.50;
+    // WIDTH expands with |bias| so Adjacent / Mood / Diagonal transitions
+    // remain inside the ring at slider extremes. At centre the ring is
+    // narrow (focused on near-key transitions); at extremes it widens to
+    // catch directionally-aligned but less-extreme moves like AdjacentUp,
+    // DiagonalUp, MoodLift — which are still musically useful at peak.
+    const WIDTH_CENTER: f32 = 0.50;
+    const WIDTH_EXTREME: f32 = 0.70;
     const FLOOR: f32 = 0.20;
 
     let bias_abs = energy_bias.abs().min(1.0);
@@ -330,7 +336,8 @@ pub fn key_ring_reward(
     let dd = cand_d - focal_d;
     let dist = (dh * dh + dd * dd).sqrt();
 
-    let tent = (1.0 - dist / WIDTH).max(0.0);
+    let width = WIDTH_CENTER + (WIDTH_EXTREME - WIDTH_CENTER) * bias_abs;
+    let tent = (1.0 - dist / width).max(0.0);
     FLOOR + (1.0 - FLOOR) * tent
 }
 
