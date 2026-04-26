@@ -706,10 +706,12 @@ impl MeshCueApp {
                         }
                     }
                     mesh_widgets::TrackTableMessage::Select(node_id) => {
-                        // Single click: highlight node + load track for preview
+                        // Single click: highlight node + load track for preview.
+                        // Drives `selected_id` on the graph (edges + ring),
+                        // distinct from mouse-cursor `hovered_id` (tooltip).
                         if let Some(id_str) = node_id.0.strip_prefix("graph_") {
                             if let Ok(track_id) = id_str.parse::<i64>() {
-                                let _ = self.handle_graph_node_hovered(Some(track_id));
+                                let _ = self.handle_graph_node_selected(Some(track_id));
                                 // Load the track in the editor for preview
                                 if let Ok(Some(track)) = self.domain.db_arc().get_track(track_id) {
                                     return Task::perform(async {}, move |_| {

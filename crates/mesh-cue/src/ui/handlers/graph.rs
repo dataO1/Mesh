@@ -363,13 +363,27 @@ impl MeshCueApp {
         }
     }
 
-    /// Node hover changed.
+    /// Node hover changed (driven by mouse cursor over the graph). Only
+    /// updates the tooltip-related `hovered_id` — does NOT change the
+    /// suggestion-list selection or the graph's edge-highlight, which now
+    /// live on `selected_id` (set explicitly when the user clicks a row).
     pub fn handle_graph_node_hovered(&mut self, id: Option<i64>) -> Task<Message> {
         if let Some(ref mut state) = self.collection.graph_state {
             state.hovered_id = id;
             state.node_cache.clear();
         }
-        // Highlight corresponding row in suggestion table
+        Task::none()
+    }
+
+    /// Suggestion-list row selection changed. Sets `selected_id` on the
+    /// graph (which drives edges + selection ring) and also syncs the
+    /// table's own selected-set so the row appears highlighted in the
+    /// list. `id = None` clears the selection.
+    pub fn handle_graph_node_selected(&mut self, id: Option<i64>) -> Task<Message> {
+        if let Some(ref mut state) = self.collection.graph_state {
+            state.selected_id = id;
+            state.node_cache.clear();
+        }
         if let Some(track_id) = id {
             let node_id = mesh_core::playlist::NodeId(format!("graph_{}", track_id));
             self.collection.graph_table_state.selected.clear();

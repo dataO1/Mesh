@@ -51,7 +51,13 @@ pub struct GraphViewState {
     pub seed_position: usize,
     pub suggestion_ids: HashSet<i64>,
     pub suggestion_scores: HashMap<i64, f32>,
+    /// Which node the mouse cursor is hovering — drives the tooltip overlay.
     pub hovered_id: Option<i64>,
+    /// Which suggestion row is currently selected in the suggestion list —
+    /// drives the edge highlight + selection ring on the graph. Distinct from
+    /// `hovered_id` so the graph doesn't redraw edges every time the mouse
+    /// crosses a node; edges only appear when a row is explicitly selected.
+    pub selected_id: Option<i64>,
     // Data
     /// Dynamic suggestion edges from current seed (seed_id, suggestion_id, composite_score)
     /// These are the ONLY edges shown — driven by the full suggestion algorithm
@@ -98,6 +104,7 @@ impl GraphViewState {
             seed_position: 0,
             suggestion_ids: HashSet::new(),
             suggestion_scores: HashMap::new(),
+            selected_id: None,
             hovered_id: None,
             suggestion_edges: Vec::new(),
             track_meta: HashMap::new(),
@@ -318,26 +325,33 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
         let seed_accent = self.accent_color.unwrap_or(COLOR_SEED_ACCENT);
         let stems = self.stem_colors;
 
-        // ── Layer 1: Suggestion edges (gray, visible) ──
-        let edge_gray = Color::from_rgb(0.5, 0.5, 0.5);
-        for &(from, to, score) in &self.suggestion_edges {
-            let from_pos = match self.positions.get(&from) {
-                Some(p) => *p,
-                None => continue,
-            };
-            let to_pos = match self.positions.get(&to) {
-                Some(p) => *p,
-                None => continue,
-            };
+        // ── Layer 1: Suggestion edges — only for the currently selected row ──
+        // Showing every suggestion edge at once cluttered the graph; edges now
+        // only appear for the row the user explicitly selected in the
+        // suggestion list (mouse hover over the graph itself doesn't trigger
+        // them).
+        if let Some(selected_id) = self.selected_id {
+            let edge_gray = Color::from_rgb(0.55, 0.55, 0.55);
+            for &(from, to, score) in &self.suggestion_edges {
+                if to != selected_id { continue; }
+                let from_pos = match self.positions.get(&from) {
+                    Some(p) => *p,
+                    None => continue,
+                };
+                let to_pos = match self.positions.get(&to) {
+                    Some(p) => *p,
+                    None => continue,
+                };
 
-            let p1 = to_screen(from_pos, self.pan, self.zoom, bounds);
-            let p2 = to_screen(to_pos, self.pan, self.zoom, bounds);
+                let p1 = to_screen(from_pos, self.pan, self.zoom, bounds);
+                let p2 = to_screen(to_pos, self.pan, self.zoom, bounds);
 
-            let opacity = score.clamp(0.3, 0.8);
-            let width = 0.5 + score * 1.5;
+                let opacity = score.clamp(0.5, 0.95);
+                let width = 1.5 + score * 1.5;
 
-            let path = Path::line(p1, p2);
-            frame.stroke(&path, Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
+                let path = Path::line(p1, p2);
+                frame.stroke(&path, Stroke::default().with_color(Color { a: opacity, ..edge_gray }).with_width(width));
+            }
         }
 
         // ── Layer 2: Seed history trail (fading red line) ──
@@ -405,7 +419,12 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
             frame.fill(&circle, Color { a: alpha, ..base_color });
         }
 
-        // ── Layer 4: Suggestion nodes (colored by score) ────────────────
+        // ── Layer 4: Suggestion nodes (cluster-colored, larger) ────────────────
+        // Suggestions keep their cluster's natural colour but render at a
+        // larger radius and full alpha — visually distinct from background
+        // nodes without imposing a score-based tinting that fights the
+        // cluster palette.
+        let _ = stems; // unused since we no longer tint by score
         for &id in &self.suggestion_ids {
             if seed_set.contains(&id) {
                 continue;
@@ -415,10 +434,26 @@ impl canvas::Program<GraphViewMessage> for GraphViewState {
                 None => continue,
             };
             let screen = to_screen(pos, self.pan, self.zoom, bounds);
-            let score = self.suggestion_scores.get(&id).copied().unwrap_or(1.0);
-            let color = themed_score_color(score, stems);
+            let base_color = self.clusters.get(&id)
+                .and_then(|&cid| if cid >= 0 { self.cluster_colors.get(&cid) } else { None })
+                .copied()
+                .unwrap_or(COLOR_NODE_DIM);
             let circle = Path::circle(screen, 5.0);
-            frame.fill(&circle, color);
+            frame.fill(&circle, base_color);
+        }
+
+        // ── Layer 4b: Selection ring around the selected suggestion ──────
+        // Visual affordance for "this is the row whose edges are drawn".
+        if let Some(selected_id) = self.selected_id {
+            if !seed_set.contains(&selected_id) {
+                if let Some(&pos) = self.positions.get(&selected_id) {
+                    let screen = to_screen(pos, self.pan, self.zoom, bounds);
+                    frame.stroke(
+                        &Path::circle(screen, 7.0),
+                        Stroke::default().with_color(Color { a: 0.9, ..seed_accent }).with_width(2.0),
+                    );
+                }
+            }
         }
 
         // ── Layer 5: Breadcrumb seeds (previous in history) ─────────────
@@ -560,34 +595,6 @@ pub fn graph_view<'a, Message: 'a>(
 /// a single Canvas widget with the energy arc ribbon.
 /// `bounds` is the sub-region within the frame where the graph should render.
 /// Auto-fits zoom to show all nodes within the bounds.
-/// Score color using theme stem colors when available.
-fn themed_score_color(score: f32, stem_colors: Option<[Color; 4]>) -> Color {
-    match stem_colors {
-        Some(stems) => {
-            // Vocals stem = good, Bass stem = moderate, hardcoded red = poor
-            let t = (1.0 - score).clamp(0.0, 1.0);
-            if t < 0.5 {
-                // Good → moderate (vocals → bass stem)
-                let s = t * 2.0;
-                Color::from_rgb(
-                    stems[0].r + (stems[2].r - stems[0].r) * s,
-                    stems[0].g + (stems[2].g - stems[0].g) * s,
-                    stems[0].b + (stems[2].b - stems[0].b) * s,
-                )
-            } else {
-                // Moderate → poor (bass stem → red)
-                let s = (t - 0.5) * 2.0;
-                Color::from_rgb(
-                    stems[2].r + (COLOR_SCORE_WORST.r - stems[2].r) * s,
-                    stems[2].g + (COLOR_SCORE_WORST.g - stems[2].g) * s,
-                    stems[2].b + (COLOR_SCORE_WORST.b - stems[2].b) * s,
-                )
-            }
-        }
-        None => score_color(score),
-    }
-}
-
 pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bounds: Rectangle, bg_color: Option<Color>) {
     // Background from theme or fallback
     frame.fill_rectangle(
@@ -640,11 +647,11 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         Point::new((s.x + ox).round(), (s.y + oy).round())
     };
 
-    // ── Layer 1: Edges only for the selected (hovered) track ──
-    if let Some(hovered_id) = state.hovered_id {
+    // ── Layer 1: Edges only for the row currently selected in the list ──
+    if let Some(selected_id) = state.selected_id {
         let edge_gray = Color::from_rgb(0.55, 0.55, 0.55);
         for &(from, to, score) in &state.suggestion_edges {
-            if to != hovered_id { continue; }
+            if to != selected_id { continue; }
             let from_pos = match state.positions.get(&from) { Some(p) => *p, None => continue };
             let to_pos = match state.positions.get(&to) { Some(p) => *p, None => continue };
             let opacity = score.clamp(0.5, 0.95);
@@ -691,15 +698,19 @@ pub fn draw_graph_readonly(state: &GraphViewState, frame: &mut canvas::Frame, bo
         frame.fill(&Path::circle(screen, radius), Color { a: alpha, ..base_color });
     }
 
-    // ── Layer 4: Selected track highlight (ring + dot) ──
-    if let Some(hovered_id) = state.hovered_id {
-        if let Some(&pos) = state.positions.get(&hovered_id) {
+    // ── Layer 4: Selected track highlight (accent ring only) ──
+    // The cluster-coloured dot is already drawn in Layer 3 at the larger
+    // suggestion radius; here we just add a ring around the selected
+    // candidate so its "selected" state is visible without overwriting
+    // its natural cluster colour with a score-based tint.
+    let _ = stems; // no longer used since we don't tint by score
+    if let Some(selected_id) = state.selected_id {
+        if let Some(&pos) = state.positions.get(&selected_id) {
             let screen = pt(pos);
-            let color = state.suggestion_scores.get(&hovered_id)
-                .map(|&s| themed_score_color(s, stems))
-                .unwrap_or(seed_accent);
-            frame.stroke(&Path::circle(screen, 7.0), Stroke::default().with_color(Color { a: 0.9, ..color }).with_width(2.0));
-            frame.fill(&Path::circle(screen, 5.0), Color { a: 0.9, ..color });
+            frame.stroke(
+                &Path::circle(screen, 7.0),
+                Stroke::default().with_color(Color { a: 0.9, ..seed_accent }).with_width(2.0),
+            );
         }
     }
 

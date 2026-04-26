@@ -177,6 +177,17 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Mesh-cue suggestion graph: edges + selection ring now keyed to the
+  list selection, not mouse hover** — Previously the suggestion graph
+  drew an edge for every suggestion at once (cluttered) and tinted each
+  suggestion node with an orange/yellow score-based colour. Edges now
+  appear only for the row currently selected in the suggestion list,
+  and suggestion nodes keep their natural cluster colour but render at
+  a larger radius. A subtle accent ring marks the selected node so you
+  can see which row's edges are being drawn. Mouse hover over the graph
+  itself still drives the tooltip overlay but no longer changes the
+  edge highlight.
+
 - **Similarity and aggression rings now use a wider rounded bell with a
   steeper shoulder** — Previously, both rings used a sharp linear tent:
   the score peaked at the focal point and fell off linearly until
