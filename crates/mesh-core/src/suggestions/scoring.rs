@@ -183,32 +183,6 @@ pub fn transition_energy_direction(tt: TransitionType) -> f32 {
     }
 }
 
-/// Continuous energy direction in [-1, +1] from raw key positions on the Camelot wheel.
-///
-/// Replaces the discrete `transition_energy_direction(TransitionType)` lookup so
-/// every key pair lands at a unique direction value (modulo true ties). Combined
-/// with the continuous Krumhansl harmonic base, this eliminates the categorical
-/// plateaus where many tracks share an identical key score and cross the filter
-/// threshold simultaneously.
-///
-/// Direction = signed circular step on the 12-position wheel mapped to [-1, +1],
-/// plus a mode-change shift (+0.15 for minor→major brightening, -0.15 for
-/// major→minor darkening). Tritone (±6) returns 0.0 — chaotic, not directional.
-pub fn key_direction_continuous(seed: &MusicalKey, cand: &MusicalKey) -> f32 {
-    let (s_pos, _) = seed.camelot();
-    let (c_pos, _) = cand.camelot();
-    let raw = (c_pos as i32) - (s_pos as i32);
-    let step = if raw > 6 { raw - 12 } else if raw < -6 { raw + 12 } else { raw };
-    if step.abs() == 6 { return 0.0; } // Tritone: neutral
-    let dir = (step as f32) / 5.0;     // -5/5 .. +6/5 → wider than ±1, then clamped
-    let mode_shift = match (seed.minor, cand.minor) {
-        (true, false) =>  0.15,  // minor → major: brightening
-        (false, true) => -0.15,  // major → minor: darkening
-        _             =>  0.0,
-    };
-    (dir + mode_shift).clamp(-1.0, 1.0)
-}
-
 // ─── Krumhansl-Kessler Perceptual Key Distance ──────────────────────
 
 /// Krumhansl-Kessler probe-tone profiles (Krumhansl & Kessler, 1982).
@@ -292,28 +266,72 @@ pub fn key_transition_score(
     energy_bias: f32,
     model: KeyScoringModel,
 ) -> f32 {
-    let base = match model {
-        KeyScoringModel::Camelot => base_score(classify_transition(seed_key, cand_key)),
+    key_ring_reward(seed_key, cand_key, energy_bias, model)
+}
+
+/// 2D ring reward on the (harmonic, direction) plane.
+///
+/// Every transition lands at a point `(h, d)` where:
+/// - `h ∈ [0, 1]` is harmonic compatibility (Krumhansl correlation or Camelot tier).
+/// - `d ∈ [-1, +1]` is energy direction from the curated `transition_energy_direction`
+///   table — `+1` strong lift, `0` neutral, `-1` strong drop.
+///
+/// The slider sweeps a focal point through this plane:
+/// - At centre: focal = `(1.00, 0.0)` — same key, neutral.
+/// - At full peak/drop: focal = `(h_archetype_peak, ±0.50)` — anchored to wherever the
+///   model places the canonical EnergyBoost / EnergyCool transition, so the
+///   prototypical "perfect peak" candidate scores exactly 1.0 in both models.
+///
+/// Reward is a soft tent on 2D distance to the focal point. No saturation knee,
+/// no synchronized cohort cliffs — the slider only slides the focal point linearly.
+pub fn key_ring_reward(
+    seed_key: &MusicalKey,
+    cand_key: &MusicalKey,
+    energy_bias: f32,
+    model: KeyScoringModel,
+) -> f32 {
+    const WIDTH: f32 = 0.50;
+    const FLOOR: f32 = 0.20;
+
+    let bias_abs = energy_bias.abs().min(1.0);
+
+    // X axis: harmonic compatibility — model-dependent.
+    let cand_h = match model {
+        KeyScoringModel::Camelot   => base_score(classify_transition(seed_key, cand_key)),
         KeyScoringModel::Krumhansl => krumhansl_base_score(seed_key, cand_key),
     };
 
-    // Energy-direction score: how well the transition aligns with the fader.
-    // Krumhansl mode uses the continuous interval-based direction so every key
-    // pair has a unique value; Camelot mode keeps the discrete table for
-    // backwards-compatible tier behaviour.
-    let energy_dir = match model {
-        KeyScoringModel::Camelot => transition_energy_direction(classify_transition(seed_key, cand_key)),
-        KeyScoringModel::Krumhansl => key_direction_continuous(seed_key, cand_key),
-    };
-    let energy_score = (energy_dir * energy_bias.signum() + 1.0) / 2.0;
+    // Y axis: energy direction — always the curated table value (perceptually tuned).
+    let cand_d = transition_energy_direction(classify_transition(seed_key, cand_key));
 
-    // Blend: interpolation from harmonic (center) to energy (extremes).
-    // Harmonic floor of 25% ensures good harmonic quality always matters —
-    // a tritone never outranks a compatible transition regardless of slider.
-    let blend = energy_bias.abs();
-    let harmonic_weight = (1.0 - blend).max(0.25);
-    let energy_weight = 1.0 - harmonic_weight;
-    (base * harmonic_weight + energy_score * energy_weight).clamp(0.0, 1.0)
+    // Focal point: slides linearly toward the (h, d) coordinates of the canonical
+    // EnergyBoost / EnergyCool transition in the *current model's* coordinate
+    // system, so the perfect peak/drop candidate normalises to score 1.0 in both
+    // models. In Camelot the archetype lands at h=0.50 (tier value); in Krumhansl
+    // it lands at the model's own correlation for "+2 same-mode" — read from the
+    // matrix and rotation-invariant within mode.
+    let h_archetype_peak = match model {
+        KeyScoringModel::Camelot => base_score(if seed_key.minor {
+            TransitionType::EnergyCool // same h as EnergyBoost (0.50)
+        } else {
+            TransitionType::EnergyBoost
+        }),
+        KeyScoringModel::Krumhansl => {
+            let mode_offset = if seed_key.minor { 12 } else { 0 };
+            let s_idx = seed_key.root as usize + mode_offset;
+            let c_idx = (seed_key.root as usize + 2) % 12 + mode_offset;
+            KRUMHANSL_MATRIX[s_idx][c_idx].max(0.02)
+        }
+    };
+    let focal_h = 1.0 + (h_archetype_peak - 1.0) * bias_abs;
+    let focal_d = 0.5 * energy_bias;
+
+    let dh = cand_h - focal_h;
+    let dd = cand_d - focal_d;
+    let dist = (dh * dh + dd * dd).sqrt();
+
+    let tent = (1.0 - dist / WIDTH).max(0.0);
+    FLOOR + (1.0 - FLOOR) * tent
 }
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
@@ -791,123 +809,123 @@ mod tests {
 
     const CAM: KeyScoringModel = KeyScoringModel::Camelot;
 
+    // ─── 2D Ring Reward (key_ring_reward) ────────────────────────────────
+    // Tests the new 2D ring scoring: focal point slides on the
+    // (harmonic, direction) plane; reward is a tent on 2D distance.
+
     #[test]
-    fn test_key_score_center_same_key() {
+    fn test_key_ring_center_same_key_is_top() {
         let am = MusicalKey::parse("Am").unwrap();
-        assert_eq!(key_transition_score(&am, &am, 0.0, CAM), 1.0);
+        assert!(key_transition_score(&am, &am, 0.0, CAM) > 0.95,
+            "SameKey at centre should hit the focal point");
     }
 
     #[test]
-    fn test_key_score_center_adjacent() {
+    fn test_key_ring_center_adjacent_is_high_but_not_top() {
         let am = MusicalKey::parse("Am").unwrap();
         let em = MusicalKey::parse("Em").unwrap();
-        assert_eq!(key_transition_score(&am, &em, 0.0, CAM), 0.85);
+        let same = key_transition_score(&am, &am, 0.0, CAM);
+        let adj  = key_transition_score(&am, &em, 0.0, CAM);
+        assert!(same > adj, "SameKey > AdjacentUp at centre: {same} vs {adj}");
+        assert!(adj > 0.30, "AdjacentUp still scores above floor at centre: {adj}");
     }
 
     #[test]
-    fn test_key_score_center_is_symmetric_for_adjacent() {
+    fn test_key_ring_center_symmetric_in_direction() {
         let am = MusicalKey::parse("Am").unwrap();
-        let em = MusicalKey::parse("Em").unwrap();
-        let dm = MusicalKey::parse("Dm").unwrap();
-        assert_eq!(
-            key_transition_score(&am, &em, 0.0, CAM),
-            key_transition_score(&am, &dm, 0.0, CAM)
-        );
+        let em = MusicalKey::parse("Em").unwrap(); // AdjacentUp +0.20
+        let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown -0.20
+        let up = key_transition_score(&am, &em, 0.0, CAM);
+        let dn = key_transition_score(&am, &dm, 0.0, CAM);
+        assert!((up - dn).abs() < 1e-4, "Centre treats up/down symmetrically: {up} vs {dn}");
     }
 
     #[test]
-    fn test_key_score_raise_prefers_up() {
+    fn test_key_ring_peak_focal_lands_on_energy_boost() {
         let am = MusicalKey::parse("Am").unwrap();
-        let em = MusicalKey::parse("Em").unwrap(); // +1 up
-        let dm = MusicalKey::parse("Dm").unwrap(); // -1 down
-        let up_score = key_transition_score(&am, &em, 1.0, CAM);
-        let down_score = key_transition_score(&am, &dm, 1.0, CAM);
-        assert!(up_score > down_score, "Raising energy should prefer +1 over -1");
-    }
-
-    #[test]
-    fn test_key_score_raise_unlocks_energy_boost() {
-        let am = MusicalKey::parse("Am").unwrap();
-        let bm = MusicalKey::parse("Bm").unwrap(); // +2 energy boost
-        let center_score = key_transition_score(&am, &bm, 0.0, CAM);
-        let peak_score = key_transition_score(&am, &bm, 1.0, CAM);
-        assert!(peak_score > center_score, "Energy boost should improve at peak");
-        assert!(peak_score >= 0.65, "Energy boost at peak should be competitive: {}", peak_score);
-    }
-
-    #[test]
-    fn test_key_score_raise_unlocks_semitone_up() {
-        let am = MusicalKey::parse("Am").unwrap();
-        let bbm = MusicalKey::parse("Bbm").unwrap(); // +7 semitone up
-        let center_score = key_transition_score(&am, &bbm, 0.0, CAM);
-        let peak_score = key_transition_score(&am, &bbm, 1.0, CAM);
-        assert!(peak_score > center_score, "Semitone up should improve at peak");
-        assert!(peak_score >= 0.50, "Semitone up at peak should be viable: {}", peak_score);
-    }
-
-    #[test]
-    fn test_key_score_drop_unlocks_tritone() {
-        let am = MusicalKey::parse("Am").unwrap();
-        let ebm = MusicalKey::parse("Ebm").unwrap(); // tritone
-        let center_score = key_transition_score(&am, &ebm, 0.0, CAM);
-        let drop_score = key_transition_score(&am, &ebm, -1.0, CAM);
-        assert!(drop_score > center_score, "Tritone should improve at drop");
-        assert!(drop_score >= 0.10, "Tritone at drop should be viable: {}", drop_score);
-    }
-
-    #[test]
-    fn test_key_score_extreme_prefers_energy_over_harmony() {
-        let am = MusicalKey::parse("Am").unwrap();
-        let em = MusicalKey::parse("Em").unwrap();  // AdjacentUp (+1)
-        let bm = MusicalKey::parse("Bm").unwrap();  // EnergyBoost (+2)
-        let bbm = MusicalKey::parse("Bbm").unwrap(); // SemitoneUp (+7)
-
+        let bm = MusicalKey::parse("Bm").unwrap(); // EnergyBoost (+2 same mode, dir=+0.50)
         let same = key_transition_score(&am, &am, 1.0, CAM);
-        let adj_up = key_transition_score(&am, &em, 1.0, CAM);
         let boost = key_transition_score(&am, &bm, 1.0, CAM);
-        let semi_up = key_transition_score(&am, &bbm, 1.0, CAM);
-
-        assert!(semi_up > same, "SemitoneUp should outscore SameKey at +1.0: {} vs {}", semi_up, same);
-        assert!(boost > same, "EnergyBoost should outscore SameKey at +1.0: {} vs {}", boost, same);
-        assert!(adj_up > same, "AdjacentUp should outscore SameKey at +1.0: {} vs {}", adj_up, same);
-        assert!(semi_up > boost, "SemitoneUp > EnergyBoost: {} vs {}", semi_up, boost);
-        assert!(boost > adj_up, "EnergyBoost > AdjacentUp: {} vs {}", boost, adj_up);
+        assert!(boost > same, "EnergyBoost outscores SameKey at full peak: {boost} vs {same}");
+        assert!(boost > 0.85, "EnergyBoost near focal at peak: {boost}");
     }
 
     #[test]
-    fn test_key_score_extreme_drop_prefers_energy_lowering() {
+    fn test_key_ring_drop_focal_lands_on_energy_cool() {
         let am = MusicalKey::parse("Am").unwrap();
-        let gm = MusicalKey::parse("Gm").unwrap();  // EnergyCool (-2)
-        let dm = MusicalKey::parse("Dm").unwrap();  // AdjacentDown (-1)
-
+        let gm = MusicalKey::parse("Gm").unwrap(); // EnergyCool (-2 same mode, dir=-0.50)
         let same = key_transition_score(&am, &am, -1.0, CAM);
         let cool = key_transition_score(&am, &gm, -1.0, CAM);
-        let adj_down = key_transition_score(&am, &dm, -1.0, CAM);
-
-        assert!(cool > same, "EnergyCool should outscore SameKey at -1.0: {} vs {}", cool, same);
-        assert!(adj_down > same, "AdjacentDown should outscore SameKey at -1.0: {} vs {}", adj_down, same);
+        assert!(cool > same, "EnergyCool outscores SameKey at full drop: {cool} vs {same}");
     }
 
     #[test]
-    fn test_key_score_mood_lift_direction_matters() {
-        let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let c = MusicalKey::parse("C").unwrap();   // 8B
-        let raise = key_transition_score(&am, &c, 0.5, CAM);
-        let drop = key_transition_score(&am, &c, -0.5, CAM);
-        assert!(raise > drop, "Mood lift should score better when raising than dropping: {} vs {}", raise, drop);
-        let extreme = key_transition_score(&am, &c, 1.0, CAM);
-        assert!(extreme > 0.50, "Mood lift should still be viable at extreme: {}", extreme);
+    fn test_key_ring_peak_prefers_up_over_down() {
+        let am = MusicalKey::parse("Am").unwrap();
+        let em = MusicalKey::parse("Em").unwrap(); // AdjacentUp
+        let dm = MusicalKey::parse("Dm").unwrap(); // AdjacentDown
+        let up = key_transition_score(&am, &em, 1.0, CAM);
+        let dn = key_transition_score(&am, &dm, 1.0, CAM);
+        assert!(up > dn, "Peak prefers up-direction over down: {up} vs {dn}");
     }
 
     #[test]
-    fn test_key_score_mood_darken_direction_matters() {
-        let c = MusicalKey::parse("C").unwrap();   // 8B
-        let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let drop = key_transition_score(&c, &am, -0.5, CAM);
-        let raise = key_transition_score(&c, &am, 0.5, CAM);
-        assert!(drop > raise, "Mood darken should score better when dropping than raising: {} vs {}", drop, raise);
-        let extreme = key_transition_score(&c, &am, -1.0, CAM);
-        assert!(extreme > 0.50, "Mood darken should still be viable at extreme: {}", extreme);
+    fn test_key_ring_tritone_floored_everywhere() {
+        let am  = MusicalKey::parse("Am").unwrap();
+        let ebm = MusicalKey::parse("Ebm").unwrap(); // tritone (h≈0.10, d=0.0)
+        for &bias in &[-1.0, -0.5, 0.0, 0.5, 1.0] {
+            let s = key_transition_score(&am, &ebm, bias, CAM);
+            assert!(s < 0.30,
+                "Tritone should never compete with focal at bias={bias}: got {s}");
+        }
+    }
+
+    #[test]
+    fn test_key_ring_mid_peak_keeps_same_key_close() {
+        // At |bias|=0.5 the focal is (0.75, +0.25). SameKey at (1.00, 0.00)
+        // is 0.354 away → still in-ring; AdjacentUp at (0.85, +0.20) is closest.
+        let am = MusicalKey::parse("Am").unwrap();
+        let em = MusicalKey::parse("Em").unwrap();
+        let same = key_transition_score(&am, &am, 0.5, CAM);
+        let adj  = key_transition_score(&am, &em, 0.5, CAM);
+        assert!(adj > same, "Mid-peak: AdjacentUp at focal beats SameKey: {adj} vs {same}");
+        assert!(same > 0.30, "SameKey still scores above floor mid-peak: {same}");
+    }
+
+    #[test]
+    fn test_key_ring_perfect_match_is_one_in_both_models() {
+        // The canonical "perfect" transition at each slider end should normalise to 1.0
+        // regardless of model — focal-h trajectory is anchored to the model's own
+        // archetype value (0.50 in Camelot, ≈ Krumhansl correlation for +2 same-mode).
+        let am = MusicalKey::parse("Am").unwrap();
+        let bm = MusicalKey::parse("Bm").unwrap(); // EnergyBoost (+2 same mode)
+        let gm = MusicalKey::parse("Gm").unwrap(); // EnergyCool  (-2 same mode)
+
+        for &model in &[KeyScoringModel::Camelot, KeyScoringModel::Krumhansl] {
+            let same  = key_ring_reward(&am, &am, 0.0,  model);
+            let boost = key_ring_reward(&am, &bm, 1.0,  model);
+            let cool  = key_ring_reward(&am, &gm, -1.0, model);
+            assert!(same > 0.99,  "{model:?}: SameKey at centre must be 1.0: {same}");
+            assert!(boost > 0.99, "{model:?}: EnergyBoost at full peak must be 1.0: {boost}");
+            assert!(cool > 0.99,  "{model:?}: EnergyCool at full drop must be 1.0: {cool}");
+        }
+    }
+
+    #[test]
+    fn test_key_ring_continuity_no_cliff() {
+        // Score should change smoothly with small slider movements — no jumps > 0.15
+        // between adjacent slider positions. (Detects re-introduced saturation knees.)
+        let am = MusicalKey::parse("Am").unwrap();
+        let bm = MusicalKey::parse("Bm").unwrap();
+        let mut prev = key_transition_score(&am, &bm, 0.0, CAM);
+        let mut max_jump = 0.0_f32;
+        for i in 1..=20 {
+            let bias = i as f32 / 20.0;
+            let s = key_transition_score(&am, &bm, bias, CAM);
+            max_jump = max_jump.max((s - prev).abs());
+            prev = s;
+        }
+        assert!(max_jump < 0.15, "Score should change smoothly across slider: max jump {max_jump}");
     }
 
     // ─── Dual Harmonic Filter ───────────────────────────────────────
@@ -922,26 +940,6 @@ mod tests {
         assert!(base_score(TransitionType::Tritone)      < STRICT_FLOOR);
         assert!(base_score(TransitionType::EnergyBoost) >= STRICT_FLOOR);
         assert!(base_score(TransitionType::EnergyCool)  >= STRICT_FLOOR);
-    }
-
-    #[test]
-    fn test_blended_threshold_flow_and_break_zones() {
-        let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let bm = MusicalKey::parse("Bm").unwrap(); // 10A = EnergyBoost from Am (+2 steps)
-
-        const STRICT_BLENDED: f32 = 0.65;
-
-        let score_center = key_transition_score(&am, &bm, 0.0, CAM);
-        assert!(score_center < STRICT_BLENDED,
-            "EnergyBoost blocked at center: {:.2} < {:.2}", score_center, STRICT_BLENDED);
-
-        let score_extreme = key_transition_score(&am, &bm, 1.0, CAM);
-        assert!(score_extreme >= STRICT_BLENDED,
-            "EnergyBoost unlocks at extreme: {:.2} >= {:.2}", score_extreme, STRICT_BLENDED);
-
-        let score_same = key_transition_score(&am, &am, 1.0, CAM);
-        assert!(score_same < STRICT_BLENDED,
-            "SameKey blocked at extreme: {:.2} < {:.2}", score_same, STRICT_BLENDED);
     }
 
     // ─── Key Direction Penalty ──────────────────────────────────────
@@ -1036,12 +1034,14 @@ mod tests {
 
     #[test]
     fn test_key_score_model_switching() {
+        // Same-key transitions hit the focal point exactly in both models —
+        // h=1.0, d=0.0 matches the centre focal point regardless of harmonic source.
         let am = MusicalKey::parse("Am").unwrap();
-        let c = MusicalKey::parse("C").unwrap();
-        let camelot = key_transition_score(&am, &c, 0.0, KeyScoringModel::Camelot);
-        let krumhansl = key_transition_score(&am, &c, 0.0, KeyScoringModel::Krumhansl);
-        assert!(camelot > 0.5, "Camelot Am→C should be high: {camelot}");
-        assert!(krumhansl > 0.5, "Krumhansl Am→C should be high: {krumhansl}");
+        let camelot = key_transition_score(&am, &am, 0.0, KeyScoringModel::Camelot);
+        let krumhansl = key_transition_score(&am, &am, 0.0, KeyScoringModel::Krumhansl);
+        assert!((camelot - krumhansl).abs() < 1e-4,
+            "SameKey at centre is identical across models: {camelot} vs {krumhansl}");
+        assert!(camelot > 0.95, "SameKey at centre lands at focal: {camelot}");
     }
 
     #[test]
@@ -1070,41 +1070,6 @@ mod tests {
         let plus = similarity_reward(0.30, 0.7, 0.40);
         let minus = similarity_reward(0.30, -0.7, 0.40);
         assert!((plus - minus).abs() < 1e-6, "symmetric in sign: {plus} vs {minus}");
-    }
-
-    #[test]
-    fn test_key_direction_continuous_neutral_at_same_key() {
-        let am = MusicalKey::parse("Am").unwrap();
-        assert!(key_direction_continuous(&am, &am).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_key_direction_continuous_signed_step() {
-        // Camelot: Am=8A, Em=9A (+1 step CW). Adjacent up should be small positive.
-        let am = MusicalKey::parse("Am").unwrap();
-        let em = MusicalKey::parse("Em").unwrap();
-        let dir = key_direction_continuous(&am, &em);
-        assert!(dir > 0.0 && dir < 0.5, "Adjacent up should be modest positive: {dir}");
-
-        // Reverse: Em → Am should be the negation (modulo mode-shift, both minor here).
-        let rev = key_direction_continuous(&em, &am);
-        assert!(rev < 0.0 && (dir + rev).abs() < 1e-6, "minor↔minor reverse should negate: {dir} vs {rev}");
-    }
-
-    #[test]
-    fn test_key_direction_continuous_tritone_neutral() {
-        let c  = MusicalKey::parse("C").unwrap();
-        let fs = MusicalKey::parse("F#").unwrap();
-        assert!(key_direction_continuous(&c, &fs).abs() < 1e-6, "Tritone should be neutral");
-    }
-
-    #[test]
-    fn test_key_direction_continuous_mode_shift() {
-        // Same Camelot position, different mode: Am=8A, C=8B → minor→major brightens.
-        let am = MusicalKey::parse("Am").unwrap();
-        let c  = MusicalKey::parse("C").unwrap();
-        assert!(key_direction_continuous(&am, &c)  >  0.0, "minor→major should brighten");
-        assert!(key_direction_continuous(&c, &am)  <  0.0, "major→minor should darken");
     }
 
     #[test]

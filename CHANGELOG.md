@@ -177,6 +177,28 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Key reward refactored as a 2D ring on (harmonic, direction) plane** —
+  The 1D linear blend `base · w_h(bias) + energy_score · w_e(bias)` had a
+  saturation knee at `harmonic_weight = 0.25` (full slider) and tier
+  plateaus that produced cohort cliffs and a "drowning out" of harmonic
+  compatibility at extremes. The reward is now a 2D tent on the
+  (harmonic_compatibility, energy_direction) plane: every transition
+  lands at a point `(h, d)`, the slider sweeps a focal point along a
+  diagonal trajectory, and the score is a soft tent on 2D Euclidean
+  distance to the focal. Centre focal = `(1.00, 0.00)` (SameKey) →
+  full-peak focal = `(h_archetype, ±0.50)` (EnergyBoost / EnergyCool
+  zone). `h_archetype` is anchored to whatever the active model places
+  the canonical "+2 same-mode" transition at — `0.50` in Camelot, the
+  matching Krumhansl correlation in Krumhansl mode — so the prototypical
+  perfect transition normalises to `1.0` at every slider end in both
+  models. Width `0.50`, soft floor `0.20`. Continuous, symmetric in
+  peak/drop, no saturation knee. The Y axis always uses the curated
+  `transition_energy_direction` table (perceptually-tuned values for
+  energy lift); the X axis is what the Camelot/Krumhansl toggle
+  controls. The legacy `key_transition_score` function name is kept as
+  a thin wrapper around the new `key_ring_reward` for callers that
+  haven't migrated yet.
+
 - **Suggestion list could collapse mid-slider on key-uniform libraries** —
   Even after the centre/peak weights were frozen and the similarity ring
   made linear, the harmonic key filter still produced a hidden cliff: the
