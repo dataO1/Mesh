@@ -177,6 +177,22 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Playlist-split suggestions now compute each list separately instead
+  of post-filtering** — When playlist-split mode was enabled, the
+  player ran one global ranking pass and then bucketed the top-N by
+  playlist membership. Under the new non-compensatory geometric-mean
+  scoring, this left both buckets impoverished: playlist tracks that
+  didn't beat the global top-N got eliminated entirely, and the
+  "global" bucket was filled with whatever happened to score highly
+  among non-playlist tracks (often poorly aligned with the seed). The
+  player now runs **two scoring passes** — one restricted to playlist
+  members, one restricted to non-playlist tracks — so each list shows
+  the best candidates from its own set. The playlist bucket no longer
+  empties out when the seed isn't naturally pointing toward playlist
+  content; the global bucket is unaffected. Compute cost is roughly
+  the same (one large pass replaced by one tiny pass + one
+  almost-as-large pass).
+
 - **Mesh-cue suggestion graph: edges + selection ring now keyed to the
   list selection, not mouse hover** — Previously the suggestion graph
   drew an edge for every suggestion at once (cluttered) and tinted each

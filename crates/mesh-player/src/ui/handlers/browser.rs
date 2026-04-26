@@ -485,11 +485,50 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
 
     Task::perform(
         async move {
-            // Fetch more candidates than we need so both halves have enough after the split
-            // No pre-split truncation — carry all scored candidates into split_suggestions
-            // so each bucket independently picks its best 15 from the full pool.
-            // Playlist tracks get a lenient key threshold via preferred_paths.
-            let mut all = query_suggestions(&sources, seed_paths, energy_direction, key_model, suggestion_config, 10_000, usize::MAX, &played, playlist_paths.as_ref(), blend_query_vec, false)?;
+            use mesh_core::suggestions::query::CandidateFilter;
+
+            // Run two separate scoring passes when playlist split is enabled:
+            // one restricted to the playlist's tracks (so the playlist bucket
+            // shows the best of those 26-ish tracks), and one excluding them
+            // (so the global bucket shows the best of the rest). This avoids
+            // the broken post-filter behaviour where the geometric-mean
+            // scoring would crush playlist tracks against the full library
+            // and leave the playlist bucket nearly empty.
+            //
+            // When playlist_split is off (or no playlist context is active),
+            // we run a single unfiltered pass and put everything in the
+            // global bucket.
+            const PLAYLIST_LIMIT: usize = 15;
+            const GLOBAL_LIMIT: usize = 35;
+
+            let (mut playlist_suggestions, mut global_suggestions) =
+                if playlist_split && playlist_paths.as_ref().map_or(false, |p| !p.is_empty()) {
+                    let pl_paths = playlist_paths.as_ref().expect("checked above");
+                    let playlist = query_suggestions(
+                        &sources, seed_paths.clone(), energy_direction, key_model,
+                        suggestion_config, 10_000, PLAYLIST_LIMIT, &played,
+                        Some(pl_paths), blend_query_vec.clone(),
+                        Some(CandidateFilter::Include(pl_paths)),
+                        false,
+                    )?;
+                    let global = query_suggestions(
+                        &sources, seed_paths, energy_direction, key_model,
+                        suggestion_config, 10_000, GLOBAL_LIMIT, &played,
+                        None, blend_query_vec,
+                        Some(CandidateFilter::Exclude(pl_paths)),
+                        false,
+                    )?;
+                    (playlist, global)
+                } else {
+                    let global = query_suggestions(
+                        &sources, seed_paths, energy_direction, key_model,
+                        suggestion_config, 10_000, GLOBAL_LIMIT + PLAYLIST_LIMIT, &played,
+                        playlist_paths.as_ref(), blend_query_vec,
+                        None,
+                        false,
+                    )?;
+                    (Vec::new(), global)
+                };
 
             // Attach per-track playlist memberships.
             //
@@ -514,64 +553,36 @@ pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
                 })
                 .collect();
 
-            for s in &mut all {
-                let Some(id) = s.track.id else { continue };
-
-                let mut matched = false;
-                for (idx, src) in sources.iter().enumerate() {
-                    if s.track.path.starts_with(&src.collection_root) {
-                        if let Some(names) = source_memberships[idx].get(&id) {
-                            s.playlists = names.clone();
-                            matched = true;
-                            break;
+            let attach = |suggestions: &mut Vec<SuggestedTrack>| {
+                for s in suggestions.iter_mut() {
+                    let Some(id) = s.track.id else { continue };
+                    let mut matched = false;
+                    for (idx, src) in sources.iter().enumerate() {
+                        if s.track.path.starts_with(&src.collection_root) {
+                            if let Some(names) = source_memberships[idx].get(&id) {
+                                s.playlists = names.clone();
+                                matched = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !matched {
+                        for mems in &source_memberships {
+                            if let Some(names) = mems.get(&id) {
+                                s.playlists = names.clone();
+                                break;
+                            }
                         }
                     }
                 }
-                if !matched {
-                    for mems in &source_memberships {
-                        if let Some(names) = mems.get(&id) {
-                            s.playlists = names.clone();
-                            break;
-                        }
-                    }
-                }
-            }
+            };
+            attach(&mut playlist_suggestions);
+            attach(&mut global_suggestions);
 
-            let (playlist_suggestions, global_suggestions) =
-                split_suggestions(all, if playlist_split { playlist_paths.as_ref() } else { None });
             Ok(SplitSuggestions { playlist_suggestions, global_suggestions })
         },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
-}
-
-/// Partition a flat suggestion list into (playlist-local, global) buckets.
-///
-/// Tracks whose absolute path is in `playlist_paths` go into the first bucket
-/// (capped at 15); the rest fill the second bucket up to a combined total of 30.
-/// If no playlist filter is provided, all results are returned as global (no split).
-fn split_suggestions(
-    all: Vec<SuggestedTrack>,
-    playlist_paths: Option<&HashSet<String>>,
-) -> (Vec<SuggestedTrack>, Vec<SuggestedTrack>) {
-    const MAX_TOTAL: usize = 50;
-
-    let filtered: Vec<SuggestedTrack> = all.into_iter()
-        .take(MAX_TOTAL)
-        .collect();
-
-    let Some(paths) = playlist_paths else {
-        return (vec![], filtered);
-    };
-
-    let (playlist, global): (Vec<_>, Vec<_>) = filtered
-        .into_iter()
-        .partition(|s| {
-            let p = s.track.path.to_string_lossy();
-            paths.contains(p.as_ref())
-        });
-
-    (playlist, global)
 }
 
 /// Handle `ScheduleSuggestionRefresh`: start debounce timer if not already pending.

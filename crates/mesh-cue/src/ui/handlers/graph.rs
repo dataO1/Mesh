@@ -504,6 +504,7 @@ impl MeshCueApp {
                         &played,
                         None,
                         None,
+                        None, // candidate_filter — score everything
                         true, // emit_components
                     )?;
 

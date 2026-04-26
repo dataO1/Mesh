@@ -110,6 +110,29 @@ pub struct SuggestedTrack {
     pub component_scores: Option<ComponentScores>,
 }
 
+/// Pre-filter for the candidate pool when scoring suggestions.
+///
+/// Used by the playlist-split feature: instead of post-filtering a single
+/// global ranking into "playlist members" vs "everything else" (which loses
+/// playlist tracks that don't beat the global top-N), the caller runs two
+/// separate queries with `Include` and `Exclude` filters so each list shows
+/// the best of its own restricted candidate set.
+pub enum CandidateFilter<'a> {
+    /// Score only tracks whose absolute path is in this set.
+    Include(&'a HashSet<String>),
+    /// Score every track EXCEPT those whose absolute path is in this set.
+    Exclude(&'a HashSet<String>),
+}
+
+impl<'a> CandidateFilter<'a> {
+    fn allows(&self, path: &str) -> bool {
+        match self {
+            CandidateFilter::Include(paths) => paths.contains(path),
+            CandidateFilter::Exclude(paths) => !paths.contains(path),
+        }
+    }
+}
+
 /// A database source for suggestion queries.
 ///
 /// Each source represents a separate track library (local collection or USB device).
@@ -171,6 +194,11 @@ pub fn query_suggestions(
     // L2-normalised). When `Some`, the per-seed HNSW routing is skipped and a single
     // vector query is issued per source instead.
     blend_query_vec: Option<Vec<f64>>,
+    // Restrict candidate scoring to tracks whose absolute path is in this set
+    // (when `Some`) or exclude tracks in this set (when path-based and called
+    // for the global bucket; the caller decides which set to pass). When
+    // `None`, all candidates are scored.
+    candidate_filter: Option<CandidateFilter<'_>>,
     emit_components: bool,
 ) -> Result<Vec<SuggestedTrack>, String> {
     if sources.is_empty() {
@@ -341,6 +369,11 @@ pub fn query_suggestions(
 
             // Skip already-played tracks
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
+
+            // Apply candidate filter (pre-restricts the pool for playlist split).
+            if let Some(ref filter) = candidate_filter {
+                if !filter.allows(&track.path.to_string_lossy()) { continue; }
+            }
 
             // Apply whitening to candidate vector if active
             let pca_vec = if let Some(ref scales) = whiten_scales {
