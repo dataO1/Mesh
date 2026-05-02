@@ -59,27 +59,34 @@ let
     OUTPUT_DIR=""
     REAL_AUDIO=""
     SKIP_BENCH=0
+    REINSTALL_DEPS_FLAG=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        --cpu)        DEVICE_OVERRIDE="cpu";  shift ;;
-        --gpu|--cuda) DEVICE_OVERRIDE="cuda"; shift ;;
-        --skip-bench) SKIP_BENCH=1;           shift ;;
-        --audio)      REAL_AUDIO="$2";        shift 2 ;;
+        --cpu)            DEVICE_OVERRIDE="cpu";   shift ;;
+        --gpu|--cuda)     DEVICE_OVERRIDE="cuda";  shift ;;
+        --skip-bench)     SKIP_BENCH=1;            shift ;;
+        --audio)          REAL_AUDIO="$2";         shift 2 ;;
+        --reinstall-deps) REINSTALL_DEPS_FLAG=1;   shift ;;
         -h|--help)
           cat <<EOF
-Usage: convert-muq-mulan-model [--cpu|--gpu] [--audio FILE] [--skip-bench] [OUTPUT_DIR]
+Usage: convert-muq-mulan-model [OPTIONS] [OUTPUT_DIR]
 
-  --cpu          Force CPU export (slow — ~10-20 min for the 630M model)
-  --gpu, --cuda  Force GPU export (fails if no CUDA detected)
-  --audio FILE   Use this audio file as a third validation case
-  --skip-bench   Don't run the wall-clock benchmark after validation
-  OUTPUT_DIR     Where to write the ONNX (default: ./models)
+  --cpu              Force CPU export (slow — ~10-20 min for the 630M model)
+  --gpu, --cuda      Force GPU export (fails if no CUDA detected)
+  --audio FILE       Use this audio file as a third validation case
+  --skip-bench       Don't run the wall-clock benchmark after validation
+  --reinstall-deps   Wipe the cached pip install and re-download (~3 GB)
+  OUTPUT_DIR         Where to write the ONNX (default: ./models)
 
 Default: auto-detect CUDA via nvidia-smi.
+
+Caches (persisted across runs to avoid re-downloads):
+  Pip site-packages : ~/.cache/mesh-spike/site-packages-{cpu,gpu-cu124}/
+  HF model snapshot : ~/.cache/mesh-spike/muq-mulan/
 EOF
           exit 0
           ;;
-        *)            OUTPUT_DIR="$1";        shift ;;
+        *)                OUTPUT_DIR="$1";         shift ;;
       esac
     done
     OUTPUT_DIR="$(realpath -m "''${OUTPUT_DIR:-./models}")"
@@ -122,40 +129,56 @@ EOF
       SKIP_DOWNLOAD_AND_EXPORT=0
     fi
 
+    # Always-fresh scratch (probe scripts, ONNX intermediate). Cleaned on exit.
     TEMP_DIR=$(mktemp -d -t muq-mulan-spike.XXXXXX)
     trap "rm -rf $TEMP_DIR" EXIT
-    SITE="$TEMP_DIR/site-packages"
-    mkdir -p "$SITE"
-    export PYTHONPATH="$SITE:''${PYTHONPATH:-}"
 
-    # ─── Stage 1: install Python deps ────────────────────────────────────
-    echo "[1/5] Installing Python deps into temp dir (one-shot, not persisted)..."
+    # ─── Stage 1: install (or reuse) Python deps ─────────────────────────
     if [ "$HAS_CUDA" = "1" ]; then
       TORCH_INDEX="https://download.pytorch.org/whl/cu124"
       ORT_PKG="onnxruntime-gpu"
-      echo "      → torch from cu124 index, onnxruntime-gpu"
+      DEPS_TAG="gpu-cu124"
     else
       TORCH_INDEX="https://download.pytorch.org/whl/cpu"
       ORT_PKG="onnxruntime"
-      echo "      → torch from cpu index, onnxruntime (CPU-only)"
+      DEPS_TAG="cpu"
     fi
 
-    ${pythonEnv}/bin/pip install --target "$SITE" --no-warn-script-location \
-      --index-url "$TORCH_INDEX" \
-      --extra-index-url "https://pypi.org/simple" \
-      "torch>=2.2,<2.6" "torchaudio>=2.2,<2.6" 2>&1 | tail -3
+    # Persistent dep cache keyed by GPU/CPU variant. Subsequent runs skip
+    # pip entirely (~3 GB of cu124 wheels otherwise re-downloaded each time).
+    # Force a refresh by deleting the dir or passing --reinstall-deps.
+    REINSTALL_DEPS=0
+    if [ "''${REINSTALL_DEPS_FLAG:-0}" = "1" ]; then
+      REINSTALL_DEPS=1
+    fi
+    SITE="$HOME/.cache/mesh-spike/site-packages-$DEPS_TAG"
+    mkdir -p "$SITE"
+    export PYTHONPATH="$SITE:''${PYTHONPATH:-}"
 
-    ${pythonEnv}/bin/pip install --target "$SITE" --no-warn-script-location \
-      "muq>=0.1.0" \
-      "huggingface_hub>=0.20" \
-      "transformers>=4.40" \
-      "librosa>=0.10" \
-      "numpy<2.0" \
-      "onnx>=1.15" \
-      "$ORT_PKG>=1.18" \
-      "optimum[exporters]>=1.20" 2>&1 | tail -5
+    if [ "$REINSTALL_DEPS" = "0" ] && [ -d "$SITE/torch" ] && [ -d "$SITE/muq" ]; then
+      echo "[1/5] Reusing cached deps at $SITE"
+      echo "      ($DEPS_TAG variant — delete the dir to force a fresh install)"
+    else
+      echo "[1/5] Installing Python deps into $SITE..."
+      echo "      → $DEPS_TAG variant (torch from $TORCH_INDEX, $ORT_PKG)"
 
-    echo "[1/5] Deps installed in $SITE"
+      ${pythonEnv}/bin/pip install --target "$SITE" --upgrade --no-warn-script-location \
+        --index-url "$TORCH_INDEX" \
+        --extra-index-url "https://pypi.org/simple" \
+        "torch>=2.2,<2.6" "torchaudio>=2.2,<2.6" 2>&1 | tail -3
+
+      ${pythonEnv}/bin/pip install --target "$SITE" --upgrade --no-warn-script-location \
+        "muq>=0.1.0" \
+        "huggingface_hub>=0.20" \
+        "transformers>=4.40" \
+        "librosa>=0.10" \
+        "numpy<2.0" \
+        "onnx>=1.15" \
+        "$ORT_PKG>=1.18" \
+        "optimum[exporters]>=1.20" 2>&1 | tail -5
+
+      echo "[1/5] Deps installed in $SITE"
+    fi
 
     # Add the cu124 wheel's bundled nvidia .so dirs to LD_LIBRARY_PATH so
     # PyTorch can load cuDNN/cuBLAS/etc. inside the nix shell (its normal
