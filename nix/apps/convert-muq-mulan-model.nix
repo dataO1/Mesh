@@ -42,6 +42,18 @@ let
     # PyTorch needs libstdc++.so.6 visible.
     export LD_LIBRARY_PATH="${libstdcppPath}:''${LD_LIBRARY_PATH:-}"
 
+    # NVIDIA host driver: PyTorch needs `libcuda.so.1` (the driver shim,
+    # NOT the cu124 wheel's bundled cudart) to detect the GPU. The driver
+    # is installed by NixOS at /run/opengl-driver/lib but that path isn't
+    # always on LD_LIBRARY_PATH inside a nix-shell. Add it if it exists.
+    for cand in /run/opengl-driver/lib /run/opengl-driver-32/lib /usr/lib/x86_64-linux-gnu /usr/lib64; do
+      if [ -e "$cand/libcuda.so.1" ] || [ -e "$cand/libcuda.so" ]; then
+        export LD_LIBRARY_PATH="$cand:$LD_LIBRARY_PATH"
+        echo "[detect] libcuda.so.1 found at $cand"
+        break
+      fi
+    done
+
     # ─── Argument parsing ────────────────────────────────────────────────
     DEVICE_OVERRIDE=""
     OUTPUT_DIR=""
@@ -144,6 +156,52 @@ EOF
       "optimum[exporters]>=1.20" 2>&1 | tail -5
 
     echo "[1/5] Deps installed in $SITE"
+
+    # Add the cu124 wheel's bundled nvidia .so dirs to LD_LIBRARY_PATH so
+    # PyTorch can load cuDNN/cuBLAS/etc. inside the nix shell (its normal
+    # RPATH-based loading occasionally breaks here).
+    if [ "$HAS_CUDA" = "1" ]; then
+      NVIDIA_LIBS=""
+      for d in "$SITE"/nvidia/*/lib; do
+        if [ -d "$d" ]; then
+          NVIDIA_LIBS="$d:$NVIDIA_LIBS"
+        fi
+      done
+      if [ -n "$NVIDIA_LIBS" ]; then
+        export LD_LIBRARY_PATH="$NVIDIA_LIBS$LD_LIBRARY_PATH"
+        echo "      → added bundled nvidia libs to LD_LIBRARY_PATH"
+      fi
+
+      # Sanity-check that PyTorch can actually see the GPU before going
+      # further. Surface the exact failure reason now instead of after a
+      # long download or partial export attempt.
+      echo "      → cuda probe..."
+      cat > "$TEMP_DIR/cuda_probe.py" <<'PYEOF'
+import sys, ctypes.util
+import torch
+ok = torch.cuda.is_available()
+print(f"      torch.__version__         : {torch.__version__}")
+print(f"      torch.version.cuda        : {torch.version.cuda}")
+print(f"      torch.cuda.is_available() : {ok}")
+if not ok:
+    drv = ctypes.util.find_library("cuda")
+    print(f"      libcuda visible          : {drv!r}")
+    try:
+        print(f"      device_count             : {torch.cuda.device_count()}")
+    except Exception as e:
+        print(f"      device_count raised      : {e}")
+    print()
+    print("      CUDA not usable from inside this shell. Likely fix:")
+    print("        - On NixOS: ensure hardware.graphics (or hardware.opengl)")
+    print("          is enabled and /run/opengl-driver/lib has libcuda.so.1.")
+    print("        - Or re-run with --cpu to proceed without GPU (slower).")
+    sys.exit(2)
+PYEOF
+      if ! ${pythonEnv}/bin/python "$TEMP_DIR/cuda_probe.py"; then
+        echo "[!] CUDA probe failed — re-run with --cpu to fall back, or fix driver path." >&2
+        exit 1
+      fi
+    fi
     echo ""
 
     if [ "$SKIP_DOWNLOAD_AND_EXPORT" = "0" ]; then
