@@ -1,5 +1,6 @@
-//! Map the 400 Discogs EffNet genre labels onto a small set of macro-genre
-//! buckets used for level-1 community clustering.
+//! Map the 519 Discogs MAEST genre labels (a 400 + 119-superset extension of
+//! the EffNet taxonomy) onto a small set of macro-genre buckets used for
+//! level-1 community clustering.
 //!
 //! The Discogs taxonomy uses "Super---Sub" format, e.g. "Electronic---Drum n Bass".
 //! We accept the full label and return a macro-genre, handling the few cases
@@ -46,7 +47,7 @@
 //!   Other                — Non-Music, Brass & Military, Children's,
 //!                          Stage & Screen, unknowns
 
-/// Return the macro-genre bucket for a Discogs EffNet "Super---Sub" label.
+/// Return the macro-genre bucket for a Discogs MAEST/EffNet "Super---Sub" label.
 /// Unknown or empty labels return "Other".
 pub fn macro_genre_for(full_label: &str) -> &'static str {
     let l = full_label.to_lowercase();
@@ -55,20 +56,29 @@ pub fn macro_genre_for(full_label: &str) -> &'static str {
     if let Some(sub) = l.strip_prefix("rock---") {
         if matches!(sub,
             "post-punk" | "coldwave" | "new wave" | "no wave"
-            | "deathrock" | "goth rock") {
+            | "deathrock" | "goth rock"
+            // MAEST: Neue Deutsche Welle = German new wave
+            | "ndw") {
             return "Synth/Wave";
         }
-        if sub == "industrial" { return "Industrial"; }
+        // MAEST: Industrial Metal = metal subgenre with industrial elements
+        if matches!(sub, "industrial" | "industrial metal") { return "Industrial"; }
         if matches!(sub,
             "experimental" | "avantgarde" | "ethereal" | "lo-fi"
             | "space rock" | "krautrock" | "post rock") {
             return "Ambient/Experimental";
         }
         if matches!(sub,
-            "dream pop" | "pop punk" | "pop rock" | "power pop" | "brit pop") {
+            "dream pop" | "pop punk" | "pop rock" | "power pop" | "brit pop"
+            // MAEST additions: jangle pop = indie/college rock w/ jangling
+            // guitars; swamp pop = Louisiana pop/R&B crossover
+            | "jangle pop" | "swamp pop") {
             return "Pop";
         }
-        if matches!(sub, "neofolk" | "folk rock" | "country rock") {
+        if matches!(sub,
+            "neofolk" | "folk rock" | "country rock"
+            // MAEST: Skiffle = British folk/blues/jazz hybrid (Lonnie Donegan)
+            | "skiffle") {
             return "Folk/World";
         }
         if matches!(sub, "jazz-rock") {
@@ -85,17 +95,23 @@ pub fn macro_genre_for(full_label: &str) -> &'static str {
             | "breakbeat" | "breaks" | "big beat" | "progressive breaks") {
             return "DnB";
         }
-        // Hardcore family (includes Breakcore)
+        // Hardcore family (includes Breakcore + MAEST variants)
         if matches!(sub,
             "hardcore" | "happy hardcore" | "breakcore" | "hardstyle"
             | "gabber" | "speedcore" | "makina" | "jumpstyle"
-            | "hands up" | "hi nrg" | "donk" | "schranz") {
+            | "hands up" | "hi nrg" | "donk" | "schranz"
+            // MAEST additions: doomcore (slow industrial hardcore),
+            // hard beat (Belgian hard dance), j-core (Japanese hardcore),
+            // lento violento (slow Italian hardstyle, Gigi D'Agostino)
+            | "doomcore" | "hard beat" | "j-core" | "lento violento") {
             return "Hardcore";
         }
         // Trance family (must come before Techno — "tech trance" is trance)
         if matches!(sub,
             "goa trance" | "psy-trance" | "trance" | "tech trance"
-            | "hard trance" | "progressive trance") {
+            | "hard trance" | "progressive trance"
+            // MAEST: Neo Trance = modern progressive trance
+            | "neo trance") {
             return "Trance";
         }
         // Techno family
@@ -104,10 +120,13 @@ pub fn macro_genre_for(full_label: &str) -> &'static str {
             | "dub techno" | "deep techno" | "bleep") {
             return "Techno";
         }
-        // Bass music
+        // Bass music — UK garage / footwork lineage
         if matches!(sub,
             "dubstep" | "grime" | "uk garage" | "speed garage"
-            | "bassline" | "juke") {
+            | "bassline" | "juke"
+            // MAEST: Footwork (Chicago juke evolution, ~160 BPM),
+            // Baltimore Club (breakbeat-driven Bmore/Jersey club)
+            | "footwork" | "baltimore club") {
             return "Bass";
         }
         // Industrial
@@ -119,7 +138,10 @@ pub fn macro_genre_for(full_label: &str) -> &'static str {
         if matches!(sub,
             "synth-pop" | "synthwave" | "vaporwave" | "darkwave"
             | "new wave" | "electroclash" | "electro" | "freestyle"
-            | "italodance" | "eurobeat" | "eurodance") {
+            | "italodance" | "eurobeat" | "eurodance"
+            // MAEST: Witch House = dark/gothic electronic, sonically
+            // darkwave-adjacent (drag/witch house tempo + pop structure)
+            | "witch house") {
             return "Synth/Wave";
         }
         // House family (house + disco lineage + acid variants)
@@ -129,7 +151,10 @@ pub fn macro_genre_for(full_label: &str) -> &'static str {
             | "ghetto house" | "ghetto" | "hard house" | "hip-house"
             | "italo house" | "tribal house" | "tropical house"
             | "disco" | "euro-disco" | "italo-disco" | "nu-disco"
-            | "disco polo" | "euro house") {
+            | "disco polo" | "euro house"
+            // MAEST: Ghettotech (Detroit ghetto-house derivative),
+            // UK Funky (UK garage/funky house hybrid)
+            | "ghettotech" | "uk funky") {
             return "House";
         }
         // Cross-over subtypes
@@ -258,5 +283,65 @@ mod tests {
         assert_eq!(macro_genre_for("Non-Music---Comedy"), "Other");
         assert_eq!(macro_genre_for("Stage & Screen---Soundtrack"), "Other");
         assert_eq!(macro_genre_for("Unknown---Something"), "Other");
+    }
+
+    /// MAEST 519-class taxonomy adds 119 sub-genres on top of EffNet 400.
+    /// Most route correctly via existing super-prefix catch-alls; these
+    /// tests cover the 15 sub-genres that needed explicit redirects.
+    #[test]
+    fn test_maest_new_electronic_routes() {
+        // Bass family
+        assert_eq!(macro_genre_for("Electronic---Footwork"), "Bass");
+        assert_eq!(macro_genre_for("Electronic---Baltimore Club"), "Bass");
+        // Hardcore family
+        assert_eq!(macro_genre_for("Electronic---Doomcore"), "Hardcore");
+        assert_eq!(macro_genre_for("Electronic---Hard Beat"), "Hardcore");
+        assert_eq!(macro_genre_for("Electronic---J-Core"), "Hardcore");
+        assert_eq!(macro_genre_for("Electronic---Lento Violento"), "Hardcore");
+        // Trance
+        assert_eq!(macro_genre_for("Electronic---Neo Trance"), "Trance");
+        // House family
+        assert_eq!(macro_genre_for("Electronic---Ghettotech"), "House");
+        assert_eq!(macro_genre_for("Electronic---UK Funky"), "House");
+        // Synth/Wave
+        assert_eq!(macro_genre_for("Electronic---Witch House"), "Synth/Wave");
+        // Default fall-through (Ambient/Experimental) for new electronic
+        // styles not in any family list
+        assert_eq!(macro_genre_for("Electronic---Electroacoustic"), "Ambient/Experimental");
+        assert_eq!(macro_genre_for("Electronic---Glitch Hop"), "Ambient/Experimental");
+        assert_eq!(macro_genre_for("Electronic---Harsh Noise Wall"), "Ambient/Experimental");
+    }
+
+    #[test]
+    fn test_maest_new_rock_routes() {
+        assert_eq!(macro_genre_for("Rock---Industrial Metal"), "Industrial");
+        assert_eq!(macro_genre_for("Rock---NDW"), "Synth/Wave");
+        assert_eq!(macro_genre_for("Rock---Jangle Pop"), "Pop");
+        assert_eq!(macro_genre_for("Rock---Swamp Pop"), "Pop");
+        assert_eq!(macro_genre_for("Rock---Skiffle"), "Folk/World");
+        // Sanity: other new rock subs fall to default Rock
+        assert_eq!(macro_genre_for("Rock---Groove Metal"), "Rock");
+        assert_eq!(macro_genre_for("Rock---Horror Rock"), "Rock");
+        assert_eq!(macro_genre_for("Rock---J-Rock"), "Rock");
+        assert_eq!(macro_genre_for("Rock---K-Rock"), "Rock");
+        assert_eq!(macro_genre_for("Rock---Rock Opera"), "Rock");
+    }
+
+    #[test]
+    fn test_maest_new_super_prefix_fallthrough() {
+        // Sample one new label per super-genre to confirm the catch-all
+        // routes still fire for the 104 MAEST labels not enumerated above.
+        assert_eq!(macro_genre_for("Blues---East Coast Blues"), "Blues");
+        assert_eq!(macro_genre_for("Classical---Twelve-tone"), "Classical");
+        assert_eq!(macro_genre_for("Folk, World, & Country---Bhangra"), "Folk/World");
+        assert_eq!(macro_genre_for("Funk / Soul---Minneapolis Sound"), "Funk/Soul");
+        assert_eq!(macro_genre_for("Hip Hop---Hyphy"), "Hip Hop");
+        assert_eq!(macro_genre_for("Jazz---Cape Jazz"), "Jazz");
+        assert_eq!(macro_genre_for("Latin---Bachata"), "Folk/World");
+        assert_eq!(macro_genre_for("Pop---Karaoke"), "Pop");
+        assert_eq!(macro_genre_for("Reggae---Mento"), "Reggae");
+        // Non-Music + Brass & Military stay in Other
+        assert_eq!(macro_genre_for("Non-Music---Sermon"), "Other");
+        assert_eq!(macro_genre_for("Brass & Military---Pipe & Drum"), "Other");
     }
 }
