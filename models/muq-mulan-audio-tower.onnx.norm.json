@@ -1,0 +1,11 @@
+{
+  "melspec_2048_mean": 6.768444971712967,
+  "melspec_2048_std": 18.417922652295623,
+  "sample_rate": 24000,
+  "n_fft": 2048,
+  "hop_length": 240,
+  "n_mels": 128,
+  "is_db": true,
+  "trim_last_frame": true,
+  "clip_secs": 10
+}

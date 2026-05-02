@@ -1,74 +1,71 @@
-//! ML model management for audio analysis
+//! ML model management for audio analysis.
 //!
-//! Handles downloading, caching, and locating ONNX models from Essentia's model hub.
-//! Models are downloaded on first use and cached in `~/.cache/mesh-cue/ml-models/`.
+//! Locates the MuQ-MuLan-large audio-tower ONNX (and its `*.norm.json`
+//! mel-normalization sidecar) on disk. Unlike the prior MAEST integration
+//! there is no public download URL — the model is produced locally by the
+//! `convert-muq-mulan-model` Nix app. We look in this order:
 //!
-//! Follows the same pattern as `separation/model.rs` (ModelManager for Demucs).
+//!   1. `MESH_MUQ_MULAN_MODEL_DIR` env var (test/CI override)
+//!   2. `<exe_dir>/models/`            (release artifact layout)
+//!   3. `<exe_dir>/../../models/`      (cargo `target/<profile>/<bin>` layout)
+//!   4. `<cwd>/models/`                (developer "run from repo root")
+//!   5. `~/.cache/mesh-cue/ml-models/` (long-term user cache)
 //!
-//! Branch `embeddings-upgrade`: EffNet has been replaced wholesale by
-//! MAEST (`discogs-maest-30s-pw-519l-2`). The classification heads
-//! (timbre/tonal/danceability/...) were trained against EffNet's 1280-dim
-//! embedding and *do not work* against MAEST's 2304-dim vector — they are
-//! disabled on this branch. Heads will be retrained against MAEST as a
-//! follow-up; see `documents/embedding-models-research.md`.
+//! On first successful load the file is hard-linked / copied into the
+//! cache so subsequent runs find it via path 5 even if the binary moves.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Types of ML models for audio analysis.
-///
-/// MAEST is the only model on this branch — the legacy EffNet classification
-/// heads (mood/voice/timbre/tonal/danceability/approachability/reverb) were
-/// removed wholesale alongside the EffNet embedding swap.
+/// Filename of the audio-tower ONNX produced by `convert-muq-mulan-model`.
+pub const MUQ_MULAN_ONNX_FILENAME: &str = "muq-mulan-audio-tower.onnx";
+
+/// Sibling sidecar with mel-normalization stats and `MelSTFT` parameters.
+pub const MUQ_MULAN_NORM_FILENAME: &str = "muq-mulan-audio-tower.onnx.norm.json";
+
+/// ML model variants. Only one model on this branch — the dual-encoder
+/// MuQ-MuLan audio tower (text tower deferred). Kept as an enum so future
+/// model swaps don't require changing every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlModelType {
-    /// MAEST PaSST/AST embedding (~348 MB).
-    /// MTG-UPF, trained on 4M tracks across 519 Discogs styles.
-    /// Input: melspectrogram [1, 1876, 96] @ 16kHz.
-    /// Outputs of interest:
-    ///   * `PartitionedCall/Identity_7` — layer-7 token embeddings
-    ///     `[1, n_tokens, 768]`, pooled to 2304-dim (CLS|DIST|mean(rest)).
-    ///   * `PartitionedCall/Identity_13` — 519-class sigmoid genre predictions.
-    /// See `documents/embedding-models-research.md`.
-    MaestEmbedding519l,
+    /// MuQ-MuLan audio tower exported via `nix run .#convert-muq-mulan-model`.
+    /// Input: dB-scale mel spectrogram `[1, 128, 1000]` per 10 s clip @ 24 kHz.
+    /// Output: 512-dim joint-space audio embedding (l2-normalized).
+    /// See `documents/embedding-models-research.md::Phase 2`.
+    MuQMulanLarge,
 }
 
 impl MlModelType {
-    /// Filename for caching
     pub fn filename(&self) -> &'static str {
         match self {
-            MlModelType::MaestEmbedding519l => "discogs-maest-30s-pw-519l-2.onnx",
+            MlModelType::MuQMulanLarge => MUQ_MULAN_ONNX_FILENAME,
         }
     }
 
-    /// Download URL
-    pub fn download_url(&self) -> &'static str {
+    pub fn norm_filename(&self) -> &'static str {
         match self {
-            MlModelType::MaestEmbedding519l => "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx",
+            MlModelType::MuQMulanLarge => MUQ_MULAN_NORM_FILENAME,
         }
     }
 
-    /// Human-readable name
     pub fn display_name(&self) -> &'static str {
         match self {
-            MlModelType::MaestEmbedding519l => "MAEST (519-style Embedding + Genre)",
+            MlModelType::MuQMulanLarge => "MuQ-MuLan-large (audio tower, 512-d)",
         }
     }
 
-    /// Models required for ML analysis on this branch.
     pub fn base_models() -> &'static [MlModelType] {
-        &[MlModelType::MaestEmbedding519l]
+        &[MlModelType::MuQMulanLarge]
     }
 }
 
-/// Manages ML model downloads and caching
+/// Locates the MuQ-MuLan ONNX + sidecar across the candidate dirs.
 pub struct MlModelManager {
+    /// Long-term cache: `~/.cache/mesh-cue/ml-models/`.
     cache_dir: PathBuf,
 }
 
 impl MlModelManager {
-    /// Create with default cache directory: `~/.cache/mesh-cue/ml-models/`
     pub fn new() -> Result<Self, String> {
         let base = dirs::cache_dir()
             .ok_or_else(|| "Could not determine cache directory".to_string())?;
@@ -77,241 +74,169 @@ impl MlModelManager {
         })
     }
 
-    /// Create with a custom cache directory (for testing)
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
         Self { cache_dir }
     }
 
-    /// Get the local path for a model
-    pub fn model_path(&self, model: MlModelType) -> PathBuf {
+    /// Long-term cache path (where we'd store the model after the user
+    /// runs the conversion script). May not exist yet.
+    pub fn cache_path(&self, model: MlModelType) -> PathBuf {
         self.cache_dir.join(model.filename())
     }
 
-    /// Check if a model is already downloaded
-    pub fn is_available(&self, model: MlModelType) -> bool {
-        self.model_path(model).exists()
+    /// Resolve the on-disk ONNX path, searching all candidate dirs in
+    /// priority order. Returns `None` if the model isn't anywhere.
+    pub fn model_path(&self, model: MlModelType) -> Option<PathBuf> {
+        for dir in self.search_dirs() {
+            let candidate = dir.join(model.filename());
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
-    /// Check if all required models are available
+    /// Resolve the sidecar `*.norm.json` next to a found ONNX.
+    /// Returns `None` if the ONNX itself wasn't found.
+    pub fn norm_path(&self, model: MlModelType) -> Option<PathBuf> {
+        self.model_path(model).map(|onnx| {
+            onnx.with_file_name(model.norm_filename())
+        })
+    }
+
+    /// Whether we can locate everything needed to run inference for `model`
+    /// (ONNX + norm sidecar both present at the same dir).
+    pub fn is_available(&self, model: MlModelType) -> bool {
+        let Some(onnx) = self.model_path(model) else { return false };
+        let sidecar = onnx.with_file_name(model.norm_filename());
+        sidecar.exists()
+    }
+
     pub fn are_base_models_available(&self) -> bool {
         MlModelType::base_models().iter().all(|m| self.is_available(*m))
     }
 
-    /// Get model path, downloading if necessary
+    /// One-time installer: if the ONNX/sidecar exists somewhere on disk
+    /// outside the cache (e.g. `models/` from a fresh `convert-muq-mulan-model`
+    /// run), copy them into the long-term cache so the user doesn't need to
+    /// keep the build dir around. No-op if the cache copy already exists or
+    /// the source is already the cache.
     ///
-    /// # Arguments
-    /// * `model` - The model type to ensure
-    /// * `progress` - Optional progress callback (0.0 to 1.0)
-    pub fn ensure_model(
-        &self,
-        model: MlModelType,
-        progress: Option<Box<dyn Fn(f32) + Send>>,
-    ) -> Result<PathBuf, String> {
-        let model_path = self.model_path(model);
-
-        if model_path.exists() {
-            log::info!("ML model {} found at {:?}", model.display_name(), model_path);
-            if let Some(cb) = &progress {
-                cb(1.0);
-            }
-            return Ok(model_path);
+    /// Returns the cache-resident ONNX path on success.
+    pub fn install_to_cache(&self, model: MlModelType) -> Result<PathBuf, String> {
+        let cache_onnx = self.cache_path(model);
+        if cache_onnx.exists() {
+            return Ok(cache_onnx);
         }
-
-        log::info!("Downloading ML model {} from {}", model.display_name(), model.download_url());
-        self.download_file(model.download_url(), &model_path, progress)?;
-        Ok(model_path)
-    }
-
-    /// Ensure all models needed for ML analysis are available
-    pub fn ensure_all_models(&self) -> Result<(), String> {
-        for &model in MlModelType::base_models() {
-            self.ensure_model(model, None)?;
-        }
-        Ok(())
-    }
-
-    /// Ensure all models, reporting per-model byte-level download progress.
-    ///
-    /// `progress` is invoked with `(model_display_name, bytes_done, bytes_total)`
-    /// at most every ~250 ms during a download (and once at completion).
-    /// Skipped entirely for models already cached on disk.
-    pub fn ensure_all_models_with_progress(
-        &self,
-        progress: impl Fn(&'static str, u64, Option<u64>) + Send + Sync + 'static,
-    ) -> Result<(), String> {
-        let progress = std::sync::Arc::new(progress);
-        for &model in MlModelType::base_models() {
-            let model_path = self.model_path(model);
-            if model_path.exists() {
-                continue;
-            }
-            log::info!(
-                "Downloading ML model {} from {}",
-                model.display_name(),
-                model.download_url()
-            );
-            let cb_progress = std::sync::Arc::clone(&progress);
-            self.download_file_with_bytes(
-                model.download_url(),
-                &model_path,
-                Box::new(move |done, total| {
-                    cb_progress(model.display_name(), done, total);
-                }),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Download a file from URL to target path with atomic rename
-    fn download_file(
-        &self,
-        url: &str,
-        target_path: &Path,
-        progress: Option<Box<dyn Fn(f32) + Send>>,
-    ) -> Result<(), String> {
-        // Adapt the legacy fractional-progress callback to the byte-level helper.
-        let bytes_cb: Box<dyn Fn(u64, Option<u64>) + Send> = if let Some(cb) = progress {
-            Box::new(move |done, total| {
-                if let Some(total) = total {
-                    if total > 0 {
-                        cb((done as f32 / total as f32).min(0.99));
-                    }
-                }
-            })
-        } else {
-            Box::new(|_, _| {})
+        let Some(src_onnx) = self.model_path(model) else {
+            return Err(format!(
+                "{} not found in any search dir; run `nix run .#convert-muq-mulan-model` to produce it",
+                model.filename(),
+            ));
         };
-        self.download_file_with_bytes(url, target_path, bytes_cb)
-    }
-
-    /// Download with byte-level progress reporting (done, total) and
-    /// periodic logging — caller-supplied callback is invoked at most every
-    /// ~250 ms while bytes are streaming.
-    fn download_file_with_bytes(
-        &self,
-        url: &str,
-        target_path: &Path,
-        progress: Box<dyn Fn(u64, Option<u64>) + Send>,
-    ) -> Result<(), String> {
+        if src_onnx == cache_onnx {
+            return Ok(cache_onnx);
+        }
+        let src_sidecar = src_onnx.with_file_name(model.norm_filename());
+        if !src_sidecar.exists() {
+            return Err(format!(
+                "Found {} but its norm sidecar {} is missing — re-run the converter",
+                src_onnx.display(),
+                src_sidecar.display(),
+            ));
+        }
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create cache dir: {}", e))?;
+        let cache_sidecar = cache_onnx.with_file_name(model.norm_filename());
+        fs::copy(&src_onnx, &cache_onnx)
+            .map_err(|e| format!("Failed to copy ONNX to cache: {}", e))?;
+        fs::copy(&src_sidecar, &cache_sidecar)
+            .map_err(|e| format!("Failed to copy sidecar to cache: {}", e))?;
+        log::info!(
+            "Installed {} → {}",
+            src_onnx.display(),
+            cache_onnx.display()
+        );
+        Ok(cache_onnx)
+    }
 
-        let temp_path = target_path.with_extension("tmp");
-
-        let response = ureq::get(url)
-            .call()
-            .map_err(|e| format!("Download failed for {}: {}", url, e))?;
-
-        let content_length: Option<u64> = response
-            .header("Content-Length")
-            .and_then(|s| s.parse().ok());
-
-        let total_mb = content_length.map(|b| b as f64 / 1_048_576.0);
-        let display_name = target_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("model");
-        match total_mb {
-            Some(mb) => log::info!("download_file: {} ({:.1} MB)", display_name, mb),
-            None => log::info!("download_file: {} (size unknown)", display_name),
-        }
-
-        let mut file = fs::File::create(&temp_path)
-            .map_err(|e| format!("Failed to create temp file: {}", e))?;
-
-        let mut reader = response.into_reader();
-        let mut buffer = [0u8; 8192];
-        let mut downloaded: u64 = 0;
-        let mut last_callback = std::time::Instant::now();
-        let mut last_log = std::time::Instant::now();
-        let started_at = std::time::Instant::now();
-        // Always emit the initial 0-byte progress so the UI can switch to the
-        // download bar before the first chunk arrives (helpful on slow links).
-        progress(0, content_length);
-
-        loop {
-            let bytes_read = reader.read(&mut buffer)
-                .map_err(|e| format!("Read error: {}", e))?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            file.write_all(&buffer[..bytes_read])
-                .map_err(|e| format!("Write error: {}", e))?;
-
-            downloaded += bytes_read as u64;
-
-            // Throttle UI updates to ~4 Hz to avoid flooding the channel.
-            if last_callback.elapsed() >= std::time::Duration::from_millis(250) {
-                progress(downloaded, content_length);
-                last_callback = std::time::Instant::now();
-            }
-            // Throttle log lines to ~1 every 5 s so long downloads aren't silent.
-            if last_log.elapsed() >= std::time::Duration::from_secs(5) {
-                let elapsed_s = started_at.elapsed().as_secs_f64().max(0.001);
-                let mb_done = downloaded as f64 / 1_048_576.0;
-                let rate_mbps = mb_done / elapsed_s;
-                match content_length {
-                    Some(total) => {
-                        let pct = (downloaded as f64 / total as f64 * 100.0).min(100.0);
-                        log::info!(
-                            "download_file: {} {:.1}% ({:.1}/{:.1} MB, {:.2} MB/s)",
-                            display_name, pct, mb_done, total as f64 / 1_048_576.0, rate_mbps
-                        );
-                    }
-                    None => log::info!(
-                        "download_file: {} {:.1} MB ({:.2} MB/s)",
-                        display_name, mb_done, rate_mbps
-                    ),
-                }
-                last_log = std::time::Instant::now();
-            }
-        }
-        // Final progress tick at 100%.
-        progress(downloaded, content_length);
-
-        file.flush().map_err(|e| format!("Flush error: {}", e))?;
-        drop(file);
-
-        // Verify size
-        let actual_size = fs::metadata(&temp_path)
-            .map_err(|e| format!("Metadata error: {}", e))?
-            .len();
-
-        if let Some(expected) = content_length {
-            if actual_size != expected {
-                fs::remove_file(&temp_path).ok();
+    /// Ensure each base model is present in *some* search dir (no download —
+    /// the MuQ-MuLan ONNX is produced by a local Nix app, not fetched).
+    pub fn ensure_all_models(&self) -> Result<(), String> {
+        for &model in MlModelType::base_models() {
+            if !self.is_available(model) {
                 return Err(format!(
-                    "Download incomplete: expected {} bytes, got {}",
-                    expected, actual_size
+                    "{} not available — run `nix run .#convert-muq-mulan-model` to generate it",
+                    model.display_name(),
                 ));
             }
         }
-
-        // Atomic rename
-        fs::rename(&temp_path, target_path)
-            .map_err(|e| format!("Rename failed: {}", e))?;
-
-        log::info!("Downloaded ML model {:?} ({} bytes)", target_path.file_name().unwrap_or_default(), actual_size);
-
         Ok(())
+    }
+
+    /// Same as `ensure_all_models` but with the byte-progress callback shape
+    /// the previous MAEST flow used. There is no download step on the
+    /// MuQ-MuLan path so the callback is never invoked — we keep the
+    /// signature so the caller in `mod.rs` can stay generic.
+    pub fn ensure_all_models_with_progress(
+        &self,
+        _progress: impl Fn(&'static str, u64, Option<u64>) + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        self.ensure_all_models()
+    }
+
+    /// Directories to search in priority order. See module docstring.
+    fn search_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+
+        // 1. Env override.
+        if let Ok(p) = std::env::var("MESH_MUQ_MULAN_MODEL_DIR") {
+            dirs.push(PathBuf::from(p));
+        }
+
+        // 2/3. Relative to the executable.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                dirs.push(exe_dir.join("models"));
+                // Cargo target/<profile>/<bin> → ../../models/
+                if let Some(parent) = exe_dir.parent().and_then(|p| p.parent()) {
+                    dirs.push(parent.join("models"));
+                }
+            }
+        }
+
+        // 4. Working directory (developer running from repo root).
+        if let Ok(cwd) = std::env::current_dir() {
+            dirs.push(cwd.join("models"));
+        }
+
+        // 5. Long-term cache.
+        dirs.push(self.cache_dir.clone());
+
+        dirs
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use super::*;
 
     #[test]
-    fn test_model_paths() {
-        let mgr = MlModelManager::with_cache_dir("/tmp/test-ml".into());
-        assert!(mgr.model_path(MlModelType::MaestEmbedding519l).to_str().unwrap().contains("discogs-maest-30s-pw-519l"));
-        assert!(mgr.model_path(MlModelType::MaestEmbedding519l).to_str().unwrap().contains("discogs-maest-30s-pw-519l"));
+    fn test_model_filenames() {
+        assert_eq!(MlModelType::MuQMulanLarge.filename(), MUQ_MULAN_ONNX_FILENAME);
+        assert_eq!(MlModelType::MuQMulanLarge.norm_filename(), MUQ_MULAN_NORM_FILENAME);
     }
 
     #[test]
     fn test_base_models_list() {
-        // embeddings-upgrade: only MAEST is required at runtime; heads disabled.
         assert_eq!(MlModelType::base_models().len(), 1);
+    }
+
+    #[test]
+    fn test_search_dirs_includes_cache_and_cwd() {
+        let mgr = MlModelManager::with_cache_dir("/tmp/test-cache".into());
+        let dirs = mgr.search_dirs();
+        assert!(dirs.iter().any(|p| p == Path::new("/tmp/test-cache")));
     }
 }
