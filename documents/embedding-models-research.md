@@ -43,9 +43,10 @@ Two motivations to upgrade:
 
 | Phase | Model | Goal | Status |
 |---|---|---|---|
-| 1 | **MAEST-30s-pw-519l-2** | Same-vendor drop-in replacement; de-risk the pipeline (head retraining, bell-σ re-tuning, HNSW dim change) | **In progress** |
-| 2 | **MuQ-MuLan** (700M) | Highest perceptual-similarity numbers + free text-query path | Pending Phase 1 review |
-| 3 | **MULE** (62M) | Best playlist-coherence supervision + cheapest of the high-quality options | Pending Phase 1 review |
+| 1 | **MAEST-30s-pw-519l-2** | Same-vendor drop-in replacement; de-risk the pipeline (head retraining, bell-σ re-tuning, HNSW dim change) | **Shipped** |
+| 2 | **MuQ-MuLan** (700M) | Highest perceptual-similarity numbers + free text-query path | ONNX export spike in progress |
+| 3 | **MULE** (62M) | Best playlist-coherence supervision + cheapest of the high-quality options | Pending Phase 2 review |
+| 4 | **Multimodal Audio LLM** (Qwen3-Omni-Captioner / Audio Flamingo 3 / Music Flamingo) | Caption-augmented similarity + structured tag extraction; fused multi-view graph; replaces aggression placeholder with a semantic signal. **mesh-cue only, GPU-gated; player consumes precomputed vectors only.** | Design phase |
 
 Phase 1 ships behind a config flag so EffNet stays available — A/B is the
 whole point. Phases 2 and 3 don't start until the user reports back on
@@ -594,9 +595,489 @@ becomes input to the sidecar-fallback scoping doc.
   feature flag for users with GPUs). If spike fails → scope the
   Python sidecar fallback architecture in a separate doc.
 
+### Spike findings — STFT export blocker + resolution (2026-05-02)
+
+First export attempt failed with `STFT does not currently support
+complex types` from the legacy TorchScript exporter. The dynamo
+fallback also failed because `torch.onnx.dynamo_export` was removed
+in PyTorch 2.6 (replaced by `torch.onnx.export(..., dynamo=True)`).
+
+Root cause: `MuQModel.preprocessor_melspec_2048` is a
+`torchaudio.transforms.MelSpectrogram` which calls `torch.stft`, and
+STFT returns complex tensors that the legacy exporter cannot represent.
+Same class of failure as the prior MAEST mel-frontend export.
+
+**Resolution:** cut the export boundary above the mel — same split we
+already use for MAEST. The wrapper monkey-patches
+`MuQModel.get_predictions` so it accepts a pre-computed mel directly
+and skips both `preprocessing` (the STFT) and `normalize` (a dict
+comprehension that doesn't trace cleanly either).
+
+Producer responsibilities now split:
+- **Python (export side):** writes a sidecar `<onnx>.norm.json` with
+  the model's `melspec_2048_mean`/`melspec_2048_std` plus the MelSTFT
+  parameters (`sample_rate=24000`, `n_fft=2048`, `hop_length=240`,
+  `n_mels=128`, `is_db=true`, `trim_last_frame=true`, `clip_secs=10`).
+- **Rust (inference side, when integrated):** computes mel matching
+  those params, applies `(mel - mean) / std`, feeds the (1, 128, 1000)
+  tensor to ONNX. Exact same shape pattern as MAEST mel.
+
+Single-clip semantics: the ONNX wraps ONE 10 s clip's worth of mel and
+returns a 512-d embedding. PyTorch's native `extract_audio_latents`
+chops a long waveform into 10 s clips and averages — Rust will do the
+same chop+average outside ONNX (mirrors MAEST's window averaging).
+
+Validate / bench scripts updated to feed mel; `validate.py` computes the
+reference mel by calling the loaded `MuQModel.preprocessor_melspec_2048`
++ stats, so a passing cosine gate also confirms Rust's eventual mel
+implementation must match those exact params.
+
 ### Out of scope for this branch
 
 - Text-query feature (deferred to Phase 3)
 - macOS GPU acceleration (no Apple users on the priority list)
 - Genre tagging (dropped per user direction)
 - Production integration into `crates/` (only after spike passes)
+
+---
+
+## Phase 4: Multimodal Audio LLM Layer (caption-augmented, fused-graph)
+
+**Status:** Design phase. No branch cut yet. Independent of Phase 2 — can land
+on top of either MAEST-only or MuQ-MuLan-only baselines.
+
+### Premise
+
+Pure audio embeddings (MAEST, MuQ-MuLan, MULE) capture timbre and structure
+but cannot describe a track in DJ-relevant terms — production qualities,
+mix-friendliness, vocal type, structural cues, blend descriptors. Adding a
+**second modality** (free-text caption from an audio LLM, embedded with a
+sentence encoder) and fusing the two graphs gives:
+
+- A semantic signal to replace the constant-0 aggression mood-tag placeholder.
+- A natural way to surface genre blends that the 519-class taxonomy can't
+  represent.
+- A cross-modal disagreement signal for outlier / QC detection — tracks
+  whose audio neighbours and caption neighbours disagree are interesting.
+- Free-text user queries against the library without retraining anything.
+
+**Hard architectural constraint:** all heavy work happens in `mesh-cue` at
+import / reanalysis time. `mesh-player` never runs an LLM, never even loads
+one. Player consumes precomputed float vectors + small JSON tag bundles —
+exactly the shape it consumes today, just with better numbers in it. USB
+sync ships the same artifact format.
+
+### Model selection
+
+User profile target: strong consumer GPU (24 GB VRAM class). H100/A100 not
+assumed. Three tiers:
+
+| Tier | Model | VRAM | Role | Verdict |
+|---|---|---|---|---|
+| Default | **Qwen3-Omni-30B-A3B-Captioner-AWQ-4bit** | ~20 GB | Caption generator (audio-in → text-out only, ≤30 s clip, no prompt accepted) | **Recommended baseline.** Apache-style weights, vLLM serving, fits 24 GB. Caption only — no Q&A. |
+| Default Q&A path | **Audio Flamingo 3** (~7–8 B) | ~16–20 GB | Prompt-driven Q&A, multi-audio in single call, JSON-mode tag extraction, pairwise comparisons | **Recommended companion.** Easier to deploy than Music Flamingo. Apache-2.0. |
+| Aspirational | **Music Flamingo** (8 B / ~36 GB FP16) | 36 GB+ | Strongest musical literacy (harmony / structure / theory), 20-min audio context | Out of reach on 24 GB without aggressive quantisation. Research-only license. Watch for 4-bit release. |
+| Skip | **Nemotron 3 Nano Omni** | — | Audio path is Parakeet (speech-tuned). Not music-aware enough. |
+| Watch | **MOSS-Audio** (OpenMOSS, Apr 2026) | varies | Time-aware QA is interesting for cue-point suggestions. Less battle-tested. |
+
+The Captioner is the simplest first step because it has zero prompt design
+surface — pass audio, get a caption. A second pass with Audio Flamingo 3
+(or Qwen3-Omni-Instruct) extracts structured fields via JSON-mode prompt.
+
+### Two embedding spaces per track
+
+After this phase the system has **two parallel float vectors per track**:
+
+1. **Audio embedding** — MAEST 2304-dim today, MuQ-MuLan 512-dim if Phase 2
+   ships. Captures sound.
+2. **Caption embedding** — caption text passed through a small sentence
+   encoder. Captures description.
+
+Recommended sentence encoder: **BGE-M3** (BAAI, ~570 MB, 1024-dim) — current
+SOTA general-purpose, strong on long descriptive text. Run on GPU during
+import; the resulting vectors are CPU-cheap forever after. Alternative
+fallback: `all-MiniLM-L6-v2` (~90 MB, 384-dim) if storage matters.
+
+Both vectors live in CozoDB. Both feed HNSW / PCA / t-SNE / Louvain / HDBSCAN
+identically — every algorithm currently in the pipeline works on either.
+
+### Pipeline (mesh-cue, import-time, GPU-gated)
+
+Behind a `StrongGpuProfile` config flag — default off. When enabled, after
+MAEST analysis runs but before HNSW index build:
+
+1. **Caption pass** — Qwen3-Omni-Captioner-AWQ-4bit on the same 30 s window
+   MAEST already extracts. ~5–15 s/track on a 24 GB GPU via vLLM. Output:
+   one ~200-word free-text caption.
+2. **Structured tag pass** — Audio Flamingo 3 (or Qwen3-Omni-Instruct) with
+   a JSON-mode prompt against the same window. Output:
+   `{aggression, dark, hypnotic, euphoric, mix_friendly_intro, vocal_type,
+   structure_timestamps, has_voice_tag, ...}` — scalars in [0,1] plus
+   enums / timestamps. ~3–8 s/track.
+3. **Caption text embedding** — BGE-M3 over the caption string.
+   1024-dim vector. ~30 ms/track on GPU.
+4. **Persist** — new CozoDB relations:
+   - `track_captions { track_id, caption_text, caption_vec[1024], tags_json,
+     llm_model_id, captioner_version, generated_at }`.
+   - HNSW index on `caption_vec` (same pattern as `ml_embeddings`).
+5. **Multi-view graph build** — see fusion strategy below. Outputs the fused
+   PCA reduction + the fused community graph + the refit aggression axis.
+   Same artifacts the current pipeline ships, just better numbers.
+
+Cost at scale: ~10–20 GPU-hours one-time for a 5 000-track library. Fine
+for re-analysis, must not block batch import. Implement as a separate
+post-MAEST stage that can also run later on demand.
+
+Determinism: pin model + temperature=0 + seed. Captions are still
+generative — we treat them as advisory data, not ground truth, and never
+overwrite user-set fields (cue points, drop marker, tags) with LLM output.
+LLM-derived suggestions surface as *proposals*, the user accepts or
+ignores them.
+
+### Fusion strategy
+
+Three patterns, in increasing sophistication. Spike (a) first; only escalate
+to (b) or (c) if needed.
+
+**(a) Concatenation + re-PCA.** Stack `[α·MAEST_vec | β·caption_vec]`,
+re-PCA to 95 % variance. Tunable α/β (start at α=β=1, normalise each block
+by its mean L2 norm). Cheapest. The aggression PCA axis you already have
+generalises directly to the new fused space — refit using the LLM-derived
+`aggression` scalar as the target.
+
+**(b) Multi-view k-NN graph (recommended).** Build *two* k-NN graphs — one
+from MAEST, one from captions — and combine:
+
+- *Edge-weight blend:* `w_ij = λ·sim_audio(i,j) + (1−λ)·sim_text(i,j)`
+  with λ exposed as a slider in the graph view.
+- *Top-k intersection:* a track is a "real" neighbour only if it appears in
+  both modalities' top-k. This is the version that lights up outliers
+  automatically — disagreement between modalities is the signal.
+
+Run Louvain / HDBSCAN on the fused graph as today. No algorithmic changes
+needed downstream.
+
+**(c) Cross-modal alignment via a learned projection.** Fit a small linear
+map (or 2-layer MLP, ~1k params) that pulls each track's MAEST vec toward
+its caption vec — a tiny CLIP-style alignment trained on the user's own
+library. Optional. Only worth the complexity if (a) and (b) leave obvious
+geometry holes in real usage.
+
+### Aggression axis — replace the placeholder
+
+Two routes, not exclusive:
+
+1. **Direct LLM scalar.** Use the `aggression` field from the JSON tag
+   bundle as the aggression value. Simplest. Caveat: LLM scalars are
+   generations, not calibrated regressions — noisy in absolute terms.
+2. **LLM-as-labeller, MAEST-as-scorer.** Use LLM-derived coarse buckets
+   (low/med/high) as supervised labels and fit a regression head on top of
+   the MAEST embedding. Output is calibrated, runtime is fast vector
+   math. **This is the cleaner pattern** — LLM provides semantics, MAEST
+   provides calibration, player runtime stays cheap.
+
+Both refit cleanly into the existing `aggression_axis` PCA artifact.
+
+### What ships to player / USB
+
+Identical artifact shape to today, just better numbers:
+
+- Fused PCA-reduced vector (~50 floats after 95 %-variance reduction).
+- Aggression scalar (now derived from a real semantic signal).
+- Structured tag JSON (~200 bytes/track).
+- Optional: caption text itself (~1 KB/track) if surfaced in player UI;
+  skip if USB size matters.
+
+Player runtime cost is **identical to today** — cosine over a small float
+vector. No LLM at mix time, ever. No model loading. No extra dependencies
+in the player binary.
+
+### Open tasks (Phase 4)
+
+- [ ] Spike: cut a `multimodal-llm-eval` branch off the latest `embeddings-
+  upgrade` head. Capture caption + tags for a 100-track sample of the
+  user's library. Manual quality eval — does Qwen3-Omni-Captioner produce
+  useful descriptions of techno/DnB specifically (the published benchmarks
+  lean pop/rock).
+- [ ] Wire vLLM serving in a separate Python sidecar process — `mesh-cue`
+  posts audio chunks via local HTTP. Sidecar lifecycle: spin up on
+  StrongGpuProfile-enabled batch import, shut down after.
+- [ ] Add CozoDB relation `track_captions { track_id, caption_text,
+  caption_vec[1024], tags_json, llm_model_id, captioner_version,
+  generated_at }`. HNSW index on `caption_vec`.
+- [ ] Implement fusion pattern (a) — concatenation + re-PCA. Compare
+  community structure against MAEST-only baseline on the user's library.
+- [ ] Implement fusion pattern (b) — multi-view k-NN with intersection
+  rule. Add λ slider to graph view. Surface cross-modal disagreement as
+  an "outlier" overlay.
+- [ ] Refit aggression axis via "LLM-as-labeller, MAEST-as-scorer" pattern.
+  Replace the constant-0 placeholder.
+- [ ] Decision gate: ship behind `StrongGpuProfile`. If quality wins are
+  marginal on real techno/DnB content, scope down to *only* the
+  aggression-relabelling use case (smallest blast radius, biggest
+  immediate fix to a known bug).
+
+### Out of scope for Phase 4
+
+- Player-side LLM inference (architecturally rejected — player is CPU /
+  precomputed vectors only).
+- Live caption generation during mixing (same reason).
+- Replacing MAEST or MuQ-MuLan with the LLM. Captions augment audio
+  embeddings; they don't substitute for them. MAEST is deterministic,
+  fast, and captures timbral nuance below the lexicon. Captions are
+  generative and language-shaped. Both modalities together beat either
+  alone — that's the entire premise of (b).
+
+### LLM-as-validator for the audio embeddings
+
+A natural follow-on question: can the LLM directly validate the audio
+embedding's similarity calls — i.e. judge whether MAEST / MuQ-MuLan got a
+neighbour right or wrong?
+
+**Yes, in three concrete forms:**
+
+1. **Pairwise similarity judgement.** For a candidate seed→neighbour pair
+   from MAEST's HNSW top-k, prompt Audio Flamingo 3 (multi-audio in a
+   single call) with: *"Are these two tracks similar in mood, energy, and
+   production? Answer yes/no/borderline plus a one-sentence reason."* Run
+   on a stratified sample of N=200–500 pairs, compute agreement rate vs
+   MAEST's distance ranking. Disagreement clusters identify systematic
+   geometry failures — e.g. same Discogs label but very different sound.
+   This is essentially **using the LLM as a cheap human evaluator**, no
+   labels needed.
+
+2. **Triplet probe.** Sample (anchor, positive, negative) where positive
+   is a top-k MAEST neighbour and negative is mid-rank. Ask the LLM
+   *"Which of B or C is more similar to A?"* Compute the rate at which the
+   LLM agrees with MAEST's ordering. Low agreement = MAEST geometry
+   doesn't reflect perceptual similarity in that region. This is the
+   exact methodology used to evaluate MuLan / CLAP in the academic
+   literature, just with an LLM standing in for crowd workers.
+
+3. **Caption-distance vs audio-distance correlation.** For all pairs in a
+   sample, compute cosine in MAEST space and cosine in caption-embedding
+   space. The Spearman correlation between the two is a global
+   embedding-quality signal. Locally, pairs where the two distances
+   diverge by more than k σ are candidates for manual review — either
+   MAEST is over-clustering by label without semantic justification, or
+   the caption missed something the audio captured. **Both directions are
+   useful**: the first finds "false positives" in the suggestion graph,
+   the second finds "false negatives" the LLM is blind to.
+
+**Limits worth flagging:**
+- LLM judgements are not ground truth. The Audio Flamingo 3 / Music
+  Flamingo training distributions skew Western pop/rock. On underground
+  techno/DnB the LLM's "similarity" notion may be coarser than MAEST's
+  timbral resolution — i.e. MAEST is right and the LLM is the one
+  hallucinating disagreement.
+- Pairwise judgements are O(n²). Limit to top-k MAEST neighbours per
+  seed; never run all-pairs.
+- Costs: ~3–10 s per pair on 24 GB GPU. A 500-pair audit is 30 min — fine
+  for periodic geometry checks, not for every track.
+
+**Practical use:** add an offline "geometry audit" command to mesh-cue
+(`mesh-cue audit-similarity --sample 500`) that runs the LLM-validator
+sweep, dumps a CSV of disagreement cases, and ranks them by severity. Run
+periodically against the user's library — especially after embedding-model
+changes (Phase 2 / Phase 3 ship dates) — to spot regressions empirically
+rather than from spot-checks alone. This is also the cleanest way to
+*compare* MAEST vs MuQ-MuLan in production: which model's neighbours does
+the LLM agree with more often, on the user's actual library?
+
+This validator path does not require shipping the multimodal layer in Phase
+4 — it can run as a one-off audit tool the moment captions exist in the
+DB. So even if fusion / aggression-relabel turns out to be marginal, the
+LLM still earns its place as an evaluation harness.
+
+### Architecture options — the full design space
+
+The audit/validator workflow above is **only an evaluation harness** — its
+purpose is to confirm the LLM produces meaningful results on this library
+before committing to an architecture. The end goal is a **fully automatic
+system for the end user**: no per-track hand review, no manual fixture
+curation in production, no human-in-the-loop at user import time. The
+validator pass is a one-off developer-side sanity check.
+
+Given that target, the design space is broader than just "caption-fusion vs
+direct-LLM-comparison". Seven distinct options, evaluated against the
+constraint *"runs once at import in mesh-cue, player consumes precomputed
+vectors only"*:
+
+#### Option 1 — Caption-embedding fusion
+
+Audio LLM → free-text caption → sentence encoder (BGE-M3) → caption vector.
+Fuse with the audio embedding via concat-PCA or multi-view k-NN. Aggression
+refit on the fused space using LLM-derived scalars as labels.
+
+- **Strength:** captions describe DJ-relevant qualities (production, vocal
+  type, mix-friendliness) that the audio embedding can't see.
+- **Weakness:** caption similarity reflects what the LLM *chose to write
+  down*. Two sonically distinct tracks can land near each other if vocab
+  overlaps; two similar tracks can drift apart if the LLM described them
+  at different levels of detail. Vocabulary-shaped, not sound-shaped.
+- **Player cost:** standard cosine over PCA vector. Free.
+- **Per-track LLM calls:** 1 (caption) + 1 (tag pass).
+- **GPU at user box:** required at import time only.
+
+#### Option 2 — LLM-as-scorer comparing audio directly
+
+Audio LLM ingests two audio clips, outputs similarity / aggression
+directly. No caption layer, no sentence encoder. At import: pairwise
+comparisons over the audio-embedding's top-k → store LLM verdicts as the
+neighbour table. Aggression: LLM pairwise comparisons → reconstructed
+global ordering → stored as scalar.
+
+- **Strength:** LLM compares *sound to sound*, not vocabulary to
+  vocabulary. No caption-vocabulary bias.
+- **Weakness:** k LLM calls per track instead of 1 — much more expensive.
+  ~30–60 GPU-min per 100 tracks at k=10.
+- **Player cost:** free — reads precomputed neighbour tables and scalar.
+  LLM expense is paid once at import; output is crystallised into the
+  same artifact shape MAEST already produces.
+- **Per-track LLM calls:** 0 unary, k pairwise.
+- **GPU at user box:** required, more of it than Option 1.
+
+#### Option 3 — LLM-as-labeller, embedding-as-scorer (hybrid) — *recommended candidate*
+
+LLM produces structured tags + scalars at import; they're used as
+**training labels** for tiny classifier/regression heads on top of the
+audio embedding. Heads run at HNSW-rerank time on the audio vector only.
+
+```
+LLM (offline, import) → {aggression, dark, hypnotic, mix_friendly, ...}
+                        ↓ used as labels to fit
+                        a few small heads on the audio embedding
+                        ↓
+Player: reads audio vec, runs cheap heads, reranks
+```
+
+- **Strength:** combines LLM semantics with embedding calibration and
+  speed. Heads are deterministic, fast, stable across LLM model swaps.
+  This is the original EffNet probe-head pattern — just relabelled by an
+  LLM instead of by MTG-Jamendo / NSynth.
+- **Weakness:** quality capped at how well the audio embedding encodes the
+  axis the LLM is labelling. If the embedding is blind to "vocal-presence",
+  no head fit on it fixes that.
+- **Player cost:** a few tiny matmuls per track. Negligible.
+- **Per-track LLM calls:** 1 (tag pass).
+- **GPU at user box:** required at import time only, briefly.
+
+This is the strongest single option in our current view — LLM provides the
+semantic axes the audio embedding is missing without ever shipping
+caption-vocabulary geometry, and player runtime stays fully
+embedding-based.
+
+#### Option 4 — LLM as graph-edge weighter (no captions, no labels)
+
+Don't store captions, don't fit heads. Use the LLM offline to score *edges
+in the suggestion graph*: for each MAEST top-k pair, ask "are these
+similar?" and store the verdict as the edge weight. The graph itself
+becomes the artifact.
+
+- **Strength:** simplest schema. Most of MAEST's wrongly-tight neighbours
+  get pruned, most of its right neighbours kept. No caption-space
+  hallucinations.
+- **Weakness:** brittle to library additions (new tracks have no
+  LLM-validated edges until reanalysis). Doesn't help with aggression.
+- **Player cost:** edge lookup. Free.
+- **Per-track LLM calls:** 0 unary, k pairwise.
+- **GPU at user box:** required at import time, equivalent to Option 2.
+
+#### Option 5 — LLM-driven re-ranker on top of audio cosine
+
+Audio embedding does cheap recall (HNSW top-50). At import, an LLM
+pairwise rerank reorders those top-50. Final stored neighbour list is
+LLM-ordered, not cosine-ordered. Same shape as Option 2 but explicitly
+framed as "embedding recalls, LLM reranks".
+
+- **Strength:** industry-standard retrieval pattern (BM25 → cross-encoder
+  rerank). Output matches the existing neighbour-table structure exactly.
+- **Weakness:** same expense profile as Option 2; only fixes ordering,
+  not aggression.
+- **Player cost:** precomputed lookup. Free.
+
+#### Option 6 — LLM-distilled lightweight student model
+
+Run the LLM on a representative sample on the dev box. Distill its
+judgements into a small student model (~10M params, audio embedding in
+→ similarity score / aggression scalar out). Ship the student, not the
+LLM. User imports run the student — no LLM ever runs on the user's
+machine.
+
+- **Strength:** the only option that doesn't require a strong GPU at user
+  import time. Removes the StrongGpuProfile gate entirely.
+- **Weakness:** student quality capped by sample diversity and
+  distillation loss. Updating the LLM requires re-distillation on the dev
+  box and a new Mesh release.
+- **Player cost:** student is small enough to run on CPU at import time
+  (or even player time if needed).
+- **Per-track LLM calls at user box:** 0.
+- **GPU at user box:** **not required.**
+
+This is the only option fully aligned with "fully automatic for *every*
+end user". It turns the LLM layer from "power-user feature behind a GPU
+gate" into "default for everyone".
+
+#### Option 7 — Joint audio-text embedding (MuQ-MuLan / CLAP)
+
+Already in the plan as Phase 2. The model produces audio and text
+embeddings *in the same space* — no separate sentence encoder, no LLM
+captioning step. Text queries become a free byproduct. Sits orthogonal
+to Options 1–6: MuQ-MuLan replaces MAEST as the audio embedding;
+the LLM layer (1–6) sits on top of *whichever* audio embedding is in
+use. Strongest combinations: **MuQ-MuLan + Option 3** for self-host
+power users; **MuQ-MuLan + Option 6** for default-on automatic.
+
+#### Comparison matrix
+
+| Option | Caption vec stored | Per-track LLM calls (unary / pairwise) | Player runtime | Quality vs MAEST-alone | GPU required at user box |
+|---|---|---|---|---|---|
+| 1 — caption fusion | yes | 1 / 0 | cosine on PCA vec | better on semantic axes, vocab-biased | yes (import only) |
+| 2 — LLM scorer | no | 0 / k | precomputed lookup | best on sound-similarity | yes, lots (import only) |
+| **3 — LLM labeller + heads** | no | 1 / 0 | tiny heads | very good on labelled axes, fast | yes (import only, brief) |
+| 4 — LLM edge weighter | no | 0 / k | edge lookup | better edges only, no aggression fix | yes, lots (import only) |
+| 5 — LLM rerank | no | 0 / k | precomputed lookup | better ordering, same recall | yes, lots (import only) |
+| **6 — LLM-distilled student** | no | 0 / 0 (at user box) | student inference | good if distillation holds | **no** |
+| 7 — MuQ-MuLan joint embedding | n/a (text encoder is the LLM substitute) | 0 / 0 | cosine | best audio geometry + free text | no extra |
+
+#### Current leaning
+
+**Near-term, single-user GPU profile (ships fastest): Option 3** — LLM
+labeller, heads on the audio embedding. Fixes the aggression placeholder,
+adds the axes the audio embedding is blind to, keeps player runtime
+trivial, no caption-vocabulary geometry to defend. Captions can still be
+generated and stored as a side effect for explainability ("suggested
+because: dark hypnotic groove, similar mix-friendly intro") — but the
+*similarity and aggression numbers* come from heads, not captions.
+
+**Long-term, true zero-GPU end user: Option 6 layered on Option 3.** Run
+the LLM on a representative corpus on the dev machine, distill into a
+student model, ship the student with Mesh. Any user — strong GPU or not —
+gets the LLM-derived semantic axes for free. This is the only path that
+turns the LLM layer from "power-user feature" into "default for
+everyone".
+
+**Least preferred as primary mechanism: Option 1** (caption fusion).
+Vocabulary-shaped geometry is harder to reason about and harder to
+evaluate than the alternatives. Captions remain useful as
+*explainability* output, but probably shouldn't sit in the
+similarity-distance critical path.
+
+#### Decision is deferred until after Phase 2
+
+Path forward locked in 2026-05-02:
+
+1. Finish Phase 2 (MuQ-MuLan ONNX export spike, integration if it
+   passes). This decides the **audio embedding** that everything else
+   sits on top of.
+2. Run the validator/audit harness against whichever embedding wins
+   Phase 2. This produces the empirical signal — does the LLM actually
+   produce meaningful judgements on the user's library?
+3. *Then* pick between Options 1–6 (or a combination). The decision is
+   evidence-driven, not architectural-from-principle. The audit numbers
+   will tell us whether to invest in caption-space geometry, LLM-labelled
+   heads, distillation, or some mix.
+
+Until step 1 lands, no work happens on Options 1–6. They're all written
+down here so the option space is preserved when the decision point
+arrives.
