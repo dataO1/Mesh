@@ -175,12 +175,16 @@ EOF
       echo "[1/5] Installing Python deps into $SITE..."
       echo "      → $DEPS_TAG variant (torch from $TORCH_INDEX, $ORT_PKG)"
 
+      # Single pip install: keeps torch + everything resolved against the
+      # same indexes. The previous two-call form let the second call
+      # re-resolve torch from default PyPI, pulling cu130 wheels — which
+      # then mismatched onnxruntime-gpu's libcublasLt.so.12 expectation,
+      # silently falling back the CUDA EP to CPU at session creation.
+      # Pinning to 2.5.x keeps a known cu124-compatible pair.
       ${pythonEnv}/bin/pip install --target "$SITE" --upgrade --no-warn-script-location \
         --index-url "$TORCH_INDEX" \
         --extra-index-url "https://pypi.org/simple" \
-        "torch>=2.2,<2.6" "torchaudio>=2.2,<2.6" 2>&1 | tail -3
-
-      ${pythonEnv}/bin/pip install --target "$SITE" --upgrade --no-warn-script-location \
+        "torch>=2.5,<2.6" "torchaudio>=2.5,<2.6" \
         "muq>=0.1.0" \
         "huggingface_hub>=0.20" \
         "transformers>=4.40" \
@@ -188,7 +192,7 @@ EOF
         "numpy<2.0" \
         "onnx>=1.15" \
         "$ORT_PKG>=1.18" \
-        "optimum[exporters]>=1.20" 2>&1 | tail -5
+        "optimum[exporters]>=1.20" 2>&1 | tail -8
 
       echo "[1/5] Deps installed in $SITE"
     fi
