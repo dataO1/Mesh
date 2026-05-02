@@ -25,7 +25,13 @@ def main() -> int:
 
     try:
         # No cache_dir kwarg → respects HF_HOME / HF_HUB_CACHE from the env.
-        local_dir = snapshot_download(repo_id=REPO_ID)
+        # allow_patterns="*" forces fetching BOTH `pytorch_model.bin` and
+        # `model.safetensors` if both exist on the repo. Without this,
+        # snapshot_download grabs only the default file list (.bin), then
+        # `MuQMuLan.from_pretrained()` re-downloads safetensors (its
+        # default loader format) — burning ~1.3 GB at anonymous rate
+        # limits.
+        local_dir = snapshot_download(repo_id=REPO_ID, allow_patterns=["*"])
     except Exception as e:
         print(f"[download] FAILED: {e}", file=sys.stderr)
         return 1
