@@ -183,6 +183,11 @@
           inherit pkgs;
         };
 
+        # MuQ-MuLan ONNX export spike (Phase 2 of embedding-models research)
+        convertMuqMulanApp = import ./nix/apps/convert-muq-mulan-model.nix {
+          inherit pkgs;
+        };
+
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -295,6 +300,12 @@
           convert-beat-model = {
             type = "app";
             program = "${convertBeatModelApp}/bin/convert-beat-model";
+          };
+          # MuQ-MuLan PyTorch → ONNX spike (audio tower only, Phase 2)
+          # Auto-detects CUDA; flags: --cpu | --gpu | --audio FILE | --skip-bench
+          convert-muq-mulan-model = {
+            type = "app";
+            program = "${convertMuqMulanApp}/bin/convert-muq-mulan-model";
           };
           # nn~ PureData external (neural audio effects)
           build-nn-tilde = {
