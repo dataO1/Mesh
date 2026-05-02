@@ -1096,8 +1096,11 @@ impl SimilarityQuery {
         }).collect())
     }
 
-    /// Scan all 1280-dim EffNet embeddings — used as input for PCA build.
-    /// Returns (track_id, 1280-dim vector) for every track that has been ML-analysed.
+    /// Scan all ML embeddings — used as input for PCA build.
+    /// Returns (track_id, vector) for every track that has been ML-analysed.
+    /// Vector dimension is determined by whatever embedder produced it
+    /// (currently MAEST 2304-dim; was EffNet 1280-dim historically).
+    /// PCA fitting tolerates any dim and rejects mixed-dim sets at the call site.
     pub fn get_all_ml_embeddings(db: &MeshDb) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
         let result = db.run_query(r#"
             ?[track_id, vec] := *ml_embeddings{track_id, vec}
@@ -1106,7 +1109,7 @@ impl SimilarityQuery {
         Ok(result.rows.iter().filter_map(|row| {
             let id = row.get(0)?.get_int()?;
             let vec = extract_f32_vec(row.get(1)).ok().flatten()?;
-            if vec.len() != 1280 { return None; }
+            if vec.is_empty() { return None; }
             Some((id, vec))
         }).collect())
     }
