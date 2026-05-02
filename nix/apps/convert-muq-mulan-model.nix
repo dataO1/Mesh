@@ -133,6 +133,17 @@ EOF
     TEMP_DIR=$(mktemp -d -t muq-mulan-spike.XXXXXX)
     trap "rm -rf $TEMP_DIR" EXIT
 
+    # Pin HuggingFace caches to the spike's own dir so both the explicit
+    # snapshot_download (download.py) and any later from_pretrained()
+    # call (export.py / validate.py) hit the same files. Without this
+    # they diverge: download.py writes to --cache-dir foo, then
+    # MuQMuLan.from_pretrained() ignores that and re-downloads ~1.3 GB
+    # into the default ~/.cache/huggingface/hub/ — which we just saw
+    # crawl at anonymous-rate-limit speed.
+    export HF_HOME="$HOME/.cache/mesh-spike/hf"
+    export HF_HUB_CACHE="$HF_HOME/hub"
+    mkdir -p "$HF_HUB_CACHE"
+
     # ─── Stage 1: install (or reuse) Python deps ─────────────────────────
     if [ "$HAS_CUDA" = "1" ]; then
       TORCH_INDEX="https://download.pytorch.org/whl/cu124"

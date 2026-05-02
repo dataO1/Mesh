@@ -1,20 +1,21 @@
 """Download the MuQ-MuLan-large checkpoint from HuggingFace.
 
-Caches into `~/.cache/mesh-spike/muq-mulan/`. Idempotent — re-runs only
-download missing files. ~2.65 GB total.
+Uses whatever cache dir `HF_HOME` / `HF_HUB_CACHE` point at — the wrapper
+sets that to `~/.cache/mesh-spike/hf` so both this script and later
+`MuQMuLan.from_pretrained(...)` calls in export.py / validate.py share
+the same hub cache. Idempotent — re-runs only fetch missing files.
+~2.65 GB total.
 """
 import os
 import sys
-from pathlib import Path
 
-CACHE_ROOT = Path.home() / ".cache" / "mesh-spike" / "muq-mulan"
 REPO_ID = "OpenMuQ/MuQ-MuLan-large"
 
 
 def main() -> int:
-    CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    print(f"[download] target cache: {CACHE_ROOT}")
-    print(f"[download] repo:         {REPO_ID}")
+    cache_root = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or "(default ~/.cache/huggingface/hub/)"
+    print(f"[download] cache (HF_HUB_CACHE): {cache_root}")
+    print(f"[download] repo:                 {REPO_ID}")
 
     try:
         from huggingface_hub import snapshot_download
@@ -23,25 +24,19 @@ def main() -> int:
         return 2
 
     try:
-        local_dir = snapshot_download(
-            repo_id=REPO_ID,
-            cache_dir=str(CACHE_ROOT),
-            # Skip optional artifacts; the muq lib loads from the cache via
-            # standard HF resolution on first .from_pretrained() call anyway.
-        )
+        # No cache_dir kwarg → respects HF_HOME / HF_HUB_CACHE from the env.
+        local_dir = snapshot_download(repo_id=REPO_ID)
     except Exception as e:
         print(f"[download] FAILED: {e}", file=sys.stderr)
         return 1
 
     print(f"[download] OK — snapshot at: {local_dir}")
-    # Show file sizes so the user can sanity-check the ~2.65 GB target.
     total = 0
     for root, _, files in os.walk(local_dir):
         for f in files:
             fp = os.path.join(root, f)
             try:
-                size = os.path.getsize(fp)
-                total += size
+                total += os.path.getsize(fp)
             except OSError:
                 pass
     print(f"[download] total snapshot size: {total / 1024**3:.2f} GiB")
