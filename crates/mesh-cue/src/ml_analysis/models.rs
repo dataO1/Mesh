@@ -194,20 +194,30 @@ impl MlModelManager {
             dirs.push(PathBuf::from(p));
         }
 
-        // 2/3. Relative to the executable.
+        // 2-4. Relative to the executable. Walk up several levels to cover:
+        //   - release artifact:           <bin>/../models/
+        //   - cargo run:                  target/<profile>/<bin> → ../../models/
+        //   - cargo test (lib):           target/<profile>/deps/<bin> → ../../../models/
+        //   - cargo test (workspace bin): same as above
         if let Ok(exe) = std::env::current_exe() {
-            if let Some(exe_dir) = exe.parent() {
-                dirs.push(exe_dir.join("models"));
-                // Cargo target/<profile>/<bin> → ../../models/
-                if let Some(parent) = exe_dir.parent().and_then(|p| p.parent()) {
-                    dirs.push(parent.join("models"));
-                }
+            let mut cur = exe.parent().map(|p| p.to_path_buf());
+            for _ in 0..4 {
+                let Some(d) = cur.clone() else { break };
+                dirs.push(d.join("models"));
+                cur = d.parent().map(|p| p.to_path_buf());
             }
         }
 
-        // 4. Working directory (developer running from repo root).
+        // 5. Working directory (developer running from repo root or crate dir).
         if let Ok(cwd) = std::env::current_dir() {
             dirs.push(cwd.join("models"));
+            // Also the parent (cwd may be a crate subdir like crates/mesh-cue).
+            if let Some(parent) = cwd.parent() {
+                dirs.push(parent.join("models"));
+            }
+            if let Some(grand) = cwd.parent().and_then(|p| p.parent()) {
+                dirs.push(grand.join("models"));
+            }
         }
 
         // 5. Long-term cache.
