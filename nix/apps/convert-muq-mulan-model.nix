@@ -264,9 +264,13 @@ PYEOF
       }
 
       cp "$TEMP_DIR/$OUTPUT_NAME.onnx" "$OUTPUT_DIR/$OUTPUT_NAME.onnx"
+      # Sidecar with mel-normalization stats + MelSTFT params; Rust reads
+      # this to reproduce the exact preprocessing the model was trained on.
+      cp "$TEMP_DIR/$OUTPUT_NAME.onnx.norm.json" "$OUTPUT_DIR/$OUTPUT_NAME.onnx.norm.json"
       EXISTING_ONNX="$OUTPUT_DIR/$OUTPUT_NAME.onnx"
       SIZE=$(du -h "$EXISTING_ONNX" | cut -f1)
       echo "[3/5] Wrote $EXISTING_ONNX ($SIZE)"
+      echo "[3/5] Wrote $EXISTING_ONNX.norm.json (mel + stats sidecar)"
       echo ""
     else
       echo "[2-3/5] Skipped download + export (using existing $EXISTING_ONNX)"
