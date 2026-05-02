@@ -158,6 +158,14 @@ pub enum ReanalysisProgress {
         /// Present when analysis_type is Metadata
         metadata_options: Option<MetadataOptions>,
     },
+    /// Pre-flight model download progress (sent before any per-track work
+    /// begins). `bytes_done` and `bytes_total` are byte counts; `bytes_total`
+    /// is `None` if the server didn't send Content-Length.
+    ModelDownload {
+        model_name: String,
+        bytes_done: u64,
+        bytes_total: Option<u64>,
+    },
     /// Starting analysis of a specific track
     TrackStarted {
         track_name: String,

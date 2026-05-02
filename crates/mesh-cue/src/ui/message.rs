@@ -148,7 +148,6 @@ pub enum Message {
     CloseSettings,
     UpdateSettingsMinTempo(String),
     UpdateSettingsMaxTempo(String),
-    UpdateSettingsParallelProcesses(String),
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
     UpdateSettingsBpmSource(BpmSource),

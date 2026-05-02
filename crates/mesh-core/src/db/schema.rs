@@ -254,38 +254,15 @@ pub struct IntensityComponents {
 
 /// ML analysis results. It has no iced dependencies.
 ///
-/// All probability/score fields are `Option<f32>` in 0.0–1.0 range.
-/// Tags are derived from these at display time with appropriate thresholds.
+/// MAEST-only minimal schema: top genre + per-style scores. The legacy EffNet
+/// classification heads (mood, vocal, danceability, ...) have been removed
+/// pending retraining against MAEST 2304-dim embeddings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MlAnalysisData {
-    /// Vocal presence probability (0.0 = instrumental, 1.0 = definitely vocal)
-    pub vocal_presence: f32,
-    /// Legacy arousal field (no longer written, kept for DB compat)
-    pub arousal: Option<f32>,
-    /// Legacy valence field (no longer written, kept for DB compat)
-    pub valence: Option<f32>,
-    /// Primary genre label (highest confidence)
+    /// Primary genre label (highest-confidence Discogs style from MAEST)
     pub top_genre: Option<String>,
-    /// Top genre scores above threshold: Vec<(label, confidence)> serialized as JSON
+    /// Top genre scores above threshold: Vec<(label, confidence)>
     pub genre_scores: Vec<(String, f32)>,
-    /// Jamendo mood/theme tags: Vec<(label, confidence)>
-    pub mood_themes: Option<Vec<(String, f32)>>,
-    /// Binary mood classifier probabilities: Vec<(label, probability)>
-    pub binary_moods: Option<Vec<(String, f32)>>,
-    /// Danceability probability (0.0 = not danceable, 1.0 = very danceable)
-    pub danceability: Option<f32>,
-    /// Music approachability regression score (0.0–1.0)
-    pub approachability: Option<f32>,
-    /// Reverb "wetness" probability (0.0 = dry, 1.0 = wet/reverberant)
-    pub reverb: Option<f32>,
-    /// Timbre brightness probability (0.0 = dark, 1.0 = bright)
-    pub timbre: Option<f32>,
-    /// Tonality probability (0.0 = atonal, 1.0 = tonal)
-    pub tonal: Option<f32>,
-    /// Acoustic sound probability (0.0 = non-acoustic, 1.0 = acoustic)
-    pub mood_acoustic: Option<f32>,
-    /// Electronic sound probability (0.0 = non-electronic, 1.0 = electronic)
-    pub mood_electronic: Option<f32>,
 }
 
 // ============================================================================
@@ -354,7 +331,53 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     create_track_tags_relation(db)?;
     create_ml_analysis_relation(db)?;
 
-    // EffNet 1280-dim embedding relation + HNSW index
+    // ML embedding relation + HNSW index.
+    // Branch `embeddings-upgrade`: this is now MAEST 2304-dim
+    // (CLS|DIST|mean@layer7 of discogs-maest-30s-pw-519l-2), replacing the
+    // legacy 1280-dim EffNet vector. Existing DBs from main are migrated in
+    // place: HNSW index dropped, relation dropped + recreated at the new dim,
+    // embeddings repopulated by re-running analysis. There is no rollback on
+    // this branch — see documents/embedding-models-research.md.
+    if existing.contains("ml_embeddings") {
+        let needs_migration = match db.run_script(
+            "::columns ml_embeddings",
+            Default::default(),
+            cozo::ScriptMutability::Immutable,
+        ) {
+            Ok(cols) => {
+                // Old schema is <F32; 1280>; new is <F32; 2304>. Detect via a probe
+                // insert of a 2304-element vector — it fails on the old typed schema.
+                let mut params = std::collections::BTreeMap::new();
+                params.insert(
+                    "vec".to_string(),
+                    cozo::DataValue::List((0..2304).map(|_| cozo::DataValue::from(0.0_f64)).collect()),
+                );
+                let probe = db.run_script(
+                    "?[track_id, vec] <- [[-1, $vec]] :put ml_embeddings {track_id => vec}",
+                    params,
+                    cozo::ScriptMutability::Mutable,
+                );
+                let _ = cols;
+                if probe.is_err() {
+                    true
+                } else {
+                    // Probe row landed — clean it up. Schema is already 2304-wide.
+                    let _ = db.run_script(
+                        "?[track_id] <- [[-1]] :rm ml_embeddings {track_id}",
+                        std::collections::BTreeMap::new(),
+                        cozo::ScriptMutability::Mutable,
+                    );
+                    false
+                }
+            }
+            Err(_) => true,
+        };
+        if needs_migration {
+            log::warn!("Migrating ml_embeddings from EffNet 1280-dim to MAEST 2304-dim — rerun analysis to repopulate");
+            let _ = db.run_script("::hnsw drop ml_embeddings:similarity_index", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
+            let _ = db.run_script("::remove ml_embeddings", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
+        }
+    }
     create_ml_embeddings_relation(db)?;
     if !existing.contains("ml_embeddings") {
         log::debug!("Creating 'ml_embeddings' HNSW index");
@@ -613,26 +636,15 @@ fn create_ml_analysis_relation(db: &DbInstance) -> Result<(), DbError> {
     run_schema(db, r#"
         {:create ml_analysis {
             track_id: Int =>
-            vocal_presence: Float?,
-            arousal: Float?,
-            valence: Float?,
             top_genre: String?,
-            genre_scores_json: String?,
-            mood_scores_json: String?,
-            binary_moods_json: String?,
-            danceability: Float?,
-            approachability: Float?,
-            reverb: Float?,
-            timbre: Float?,
-            tonal: Float?,
-            mood_acoustic: Float?,
-            mood_electronic: Float?
+            genre_scores_json: String?
         }}
     "#)
 }
 
-/// Check if ml_analysis needs schema migration (e.g., missing columns).
-/// If so, drop and recreate. ML data is regenerated via Similarity reanalysis.
+/// Check if ml_analysis needs schema migration (e.g., the legacy 14-column
+/// schema is still in place). If so, drop and recreate. ML data is
+/// regenerated via Similarity reanalysis.
 fn migrate_ml_analysis_if_needed(db: &DbInstance) -> Result<(), DbError> {
     let result = db
         .run_script("::columns ml_analysis", Default::default(), cozo::ScriptMutability::Immutable)
@@ -644,11 +656,13 @@ fn migrate_ml_analysis_if_needed(db: &DbInstance) -> Result<(), DbError> {
         })
     };
 
-    // Check for latest schema additions — if any are missing, drop and recreate
-    let needs_migration = !has_column("binary_moods_json") || !has_column("danceability");
+    // Trigger migration when the legacy classification-head columns are still
+    // present (pre-MAEST schema). Drop+recreate is fine — MAEST analysis is
+    // regenerated via the Similarity reanalysis pipeline.
+    let needs_migration = has_column("vocal_presence");
 
     if needs_migration {
-        log::info!("Migrating 'ml_analysis' schema: adding new audio characteristic columns");
+        log::info!("Migrating 'ml_analysis' schema: collapsing to MAEST-only (top_genre + genre_scores_json)");
         db.run_script("::remove ml_analysis", Default::default(), cozo::ScriptMutability::Mutable)
             .map_err(|e| DbError::Schema(e.to_string()))?;
         create_ml_analysis_relation(db)?;
@@ -870,11 +884,13 @@ fn count_relation(db: &DbInstance, relation: &str) -> Result<usize, DbError> {
 }
 
 fn create_ml_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
-    // EffNet 1280-dim embedding vector — populated during ML import / re-analyse
+    // MAEST 2304-dim embedding (CLS|DIST|mean@layer7 of discogs-maest-30s-pw-519l-2),
+    // populated during ML import / re-analyse. Branch `embeddings-upgrade` —
+    // replaces the legacy 1280-dim EffNet vector.
     run_schema(db, r#"
         {:create ml_embeddings {
             track_id: Int =>
-            vec: <F32; 1280>
+            vec: <F32; 2304>
         }}
     "#)
 }
@@ -889,7 +905,7 @@ fn create_ml_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
     let result = db.run_script(
         r#"
         ::hnsw create ml_embeddings:similarity_index {
-            dim: 1280,
+            dim: 2304,
             m: 32,
             ef_construction: 300,
             dtype: F32,

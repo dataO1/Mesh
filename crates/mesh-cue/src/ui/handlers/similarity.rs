@@ -77,9 +77,7 @@ impl MeshCueApp {
                     for (track_id, _) in &pca_data {
                         if let Ok(Some(ml)) = db.get_ml_analysis(*track_id) {
                             let genre = ml.top_genre.as_deref().unwrap_or("");
-                            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(
-                                genre, ml.mood_themes.as_ref(),
-                            );
+                            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(genre);
                             aggression_estimates.insert(*track_id, aggr);
                         }
                     }

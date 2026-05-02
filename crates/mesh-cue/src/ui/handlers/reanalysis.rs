@@ -192,10 +192,21 @@ impl MeshCueApp {
                 self.reanalysis_state.total_tracks = total_tracks;
                 self.reanalysis_state.analysis_type = Some(analysis_type);
             }
+            ReanalysisProgress::ModelDownload { model_name, bytes_done, bytes_total } => {
+                use crate::ui::state::reanalysis::ModelDownloadStatus;
+                let done = bytes_total.map_or(false, |t| t > 0 && bytes_done >= t);
+                self.reanalysis_state.model_download = if done {
+                    None
+                } else {
+                    Some(ModelDownloadStatus { model_name, bytes_done, bytes_total })
+                };
+            }
             ReanalysisProgress::TrackStarted { track_name, .. } => {
                 // Only update the display name, not the counter
                 // (counter is updated by TrackCompleted)
                 self.reanalysis_state.current_track = Some(track_name);
+                // First track starting → download phase is over.
+                self.reanalysis_state.model_download = None;
             }
             ReanalysisProgress::TrackCompleted { success, .. } => {
                 if success {
@@ -215,6 +226,7 @@ impl MeshCueApp {
                 self.reanalysis_state.succeeded = succeeded;
                 self.reanalysis_state.failed = failed;
                 self.reanalysis_state.current_track = None;
+                self.reanalysis_state.model_download = None;
 
                 // Resume audio if a track is loaded
                 if self.collection.loaded_track.is_some() {

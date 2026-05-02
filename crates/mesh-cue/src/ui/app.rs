@@ -427,7 +427,6 @@ impl MeshCueApp {
             Message::CloseSettings => return self.handle_close_settings(),
             Message::UpdateSettingsMinTempo(value) => return self.handle_update_settings_min_tempo(value),
             Message::UpdateSettingsMaxTempo(value) => return self.handle_update_settings_max_tempo(value),
-            Message::UpdateSettingsParallelProcesses(value) => return self.handle_update_settings_parallel_processes(value),
             Message::UpdateSettingsTrackNameFormat(value) => return self.handle_update_settings_track_name_format(value),
             Message::UpdateSettingsGridBars(value) => return self.handle_update_settings_grid_bars(value),
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
@@ -1196,6 +1195,30 @@ impl MeshCueApp {
     fn view_reanalysis_progress_bar(&self) -> Option<Element<'_, Message>> {
         if !self.reanalysis_state.is_running {
             return None;
+        }
+
+        // Pre-flight model download takes priority over per-track progress —
+        // before the first track starts we want to show "Downloading MAEST…
+        // 42% (146.2/348.1 MB)" instead of "Re-analysing Metadata: 0/N".
+        if let Some(dl) = &self.reanalysis_state.model_download {
+            const MIB: f64 = 1_048_576.0;
+            let done_mb = dl.bytes_done as f64 / MIB;
+            let (progress, progress_text) = match dl.bytes_total {
+                Some(total) if total > 0 => {
+                    let total_mb = total as f64 / MIB;
+                    let frac = (dl.bytes_done as f32 / total as f32).clamp(0.0, 1.0);
+                    let pct = (frac * 100.0) as u32;
+                    (frac, format!("{}% ({:.1}/{:.1} MB)", pct, done_mb, total_mb))
+                }
+                _ => (0.0, format!("{:.1} MB", done_mb)),
+            };
+            let label = format!("Downloading {}", dl.model_name);
+            return Some(super::import_modal::build_status_bar(
+                label,
+                progress_text,
+                progress,
+                Message::CancelReanalysis,
+            ));
         }
 
         let progress = if self.reanalysis_state.total_tracks > 0 {

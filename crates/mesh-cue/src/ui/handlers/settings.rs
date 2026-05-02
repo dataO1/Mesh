@@ -41,12 +41,6 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Handle UpdateSettingsParallelProcesses message
-    pub fn handle_update_settings_parallel_processes(&mut self, value: String) -> Task<Message> {
-        self.settings.draft_parallel_processes = value;
-        Task::none()
-    }
-
     /// Handle UpdateSettingsTrackNameFormat message
     pub fn handle_update_settings_track_name_format(&mut self, value: String) -> Task<Message> {
         self.settings.draft_track_name_format = value;
@@ -138,7 +132,6 @@ impl MeshCueApp {
         // Parse and validate values
         let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
         let max = self.settings.draft_max_tempo.parse::<i32>().unwrap_or(208);
-        let parallel = self.settings.draft_parallel_processes.parse::<u8>().unwrap_or(4);
 
         // Check if audio output device changed
         let old_device = self.domain.config().audio.output_device;
@@ -151,8 +144,7 @@ impl MeshCueApp {
             config.analysis.bpm.min_tempo = min;
             config.analysis.bpm.max_tempo = max;
             config.analysis.bpm.source = self.settings.draft_bpm_source;
-            config.analysis.parallel_processes = parallel;
-            config.analysis.validate(); // validates both bpm and parallel_processes
+            config.analysis.validate();
 
             // Update track name format
             config.track_name_format = self.settings.draft_track_name_format.clone();
@@ -180,7 +172,6 @@ impl MeshCueApp {
             // Update drafts to show validated values
             self.settings.draft_min_tempo = config.analysis.bpm.min_tempo.to_string();
             self.settings.draft_max_tempo = config.analysis.bpm.max_tempo.to_string();
-            self.settings.draft_parallel_processes = config.analysis.parallel_processes.to_string();
         }
 
         // Apply theme immediately

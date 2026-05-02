@@ -34,7 +34,7 @@ use crate::analysis::{analyze_audio, AnalysisResult};
 use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file;
 use crate::import::StemImporter;
-use crate::ml_analysis::{self, MlAnalysisResult, MlAnalyzer};
+use crate::ml_analysis::{self, MlAnalysisResult};
 use crate::separation::{SeparationConfig, SeparationService};
 use anyhow::{Context, Result};
 use mesh_core::db::{DatabaseService, MlAnalysisData, Track};
@@ -45,7 +45,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// RAII guard for temp file cleanup - deletes file on drop unless disarmed.
@@ -322,8 +322,6 @@ pub struct ImportConfig {
     pub bpm_config: BpmConfig,
     /// Loudness normalization configuration
     pub loudness_config: LoudnessConfig,
-    /// Number of parallel analysis processes (1-16)
-    pub parallel_processes: u8,
     /// Stem separation configuration (for mixed audio files)
     pub separation_config: Option<SeparationConfig>,
 }
@@ -543,12 +541,14 @@ pub fn compute_stem_energy_ratios(
 
 /// Process a single track group: load stems, analyze, export
 ///
-/// This is run by worker threads. When `ml_analyzer` is provided,
-/// also runs ML analysis (genre, arousal/valence, mood) and auto-tagging.
+/// This is run by worker threads. When `ml_model_dir` is provided, also runs
+/// ML analysis (genre, embedding, auto-tagging) using a per-worker analyzer
+/// built lazily by `ml_analysis::with_thread_local_analyzer` — no shared
+/// Mutex, so all rayon workers run MAEST in parallel.
 fn process_single_track(
     group: &StemGroup,
     config: &ImportConfig,
-    ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
+    ml_model_dir: Option<&Path>,
     known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = group.base_name.clone();
@@ -774,14 +774,13 @@ fn process_single_track(
         final_path
     );
 
-    // ── ML Analysis (mel spectrogram → genre/arousal/mood/voice) ──
-    let ml_result: Option<MlAnalysisResult> = if ml_analyzer.is_some() {
+    // ── ML Analysis (mel spectrogram → MAEST 2304-d embedding + 519-class genre) ──
+    let ml_result: Option<MlAnalysisResult> = if let Some(model_dir) = ml_model_dir {
         // Compute mel spectrogram from full mix mono (pure Rust DSP)
-        let mono_for_mel = match importer.get_mono_sum() {
-            Ok(m) => m,
-            Err(_) => Vec::new(),
-        };
-        let mel = if !mono_for_mel.is_empty() {
+        let mono_for_mel = importer.get_mono_sum().unwrap_or_default();
+        let mel = if mono_for_mel.is_empty() {
+            None
+        } else {
             match ml_analysis::preprocessing::compute_mel_spectrogram(&mono_for_mel, SAMPLE_RATE as f32) {
                 Ok(mel) => {
                     log::info!(
@@ -795,72 +794,43 @@ fn process_single_track(
                     None
                 }
             }
-        } else {
-            None
         };
 
-        // Run EffNet + classification heads (genre, mood, voice/instrumental)
-        if let (Some(analyzer_arc), Some(mel)) = (ml_analyzer, mel) {
-            match analyzer_arc.lock() {
-                Ok(mut analyzer) => {
-                    match analyzer.analyze(&mel) {
-                        Ok(result) => {
-                            log::info!(
-                                "process_single_track: '{}' ML analysis complete — genre={:?}, arousal={:?}, vocal={:.3}",
-                                base_name, result.data.top_genre, result.data.arousal, result.data.vocal_presence
-                            );
-                            Some(result)
-                        }
-                        Err(e) => {
-                            log::warn!("process_single_track: '{}' ML inference failed: {}", base_name, e);
-                            Some(MlAnalysisResult {
-                                data: MlAnalysisData {
-                                    vocal_presence: 0.0,
-                                    arousal: None,
-                                    valence: None,
-                                    top_genre: None,
-                                    genre_scores: Vec::new(),
-                                    mood_themes: None,
-                                    binary_moods: None,
-                                    danceability: None,
-                                    approachability: None,
-                                    reverb: None,
-                                    timbre: None,
-                                    tonal: None,
-                                    mood_acoustic: None,
-                                    mood_electronic: None,
-                                },
-                                embedding: Vec::new(),
-                            })
-                        }
+        // Empty MAEST result used when we can't run inference for this track —
+        // genre stays None and embedding is empty so downstream callers
+        // recognize "ML attempted but unavailable" vs "ML disabled".
+        let empty = || MlAnalysisResult {
+            data: MlAnalysisData {
+                top_genre: None,
+                genre_scores: Vec::new(),
+            },
+            embedding: Vec::new(),
+        };
+
+        match mel {
+            Some(mel) => {
+                let inference = ml_analysis::with_thread_local_analyzer(model_dir, |analyzer| {
+                    analyzer.analyze(&mel)
+                });
+                match inference {
+                    Ok(Ok(result)) => {
+                        log::info!(
+                            "process_single_track: '{}' ML analysis complete — genre={:?}",
+                            base_name, result.data.top_genre,
+                        );
+                        Some(result)
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!("process_single_track: '{}' ML inference failed: {}", base_name, e);
+                        Some(empty())
+                    }
+                    Err(e) => {
+                        log::warn!("process_single_track: '{}' MAEST init failed: {}", base_name, e);
+                        Some(empty())
                     }
                 }
-                Err(e) => {
-                    log::error!("process_single_track: MlAnalyzer lock poisoned: {}", e);
-                    None
-                }
             }
-        } else {
-            // No mel spectrogram available
-            Some(MlAnalysisResult {
-                data: MlAnalysisData {
-                    vocal_presence: 0.0,
-                    arousal: None,
-                    valence: None,
-                    top_genre: None,
-                    genre_scores: Vec::new(),
-                    mood_themes: None,
-                    binary_moods: None,
-                    danceability: None,
-                    approachability: None,
-                    reverb: None,
-                    timbre: None,
-                    tonal: None,
-                    mood_acoustic: None,
-                    mood_electronic: None,
-                },
-                embedding: Vec::new(),
-            })
+            None => Some(empty()),
         }
     } else {
         None
@@ -907,8 +877,8 @@ fn process_single_track(
                     auto_tag_from_ml(track_id, &ml.data, &config.db_service);
                 }
 
-                // Persist EffNet embedding for 1280-dim HNSW similarity search
-                if ml.embedding.len() == 1280 {
+                // Persist MAEST 2304-d embedding for HNSW similarity search
+                if ml.embedding.len() == 2304 {
                     if let Err(e) = config.db_service.store_ml_embedding(track_id, &ml.embedding) {
                         log::warn!("process_single_track: Failed to store ML embedding for '{}': {}", base_name, e);
                     }
@@ -970,8 +940,10 @@ pub fn clear_ml_tags(track_id: i64, db: &DatabaseService) {
 
 /// Auto-generate tags from ML analysis results
 ///
-/// Creates colored tags for genre, mood, and vocal/instrumental classification.
-/// Tags are stored via the database tag system.
+/// Creates colored tags for the top Discogs styles emitted by MAEST. The
+/// previous mood / vocal / characteristic tag blocks were tied to the
+/// EffNet classification heads and have been removed alongside them; they
+/// will return once MAEST-trained heads are available.
 pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService) {
     // Genre tags — split Discogs "SuperGenre---SubGenre" into separate tags
     // Super-genres (dark blue), sub-genres (blue) — deduplicate super-genres
@@ -988,7 +960,7 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
                 }
             }
             // Consolidate DnB-family sub-genres into a single "DnB" tag,
-            // and skip "Instrumental" (redundant with ML voice detection)
+            // and skip "Instrumental" (redundant with future ML voice detection)
             let sub_tag = match sub_genre {
                 "Drum n Bass" | "Breakcore" | "Jungle" => "DnB",
                 "Instrumental" => continue,
@@ -1005,66 +977,6 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
             }
         }
     }
-
-    // Jamendo mood/theme tags (purple) — top 3 above 0.2 confidence
-    if let Some(ref moods) = ml.mood_themes {
-        for (label, score) in moods.iter().take(3) {
-            if *score >= 0.2 {
-                if let Err(e) = db.add_tag(track_id, label, Some("#8b5cf6")) {
-                    log::warn!("auto_tag_from_ml: Failed to add mood tag '{}': {}", label, e);
-                }
-            }
-        }
-    }
-
-    // Binary mood tags (pink) — above 0.5 threshold
-    if let Some(ref binary_moods) = ml.binary_moods {
-        for (label, prob) in binary_moods {
-            if *prob >= 0.5 {
-                if let Err(e) = db.add_tag(track_id, label, Some("#ec4899")) {
-                    log::warn!("auto_tag_from_ml: Failed to add binary mood tag '{}': {}", label, e);
-                }
-            }
-        }
-    }
-
-    // Vocal tag (gruvbox green — matches vocal stem color) — from ML voice/instrumental classifier
-    if ml.vocal_presence >= 0.5 {
-        let _ = db.add_tag(track_id, "Vocal", Some("#b8bb26"));
-    }
-
-    // Audio characteristic tags (teal) — from binary classifiers
-    // Timbre: Bright or Dark (mutually exclusive)
-    if let Some(bright_prob) = ml.timbre {
-        if bright_prob >= 0.5 {
-            let _ = db.add_tag(track_id, "Bright", Some("#0d9488"));
-        } else {
-            let _ = db.add_tag(track_id, "Dark", Some("#0d9488"));
-        }
-    }
-
-    // Tonal/Atonal (mutually exclusive)
-    if let Some(tonal_prob) = ml.tonal {
-        if tonal_prob >= 0.5 {
-            let _ = db.add_tag(track_id, "Tonal", Some("#0d9488"));
-        } else {
-            let _ = db.add_tag(track_id, "Atonal", Some("#0d9488"));
-        }
-    }
-
-    // Acoustic (positive class only — no tag for non-acoustic)
-    if let Some(acoustic_prob) = ml.mood_acoustic {
-        if acoustic_prob >= 0.5 {
-            let _ = db.add_tag(track_id, "Acoustic", Some("#0d9488"));
-        }
-    }
-
-    // Electronic (positive class only — no tag for non-electronic)
-    if let Some(electronic_prob) = ml.mood_electronic {
-        if electronic_prob >= 0.5 {
-            let _ = db.add_tag(track_id, "Electronic", Some("#0d9488"));
-        }
-    }
 }
 
 /// Process a mixed audio file: separate into stems, then import
@@ -1078,7 +990,7 @@ fn process_mixed_track(
     file: &MixedAudioFile,
     config: &ImportConfig,
     progress_tx: &Sender<ImportProgress>,
-    ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
+    ml_model_dir: Option<&Path>,
     known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = file.base_name.clone();
@@ -1197,7 +1109,7 @@ fn process_mixed_track(
     // Process using existing pipeline
     // Note: We don't delete source files from group.all_paths() since they're temp files
     // that will be cleaned up by the guards
-    process_single_track(&group, config, ml_analyzer, known_artists)
+    process_single_track(&group, config, ml_model_dir, known_artists)
 }
 
 /// Run the batch import process
@@ -1240,40 +1152,17 @@ pub fn run_batch_import(
         return;
     }
 
-    // Initialize ML analyzer if models are available
-    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
-        match ml_analysis::models::MlModelManager::new() {
-            Ok(mgr) => {
-                // Ensure models are downloaded before starting import
-                if let Err(e) = mgr.ensure_all_models() {
-                    log::warn!("run_batch_import: Failed to download ML models: {}", e);
-                }
-                let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
-                    .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-
-                match MlAnalyzer::new(&model_dir) {
-                    Ok(analyzer) => {
-                        log::info!("run_batch_import: ML analyzer initialized");
-                        Some(Arc::new(Mutex::new(analyzer)))
-                    }
-                    Err(e) => {
-                        log::warn!("run_batch_import: ML models not available, skipping ML analysis: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("run_batch_import: Cannot determine model cache dir: {}", e);
-                None
-            }
-        }
-    };
+    // Resolve the MAEST model directory once (downloads on demand). Each
+    // worker builds its own per-thread analyzer via
+    // `ml_analysis::with_thread_local_analyzer` so MAEST inference runs
+    // unserialized across the rayon pool.
+    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_maest_model_dir(|_, _, _| {});
 
     // Load known artists once for filename disambiguation across all tracks
     let known_artists = crate::metadata::get_known_artists(&config.db_service);
 
-    // Configure rayon thread pool with user-specified parallelism
-    let num_workers = config.parallel_processes.clamp(1, 16) as usize;
+    // Configure rayon thread pool sized to runtime parallelism
+    let num_workers = crate::analysis_workers();
     log::info!("run_batch_import: Using {} parallel workers", num_workers);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_workers)
@@ -1304,7 +1193,7 @@ pub fn run_batch_import(
                 });
 
                 // Process the track
-                let result = process_single_track(group, &config, ml_analyzer.as_ref(), &known_artists);
+                let result = process_single_track(group, &config, ml_model_dir.as_deref(), &known_artists);
 
                 // Delete source files on success
                 if result.success {
@@ -1400,33 +1289,9 @@ pub fn run_batch_import_mixed(
         return;
     }
 
-    // Initialize ML analyzer if models are available
-    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
-        match ml_analysis::models::MlModelManager::new() {
-            Ok(mgr) => {
-                if let Err(e) = mgr.ensure_all_models() {
-                    log::warn!("run_batch_import_mixed: Failed to download ML models: {}", e);
-                }
-                let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
-                    .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-
-                match MlAnalyzer::new(&model_dir) {
-                    Ok(analyzer) => {
-                        log::info!("run_batch_import_mixed: ML analyzer initialized");
-                        Some(Arc::new(Mutex::new(analyzer)))
-                    }
-                    Err(e) => {
-                        log::warn!("run_batch_import_mixed: ML models not available, skipping ML analysis: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("run_batch_import_mixed: Cannot determine model cache dir: {}", e);
-                None
-            }
-        }
-    };
+    // Resolve MAEST model dir once; per-worker analyzers built lazily via
+    // `ml_analysis::with_thread_local_analyzer` (no shared Mutex).
+    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_maest_model_dir(|_, _, _| {});
 
     // Load known artists once for filename disambiguation across all tracks
     let known_artists = crate::metadata::get_known_artists(&config.db_service);
@@ -1455,7 +1320,7 @@ pub fn run_batch_import_mixed(
         });
 
         // Process the track (separation + import)
-        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref(), &known_artists);
+        let result = process_mixed_track(file, &config, &progress_tx, ml_model_dir.as_deref(), &known_artists);
 
         // Delete source file on success
         if result.success {

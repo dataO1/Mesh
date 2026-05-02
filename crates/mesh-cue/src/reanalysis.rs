@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Re-analyze a single track's BPM and beat grid
@@ -169,14 +169,12 @@ fn create_drums_mono(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
 /// * `bpm_config` - BPM detection configuration
-/// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
 /// * `db` - Optional database service for storing results
 pub fn run_batch_reanalysis(
     tracks: Vec<PathBuf>,
     bpm_config: BpmConfig,
-    parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: std::sync::Arc<AtomicBool>,
     db: Option<Arc<DatabaseService>>,
@@ -209,8 +207,8 @@ pub fn run_batch_reanalysis(
         return;
     }
 
-    // Configure rayon thread pool with user-specified parallelism (same as batch_import)
-    let num_workers = parallel_processes.clamp(1, 16) as usize;
+    // Configure rayon thread pool sized to runtime parallelism (same as batch_import)
+    let num_workers = crate::analysis_workers();
     log::info!("run_batch_reanalysis: Using {} parallel workers", num_workers);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_workers)
@@ -296,12 +294,15 @@ pub fn run_batch_reanalysis(
 /// 1. Name/Artist: look up original_name from DB, re-parse with metadata module
 /// 2. Essentia subprocess (LUFS and/or Key): read audio at 44100Hz, run analysis
 /// 3. ML features (Tags): compute mel spectrogram, run EffNet, auto-tag
+/// `ml_model_dir`: path to the directory containing the MAEST ONNX.
+/// If `Some`, ML tags are run via a per-worker (thread-local) analyzer
+/// to avoid the global Mutex bottleneck. `None` skips ML tags entirely.
 fn reanalyze_metadata_track(
     path: &Path,
     options: &MetadataOptions,
     db: &Arc<DatabaseService>,
     known_artists: &HashSet<String>,
-    ml_analyzer: Option<&Arc<Mutex<crate::ml_analysis::MlAnalyzer>>>,
+    ml_model_dir: Option<&Path>,
 ) -> Result<()> {
     log::info!("reanalyze_metadata_track: {:?} (name={}, loudness={}, key={}, tags={})",
         path, options.name_artist, options.loudness, options.key, options.tags);
@@ -372,9 +373,9 @@ fn reanalyze_metadata_track(
         }
     }
 
-    // Step 3: ML features (Tags) — ort is thread-safe, no subprocess needed
+    // Step 3: ML features (Tags) — per-worker analyzer, no shared lock
     if options.tags {
-        if let Some(ml_arc) = ml_analyzer {
+        if let Some(model_dir) = ml_model_dir {
             // Load audio ONCE at native rate — used for ML mel spectrogram + stem energy RMS
             let reader = AudioFileReader::open(path)
                 .with_context(|| format!("Failed to open file: {:?}", path))?;
@@ -388,16 +389,15 @@ fn reanalyze_metadata_track(
                 &mono_mix, SAMPLE_RATE as f32,
             ).map_err(|e| anyhow::anyhow!("Mel spectrogram failed: {}", e))?;
 
-            let ml_result = {
-                let mut analyzer = ml_arc.lock()
-                    .map_err(|e| anyhow::anyhow!("MlAnalyzer lock poisoned: {}", e))?;
+            let ml_result = crate::ml_analysis::with_thread_local_analyzer(model_dir, |analyzer| {
                 analyzer.analyze(&mel)
-                    .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))?
-            };
+                    .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))
+            })
+            .map_err(|e| anyhow::anyhow!("Per-thread MAEST init failed: {}", e))??;
 
             log::info!(
-                "reanalyze_metadata_track: ML genre={:?}, vocal={:.3}",
-                ml_result.data.top_genre, ml_result.data.vocal_presence
+                "reanalyze_metadata_track: ML genre={:?}",
+                ml_result.data.top_genre,
             );
 
             if let Err(e) = db.store_ml_analysis(track_id, &ml_result.data) {
@@ -406,8 +406,8 @@ fn reanalyze_metadata_track(
             crate::batch_import::clear_ml_tags(track_id, db);
             crate::batch_import::auto_tag_from_ml(track_id, &ml_result.data, db);
 
-            // Persist EffNet embedding
-            if ml_result.embedding.len() == 1280 {
+            // Persist MAEST 2304-dim embedding
+            if ml_result.embedding.len() == 2304 {
                 if let Err(e) = db.store_ml_embedding(track_id, &ml_result.embedding) {
                     log::warn!("reanalyze_metadata_track: Failed to store ML embedding: {:?}", e);
                 }
@@ -451,14 +451,12 @@ fn reanalyze_metadata_track(
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
 /// * `options` - Which metadata sub-analyses to run
-/// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
 /// * `db` - Database service for storing results
 pub fn run_batch_metadata_reanalysis(
     tracks: Vec<PathBuf>,
     options: MetadataOptions,
-    parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: Arc<AtomicBool>,
     db: Arc<DatabaseService>,
@@ -500,39 +498,25 @@ pub fn run_batch_metadata_reanalysis(
     };
 
     // Initialize ML analyzer once for the entire batch (if Tags is ticked)
-    let ml_analyzer: Option<Arc<Mutex<ml_analysis::MlAnalyzer>>> = if options.tags {
-        match ml_analysis::MlModelManager::new() {
-            Ok(mgr) => {
-                if let Err(e) = mgr.ensure_all_models() {
-                    log::warn!("run_batch_metadata_reanalysis: Failed to download ML models: {}", e);
-                }
-                let model_dir = mgr
-                    .model_path(ml_analysis::MlModelType::EffNetEmbedding)
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .to_path_buf();
-                match ml_analysis::MlAnalyzer::new(&model_dir) {
-                    Ok(analyzer) => {
-                        log::info!("run_batch_metadata_reanalysis: ML analyzer initialized");
-                        Some(Arc::new(Mutex::new(analyzer)))
-                    }
-                    Err(e) => {
-                        log::warn!("run_batch_metadata_reanalysis: ML models not available, skipping tags: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("run_batch_metadata_reanalysis: Cannot determine model cache dir: {}", e);
-                None
-            }
-        }
+    // Resolve the model directory once (download blocks here if needed) and
+    // hand that path to each worker — the actual `MlAnalyzer` is built
+    // lazily per worker thread inside `with_thread_local_analyzer`, so all
+    // rayon workers run independent ORT sessions in parallel.
+    let ml_model_dir: Option<PathBuf> = if options.tags {
+        let dl_tx = progress_tx.clone();
+        ml_analysis::ensure_maest_model_dir(move |name, done, total| {
+            let _ = dl_tx.send(ReanalysisProgress::ModelDownload {
+                model_name: name.to_string(),
+                bytes_done: done,
+                bytes_total: total,
+            });
+        })
     } else {
         None
     };
 
-    // Configure rayon thread pool
-    let num_workers = parallel_processes.clamp(1, 16) as usize;
+    // Configure rayon thread pool sized to runtime parallelism
+    let num_workers = crate::analysis_workers();
     log::info!("run_batch_metadata_reanalysis: Using {} parallel workers", num_workers);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_workers)
@@ -561,7 +545,7 @@ pub fn run_batch_metadata_reanalysis(
                     total,
                 });
 
-                match reanalyze_metadata_track(path, &options, &db, &known_artists, ml_analyzer.as_ref()) {
+                match reanalyze_metadata_track(path, &options, &db, &known_artists, ml_model_dir.as_deref()) {
                     Ok(()) => {
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,

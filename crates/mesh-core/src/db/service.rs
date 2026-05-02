@@ -38,21 +38,13 @@ use std::collections::{BTreeMap, HashMap};
 // ML Scores - Lightweight Struct for Suggestion Scoring
 // ============================================================================
 
-/// Lightweight ML scores for suggestion scoring (subset of MlAnalysisData)
+/// Lightweight ML scores for suggestion scoring (subset of MlAnalysisData).
+///
+/// Post-MAEST minimal struct: only the top genre survives. The legacy
+/// classification-head fields (timbre/danceability/...) were removed when
+/// EffNet was retired and will be re-introduced once MAEST-trained heads land.
 #[derive(Debug, Clone, Default)]
 pub struct MlScores {
-    /// Danceability probability (0.0 = not danceable, 1.0 = very danceable)
-    pub danceability: Option<f32>,
-    /// Music approachability regression score (0.0–1.0)
-    pub approachability: Option<f32>,
-    /// Timbre brightness probability (0.0 = dark, 1.0 = bright)
-    pub timbre: Option<f32>,
-    /// Tonality probability (0.0 = atonal, 1.0 = tonal)
-    pub tonal: Option<f32>,
-    /// Acoustic sound probability (0.0 = non-acoustic, 1.0 = acoustic)
-    pub mood_acoustic: Option<f32>,
-    /// Electronic sound probability (0.0 = non-electronic, 1.0 = electronic)
-    pub mood_electronic: Option<f32>,
     /// Primary genre label
     pub top_genre: Option<String>,
 }
@@ -1637,44 +1629,26 @@ impl DatabaseService {
     // ML Analysis Operations
     // ========================================================================
 
-    /// Store ML analysis result for a track (upsert)
+    /// Store ML analysis result for a track (upsert).
+    ///
+    /// MAEST-only minimal write: top_genre + serialized genre_scores.
     pub fn store_ml_analysis(&self, track_id: i64, data: &super::schema::MlAnalysisData) -> Result<(), DbError> {
         let genre_scores_json = serde_json::to_string(&data.genre_scores)
             .unwrap_or_else(|_| "[]".to_string());
-        let mood_scores_json = data.mood_themes.as_ref()
-            .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
-        let binary_moods_json = data.binary_moods.as_ref()
-            .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
-
-        let opt_f32 = |v: Option<f32>| -> DataValue {
-            v.map(|f| DataValue::from(f as f64)).unwrap_or(DataValue::Null)
-        };
 
         let mut params = BTreeMap::new();
         params.insert("tid".to_string(), DataValue::from(track_id));
-        params.insert("vocal_presence".to_string(), DataValue::from(data.vocal_presence as f64));
-        params.insert("arousal".to_string(), opt_f32(data.arousal));
-        params.insert("valence".to_string(), opt_f32(data.valence));
-        params.insert("top_genre".to_string(), data.top_genre.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert(
+            "top_genre".to_string(),
+            data.top_genre.as_ref()
+                .map(|s| DataValue::Str(s.clone().into()))
+                .unwrap_or(DataValue::Null),
+        );
         params.insert("genre_scores_json".to_string(), DataValue::Str(genre_scores_json.into()));
-        params.insert("mood_scores_json".to_string(), mood_scores_json.map(|s| DataValue::Str(s.into())).unwrap_or(DataValue::Null));
-        params.insert("binary_moods_json".to_string(), binary_moods_json.map(|s| DataValue::Str(s.into())).unwrap_or(DataValue::Null));
-        params.insert("danceability".to_string(), opt_f32(data.danceability));
-        params.insert("approachability".to_string(), opt_f32(data.approachability));
-        params.insert("reverb".to_string(), opt_f32(data.reverb));
-        params.insert("timbre".to_string(), opt_f32(data.timbre));
-        params.insert("tonal".to_string(), opt_f32(data.tonal));
-        params.insert("mood_acoustic".to_string(), opt_f32(data.mood_acoustic));
-        params.insert("mood_electronic".to_string(), opt_f32(data.mood_electronic));
 
         self.db.run_script(r#"
-            ?[track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-              danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic] <- [[
-                $tid, $vocal_presence, $arousal, $valence, $top_genre, $genre_scores_json, $mood_scores_json, $binary_moods_json,
-                $danceability, $approachability, $reverb, $timbre, $tonal, $mood_acoustic, $mood_electronic
-            ]]
-            :put ml_analysis {track_id => vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-                              danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic}
+            ?[track_id, top_genre, genre_scores_json] <- [[$tid, $top_genre, $genre_scores_json]]
+            :put ml_analysis {track_id => top_genre, genre_scores_json}
         "#, params)?;
 
         Ok(())
@@ -1686,47 +1660,19 @@ impl DatabaseService {
         params.insert("tid".to_string(), DataValue::from(track_id));
 
         let result = self.db.run_query(r#"
-            ?[vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-              danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic] :=
-                *ml_analysis{track_id: $tid, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-                             danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic}
+            ?[top_genre, genre_scores_json] :=
+                *ml_analysis{track_id: $tid, top_genre, genre_scores_json}
         "#, params)?;
 
         if let Some(row) = result.rows.first() {
-            let vocal_presence = row[0].get_float().unwrap_or(0.0) as f32;
-            let arousal = row[1].get_float().map(|f| f as f32);
-            let valence = row[2].get_float().map(|f| f as f32);
-            let top_genre = row[3].get_str().map(|s| s.to_string());
-            let genre_scores: Vec<(String, f32)> = row[4].get_str()
+            let top_genre = row[0].get_str().map(|s| s.to_string());
+            let genre_scores: Vec<(String, f32)> = row[1].get_str()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
-            let mood_themes: Option<Vec<(String, f32)>> = row[5].get_str()
-                .and_then(|s| serde_json::from_str(s).ok());
-            let binary_moods: Option<Vec<(String, f32)>> = row[6].get_str()
-                .and_then(|s| serde_json::from_str(s).ok());
-            let danceability = row[7].get_float().map(|f| f as f32);
-            let approachability = row[8].get_float().map(|f| f as f32);
-            let reverb = row[9].get_float().map(|f| f as f32);
-            let timbre = row[10].get_float().map(|f| f as f32);
-            let tonal = row[11].get_float().map(|f| f as f32);
-            let mood_acoustic = row[12].get_float().map(|f| f as f32);
-            let mood_electronic = row[13].get_float().map(|f| f as f32);
 
             Ok(Some(super::schema::MlAnalysisData {
-                vocal_presence,
-                arousal,
-                valence,
                 top_genre,
                 genre_scores,
-                mood_themes,
-                binary_moods,
-                danceability,
-                approachability,
-                reverb,
-                timbre,
-                tonal,
-                mood_acoustic,
-                mood_electronic,
             }))
         } else {
             Ok(None)
@@ -1738,10 +1684,8 @@ impl DatabaseService {
         use std::collections::HashMap;
 
         let result = self.db.run_query(r#"
-            ?[track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-              danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic] :=
-                *ml_analysis{track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
-                             danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic}
+            ?[track_id, top_genre, genre_scores_json] :=
+                *ml_analysis{track_id, top_genre, genre_scores_json}
         "#, BTreeMap::new())?;
 
         let mut map = HashMap::new();
@@ -1750,40 +1694,14 @@ impl DatabaseService {
                 Some(id) => id,
                 None => continue,
             };
-            let vocal_presence = row[1].get_float().unwrap_or(0.0) as f32;
-            let arousal = row[2].get_float().map(|f| f as f32);
-            let valence = row[3].get_float().map(|f| f as f32);
-            let top_genre = row[4].get_str().map(|s| s.to_string());
-            let genre_scores: Vec<(String, f32)> = row[5].get_str()
+            let top_genre = row[1].get_str().map(|s| s.to_string());
+            let genre_scores: Vec<(String, f32)> = row[2].get_str()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
-            let mood_themes: Option<Vec<(String, f32)>> = row[6].get_str()
-                .and_then(|s| serde_json::from_str(s).ok());
-            let binary_moods: Option<Vec<(String, f32)>> = row[7].get_str()
-                .and_then(|s| serde_json::from_str(s).ok());
-            let danceability = row[8].get_float().map(|f| f as f32);
-            let approachability = row[9].get_float().map(|f| f as f32);
-            let reverb = row[10].get_float().map(|f| f as f32);
-            let timbre = row[11].get_float().map(|f| f as f32);
-            let tonal = row[12].get_float().map(|f| f as f32);
-            let mood_acoustic = row[13].get_float().map(|f| f as f32);
-            let mood_electronic = row[14].get_float().map(|f| f as f32);
 
             map.insert(tid, super::schema::MlAnalysisData {
-                vocal_presence,
-                arousal,
-                valence,
                 top_genre,
                 genre_scores,
-                mood_themes,
-                binary_moods,
-                danceability,
-                approachability,
-                reverb,
-                timbre,
-                tonal,
-                mood_acoustic,
-                mood_electronic,
             });
         }
         Ok(map)
@@ -1811,34 +1729,7 @@ impl DatabaseService {
         Ok(map)
     }
 
-    /// Batch-fetch arousal values for multiple tracks (for suggestion scoring)
-    pub fn get_arousal_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, f32>, DbError> {
-        use std::collections::HashMap;
-
-        if track_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
-        let mut params = BTreeMap::new();
-        params.insert("ids".to_string(), DataValue::List(id_values));
-
-        let result = self.db.run_query(r#"
-            ?[track_id, arousal] := *ml_analysis{track_id, arousal},
-                                    track_id in $ids,
-                                    is_not_null(arousal)
-        "#, params)?;
-
-        let mut map = HashMap::new();
-        for row in &result.rows {
-            if let (Some(tid), Some(arousal)) = (row[0].get_int(), row[1].get_float()) {
-                map.insert(tid, arousal as f32);
-            }
-        }
-        Ok(map)
-    }
-
-    /// Batch-fetch ML scores for suggestion scoring
+    /// Batch-fetch ML scores for suggestion scoring (post-MAEST: top_genre only).
     pub fn get_ml_scores_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, MlScores>, DbError> {
         use std::collections::HashMap;
 
@@ -1851,10 +1742,8 @@ impl DatabaseService {
         params.insert("ids".to_string(), DataValue::List(id_values));
 
         let result = self.db.run_query(r#"
-            ?[track_id, danceability, approachability, timbre, tonal,
-              mood_acoustic, mood_electronic, top_genre] :=
-                *ml_analysis{track_id, danceability, approachability, timbre, tonal,
-                             mood_acoustic, mood_electronic, top_genre},
+            ?[track_id, top_genre] :=
+                *ml_analysis{track_id, top_genre},
                 track_id in $ids
         "#, params)?;
 
@@ -1862,13 +1751,7 @@ impl DatabaseService {
         for row in &result.rows {
             if let Some(tid) = row[0].get_int() {
                 map.insert(tid, MlScores {
-                    danceability: row[1].get_float().map(|f| f as f32),
-                    approachability: row[2].get_float().map(|f| f as f32),
-                    timbre: row[3].get_float().map(|f| f as f32),
-                    tonal: row[4].get_float().map(|f| f as f32),
-                    mood_acoustic: row[5].get_float().map(|f| f as f32),
-                    mood_electronic: row[6].get_float().map(|f| f as f32),
-                    top_genre: row[7].get_str().map(|s| s.to_string()),
+                    top_genre: row[1].get_str().map(|s| s.to_string()),
                 });
             }
         }

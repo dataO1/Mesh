@@ -167,6 +167,10 @@ pub fn genre_aggression_score(genre: &str) -> f32 {
 
 /// Mood tag weights for aggression estimation.
 /// Positive = boosts aggression, negative = reduces aggression.
+///
+/// Currently unused — kept as a reference for the future MAEST-derived
+/// mood weighting that will replace the dropped Jamendo input.
+#[allow(dead_code)]
 pub fn mood_tag_weight(tag: &str) -> f32 {
     match tag {
         // Boost aggression
@@ -187,23 +191,22 @@ pub fn mood_tag_weight(tag: &str) -> f32 {
     }
 }
 
-/// Compute per-track aggression estimate from genre label + mood tags.
+/// Compute per-track aggression estimate from a genre label.
+///
 /// Returns a value in [0.0, 1.0].
-pub fn compute_track_aggression(
-    genre: &str,
-    mood_themes: Option<&Vec<(String, f32)>>,
-) -> f32 {
+///
+/// Note: previously this function also took a `mood_themes` Jamendo-tag
+/// vector that contributed 40% of the score. The mood-themes input was
+/// removed when the EffNet classification heads were retired; the mood
+/// contribution is currently held at a constant 0.0 and aggression will be
+/// re-derived from the new MAEST embedding in a follow-up branch.
+pub fn compute_track_aggression(genre: &str) -> f32 {
     let genre_score = genre_aggression_score(genre); // 0.0–0.75
 
-    let mood_score = mood_themes
-        .map(|tags| {
-            tags.iter()
-                .map(|(tag, prob)| prob * mood_tag_weight(tag))
-                .sum::<f32>()
-        })
-        .unwrap_or(0.0); // typically -0.5 to +0.5
+    // Mood-derived term is dropped on the embeddings-upgrade branch.
+    let mood_score: f32 = 0.0;
 
-    // Combine: 60% genre (reliable coarse signal) + 40% mood (noisy but fine-grained)
+    // Combine: 60% genre (reliable coarse signal) + 40% mood (currently 0).
     (0.6 * genre_score + 0.4 * (mood_score + 0.5).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 

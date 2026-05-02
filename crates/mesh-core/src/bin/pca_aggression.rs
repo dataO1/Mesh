@@ -219,8 +219,11 @@ fn main() {
         .collect();
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Also compute real aggression scores using genre+mood and show mood tags
-    eprintln!("\n=== SAMPLE TRACKS: genre + mood tags + aggression score ===\n");
+    // Also compute real aggression scores from the genre label only.
+    // (Mood-tag input was removed when the EffNet classification heads
+    // were retired; aggression will be re-derived from MAEST embeddings
+    // in a follow-up branch.)
+    eprintln!("\n=== SAMPLE TRACKS: genre + aggression score ===\n");
     let sample_names = ["Fuzzy Teeth", "Slinkystink", "Airbourne", "Shinde", "Overcome",
                          "Eraser", "Ego VIP", "Bitemark", "Omnivore", "Dooky Boogs",
                          "Paradise", "Witch", "Air ", "Reptile", "Blindside"];
@@ -229,15 +232,10 @@ fn main() {
         let matches = sample_names.iter().any(|s| track.title.contains(s));
         if !matches { continue; }
         if let Ok(Some(ml)) = db.get_ml_analysis(id) {
-            let moods = ml.mood_themes.clone().unwrap_or_default();
-            let top_moods: Vec<String> = moods.iter().take(5)
-                .map(|(tag, p)| format!("{}={:.2}", tag, p)).collect();
             let genre = ml.top_genre.as_deref().unwrap_or("");
-            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(
-                genre, ml.mood_themes.as_ref(),
-            );
-            eprintln!("  aggr={:.3} genre={:20} artist={:25} title={:30} moods=[{}]",
-                aggr, genre, track.artist.as_deref().unwrap_or("?"), track.title, top_moods.join(", "));
+            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(genre);
+            eprintln!("  aggr={:.3} genre={:20} artist={:25} title={:30}",
+                aggr, genre, track.artist.as_deref().unwrap_or("?"), track.title);
         }
     }
 

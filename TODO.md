@@ -275,3 +275,85 @@ These features would make clusters queryable and actionable:
 - [ ] Graph clustering: user-facing granularity slider (Coarse /
   Default / Fine) mapping to (γ, min_cluster_size) presets. Gives DJs
   direct control over "how many buckets" without needing a quality heuristic.
+
+# Research
+Also evaluate potential use cases of multi-modal LLMs like the Nemotron 3 Nano
+Omni. can they be of any additional value for this? maybe for example for the
+aggression analysis, refinement of genre classification, finding similarity
+outliers etc? in addiion to the embeddings, for uers, that have a strong GPU,
+like me.
+
+---
+
+# Embedding Model Upgrade
+
+## Quick win — MAEST-30s-pw-519l-2 (replaces EffNet on `embeddings-upgrade`)
+
+Same vendor (MTG-UPF), official ONNX, larger Discogs taxonomy (519 vs 400
+styles), trained on 4M tracks vs 3.3M. **Embedding is 2304-dim** on this
+branch (CLS|DIST|mean@layer7 stack — paper-recommended pooling, not
+CLS-only). Same CC-BY-NC license. CPU cost ~1.5–4s per track vs EffNet's
+50–200ms — still inside seconds-per-track import budget.
+
+Branch is **MAEST-only**: EffNet plus all 9 classification heads
+(timbre/tonal/danceability/approachability/mood_acoustic/mood_electronic/
+JamendoMood/voice/reverb) were removed wholesale at user direction. Heads
+can be retrained on top of MAEST embeddings later if needed.
+
+- [x] Swap `discogs-effnet-bsdynamic-1.onnx` for `discogs-maest-30s-pw-519l-2`
+  in `crates/mesh-cue/src/ml_analysis/`. Input `[1, 1876, 96]` mel @ 16 kHz,
+  pooled output 2304-dim from `PartitionedCall/Identity_7`.
+- [x] Remove all classification heads (`MlModelType`, `MlAnalyzer`,
+  `MlAnalysisData`, `auto_tag_from_ml`, suggestions/aggression mood input,
+  Track table Timbre/Danceability columns, db_inspect/intensity_report/
+  pca_aggression bin references, USB sync).
+- [x] DB schema migrated: `ml_embeddings` widened `<F32; 1280>` → `<F32; 2304>`,
+  `ml_analysis` collapsed to `{track_id => top_genre, genre_scores_json}`,
+  HNSW index recreated at dim 2304.
+- [x] `cargo check --workspace --no-default-features --all-targets` passes.
+- [ ] **User test:** trigger re-analysis on a small set of tracks, verify
+  2304-dim embeddings populate, sanity-check HNSW similarity rankings,
+  observe import-time regression. Findings → `documents/embedding-models-research.md`.
+- [ ] Re-tune Goldilocks bell-σ zones (recent commits 6bd1972, 045aba0
+  calibrated to EffNet's 1280-d distance distribution — full re-calibration
+  pass needed against MAEST 2304-d).
+- [ ] Rebuild PCA + t-SNE for the graph view (ml_pca_embeddings is dynamic-dim
+  so no schema change, but the projection itself needs rebuilding).
+- [ ] Re-derive aggression axis from MAEST embedding (currently 0.0 placeholder
+  for the mood-tag term in `suggestions/aggression.rs`).
+- [ ] Add LAION-CLAP `music_audioset_epoch_15` (or distilled DCLAP, ~30MB
+  ONNX) as a *parallel* index for text→audio query ("dark hypnotic techno
+  ~132 BPM"). 512-dim joint space, doesn't disturb similarity pipeline.
+
+### Candidate model comparison
+
+| Model | Params | Dim | ONNX | CPU/30s | License | Verdict |
+|---|---|---|---|---|---|---|
+| **MAEST-30s-pw-519l-2** | 87M | 768 | ✅ official | 1.5–4s | CC-BY-NC | Primary upgrade |
+| **MULE** (Pandora) | 62M | 1728 | ❌ TF only | 0.5–2s | GPL+CC-BY-NC | Best MARBLE genre, worse license + export work |
+| **LAION-CLAP music_audioset** | 80M | 512 | ✅ via optimum | ~1s | MIT/CC0 | Complement only — text→audio query |
+| MERT-v1-95M | 95M | 768 | ❌ no official | 5–8s | CC-BY-NC | Worse than MULE on genre, 5–10× slower |
+| MuQ-MuLan | 700M | — | ❌ | 5–10s | MIT/CC-BY-NC | Best perceptual numbers (72.4% ABX), no ONNX |
+| MusicFM-MSD | 330M | 1024 | ❌ | 5–10s | MIT/Apache | Strong on chords/beats, irrelevant to similarity |
+| OMAR-RQ | 580M | — | ❌ | 10s+ | AGPL+CC-BY-NC | Not viable — license, size, novel quantizer ops |
+
+## Future — pure-quality embedding upgrade (architecture change accepted)
+
+Rerank by **embedding quality alone** (still constrained to CPU-feasible local
+inference within tens of seconds per track, all weights distributable). License
+and ONNX availability treated as integration tax, not disqualifiers.
+
+| Rank | Model | Why it ranks here |
+|---|---|---|
+| 1 | **MuQ-MuLan** (700M) | Highest published perceptual-similarity number on Inst-Sim-ABX (72.4% triplet agreement on full mix, 90.4% with stem-separation reweighting — beats LAION-CLAP 71.9% / 83.2%). MagnaTagATune zero-shot ROC-AUC 79.3 (SOTA at publication). Music+text joint space gives text-query for free. PyTorch-only and ~10s CPU/track is the cost. |
+| 2 | **OMAR-RQ** (580M) | Newest MTG-UPF SSL model (ACM MM 2025), trained on 330K hours of Discogs-flavored YouTube audio. Best open SSL on MTG tagging mAP, pitch, chord, beat, structure. AGPL + novel RVQ/FSQ ops make integration painful but quality is top-tier. |
+| 3 | **MULE** (62M) | Beats every MERT variant on MTG-Jamendo genre (88.0 ROC / 20.4 AP), ties Jukebox-5B at 1/80th the size. Contrastively trained at Pandora specifically for similarity/playlist generation. CPU-cheapest of the high-quality options. TF→ONNX export is the integration cost. |
+| 4 | **MAEST-30s-pw-519l-2** (87M) | Same-vendor successor to EffNet, supervised on Discogs taxonomy. Strongest electronic-music coverage by construction. Loses to MuQ/OMAR-RQ on cross-domain music-IR but wins on Discogs-style genre alignment specifically. |
+| 5 | **MusicFM-MSD** (330M) | Best published numbers on chords/beats/structure. Similarity isn't its strength — picks up here only if Mesh wants to consolidate beat detection (currently Beat This!) and chord/key analysis into one backbone. |
+| 6 | **MERT-v1-330M** (330M) | Strong general MIR backbone but MARBLE numbers don't beat MULE on genre. Useful only if frame-level (75Hz) features are wanted for downstream tasks. |
+| 7 | **LAION-CLAP** (80M) | Excellent for the text-query path but weaker than music-pretrained models for pure audio-audio similarity. Stays as the complementary text encoder, not the primary embedder. |
+
+Top-quality realistic path: **MuQ-MuLan as primary similarity + MULE as
+HNSW-indexed fallback for the long tail + LAION-CLAP for text query.**
+Two-stage retrieval (cheap MULE recall → MuQ-MuLan rerank top-K) avoids
+running the 700M model over the full library on every query.

@@ -227,10 +227,6 @@ pub enum TrackColumn {
     CoplayCount,
     /// ML aggression score [0-1]
     Aggression,
-    /// ML timbre score (0=dark, 1=bright)
-    Timbre,
-    /// ML danceability score [0-1]
-    Danceability,
     /// Primary genre string
     Genre,
     /// Stem balance mini-bar (vocal/drums/bass/other)
@@ -257,8 +253,6 @@ impl TrackColumn {
             Self::EnergyMatch => "Intens",
             Self::CoplayCount => "CoPlay",
             Self::Aggression => "Aggr",
-            Self::Timbre => "Timbr",
-            Self::Danceability => "Dance",
             Self::Genre => "Genre",
             Self::StemBalance => "Stems",
             Self::FinalScore => "Match",
@@ -287,8 +281,6 @@ impl TrackColumn {
             Self::EnergyMatch => Length::Fixed(55.0),
             Self::CoplayCount => Length::Fixed(45.0),
             Self::Aggression => Length::Fixed(55.0),
-            Self::Timbre => Length::Fixed(50.0),
-            Self::Danceability => Length::Fixed(65.0),
             Self::Genre => Length::Fixed(90.0),
             Self::StemBalance => Length::Fixed(70.0),
             Self::FinalScore => Length::Fixed(55.0),
@@ -364,8 +356,6 @@ pub struct TrackRow<Id: Clone> {
     pub energy_match: Option<f32>,
     pub coplay_count: Option<f32>,
     pub aggression: Option<f32>,
-    pub timbre: Option<f32>,
-    pub danceability: Option<f32>,
     pub genre: Option<String>,
     pub stem_balance: Option<(f32, f32, f32, f32)>, // vocal, drums, bass, other
     pub final_score: Option<f32>,
@@ -396,8 +386,6 @@ impl<Id: Clone> TrackRow<Id> {
             energy_match: None,
             coplay_count: None,
             aggression: None,
-            timbre: None,
-            danceability: None,
             genre: None,
             stem_balance: None,
             final_score: None,
@@ -564,8 +552,6 @@ pub fn compare_tracks_by_column<Id: Clone>(
         TrackColumn::EnergyMatch => compare_opt_f32(a.energy_match, b.energy_match),
         TrackColumn::CoplayCount => compare_opt_f32(a.coplay_count, b.coplay_count),
         TrackColumn::Aggression => compare_opt_f32(a.aggression, b.aggression),
-        TrackColumn::Timbre => compare_opt_f32(a.timbre, b.timbre),
-        TrackColumn::Danceability => compare_opt_f32(a.danceability, b.danceability),
         TrackColumn::Genre => {
             let a_genre = a.genre.as_deref().unwrap_or("");
             let b_genre = b.genre.as_deref().unwrap_or("");
@@ -1166,8 +1152,6 @@ where
         TrackColumn::EnergyMatch => track.energy_match.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::CoplayCount => track.coplay_count.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Aggression => track.aggression.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
-        TrackColumn::Timbre => track.timbre.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
-        TrackColumn::Danceability => track.danceability.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".to_string()),
         TrackColumn::Genre => track.genre.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::FinalScore => track.final_score.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "-".to_string()),
     };

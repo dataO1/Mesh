@@ -30,19 +30,13 @@ fn main() {
 
     // Batch fetch all data
     let intensity_map = db.batch_get_intensity_components(&ids).unwrap_or_default();
-    let ml_scores = db.get_ml_scores_batch(&ids).unwrap_or_default();
     let stem_map = db.batch_get_stem_energy(&ids).unwrap_or_default();
 
-    // Collect all ML analysis for genre info
-    let mut genre_map: HashMap<i64, (String, f32, Option<f32>, Option<f32>)> = HashMap::new();
+    // Collect top-genre info from MAEST ml_analysis
+    let mut genre_map: HashMap<i64, String> = HashMap::new();
     for &id in &ids {
         if let Ok(Some(ml)) = db.get_ml_analysis(id) {
-            genre_map.insert(id, (
-                ml.top_genre.unwrap_or_default(),
-                ml.vocal_presence,
-                ml.danceability,
-                ml.timbre,
-            ));
+            genre_map.insert(id, ml.top_genre.unwrap_or_default());
         }
     }
 
@@ -56,19 +50,15 @@ fn main() {
     }
     rows.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Header
-    println!("rank\tcomposite\tartist\ttitle\tgenre\tflux\tflatness\tcentroid\tdissonance\tcrest\tenergy_var\tharm_complex\trolloff\tcent_var\tflux_var\tvocal\tdanceability\ttimbre\tdrum_energy\tbass_energy");
+    // Header (vocal/danceability/timbre columns dropped with classification heads)
+    println!("rank\tcomposite\tartist\ttitle\tgenre\tflux\tflatness\tcentroid\tdissonance\tcrest\tenergy_var\tharm_complex\trolloff\tcent_var\tflux_var\tdrum_energy\tbass_energy");
 
     for (rank, (id, title, artist, composite)) in rows.iter().enumerate() {
         let ic = intensity_map.get(id).unwrap();
-        let genre_info = genre_map.get(id);
-        let genre = genre_info.map(|(g, _, _, _)| g.as_str()).unwrap_or("");
-        let vocal = genre_info.map(|(_, v, _, _)| *v).unwrap_or(0.0);
-        let dance = genre_info.and_then(|(_, _, d, _)| *d).unwrap_or(0.0);
-        let timbre = genre_info.and_then(|(_, _, _, t)| *t).unwrap_or(0.0);
+        let genre = genre_map.get(id).map(|g| g.as_str()).unwrap_or("");
         let (_, drum, bass, _) = stem_map.get(id).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
 
-        println!("{}\t{:.4}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{:.4}",
+        println!("{}\t{:.4}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
             rank + 1,
             composite,
             artist.as_deref().unwrap_or(""),
@@ -84,9 +74,6 @@ fn main() {
             ic.spectral_rolloff,
             ic.centroid_variance,
             ic.flux_variance,
-            vocal,
-            dance,
-            timbre,
             drum,
             bass,
         );

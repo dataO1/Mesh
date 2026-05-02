@@ -27,6 +27,11 @@ pub struct ReanalysisState {
     /// Channel to receive progress updates from worker thread
     pub progress_rx: Option<Receiver<ReanalysisProgress>>,
 
+    /// Pre-flight model download in progress (model_name, bytes_done, bytes_total).
+    /// `Some` while downloading; cleared once all tracks start. Renders an
+    /// alternate label/bar in the footer instead of the per-track status.
+    pub model_download: Option<ModelDownloadStatus>,
+
     // Config modal state (for "Re-analyse Metadata..." modal)
     /// Whether the metadata config modal is open
     pub config_modal_open: bool,
@@ -40,4 +45,12 @@ pub struct ReanalysisState {
     pub config_key: bool,
     /// Checkbox: ML tags (genre, mood, etc.)
     pub config_tags: bool,
+}
+
+/// Snapshot of an in-flight model download for the footer status bar.
+#[derive(Debug, Clone)]
+pub struct ModelDownloadStatus {
+    pub model_name: String,
+    pub bytes_done: u64,
+    pub bytes_total: Option<u64>,
 }

@@ -65,9 +65,7 @@ fn main() {
         if let Ok(Some(ml)) = db.get_ml_analysis(id) {
             println!("\nSample ml_analysis (track_id={id}):");
             println!("  top_genre:    {:?}", ml.top_genre);
-            println!("  vocal:        {:?}", ml.vocal_presence);
-            println!("  danceability: {:?}", ml.danceability);
-            println!("  timbre:       {:?}", ml.timbre);
+            println!("  genre_scores: {} entries", ml.genre_scores.len());
         }
     }
 

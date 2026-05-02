@@ -161,12 +161,6 @@ pub struct AnalysisConfig {
     pub bpm: BpmConfig,
     /// Loudness normalization settings (for export-time waveform scaling)
     pub loudness: LoudnessConfig,
-    /// Number of parallel analysis processes (1-16)
-    ///
-    /// Each track is analyzed in a separate subprocess (procspawn) because
-    /// Essentia's C++ library is not thread-safe. This controls how many
-    /// subprocesses run concurrently during batch import.
-    pub parallel_processes: u8,
     /// Stem separation settings (for mixed audio import)
     pub separation: SeparationConfig,
 }
@@ -176,16 +170,14 @@ impl Default for AnalysisConfig {
         Self {
             bpm: BpmConfig::default(),
             loudness: LoudnessConfig::default(),
-            parallel_processes: 4,
             separation: SeparationConfig::default(),
         }
     }
 }
 
 impl AnalysisConfig {
-    /// Validate and clamp parallel_processes to valid range (1-16)
+    /// Validate and clamp sub-configs to their supported ranges.
     pub fn validate(&mut self) {
-        self.parallel_processes = self.parallel_processes.clamp(1, 16);
         self.bpm.validate();
         self.separation.validate();
     }
@@ -292,10 +284,9 @@ pub fn load_config(path: &Path) -> Config {
     let mut config: Config = mesh_core::config::load_config(path);
     config.analysis.validate();
     log::info!(
-        "load_config: Loaded config - BPM range: {}-{}, parallel: {}",
+        "load_config: Loaded config - BPM range: {}-{}",
         config.analysis.bpm.min_tempo,
         config.analysis.bpm.max_tempo,
-        config.analysis.parallel_processes
     );
     config
 }
@@ -346,7 +337,6 @@ mod tests {
                     ..Default::default()
                 },
                 loudness: LoudnessConfig::default(),
-                parallel_processes: 4,
                 separation: SeparationConfig::default(),
             },
             display: DisplayConfig::default(),

@@ -1070,7 +1070,6 @@ impl MeshCueDomain {
             db_service: self.db_service.clone(),
             bpm_config: self.config.analysis.bpm.clone(),
             loudness_config: self.config.analysis.loudness.clone(),
-            parallel_processes: self.config.analysis.parallel_processes,
             separation_config: Some(self.config.analysis.separation.clone()),
         };
 
@@ -1112,7 +1111,6 @@ impl MeshCueDomain {
             db_service: self.db_service.clone(),
             bpm_config: self.config.analysis.bpm.clone(),
             loudness_config: self.config.analysis.loudness.clone(),
-            parallel_processes: self.config.analysis.parallel_processes,
             separation_config: Some(self.config.analysis.separation.clone()),
         };
 
@@ -1180,7 +1178,6 @@ impl MeshCueDomain {
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
-        let parallel = self.config.analysis.parallel_processes;
         let db = self.db_service.clone();
         let cancel = cancel_flag.clone();
 
@@ -1191,7 +1188,6 @@ impl MeshCueDomain {
                     run_batch_reanalysis(
                         tracks,
                         bpm_config,
-                        parallel,
                         progress_tx,
                         cancel,
                         Some(db),
@@ -1204,7 +1200,6 @@ impl MeshCueDomain {
                     crate::reanalysis::run_batch_metadata_reanalysis(
                         tracks,
                         options,
-                        parallel,
                         progress_tx,
                         cancel,
                         db,
