@@ -48,6 +48,15 @@ impl MeshCueApp {
 
                     log::info!("[PCA] Projection built. Storing {}-dim vectors...", projection.n_components);
 
+                    // Wipe stale PCA rows before inserting fresh ones. Otherwise
+                    // tracks without a current ML embedding (here: 56/910 after
+                    // a partial reanalysis) keep their old-dim PCA vectors,
+                    // and later code that reads the relation panics when it
+                    // sees mixed dimensions in the same table.
+                    if let Err(e) = db.clear_all_pca_embeddings() {
+                        log::warn!("[PCA] Failed to clear stale PCA rows before rebuild: {e}");
+                    }
+
                     // Store projected vectors with progress updates
                     let mut stored = 0usize;
                     for (i, (track_id, raw_vec)) in embeddings.iter().enumerate() {

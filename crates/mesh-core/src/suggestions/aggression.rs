@@ -223,12 +223,35 @@ pub fn compute_aggression_weights(
     aggression_estimates: &HashMap<i64, f32>,
 ) -> Option<(Vec<f32>, f32)> {
     if pca_data.is_empty() { return None; }
-    let pca_dim = pca_data[0].1.len();
+
+    // Pick the modal PCA dim and drop rows whose vectors don't match. Stale
+    // rows from a prior PCA fit (different embedding model / different
+    // explained-variance cut) survive in `ml_pca_embeddings` until the next
+    // `Build Similarity Index` clears them; if any slip through, indexing
+    // `v[dim]` later would panic. Survive the mismatch instead.
+    let mut dim_counts: HashMap<usize, usize> = HashMap::new();
+    for (_, v) in pca_data {
+        *dim_counts.entry(v.len()).or_insert(0) += 1;
+    }
+    let pca_dim = match dim_counts.iter().max_by_key(|(_, c)| **c).map(|(d, _)| *d) {
+        Some(d) if d > 0 => d,
+        _ => return None,
+    };
+    if dim_counts.len() > 1 {
+        log::warn!(
+            "compute_aggression_weights: mixed PCA dims in input ({:?}); using {} and dropping mismatched rows",
+            dim_counts, pca_dim,
+        );
+    }
 
     // Build paired data: tracks that have both PCA and aggression estimate
-    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter().map(|(id, v)| (*id, v)).collect();
+    let pca_map: HashMap<i64, &Vec<f32>> = pca_data.iter()
+        .filter(|(_, v)| v.len() == pca_dim)
+        .map(|(id, v)| (*id, v))
+        .collect();
     let paired: Vec<i64> = pca_data.iter()
-        .filter_map(|(id, _)| aggression_estimates.get(id).map(|_| *id))
+        .filter(|(id, v)| v.len() == pca_dim && aggression_estimates.contains_key(id))
+        .map(|(id, _)| *id)
         .collect();
 
     if paired.len() < 10 { return None; }

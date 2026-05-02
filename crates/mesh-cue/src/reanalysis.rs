@@ -406,11 +406,29 @@ fn reanalyze_metadata_track(
             crate::batch_import::clear_ml_tags(track_id, db);
             crate::batch_import::auto_tag_from_ml(track_id, &ml_result.data, db);
 
-            // Persist MAEST 2304-dim embedding
-            if ml_result.embedding.len() == 2304 {
-                if let Err(e) = db.store_ml_embedding(track_id, &ml_result.embedding) {
-                    log::warn!("reanalyze_metadata_track: Failed to store ML embedding: {:?}", e);
-                }
+            // Persist MAEST 2304-dim embedding. The Cozo schema is strictly
+            // typed `<F32; 2304>` — anything else cannot be stored. Treat
+            // wrong-size as a hard failure so the batch counter surfaces it
+            // instead of silently swallowing the track (we previously had a
+            // silent `if len == 2304` gate that left 56/910 tracks with no
+            // embedding while reporting "910 succeeded, 0 failed").
+            const EXPECTED_EMB_DIM: usize = 2304;
+            if ml_result.embedding.len() != EXPECTED_EMB_DIM {
+                log::error!(
+                    "reanalyze_metadata_track: MAEST returned wrong embedding size {} (expected {}) for {:?} — track marked failed",
+                    ml_result.embedding.len(), EXPECTED_EMB_DIM, path,
+                );
+                return Err(anyhow::anyhow!(
+                    "MAEST embedding wrong dim: got {}, expected {}",
+                    ml_result.embedding.len(), EXPECTED_EMB_DIM,
+                ));
+            }
+            if let Err(e) = db.store_ml_embedding(track_id, &ml_result.embedding) {
+                log::error!(
+                    "reanalyze_metadata_track: Failed to store ML embedding for {:?}: {:?}",
+                    path, e,
+                );
+                return Err(anyhow::anyhow!("store_ml_embedding failed: {}", e));
             }
 
             // Stem energy densities — reuse already-loaded stems (no extra file open)

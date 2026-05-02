@@ -962,9 +962,24 @@ impl DatabaseService {
 
     // ── PCA 128-dim embeddings ───────────────────────────────────────────────
 
-    /// Store a 128-dim PCA-projected embedding (built by "Build Similarity Index").
+    /// Store a PCA-projected embedding (built by "Build Similarity Index").
+    /// Dim is determined at build time from the input ML embedding dim and
+    /// the explained-variance target — currently ~131 for MAEST 2304-dim input.
     pub fn store_pca_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
         SimilarityQuery::upsert_pca_embedding(&self.db, track_id, embedding)
+    }
+
+    /// Drop every row in `ml_pca_embeddings`. Used at the start of a PCA
+    /// rebuild so stale rows (different dim from a prior projection, e.g.
+    /// 109-dim EffNet leftovers when MAEST refits to ~131 dims) don't
+    /// corrupt downstream consumers that assume a consistent dim across
+    /// the relation.
+    pub fn clear_all_pca_embeddings(&self) -> Result<(), DbError> {
+        self.db.run_script(
+            "?[track_id] := *ml_pca_embeddings{track_id} :rm ml_pca_embeddings {track_id}",
+            std::collections::BTreeMap::new(),
+        )?;
+        Ok(())
     }
 
     /// Retrieve the raw 128-dim PCA embedding (None if not yet built).
