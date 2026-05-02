@@ -28,6 +28,8 @@ let
   # PyTorch pip wheels link against libstdc++.so.6 at import time;
   # in pure Nix env the system .so isn't on LD_LIBRARY_PATH by default.
   libstdcppPath = "${pkgs.stdenv.cc.cc.lib}/lib";
+  # NumPy's C extensions need libz.so.1 at import; not in the bare nix shell.
+  zlibPath = "${pkgs.zlib}/lib";
 
   # Reference the spike's Python files so Nix puts them in the store and
   # we can `cp` them into the temp_dir at runtime.
@@ -39,8 +41,8 @@ let
   convertScript = pkgs.writeShellScriptBin "convert-muq-mulan-model" ''
     set -euo pipefail
 
-    # PyTorch needs libstdc++.so.6 visible.
-    export LD_LIBRARY_PATH="${libstdcppPath}:''${LD_LIBRARY_PATH:-}"
+    # PyTorch needs libstdc++.so.6 visible; NumPy needs libz.so.1.
+    export LD_LIBRARY_PATH="${libstdcppPath}:${zlibPath}:''${LD_LIBRARY_PATH:-}"
 
     # NVIDIA host driver: PyTorch needs `libcuda.so.1` (the driver shim,
     # NOT the cu124 wheel's bundled cudart) to detect the GPU. The driver
