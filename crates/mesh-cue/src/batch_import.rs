@@ -774,7 +774,7 @@ fn process_single_track(
         final_path
     );
 
-    // ── ML Analysis (mel spectrogram → MAEST 2304-d embedding + 519-class genre) ──
+    // ── ML Analysis (24 kHz / 128-band mel → MuQ-MuLan 512-d embedding) ──
     let ml_result: Option<MlAnalysisResult> = if let Some(model_dir) = ml_model_dir {
         // Compute mel spectrogram from full mix mono (pure Rust DSP)
         let mono_for_mel = importer.get_mono_sum().unwrap_or_default();
@@ -796,9 +796,10 @@ fn process_single_track(
             }
         };
 
-        // Empty MAEST result used when we can't run inference for this track —
-        // genre stays None and embedding is empty so downstream callers
-        // recognize "ML attempted but unavailable" vs "ML disabled".
+        // Empty result used when we can't run inference for this track —
+        // genre stays None (MuQ-MuLan never sets it) and embedding is empty
+        // so downstream callers recognize "ML attempted but unavailable"
+        // vs "ML disabled".
         let empty = || MlAnalysisResult {
             data: MlAnalysisData {
                 top_genre: None,
@@ -825,7 +826,7 @@ fn process_single_track(
                         Some(empty())
                     }
                     Err(e) => {
-                        log::warn!("process_single_track: '{}' MAEST init failed: {}", base_name, e);
+                        log::warn!("process_single_track: '{}' MuQ-MuLan init failed: {}", base_name, e);
                         Some(empty())
                     }
                 }
@@ -877,11 +878,19 @@ fn process_single_track(
                     auto_tag_from_ml(track_id, &ml.data, &config.db_service);
                 }
 
-                // Persist MAEST 2304-d embedding for HNSW similarity search
-                if ml.embedding.len() == 2304 {
+                // Persist MuQ-MuLan 512-d embedding for HNSW similarity search.
+                // Hard-fail on dim mismatch: store_ml_embedding requires exactly
+                // MUQ_MULAN_EMBEDDING_DIM, anything else means inference returned
+                // a malformed vector (the ONNX is contractually 512-d).
+                if ml.embedding.len() == ml_analysis::MUQ_MULAN_EMBEDDING_DIM {
                     if let Err(e) = config.db_service.store_ml_embedding(track_id, &ml.embedding) {
                         log::warn!("process_single_track: Failed to store ML embedding for '{}': {}", base_name, e);
                     }
+                } else if !ml.embedding.is_empty() {
+                    log::error!(
+                        "process_single_track: '{}' MuQ-MuLan returned wrong embedding dim {} (expected {}); skipping store",
+                        base_name, ml.embedding.len(), ml_analysis::MUQ_MULAN_EMBEDDING_DIM,
+                    );
                 }
 
                 // Persist stem energy densities for complement scoring in suggestions
@@ -1156,7 +1165,7 @@ pub fn run_batch_import(
     // worker builds its own per-thread analyzer via
     // `ml_analysis::with_thread_local_analyzer` so MAEST inference runs
     // unserialized across the rayon pool.
-    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_maest_model_dir(|_, _, _| {});
+    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_ml_model_dir(|_, _, _| {});
 
     // Load known artists once for filename disambiguation across all tracks
     let known_artists = crate::metadata::get_known_artists(&config.db_service);
@@ -1291,7 +1300,7 @@ pub fn run_batch_import_mixed(
 
     // Resolve MAEST model dir once; per-worker analyzers built lazily via
     // `ml_analysis::with_thread_local_analyzer` (no shared Mutex).
-    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_maest_model_dir(|_, _, _| {});
+    let ml_model_dir: Option<PathBuf> = ml_analysis::ensure_ml_model_dir(|_, _, _| {});
 
     // Load known artists once for filename disambiguation across all tracks
     let known_artists = crate::metadata::get_known_artists(&config.db_service);

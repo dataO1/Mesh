@@ -919,25 +919,25 @@ impl DatabaseService {
     // ML Embeddings & Similarity
     // ========================================================================
 
-    // ── EffNet ML embedding ─────────────────────────────────────────────────
+    // ── ML embedding (MuQ-MuLan 512-d) ──────────────────────────────────────
 
-    /// Store a 1280-dim EffNet embedding for similarity search.
+    /// Store the 512-dim MuQ-MuLan audio-tower embedding for similarity search.
     pub fn store_ml_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
         SimilarityQuery::upsert_ml_embedding(&self.db, track_id, embedding)
     }
 
-    /// Retrieve the raw EffNet embedding for a track (None if not yet analysed).
+    /// Retrieve the raw MuQ-MuLan embedding for a track (None if not yet analysed).
     pub fn get_ml_embedding_raw(&self, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
         SimilarityQuery::get_ml_embedding_raw(&self.db, track_id)
     }
 
-    /// Find similar tracks via EffNet HNSW (same DB, by track ID).
+    /// Find similar tracks via MuQ-MuLan HNSW (same DB, by track ID).
     pub fn find_similar_tracks_ml(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar_by_ml_id(&self.db, track_id, limit)?;
         Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
     }
 
-    /// Find similar tracks via EffNet HNSW using a raw vector (cross-database).
+    /// Find similar tracks via MuQ-MuLan HNSW using a raw vector (cross-database).
     pub fn find_similar_by_ml_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar_by_ml_vector(&self.db, query_vec, limit)?;
         Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
@@ -964,16 +964,17 @@ impl DatabaseService {
 
     /// Store a PCA-projected embedding (built by "Build Similarity Index").
     /// Dim is determined at build time from the input ML embedding dim and
-    /// the explained-variance target — currently ~131 for MAEST 2304-dim input.
+    /// the explained-variance target. Under MuQ-MuLan (512-dim input) the
+    /// projection typically lands well below 512; the exact dim is
+    /// auto-detected and recorded with each row.
     pub fn store_pca_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
         SimilarityQuery::upsert_pca_embedding(&self.db, track_id, embedding)
     }
 
     /// Drop every row in `ml_pca_embeddings`. Used at the start of a PCA
-    /// rebuild so stale rows (different dim from a prior projection, e.g.
-    /// 109-dim EffNet leftovers when MAEST refits to ~131 dims) don't
-    /// corrupt downstream consumers that assume a consistent dim across
-    /// the relation.
+    /// rebuild so stale rows (different dim from a prior projection — e.g.
+    /// MAEST/EffNet leftovers when MuQ-MuLan refits) don't corrupt
+    /// downstream consumers that assume a consistent dim across the relation.
     pub fn clear_all_pca_embeddings(&self) -> Result<(), DbError> {
         self.db.run_script(
             "?[track_id] := *ml_pca_embeddings{track_id} :rm ml_pca_embeddings {track_id}",

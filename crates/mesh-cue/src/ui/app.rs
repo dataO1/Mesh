@@ -1197,9 +1197,10 @@ impl MeshCueApp {
             return None;
         }
 
-        // Pre-flight model download takes priority over per-track progress —
-        // before the first track starts we want to show "Downloading MAEST…
-        // 42% (146.2/348.1 MB)" instead of "Re-analysing Metadata: 0/N".
+        // Pre-flight model download UI — kept alive for any future model
+        // that ships with a remote download (the current MuQ-MuLan flow has
+        // no download step; the ONNX is built locally via the convert app,
+        // so this block is dormant under MuQ-MuLan).
         if let Some(dl) = &self.reanalysis_state.model_download {
             const MIB: f64 = 1_048_576.0;
             let done_mb = dl.bytes_done as f64 / MIB;

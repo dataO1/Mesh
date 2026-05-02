@@ -254,14 +254,17 @@ pub struct IntensityComponents {
 
 /// ML analysis results. It has no iced dependencies.
 ///
-/// MAEST-only minimal schema: top genre + per-style scores. The legacy EffNet
-/// classification heads (mood, vocal, danceability, ...) have been removed
-/// pending retraining against MAEST 2304-dim embeddings.
+/// MuQ-MuLan emits a 512-d embedding only — no genre / classification head.
+/// These fields are kept for schema compatibility (older rows may still
+/// carry genre info from the prior MAEST integration) but new analyses
+/// always populate them as `None` / empty. Downstream consumers
+/// (USB sync, suggestion scoring) already tolerate missing genre.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MlAnalysisData {
-    /// Primary genre label (highest-confidence Discogs style from MAEST)
+    /// Legacy: top genre label from the MAEST 519-class head. Always
+    /// `None` under MuQ-MuLan; preserved on older rows for back-compat.
     pub top_genre: Option<String>,
-    /// Top genre scores above threshold: Vec<(label, confidence)>
+    /// Legacy: per-style scores from MAEST. Always empty under MuQ-MuLan.
     pub genre_scores: Vec<(String, f32)>,
 }
 
@@ -332,48 +335,40 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     create_ml_analysis_relation(db)?;
 
     // ML embedding relation + HNSW index.
-    // Branch `embeddings-upgrade`: this is now MAEST 2304-dim
-    // (CLS|DIST|mean@layer7 of discogs-maest-30s-pw-519l-2), replacing the
-    // legacy 1280-dim EffNet vector. Existing DBs from main are migrated in
-    // place: HNSW index dropped, relation dropped + recreated at the new dim,
-    // embeddings repopulated by re-running analysis. There is no rollback on
-    // this branch — see documents/embedding-models-research.md.
+    // Branch `muq-mulan-integration`: MuQ-MuLan-large 512-dim joint-space
+    // audio embedding (l2-normalized, averaged across 10 s clips).
+    // Replaces both the earlier MAEST 2304-dim and the original EffNet
+    // 1280-dim schemas. Migration probes the existing relation with a
+    // 512-element vector; if the typed schema rejects it we drop the
+    // index + relation and recreate at the new dim. Embeddings are
+    // repopulated on next reanalysis. No rollback —
+    // see documents/embedding-models-research.md::Phase 2.
     if existing.contains("ml_embeddings") {
-        let needs_migration = match db.run_script(
-            "::columns ml_embeddings",
-            Default::default(),
-            cozo::ScriptMutability::Immutable,
-        ) {
-            Ok(cols) => {
-                // Old schema is <F32; 1280>; new is <F32; 2304>. Detect via a probe
-                // insert of a 2304-element vector — it fails on the old typed schema.
-                let mut params = std::collections::BTreeMap::new();
-                params.insert(
-                    "vec".to_string(),
-                    cozo::DataValue::List((0..2304).map(|_| cozo::DataValue::from(0.0_f64)).collect()),
-                );
-                let probe = db.run_script(
-                    "?[track_id, vec] <- [[-1, $vec]] :put ml_embeddings {track_id => vec}",
-                    params,
+        let needs_migration = {
+            let mut params = std::collections::BTreeMap::new();
+            params.insert(
+                "vec".to_string(),
+                cozo::DataValue::List((0..512).map(|_| cozo::DataValue::from(0.0_f64)).collect()),
+            );
+            let probe = db.run_script(
+                "?[track_id, vec] <- [[-1, $vec]] :put ml_embeddings {track_id => vec}",
+                params,
+                cozo::ScriptMutability::Mutable,
+            );
+            if probe.is_err() {
+                true
+            } else {
+                // Probe row landed — clean it up. Schema is already 512-wide.
+                let _ = db.run_script(
+                    "?[track_id] <- [[-1]] :rm ml_embeddings {track_id}",
+                    std::collections::BTreeMap::new(),
                     cozo::ScriptMutability::Mutable,
                 );
-                let _ = cols;
-                if probe.is_err() {
-                    true
-                } else {
-                    // Probe row landed — clean it up. Schema is already 2304-wide.
-                    let _ = db.run_script(
-                        "?[track_id] <- [[-1]] :rm ml_embeddings {track_id}",
-                        std::collections::BTreeMap::new(),
-                        cozo::ScriptMutability::Mutable,
-                    );
-                    false
-                }
+                false
             }
-            Err(_) => true,
         };
         if needs_migration {
-            log::warn!("Migrating ml_embeddings from EffNet 1280-dim to MAEST 2304-dim — rerun analysis to repopulate");
+            log::warn!("Migrating ml_embeddings to MuQ-MuLan 512-dim — rerun analysis to repopulate");
             let _ = db.run_script("::hnsw drop ml_embeddings:similarity_index", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
             let _ = db.run_script("::remove ml_embeddings", std::collections::BTreeMap::new(), cozo::ScriptMutability::Mutable);
         }
@@ -657,12 +652,12 @@ fn migrate_ml_analysis_if_needed(db: &DbInstance) -> Result<(), DbError> {
     };
 
     // Trigger migration when the legacy classification-head columns are still
-    // present (pre-MAEST schema). Drop+recreate is fine — MAEST analysis is
+    // present (pre-MuQ-MuLan schema). Drop+recreate is fine — analysis is
     // regenerated via the Similarity reanalysis pipeline.
     let needs_migration = has_column("vocal_presence");
 
     if needs_migration {
-        log::info!("Migrating 'ml_analysis' schema: collapsing to MAEST-only (top_genre + genre_scores_json)");
+        log::info!("Migrating 'ml_analysis' schema: collapsing to MuQ-MuLan-compatible (top_genre + genre_scores_json kept for back-compat, always empty for new rows)");
         db.run_script("::remove ml_analysis", Default::default(), cozo::ScriptMutability::Mutable)
             .map_err(|e| DbError::Schema(e.to_string()))?;
         create_ml_analysis_relation(db)?;
@@ -884,13 +879,12 @@ fn count_relation(db: &DbInstance, relation: &str) -> Result<usize, DbError> {
 }
 
 fn create_ml_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
-    // MAEST 2304-dim embedding (CLS|DIST|mean@layer7 of discogs-maest-30s-pw-519l-2),
-    // populated during ML import / re-analyse. Branch `embeddings-upgrade` —
-    // replaces the legacy 1280-dim EffNet vector.
+    // MuQ-MuLan-large 512-dim joint-space audio embedding, populated by
+    // ML import / re-analyse. Replaces the earlier MAEST 2304-dim vector.
     run_schema(db, r#"
         {:create ml_embeddings {
             track_id: Int =>
-            vec: <F32; 2304>
+            vec: <F32; 512>
         }}
     "#)
 }
@@ -899,13 +893,14 @@ fn create_ml_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
     // Ensure the relation exists first
     create_ml_embeddings_relation(db)?;
 
-    // HNSW index for EffNet embeddings.
-    // m=32 (vs 16 for audio_features) — higher dimensionality benefits from more connections.
-    // ef_construction=300 for high recall during index building.
+    // HNSW index for MuQ-MuLan embeddings.
+    // m=32 to match prior MAEST tuning; the model already l2-normalizes
+    // per-clip outputs so cosine + averaged embedding remains a sensible
+    // similarity geometry.
     let result = db.run_script(
         r#"
         ::hnsw create ml_embeddings:similarity_index {
-            dim: 2304,
+            dim: 512,
             m: 32,
             ef_construction: 300,
             dtype: F32,

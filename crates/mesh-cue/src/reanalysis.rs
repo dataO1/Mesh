@@ -393,7 +393,7 @@ fn reanalyze_metadata_track(
                 analyzer.analyze(&mel)
                     .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))
             })
-            .map_err(|e| anyhow::anyhow!("Per-thread MAEST init failed: {}", e))??;
+            .map_err(|e| anyhow::anyhow!("Per-thread MuQ-MuLan init failed: {}", e))??;
 
             log::info!(
                 "reanalyze_metadata_track: ML genre={:?}",
@@ -406,20 +406,18 @@ fn reanalyze_metadata_track(
             crate::batch_import::clear_ml_tags(track_id, db);
             crate::batch_import::auto_tag_from_ml(track_id, &ml_result.data, db);
 
-            // Persist MAEST 2304-dim embedding. The Cozo schema is strictly
-            // typed `<F32; 2304>` — anything else cannot be stored. Treat
+            // Persist MuQ-MuLan 512-dim embedding. The Cozo schema is strictly
+            // typed `<F32; 512>` — anything else cannot be stored. Treat
             // wrong-size as a hard failure so the batch counter surfaces it
-            // instead of silently swallowing the track (we previously had a
-            // silent `if len == 2304` gate that left 56/910 tracks with no
-            // embedding while reporting "910 succeeded, 0 failed").
-            const EXPECTED_EMB_DIM: usize = 2304;
+            // instead of silently swallowing the track.
+            const EXPECTED_EMB_DIM: usize = crate::ml_analysis::MUQ_MULAN_EMBEDDING_DIM;
             if ml_result.embedding.len() != EXPECTED_EMB_DIM {
                 log::error!(
-                    "reanalyze_metadata_track: MAEST returned wrong embedding size {} (expected {}) for {:?} — track marked failed",
+                    "reanalyze_metadata_track: MuQ-MuLan returned wrong embedding size {} (expected {}) for {:?} — track marked failed",
                     ml_result.embedding.len(), EXPECTED_EMB_DIM, path,
                 );
                 return Err(anyhow::anyhow!(
-                    "MAEST embedding wrong dim: got {}, expected {}",
+                    "MuQ-MuLan embedding wrong dim: got {}, expected {}",
                     ml_result.embedding.len(), EXPECTED_EMB_DIM,
                 ));
             }
@@ -522,7 +520,7 @@ pub fn run_batch_metadata_reanalysis(
     // rayon workers run independent ORT sessions in parallel.
     let ml_model_dir: Option<PathBuf> = if options.tags {
         let dl_tx = progress_tx.clone();
-        ml_analysis::ensure_maest_model_dir(move |name, done, total| {
+        ml_analysis::ensure_ml_model_dir(move |name, done, total| {
             let _ = dl_tx.send(ReanalysisProgress::ModelDownload {
                 model_name: name.to_string(),
                 bytes_done: done,

@@ -793,9 +793,9 @@ impl SimilarityQuery {
             .collect())
     }
 
-    // ── EffNet 1280-dim embedding ─────────────────────────────────���────────
+    // ── ML embedding (MuQ-MuLan 512-d) ──────────────────────────────────────
 
-    /// Insert or update a 1280-dim EffNet embedding for a track.
+    /// Insert or update the 512-dim MuQ-MuLan audio embedding for a track.
     pub fn upsert_ml_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
         params.insert("track_id".to_string(), DataValue::from(track_id));
@@ -1099,7 +1099,7 @@ impl SimilarityQuery {
     /// Scan all ML embeddings — used as input for PCA build.
     /// Returns (track_id, vector) for every track that has been ML-analysed.
     /// Vector dimension is determined by whatever embedder produced it
-    /// (currently MAEST 2304-dim; was EffNet 1280-dim historically).
+    /// (currently MuQ-MuLan 512-dim; previously MAEST 2304-dim, EffNet 1280-dim).
     /// PCA fitting tolerates any dim and rejects mixed-dim sets at the call site.
     pub fn get_all_ml_embeddings(db: &MeshDb) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
         let result = db.run_query(r#"
