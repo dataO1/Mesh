@@ -371,3 +371,232 @@ setup, observation, action.
 4. Report back observations here for Phase 2/3 planning.
 
 <!-- Append observations below this line. -->
+
+### 2026-05-02 — Phase 1 evaluation closed
+
+Real-world results on a 910-track electronic library (DnB/techno/house mix):
+
+- **PCA build:** 854 → 131-dim @ 95 % variance (vs EffNet's 128/95 %). Higher
+  PCA dim = more semantic signal surviving compression. Good.
+- **Smart-suggestion top-10 from a liquid-DnB seed**: 7 of 10 are correct
+  DnB neighbours (Bad Robot, About U, Back in Those Days, Hard Noize,
+  Phaselock, Forgo, Just a Feeling). MAEST is locking the right
+  neighbourhood. Strong.
+- **Score distribution on first run is bottom-heavy** — 244/342 tracks
+  sit at the 0.044 floor. Cause: the harmonic Camelot Strict filter +
+  bell-σ curves were tuned against EffNet's distance distribution and
+  no longer fit MAEST's cleaner cosine geometry.
+  - vec component median = 0.20 (the floor) → bell σ wants to be ~0.25–0.30
+    instead of 0.18.
+  - aggr component median = 0.25 (the floor) → expected: the mood-tag
+    term is at the constant-0 placeholder until re-derived from MAEST.
+  - key=0.93 vs key=0.59 split with nothing in between → Camelot Strict
+    plus harmonic gate is doing what it's told but masking candidates.
+- **Genre tagging quality**: 519-class taxonomy returns recognisable
+  labels (Drum n Bass, Disco, Experimental, African) on real tracks.
+  Discogs-style taxonomy is qualitatively better than EffNet's 400.
+- **Performance after the per-thread analyzer + window-cap fix**:
+  854-track reanalysis in ~26 minutes on a 24-core machine. CPU peak
+  ~70 %. Acceptable for a one-time pass.
+- **Two known regressions, both calibration not architecture**:
+  bell-σ retune is needed; aggression mood-term re-derivation is
+  needed. The pipeline itself is sound.
+
+Phase 1 verdict: **MAEST is shipped, working, and producing meaningful
+similarity / clustering / suggestions. Branch left alive on
+`embeddings-upgrade` for any further calibration.** Phase 2 (MuQ-MuLan)
+proceeds on a fresh branch off `embeddings-upgrade`.
+
+---
+
+## Phase 2: MuQ-MuLan ONNX export spike
+
+Branch `muq-mulan-eval` (off `embeddings-upgrade` at 7790c0c, 2026-05-02).
+
+### Why MuQ-MuLan
+
+Highest published perceptual-similarity numbers in the open-source music
+embedding space (MuLan paper, ICLR 2025):
+
+- 72.4 % Inst-Sim-ABX (full mix), 90.4 % with stem-separation reweighting
+- 79.3 % MagnaTagATune zero-shot ROC-AUC
+- Joint 512-dim audio+text space → unlocks text-query for free
+  ("dark hypnotic techno around 132 BPM")
+
+Headline trade-offs vs MAEST:
+
+| Axis | MAEST | MuQ-MuLan |
+|---|---|---|
+| Total params | 87 M | **630 M** (310 M audio tower + 320 M text tower) |
+| Embedding dim | 2304 | **512** (78 % storage win) |
+| Model file | 348 MB | **2.65 GB** |
+| CPU per-window | ~1.5 s | ~4–6 s desktop / ~10–15 s laptop |
+| Reanalysis 854 tracks (24-core) | ~6 min | ~14 min |
+| GPU (RTX 3060 / 4070) | n/a | **<2 min** |
+| VRAM @ fp32 | n/a | ~3.3 GB (fits 6 GB cards) |
+| License | CC-BY-NC | MIT code, CC-BY-NC weights |
+
+**Hard constraints from upstream:**
+- fp32 only — fp16 produces NaN, no bfloat16 path
+- 24 kHz mono input (vs MAEST's 16 kHz)
+- 128-band mel preprocessor (vs MAEST's 96-band)
+- No genre logits — emits 512-d audio embedding only
+- Open-source weights are MSD-trained variant; paper numbers are upper
+  bounds for the actual checkpoint
+
+**Decisions locked in for this branch (user-confirmed 2026-05-02):**
+- Genre tagging is **not required** — drop it cleanly when MuQ-MuLan
+  replaces MAEST. `genre_map.rs` and `auto_tag_from_ml`'s genre block
+  become dead code or get repurposed.
+- macOS / Apple Silicon is **not a priority** — accept CPU-only on Mac;
+  no Python sidecar fallback specifically for MPS.
+- Text-query feature: **deferred** — get audio embedding working first;
+  add text encoder + query path as a follow-up.
+
+### Architecture decision: ONNX export first, sidecar fallback only if it fails
+
+Per the integration-options analysis (full table in the prior research),
+the ONNX path is the only one that preserves Mesh's single-binary
+distribution + per-thread `ort` session pattern + free CPU/CUDA branching
+via execution providers. Cost: 1-day spike to validate. Upside: drop-in
+replacement at the `MlAnalyzer` level.
+
+**Spike pass criteria:**
+1. Audio tower exports cleanly to ONNX opset ≥17 with dynamic batch axis.
+2. Inference output cosine-matches PyTorch reference within 1e-4 on the
+   same input mel.
+3. CPU inference time per 30-s window is within 1.5× of native PyTorch
+   (sanity check that `ort` isn't bottlenecking).
+
+**Spike fail → fallback plan:** scope the Python sidecar (option B) —
+adds Python runtime to the distribution but unblocks GPU paths via the
+upstream torch.cuda. This is a multi-week packaging refactor.
+
+### Spike implementation plan — *isolated from `crates/`*
+
+The spike must not touch `crates/mesh-cue/src/ml_analysis/` or any other
+production code. Everything lives in the existing `nix/apps/` conversion
+pattern that's already used for EffNet-head / Beat This! / Demucs ONNX
+exports.
+
+**Files added (all outside `crates/`):**
+- `nix/apps/convert-muq-mulan-model.nix` — flake app following the same
+  template as `convert-ml-model.nix` and `convert-beat-model.nix`. Wires
+  Python deps via `pip install --target tmp_dir` (no permanent venv,
+  cached between runs in `/tmp` like the existing apps).
+- `nix/apps/convert-muq-mulan/` (subdirectory if helpful) — actual
+  Python script(s) the shell wrapper invokes:
+  - `download.py` — `huggingface_hub.snapshot_download("OpenMuQ/MuQ-MuLan-large")`
+  - `export.py` — instantiate the MuQ-MuLan audio tower, trace via
+    `torch.onnx.export(..., opset_version=17, dynamic_axes={...})`,
+    save to `models/muq-mulan-audio-tower.onnx`
+  - `validate.py` — load both PyTorch and ONNX models, run on a 30-s
+    test clip, assert cosine ≥ 0.9999. Print pass/fail + actual cosine.
+  - `bench.py` — wall-clock timing per window on CPU; print N samples'
+    quartiles. (No GPU bench in the spike — that's a follow-up after
+    integration.)
+- `flake.nix` — register `convert-muq-mulan-model` flake app the same
+  way `convert-ml-model` is wired (lines 285–290).
+
+**Python deps to add (via pip in the conversion app's tmp_dir):**
+- `torch>=2.2,<2.6` — **GPU-accelerated by default if CUDA is detected.**
+  The conversion app probes for `nvidia-smi` (or `CUDA_VISIBLE_DEVICES` /
+  `--gpu` flag) and installs from the appropriate PyPI index:
+  - GPU detected → `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+  - No GPU → `pip install torch --index-url https://download.pytorch.org/whl/cpu`
+  The user's dev box has a CUDA GPU so the spike will use it. Tracing
+  a 630M model on GPU is seconds vs ~10–20 minutes on CPU.
+- `transformers>=4.40` (xlm-roberta tokenizer + base model)
+- `huggingface_hub>=0.20` (snapshot_download)
+- `librosa>=0.10` (24 kHz resample, 128-band mel)
+- `numpy<2.0` (PyTorch wheel compatibility)
+- `onnx>=1.15`
+- `onnxruntime>=1.18` for CPU validation; **`onnxruntime-gpu>=1.18`** if
+  we also want to validate the ONNX runs on GPU during the spike (free
+  signal that production CUDA path will work end-to-end)
+- `optimum[exporters]>=1.20` (alternative export pathway if `torch.onnx`
+  can't handle the Conformer)
+
+**ONNX file is device-agnostic** — exported once on GPU, runs on CPU OR
+GPU at inference time depending on the `ort` execution provider. The
+GPU-accelerated tracing is purely a developer-convenience win; doesn't
+change what we ship to users.
+
+**Sequence:**
+1. **Pre-flight**: shell wrapper detects CUDA via `nvidia-smi -L` (or
+   `--cpu` flag override) and picks the appropriate PyTorch wheel index.
+   Logs `Using CUDA device: <name>` or `No CUDA detected — using CPU`.
+2. `nix run .#convert-muq-mulan-model` invokes `download.py` →
+   pulls the ~2.65 GB checkpoint into a Nix-store-friendly cache
+   (`$XDG_CACHE_HOME/mesh-spike/muq-mulan/`).
+3. `export.py` instantiates `MuQMuLan.from_pretrained(...).to(device)`
+   where `device` is `cuda` if available else `cpu`, isolates the audio
+   tower (`.audio_encoder` or equivalent — confirm exact attr name from
+   the HF model card), and runs `torch.onnx.export` with:
+   - dynamic axes `{0: "batch"}` on input
+   - opset_version=17
+   - `do_constant_folding=True`
+   - input shape `[1, 720000]` (24 kHz × 30 s) OR `[1, 750, 128]` mel
+     depending on where in the pipeline we cut the export boundary
+   - tracing happens on GPU when available (seconds vs ~10–20 minutes
+     on CPU); the resulting ONNX file is device-agnostic
+4. `validate.py` round-trips a sine-wave + a real audio clip through
+   both PyTorch (on the same device used for export) and ONNX (on CPU
+   via `onnxruntime`), asserts cosine ≥ 0.9999 per output dim. If
+   `onnxruntime-gpu` is installed, also validates the CUDA execution
+   provider produces matching output — confirms the production CUDA
+   path will work without surprises.
+5. If steps 1–4 succeed, output is `models/muq-mulan-audio-tower.onnx`
+   (~1.2 GB expected). Document the I/O signature in
+   `documents/muq-mulan-onnx-export.md` (input tensor name + shape,
+   output tensor name + shape) — same template MAEST got from the
+   Essentia metadata JSON.
+6. **Stop here for the spike.** Do not touch `crates/`. The spike's
+   only deliverable is "does the audio tower export cleanly to ONNX,
+   and does it produce numerically-correct embeddings on both CPU and
+   GPU runtimes?"
+
+**Devshell impact:** the existing `nix/devshell.nix` already has a
+commented-out `pythonEnv` block (lines 9–17). The spike doesn't need to
+uncomment it — the conversion app brings its own Python via the
+`writeShellScriptBin` + `pkgs.python311.withPackages` pattern, exactly
+like `convert-ml-model.nix` does. Devshell stays lean.
+
+**Time budget:** 1 day for the export attempt. If it fails, the failure
+mode is documented (which op didn't trace, what error message) and
+becomes input to the sidecar-fallback scoping doc.
+
+### Open tasks (Phase 2)
+
+- [ ] Add `nix/apps/convert-muq-mulan-model.nix` (template:
+  `nix/apps/convert-ml-model.nix`). Includes CUDA auto-detection via
+  `nvidia-smi -L` and `--cpu`/`--gpu` flag overrides.
+- [ ] Wire `convert-muq-mulan-model` into `flake.nix` apps list
+- [ ] Write `nix/apps/convert-muq-mulan/download.py` —
+  `huggingface_hub.snapshot_download("OpenMuQ/MuQ-MuLan-large")`
+- [ ] Write `nix/apps/convert-muq-mulan/export.py` — picks
+  `cuda`/`cpu` device, traces on GPU when available; tries
+  `torch.onnx.export` first; falls back to `optimum-cli export onnx`
+  if traces fail
+- [ ] Write `nix/apps/convert-muq-mulan/validate.py` (cosine ≥ 0.9999
+  PyTorch vs ONNX-CPU on synthetic + real audio; also validate
+  ONNX-CUDA EP if `onnxruntime-gpu` available — confirms the
+  production GPU path won't surprise us at runtime)
+- [ ] Write `nix/apps/convert-muq-mulan/bench.py` (wall-clock per window
+  on CPU + GPU if present, n=20 samples)
+- [ ] Run the spike end-to-end on the user's GPU box. Capture pass/fail.
+- [ ] Document the resulting I/O signature in
+  `documents/muq-mulan-onnx-export.md` if the export succeeds
+- [ ] **Decision gate:** if spike passes → scope the production
+  integration (new `MlModelType::MuQMuLanLarge` variant, schema
+  migration `<F32; 2304>` → `<F32; 512>`, preprocessing rewrite for
+  24 kHz / 128-band mel, drop genre handling cleanly, `ort` CUDA
+  feature flag for users with GPUs). If spike fails → scope the
+  Python sidecar fallback architecture in a separate doc.
+
+### Out of scope for this branch
+
+- Text-query feature (deferred to Phase 3)
+- macOS GPU acceleration (no Apple users on the priority list)
+- Genre tagging (dropped per user direction)
+- Production integration into `crates/` (only after spike passes)
