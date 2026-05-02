@@ -17,9 +17,14 @@ import time
 
 import numpy as np
 
+# The ONNX takes a normalized mel-spectrogram per 10 s clip — Rust does
+# the mel + normalize externally. For timing we just need the right shape;
+# content is irrelevant. 24 kHz / hop 240 / 10 s = 1000 frames, 128 mels.
 SAMPLE_RATE = 24_000
-DURATION_S = 30
-INPUT_SAMPLES = SAMPLE_RATE * DURATION_S
+CLIP_SECS = 10
+N_MELS = 128
+HOP_LENGTH = 240
+MEL_FRAMES = SAMPLE_RATE * CLIP_SECS // HOP_LENGTH
 
 
 def quantiles(times_ms: list[float]) -> tuple[float, float, float]:
@@ -40,14 +45,14 @@ def bench_provider(onnx_path: str, provider: str, n: int) -> None:
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    # Synthetic input — content doesn't matter for timing.
-    x = np.random.default_rng(0).standard_normal((1, INPUT_SAMPLES)).astype(np.float32)
+    # Synthetic mel — content doesn't matter for timing.
+    x = np.random.default_rng(0).standard_normal((1, N_MELS, MEL_FRAMES)).astype(np.float32)
 
     # 3 warmup runs to amortize first-call overhead (cuDNN autotune, etc.).
     for _ in range(3):
         session.run([output_name], {input_name: x})
 
-    print(f"[bench] {provider}: {n} timed runs (single-window, batch=1)")
+    print(f"[bench] {provider}: {n} timed runs (single 10s clip, batch=1)")
     times: list[float] = []
     for i in range(n):
         t0 = time.perf_counter()
@@ -56,9 +61,12 @@ def bench_provider(onnx_path: str, provider: str, n: int) -> None:
 
     lo, med, p95 = quantiles(times)
     print(f"[bench] {provider}: min={lo:.0f}ms  median={med:.0f}ms  p95={p95:.0f}ms")
-    # 4 windows per track per the existing MAEST cap → estimated per-track time.
-    per_track = med * 4
-    print(f"[bench] {provider}: estimated per-track (4 windows): {per_track:.0f}ms")
+    # MAEST uses 4 evenly-spaced 30s windows. MuQ-MuLan natively averages
+    # consecutive 10s clips — open question whether we keep that or
+    # subsample. Report a few candidate strides so the integration plan
+    # can pick one with real numbers.
+    for n_clips in (3, 6, 12):
+        print(f"[bench] {provider}: estimated per-track ({n_clips}×10s clips): {med * n_clips:.0f}ms")
 
 
 def main() -> int:

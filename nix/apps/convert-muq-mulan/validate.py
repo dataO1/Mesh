@@ -1,10 +1,26 @@
 """Validate the exported ONNX matches the PyTorch reference within tolerance.
 
 Cosine ≥ 0.9999 per output is the gate (per the spike plan in
-documents/embedding-models-research.md). We check on:
-  1. A pure sine wave  — deterministic, isolates numerical drift.
-  2. White noise        — exercises wider spectral content.
-  3. A real audio file  — only if argv[3] is provided.
+documents/embedding-models-research.md).
+
+The exported ONNX takes a **normalized mel-spectrogram** as input (Rust
+will compute mel + normalize externally). PyTorch's reference still
+takes a raw waveform and computes its own mel internally. To keep the
+comparison apples-to-apples we feed the model exactly ONE 10-second
+clip (the model's `clip_secs`), so PyTorch's clip-splitting + per-clip
+averaging is a no-op.
+
+For each test case, we:
+  1. Run PyTorch reference: `mulan(wavs=raw_waveform)` → 512-d.
+  2. Compute the same MuQ-internal mel on the raw waveform via the
+     model's own `preprocessor_melspec_2048` + `stat` dict.
+  3. Run ONNX: `session.run(mel=normalized_mel)` → 512-d.
+  4. Cosine-compare.
+
+Test cases:
+  1. A pure sine wave — deterministic, isolates numerical drift.
+  2. White noise      — exercises wider spectral content.
+  3. A real audio file — only if argv[3] is provided.
 
 Also runs the ONNX through the CUDA execution provider (`onnxruntime-gpu`)
 when available, to confirm the production GPU path won't surprise us.
@@ -24,8 +40,8 @@ import numpy as np
 import torch
 
 SAMPLE_RATE = 24_000
-DURATION_S = 30
-INPUT_SAMPLES = SAMPLE_RATE * DURATION_S
+CLIP_SECS = 10                          # match MuQ-MuLan's `clip_secs`
+INPUT_SAMPLES = SAMPLE_RATE * CLIP_SECS # 240_000 → exactly one clip
 
 COSINE_GATE = 0.9999  # per spike plan
 
@@ -67,8 +83,7 @@ def make_test_inputs(audio_file: str | None):
         try:
             import librosa
 
-            wav, _ = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True, duration=DURATION_S)
-            # Pad/truncate to exactly INPUT_SAMPLES.
+            wav, _ = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True, duration=CLIP_SECS)
             if len(wav) < INPUT_SAMPLES:
                 wav = np.pad(wav, (0, INPUT_SAMPLES - len(wav)))
             else:
@@ -80,13 +95,17 @@ def make_test_inputs(audio_file: str | None):
     return cases
 
 
-def run_pytorch(device: torch.device, cases) -> dict[str, np.ndarray]:
-    """Run all cases through the PyTorch MuQMuLan reference."""
+def load_pytorch(device: torch.device):
+    """Load MuQMuLan reference model. Used both for PyTorch inference and
+    for computing the normalized mel that feeds the ONNX."""
     print(f"[validate] loading PyTorch MuQMuLan on {device}...")
     from muq import MuQMuLan
 
-    mulan = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large").to(device).eval()
+    return MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large").to(device).eval()
 
+
+def run_pytorch(mulan, device: torch.device, cases) -> dict[str, np.ndarray]:
+    """Run all cases through the PyTorch MuQMuLan reference (raw waveform in)."""
     results: dict[str, np.ndarray] = {}
     with torch.no_grad():
         for label, wav in cases:
@@ -99,8 +118,29 @@ def run_pytorch(device: torch.device, cases) -> dict[str, np.ndarray]:
     return results
 
 
-def run_onnx(onnx_path: str, provider: str, cases) -> dict[str, np.ndarray]:
-    """Run all cases through the ONNX runtime with the given execution provider."""
+def compute_normalized_mel(mulan, device: torch.device, wav: np.ndarray) -> np.ndarray:
+    """Compute the same mel + normalization that MuQModel.get_predictions
+    used to do internally — but on the host so we can feed ONNX directly."""
+    muq_model = mulan.mulan.audio.model.model
+    preproc = muq_model.preprocessor_melspec_2048
+    preproc.to(device)
+    stat = muq_model.stat
+    mean = stat["melspec_2048_mean"]
+    std = stat["melspec_2048_std"]
+
+    with torch.no_grad():
+        x = torch.from_numpy(wav).unsqueeze(0).to(device).float()
+        # MelSTFT is callable; matches preprocessing()'s `layer(x.float())[..., :-1]`.
+        mel = preproc(x)[..., :-1]
+        mel = (mel - mean) / std
+    return mel.cpu().numpy().astype(np.float32)
+
+
+def run_onnx(onnx_path: str, provider: str, mels: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Run all cases through the ONNX runtime with the given execution provider.
+
+    `mels` is {label: precomputed normalized mel of shape (1, n_mels, T)}.
+    """
     import onnxruntime as ort
 
     available = ort.get_available_providers()
@@ -114,10 +154,9 @@ def run_onnx(onnx_path: str, provider: str, cases) -> dict[str, np.ndarray]:
     output_name = session.get_outputs()[0].name
 
     results: dict[str, np.ndarray] = {}
-    for label, wav in cases:
-        x = wav[np.newaxis, :].astype(np.float32)
+    for label, mel in mels.items():
         t0 = time.time()
-        out = session.run([output_name], {input_name: x})[0]
+        out = session.run([output_name], {input_name: mel})[0]
         dt = time.time() - t0
         results[label] = out[0]
         print(f"[validate]   onnx    {provider:>26} {label:>32}: shape={out.shape} dt={dt * 1000:.0f}ms")
@@ -133,7 +172,7 @@ def compare(pt_results: dict, onnx_results: dict, source_label: str) -> bool:
             continue
         cos = cosine(pt_results[label], onnx_results[label])
         passed = cos >= COSINE_GATE
-        flag = "✓" if passed else "✗ FAIL"
+        flag = "OK" if passed else "FAIL"
         print(f"[validate]   {source_label:>32} {label:>32}: cos={cos:.6f}  {flag}")
         if not passed:
             all_pass = False
@@ -156,14 +195,22 @@ def main() -> int:
     cases = make_test_inputs(audio_file)
     print(f"[validate] {len(cases)} test cases: {[c[0] for c in cases]}")
 
-    pt = run_pytorch(device, cases)
+    mulan = load_pytorch(device)
 
-    cpu_results = run_onnx(onnx_path, "CPUExecutionProvider", cases)
+    pt = run_pytorch(mulan, device, cases)
+
+    # Pre-compute normalized mels once; both CPU and CUDA EPs share them.
+    print("[validate] computing normalized mels for ONNX input...")
+    mels = {label: compute_normalized_mel(mulan, device, wav) for label, wav in cases}
+    for label, mel in mels.items():
+        print(f"[validate]   mel {label:>32}: shape={mel.shape}")
+
+    cpu_results = run_onnx(onnx_path, "CPUExecutionProvider", mels)
     cpu_ok = compare(pt, cpu_results, "ONNX-CPU")
 
     cuda_ok = True
     if device.type == "cuda":
-        cuda_results = run_onnx(onnx_path, "CUDAExecutionProvider", cases)
+        cuda_results = run_onnx(onnx_path, "CUDAExecutionProvider", mels)
         if cuda_results:
             cuda_ok = compare(pt, cuda_results, "ONNX-CUDA")
         else:
