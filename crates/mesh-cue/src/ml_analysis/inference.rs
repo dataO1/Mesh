@@ -56,17 +56,18 @@ const MUQ_MULAN_CLIP_FRAMES: usize = (MUQ_TARGET_SR as usize) * 10 / MUQ_HOP;
 ///
 /// PyTorch's `extract_audio_latents` averages every non-overlapping 10 s
 /// window. For DJ-typical 3–6 minute tracks that's 18–36 clips per track,
-/// dominating per-track cost. We cap at 12 evenly-spaced clips so a
-/// 4-minute track samples ~every 20 s of audio — captures intro / build /
-/// drop / break / second drop / outro with overlap, much closer to the
-/// PyTorch reference than the prior 6-clip sample.
+/// dominating per-track cost. We cap at 6 evenly-spaced clips so a
+/// 4-minute track samples roughly intro / verse / break / build / chorus /
+/// outro — the same spirit MAEST uses with its 4-window cap.
 ///
-/// Bumped from 6 to 12 after empirical eval found tracks with quieter
-/// intros (e.g. Pythius/BSE "Doctrine") were systematically underranked
-/// because the 6-sample average gave too much weight to the calm sections.
-/// At ~290 ms / clip on CPU this is ~3.5 s of ML per track — slower
-/// reanalysis but the rayon pool absorbs it.
-const MUQ_MULAN_MAX_CLIPS: usize = 12;
+/// **History.** Briefly tried 12 clips. A full-library 12-clip reanalysis
+/// produced an identical Spearman score on the 47-anchor eval set
+/// (+0.358 V11 either way). 12 clips also slightly *demoted* peak-time
+/// tracks like Charlotte De Witte "How You Move" (rank 35 → 76) because
+/// the wider sample picks up more breakdowns/builds and dilutes peak-only
+/// energy. Reverted to 6: same metric, half the per-track cost
+/// (~1.7 s vs ~3.5 s on CPU).
+const MUQ_MULAN_MAX_CLIPS: usize = 6;
 
 /// ONNX input tensor name (set by `export.py`).
 const MUQ_MULAN_INPUT_NAME: &str = "mel";
