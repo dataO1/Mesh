@@ -12,8 +12,44 @@
 //! 3. Run full SVD — right singular vectors V are the principal component axes
 //! 4. Keep first `n_components` columns of V (highest-variance directions)
 //! 5. At query time: `project(v) = normalize((v - mean) @ V[:, :k])`
+//!
+//! # Bypass switch: [`PCA_REDUCTION_ENABLED`]
+//!
+//! Set this constant to `false` to disable dimensionality reduction entirely.
+//! [`compute_pca_projection`] then returns an **identity passthrough** —
+//! `mean = 0`, `components = I_dim`, `n_components = dim` — so [`PcaProjection::project`]
+//! emits the input vector unchanged (modulo a final L2-normalize, which is a no-op
+//! on the already-l2-normalized MuQ-MuLan output).
+//!
+//! Effect on the rest of the pipeline:
+//! - `ml_pca_embeddings` rows store full-dim vectors (e.g. 512-d under MuQ-MuLan)
+//!   instead of the 27-ish auto-selected reduction.
+//! - HNSW index on `ml_pca_embeddings` is built at full dim. Slightly slower
+//!   queries; usually noticeably better neighbor quality on smaller libraries.
+//! - Aggression-axis fit (`compute_aggression_weights`) runs over `dim` features
+//!   instead of `n_components`. With more dims to correlate against, per-dim
+//!   Pearson seeds are typically more discriminative.
+//! - Graph view, suggestions, USB sync — all still read `ml_pca_embeddings`
+//!   transparently; no schema change required (the relation already stores a
+//!   variable-length `[Float]` list).
+//!
+//! Flip the flag and trigger "Build Similarity Index" again to rebuild the
+//! relation under the new mode. Aggression-axis weights need a re-calibration
+//! pass after the dim changes (their length is tied to whatever `ml_pca_embeddings`
+//! currently holds).
 
 use faer::prelude::*;
+
+/// Master switch for PCA reduction. When `false`, [`compute_pca_projection`]
+/// emits an identity passthrough — see the module-level docstring for the
+/// downstream consequences.
+///
+/// Defaulting to `false` for the MuQ-MuLan rollout: the input is only 512-d
+/// and already l2-normalized, so the auto-selected ~27-d projection compresses
+/// the variance landscape harder than is helpful for neighbor / aggression
+/// quality. Flip back to `true` if you ever swap in a high-dim model
+/// (e.g. >1024-d) where concentration-of-measure is again a real concern.
+pub const PCA_REDUCTION_ENABLED: bool = false;
 
 /// A trained PCA projection that maps high-dimensional embeddings to a compact space.
 pub struct PcaProjection {
@@ -81,6 +117,24 @@ pub fn compute_pca_projection(
     let dim = embeddings[0].1.len();
     if dim == 0 {
         return Err("Zero-length embeddings".to_string());
+    }
+
+    // Bypass: identity passthrough. See PCA_REDUCTION_ENABLED docstring for why.
+    if !PCA_REDUCTION_ENABLED {
+        let mut components = vec![0.0f32; dim * dim];
+        for i in 0..dim {
+            components[i * dim + i] = 1.0;
+        }
+        log::info!(
+            "[PCA] Reduction DISABLED (PCA_REDUCTION_ENABLED=false): emitting {}-dim identity passthrough for n={} embeddings",
+            dim, n,
+        );
+        return Ok(PcaProjection {
+            mean: vec![0.0f32; dim],
+            components,
+            n_components: dim,
+            dim,
+        });
     }
 
     // Step 1: Column means
