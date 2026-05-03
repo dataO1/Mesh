@@ -14,6 +14,12 @@ path = "src/lib.rs"
 name = "mesh-cue"
 path = "src/main.rs"
 
+# Diagnostic CLI: project every track onto an intensity-axis variant
+# (text-tower-derived) and emit a ranked list. See documents/aggression-axis-text-tower-plan.md.
+[[bin]]
+name = "axis_eval"
+path = "src/bin/axis_eval.rs"
+
 # === Debian/Ubuntu packaging ===
 [package.metadata.deb]
 maintainer = "Mesh Team"

@@ -195,11 +195,14 @@ pub fn mood_tag_weight(tag: &str) -> f32 {
 ///
 /// Returns a value in [0.0, 1.0].
 ///
-/// Note: previously this function also took a `mood_themes` Jamendo-tag
-/// vector that contributed 40% of the score. The mood-themes input was
-/// removed when the EffNet classification heads were retired; the mood
-/// contribution is currently held at a constant 0.0 and aggression will be
-/// re-derived from the new MAEST embedding in a follow-up branch.
+/// **Status: dormant.** No live caller after the text-tower intensity-axis
+/// landed (the chill↔aggressive vocabulary is now encoded by the
+/// MuQ-MuLan-derived `IntensityAxis`, not by genre lookup). Kept in the
+/// codebase as the regression target for an eventual fine-tune layer
+/// (option 3 in `documents/aggression-axis-text-tower-plan.md`) — removing
+/// it would close off the option to combine the polar axis with calibration
+/// pair feedback.
+#[allow(dead_code)]
 pub fn compute_track_aggression(genre: &str) -> f32 {
     let genre_score = genre_aggression_score(genre); // 0.0–0.75
 
@@ -218,6 +221,12 @@ pub fn compute_track_aggression(genre: &str) -> f32 {
 /// optimal aggression axis in the full PCA space.
 ///
 /// Also returns the combined correlation r of the full weighted projection.
+///
+/// **Status: dormant.** Replaced by the text-tower-derived intensity axis
+/// loaded from `muq-mulan-aggression-axis.json`. Kept available for the
+/// future fine-tune-on-calibration-pairs layer — see
+/// `documents/aggression-axis-text-tower-plan.md`.
+#[allow(dead_code)]
 pub fn compute_aggression_weights(
     pca_data: &[(i64, Vec<f32>)],
     aggression_estimates: &HashMap<i64, f32>,
@@ -302,6 +311,57 @@ pub fn compute_aggression_weights(
 /// Returns a raw score (not percentile-ranked — caller should rank across library).
 pub fn project_aggression(pca_vec: &[f32], weights: &[f32]) -> f32 {
     pca_vec.iter().zip(weights.iter()).map(|(p, w)| p * w).sum()
+}
+
+/// Quality signal for an aggression axis given the user's stored calibration
+/// pairs: fraction of pairs whose ordering on the axis agrees with the user's
+/// choice. Used as the `correlation` field stored alongside the weights —
+/// makes `aggression_inspect` print something meaningful even though the
+/// axis is no longer Pearson-fit.
+///
+/// `pairs` rows are `(track_a, track_b, choice)` where choice is
+/// `0` = user said A more aggressive, `1` = B more aggressive, `2` = equal.
+/// `embed_lookup` returns the per-track vector to project (typically the raw
+/// 512-d MuQ-MuLan embedding, or whatever lives in `ml_pca_embeddings` if
+/// PCA passthrough is on — both are the same dim under the current default).
+///
+/// Returns `None` if fewer than 3 pairs are usable (both tracks have
+/// embeddings); the caller should treat that as "not enough signal,
+/// don't store a correlation."
+///
+/// Equal-tolerance band: pairs with axis-score |Δ| < `equal_band` are
+/// counted as agreeing iff the user choice was 2 ("about equal").
+pub fn compute_pair_agreement(
+    axis: &[f32],
+    embed_lookup: impl Fn(i64) -> Option<Vec<f32>>,
+    pairs: &[(i64, i64, i32)],
+    equal_band: f32,
+) -> Option<f32> {
+    let mut total = 0usize;
+    let mut agree = 0usize;
+    for (a, b, choice) in pairs {
+        let (Some(va), Some(vb)) = (embed_lookup(*a), embed_lookup(*b)) else { continue };
+        if va.len() != axis.len() || vb.len() != axis.len() { continue; }
+        let sa = project_aggression(&va, axis);
+        let sb = project_aggression(&vb, axis);
+        let delta = sa - sb; // positive = A scored more aggressive than B
+        let user_says_a = *choice == 0;
+        let user_says_b = *choice == 1;
+        let user_says_equal = *choice == 2;
+
+        let axis_band_equal = delta.abs() < equal_band;
+        let axis_says_a = delta > equal_band;
+        let axis_says_b = delta < -equal_band;
+
+        let this_agrees = (user_says_a && axis_says_a)
+            || (user_says_b && axis_says_b)
+            || (user_says_equal && axis_band_equal);
+
+        total += 1;
+        if this_agrees { agree += 1; }
+    }
+    if total < 3 { return None; }
+    Some(agree as f32 / total as f32)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

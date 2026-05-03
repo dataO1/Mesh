@@ -74,34 +74,81 @@ impl MeshCueApp {
 
                     log::info!("[PCA] Build complete: {} PCA embeddings stored (of {} total)", stored, total);
 
-                    // Compute PCA aggression axis from genre + mood tags
-                    log::info!("[PCA] Computing aggression axis from genre + mood tags...");
-                    let all_pca = db.get_all_pca_with_tracks().unwrap_or_default();
-                    let pca_data: Vec<(i64, Vec<f32>)> = all_pca.iter()
-                        .filter_map(|(t, v)| Some((t.id?, v.clone())))
-                        .collect();
-
-                    // Build aggression estimates from ML analysis (genre + mood)
-                    let mut aggression_estimates = std::collections::HashMap::new();
-                    for (track_id, _) in &pca_data {
-                        if let Ok(Some(ml)) = db.get_ml_analysis(*track_id) {
-                            let genre = ml.top_genre.as_deref().unwrap_or("");
-                            let aggr = mesh_core::suggestions::aggression::compute_track_aggression(genre);
-                            aggression_estimates.insert(*track_id, aggr);
+                    // Aggression axis: pull the active text-tower-derived intensity
+                    // axis from the model dir and store it as the weights vector.
+                    // The old genre+mood Pearson fit is gone — its supervisor
+                    // (compute_track_aggression(genre)) returned 0 for every track
+                    // under MuQ-MuLan, so the fit had no signal source.
+                    //
+                    // The "correlation" field is repurposed as the calibration-pair
+                    // agreement rate (eval-only — calibration UI no longer drives
+                    // weight fitting). See documents/aggression-axis-text-tower-plan.md.
+                    log::info!("[PCA] Loading text-tower intensity axis...");
+                    let model_dir = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
+                        Some(d) => d,
+                        None => {
+                            log::warn!("[PCA] No MuQ-MuLan model dir — skipping intensity axis store");
+                            return Ok(());
                         }
+                    };
+                    let axis_path = model_dir.join(
+                        crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename()
+                    );
+                    if !axis_path.exists() {
+                        log::warn!(
+                            "[PCA] No intensity axis JSON at {:?} — intensity scoring inactive. \
+                             Run `nix run .#derive-aggression-axes`, then copy a variant from \
+                             models/aggression-axes/ as {}.",
+                            axis_path,
+                            crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename(),
+                        );
+                        return Ok(());
+                    }
+                    let axis = match crate::ml_analysis::IntensityAxis::load(&axis_path) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            log::warn!("[PCA] Failed to load intensity axis from {:?}: {}", axis_path, e);
+                            return Ok(());
+                        }
+                    };
+                    log::info!(
+                        "[PCA] Active intensity axis: {} ({}) — formula: {}",
+                        axis.variant_id, axis.name, axis.intensity_formula,
+                    );
+
+                    // Agreement rate against any stored calibration pairs (eval-only).
+                    // Falls back to 1.0 when the user has no pairs yet — meaning
+                    // "we have no contradicting evidence", not "perfect fit".
+                    let pairs = db.get_all_calibration_pairs().unwrap_or_default();
+                    let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
+                        .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
+                        .collect();
+                    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement(
+                        &axis.intensity_axis_vec,
+                        |id| db.get_ml_embedding_raw(id).ok().flatten(),
+                        &pair_triplets,
+                        0.02, // equal-band: ±0.02 cosine units around 0
+                    );
+                    let correlation_field = agreement.unwrap_or(1.0);
+                    if let Some(rate) = agreement {
+                        log::info!(
+                            "[PCA] Intensity axis vs {} stored calibration pairs: {:.1}% agreement",
+                            pair_triplets.len(), rate * 100.0,
+                        );
+                    } else {
+                        log::info!(
+                            "[PCA] No usable calibration pairs ({} stored) — storing axis with correlation=1.0",
+                            pair_triplets.len(),
+                        );
                     }
 
-                    if let Some((weights, combined_r)) = mesh_core::suggestions::aggression::compute_aggression_weights(
-                        &pca_data, &aggression_estimates,
-                    ) {
-                        let n_nonzero = weights.iter().filter(|w| w.abs() > 0.01).count();
-                        log::info!("[PCA] Aggression weights: {} dims, {} significant, combined r={:.4}",
-                            weights.len(), n_nonzero, combined_r);
-                        if let Err(e) = db.store_aggression_weights(&weights, combined_r) {
-                            log::warn!("[PCA] Failed to store aggression weights: {}", e);
-                        }
+                    if let Err(e) = db.store_aggression_weights(&axis.intensity_axis_vec, correlation_field) {
+                        log::warn!("[PCA] Failed to store aggression axis: {}", e);
                     } else {
-                        log::warn!("[PCA] Could not compute aggression weights (insufficient genre/mood data)");
+                        log::info!(
+                            "[PCA] Stored intensity axis ({} dims, agreement/correlation={:.4})",
+                            axis.intensity_axis_vec.len(), correlation_field,
+                        );
                     }
 
                     Ok(())

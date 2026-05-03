@@ -29,6 +29,7 @@ use ort::value::Tensor;
 use mesh_core::db::MlAnalysisData;
 use serde::Deserialize;
 
+use super::aggression_axis::IntensityAxis;
 use super::models::MlModelType;
 use super::preprocessing::{MelSpectrogramResult, MUQ_HOP, MUQ_N_MELS, MUQ_TARGET_SR};
 
@@ -124,9 +125,15 @@ fn extract_stat(value: &serde_json::Value, label: &str) -> Result<Vec<f32>, Stri
 }
 
 /// ML analysis engine with a pre-loaded MuQ-MuLan ONNX session + stats.
+///
+/// `intensity_axis` is loaded best-effort: if the active variant JSON is
+/// missing next to the ONNX, the analyzer still works for embedding
+/// extraction; only intensity scoring degrades to "axis unknown" until the
+/// axis JSON is provided.
 pub struct MlAnalyzer {
     session: Session,
     stats: ResolvedStats,
+    intensity_axis: Option<IntensityAxis>,
 }
 
 // Safety: ort::Session is Send+Sync by design.
@@ -197,12 +204,51 @@ impl MlAnalyzer {
             .and_then(|b| b.commit_from_file(&onnx_path))
             .map_err(|e| format!("Failed to load MuQ-MuLan ONNX: {}", e))?;
 
+        // Best-effort: load the active intensity-axis variant if present.
+        // Absent axis is non-fatal — embedding extraction still works,
+        // only intensity scoring degrades.
+        let axis_path = model_dir.join(MlModelType::MuQMulanLarge.aggression_axis_filename());
+        let intensity_axis = if axis_path.exists() {
+            match IntensityAxis::load(&axis_path) {
+                Ok(axis) => {
+                    log::info!(
+                        "Loaded intensity axis '{}' ({}) from {:?}",
+                        axis.variant_id, axis.name, axis_path
+                    );
+                    Some(axis)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to load intensity axis from {:?}: {} \
+                         — intensity scoring will be inactive",
+                        axis_path, e
+                    );
+                    None
+                }
+            }
+        } else {
+            log::info!(
+                "No intensity axis JSON at {:?} — intensity scoring inactive \
+                 (run `nix run .#derive-aggression-axes` and copy a variant \
+                 from models/aggression-axes/ into the cache as {})",
+                axis_path,
+                MlModelType::MuQMulanLarge.aggression_axis_filename(),
+            );
+            None
+        };
+
         log::info!(
-            "Loaded MuQ-MuLan-large audio tower from {:?} (mean_len={}, std_len={})",
-            onnx_path, stats.mean.len(), stats.std.len()
+            "Loaded MuQ-MuLan-large audio tower from {:?} (mean_len={}, std_len={}, axis={})",
+            onnx_path, stats.mean.len(), stats.std.len(),
+            intensity_axis.as_ref().map(|a| a.variant_id.as_str()).unwrap_or("<none>"),
         );
 
-        Ok(Self { session, stats })
+        Ok(Self { session, stats, intensity_axis })
+    }
+
+    /// Reference to the loaded intensity axis (or None if absent / load-failed).
+    pub fn intensity_axis(&self) -> Option<&IntensityAxis> {
+        self.intensity_axis.as_ref()
     }
 
     /// Run inference on a precomputed dB-scale mel spectrogram.

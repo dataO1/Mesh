@@ -20,10 +20,12 @@
 pub mod preprocessing;
 pub mod models;
 pub mod inference;
+pub mod aggression_axis;
 
 // Re-export key types
 pub use inference::{MlAnalyzer, MlAnalysisResult, MUQ_MULAN_EMBEDDING_DIM};
 pub use models::{MlModelManager, MlModelType};
+pub use aggression_axis::IntensityAxis;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};

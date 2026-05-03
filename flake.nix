@@ -188,6 +188,12 @@
           inherit pkgs;
         };
 
+        # Derive intensity-axis variants from MuQ-MuLan's text tower
+        # (text-anchored linear-probe aggression replacement).
+        deriveAggressionAxesApp = import ./nix/apps/derive-aggression-axes.nix {
+          inherit pkgs;
+        };
+
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -306,6 +312,12 @@
           convert-muq-mulan-model = {
             type = "app";
             program = "${convertMuqMulanApp}/bin/convert-muq-mulan-model";
+          };
+          # MuQ-MuLan text-tower polar-prompt intensity-axis variants
+          # (writes one JSON per variant under ./models/aggression-axes/)
+          derive-aggression-axes = {
+            type = "app";
+            program = "${deriveAggressionAxesApp}/bin/derive-aggression-axes";
           };
           # nn~ PureData external (neural audio effects)
           build-nn-tilde = {

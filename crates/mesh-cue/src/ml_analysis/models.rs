@@ -23,6 +23,13 @@ pub const MUQ_MULAN_ONNX_FILENAME: &str = "muq-mulan-audio-tower.onnx";
 /// Sibling sidecar with mel-normalization stats and `MelSTFT` parameters.
 pub const MUQ_MULAN_NORM_FILENAME: &str = "muq-mulan-audio-tower.onnx.norm.json";
 
+/// Active intensity-axis JSON, derived from MuQ-MuLan's text tower against
+/// polar prompts. Lives next to the ONNX. Swapping which variant is "active"
+/// is a single file copy/symlink — see `models/aggression-axes/` for the
+/// full variant pool and `documents/aggression-axis-text-tower-plan.md`
+/// for the design.
+pub const MUQ_MULAN_AGGRESSION_AXIS_FILENAME: &str = "muq-mulan-aggression-axis.json";
+
 /// ML model variants. Only one model on this branch — the dual-encoder
 /// MuQ-MuLan audio tower (text tower deferred). Kept as an enum so future
 /// model swaps don't require changing every call site.
@@ -45,6 +52,12 @@ impl MlModelType {
     pub fn norm_filename(&self) -> &'static str {
         match self {
             MlModelType::MuQMulanLarge => MUQ_MULAN_NORM_FILENAME,
+        }
+    }
+
+    pub fn aggression_axis_filename(&self) -> &'static str {
+        match self {
+            MlModelType::MuQMulanLarge => MUQ_MULAN_AGGRESSION_AXIS_FILENAME,
         }
     }
 
@@ -104,8 +117,20 @@ impl MlModelManager {
         })
     }
 
+    /// Resolve the active aggression-axis JSON next to a found ONNX.
+    /// Returns `None` if the ONNX itself wasn't found. The axis file may
+    /// still be missing — callers should treat that as a degraded but
+    /// non-fatal state (intensity scoring just won't produce a signal).
+    pub fn aggression_axis_path(&self, model: MlModelType) -> Option<PathBuf> {
+        self.model_path(model).map(|onnx| {
+            onnx.with_file_name(model.aggression_axis_filename())
+        })
+    }
+
     /// Whether we can locate everything needed to run inference for `model`
-    /// (ONNX + norm sidecar both present at the same dir).
+    /// (ONNX + norm sidecar both present at the same dir). The aggression
+    /// axis is intentionally NOT a hard requirement — its absence degrades
+    /// intensity scoring but doesn't prevent the rest of the pipeline.
     pub fn is_available(&self, model: MlModelType) -> bool {
         let Some(onnx) = self.model_path(model) else { return false };
         let sidecar = onnx.with_file_name(model.norm_filename());
@@ -152,6 +177,31 @@ impl MlModelManager {
             .map_err(|e| format!("Failed to copy ONNX to cache: {}", e))?;
         fs::copy(&src_sidecar, &cache_sidecar)
             .map_err(|e| format!("Failed to copy sidecar to cache: {}", e))?;
+
+        // Best-effort: also copy the aggression axis if the source dir has
+        // one. Missing axis is non-fatal — intensity scoring degrades but
+        // ML inference still works.
+        let src_axis = src_onnx.with_file_name(model.aggression_axis_filename());
+        if src_axis.exists() {
+            let cache_axis = cache_onnx.with_file_name(model.aggression_axis_filename());
+            if let Err(e) = fs::copy(&src_axis, &cache_axis) {
+                log::warn!(
+                    "Failed to copy aggression axis to cache (non-fatal): {}",
+                    e,
+                );
+            } else {
+                log::info!(
+                    "Installed aggression axis {} → {}",
+                    src_axis.display(),
+                    cache_axis.display(),
+                );
+            }
+        } else {
+            log::info!(
+                "No aggression-axis JSON next to ONNX — intensity scoring will be inactive until one is provided",
+            );
+        }
+
         log::info!(
             "Installed {} → {}",
             src_onnx.display(),
