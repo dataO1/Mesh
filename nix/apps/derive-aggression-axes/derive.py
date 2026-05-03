@@ -149,6 +149,28 @@ SUB_AXES = {
             "tuneful synthesizer music with clear singable themes",
         ],
     ),
+    "atonality": (
+        [
+            "atonal experimental music with no key center",
+            "dissonant percussive music focused on rhythm not melody",
+            "abstract sound design with no harmonic content",
+            "rhythm-only techno with mechanical hits and no chord progression",
+            "industrial techno built from non-pitched percussion and impacts",
+            "atonal noise-techno with metallic hits and no tonal melody",
+            "drum-focused hard techno with kicks claps stabs and no melodic line",
+            "percussive tribal techno with toms and shakers but no harmony",
+        ],
+        [
+            "melodic music with clear chord progressions and key center",
+            "tonal harmonic music with traditional voice leading",
+            "song-based music with verse-chorus melodic structure",
+            "trance with euphoric arpeggios and major-key buildups",
+            "melodic house with warm pad chords and singable hooks",
+            "synthwave with clear melodic leads over harmonic basslines",
+            "deep house with jazzy chord stabs and tonal bassline",
+            "ambient music with consonant chord drones and harmonic stillness",
+        ],
+    ),
 }
 
 # ─── Variant library ───────────────────────────────────────────────────────
@@ -207,6 +229,89 @@ VARIANTS = {
             ("noisiness", 0.25),
         ],
         "rationale": "Inverts V6 emphasis to test whether dark+noisy carry more 'intensity' signal than the literal aggression vocabulary. Useful comparison: if V6 and V7 rank similarly, the underlying axes are correlated; if they diverge, the weighting matters.",
+    },
+
+    # ── V8-V13: V6/V7 lineage with explicit distortion + atonal axis ────────
+    # First eval round picked V6/V7 as best — both blend multiple sub-axes
+    # but neither weights distortion enough to dominate, and neither has
+    # the atonal↔melodic distinction (which is the cleanest semantic split
+    # between hard techno/neuro DnB and melodic techno/deep house).
+
+    "V8_v7_with_distortion_bump": {
+        "name": "V7 with distortion bumped 0.2→0.35",
+        "components": [
+            ("aggression", 0.15),
+            ("distortion", 0.35),
+            ("density", 0.05),
+            ("darkness", 0.20),
+            ("noisiness", 0.25),
+        ],
+        "rationale": "V7 already wins Spearman; user feels distortion is underweighted in top results. Bump distortion to be the largest single contributor while keeping V7's dark+noisy character. Tests whether more distortion sharpens the top-end ranking.",
+    },
+
+    "V9_v6_with_atonal": {
+        "name": "V6 with atonal added (0.4/0.2/0.15/0.1/0.05/0.1)",
+        "components": [
+            ("aggression", 0.4),
+            ("distortion", 0.2),
+            ("density", 0.15),
+            ("darkness", 0.10),
+            ("noisiness", 0.05),
+            ("atonality", 0.10),
+        ],
+        "rationale": "V6 is the most-balanced top performer. Add the atonal axis at 0.10 to give percussive/non-melodic tracks (industrial techno, neuro) a small additional boost. Aggression stays dominant.",
+    },
+
+    "V10_balanced_six_axis": {
+        "name": "Balanced six-axis (0.25/0.20/0.15/0.10/0.10/0.20)",
+        "components": [
+            ("aggression", 0.25),
+            ("distortion", 0.20),
+            ("density", 0.15),
+            ("darkness", 0.10),
+            ("noisiness", 0.10),
+            ("atonality", 0.20),
+        ],
+        "rationale": "All 6 sub-axes contribute meaningfully, with aggression + atonality the top two. Tests the hypothesis that the cleanest 'intensity' signal is 'aggressive AND non-melodic' (industrial techno gold standard).",
+    },
+
+    "V11_neuro_dnb_tuned": {
+        "name": "Neuro/DnB-tuned (high aggr + dist + noisy + atonal)",
+        "components": [
+            ("aggression", 0.30),
+            ("distortion", 0.25),
+            ("density", 0.05),
+            ("darkness", 0.10),
+            ("noisiness", 0.20),
+            ("atonality", 0.10),
+        ],
+        "rationale": "Tuned for neurofunk DnB / dark techstep specifically. Aggression + distortion + noisiness all prominent, density downweighted (neuro is rhythmically dense but tracks are also often quite spare in the breakdown).",
+    },
+
+    "V12_peak_techno_tuned": {
+        "name": "Peak-time-techno-tuned (aggr + dark + atonal, low noisy)",
+        "components": [
+            ("aggression", 0.35),
+            ("distortion", 0.15),
+            ("density", 0.10),
+            ("darkness", 0.20),
+            ("noisiness", 0.05),
+            ("atonality", 0.15),
+        ],
+        "rationale": "Tuned for peak-time / hard techno — driving + dark + atonal, low noisiness (peak techno isn't noisy, just LOUD and percussive). Tests whether downweighting noisiness recovers Charlotte De Witte / peak-time tracks that V7 underranked.",
+    },
+
+    "V13_distortion_atonal_dominant": {
+        "name": "Distortion + atonal dominant (testing user hypothesis)",
+        "components": [
+            ("aggression", 0.10),
+            ("distortion", 0.35),
+            ("density", 0.05),
+            ("darkness", 0.10),
+            ("noisiness", 0.10),
+            ("atonality", 0.30),
+        ],
+        "rationale": "Stress-test: if 'intensity' is best captured by 'sounds distorted AND sounds atonal/percussive', this should win. Aggression demoted to a tiebreaker. Likely overshoots and breaks peak-time techno (which is aggressive but not heavily distorted), but the comparison point is informative.",
     },
 }
 

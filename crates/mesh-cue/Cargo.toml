@@ -20,6 +20,12 @@ path = "src/main.rs"
 name = "axis_eval"
 path = "src/bin/axis_eval.rs"
 
+# Headless ML re-embedding for the whole collection — used to refresh
+# embeddings after MUQ_MULAN_MAX_CLIPS or MuQ-MuLan model changes.
+[[bin]]
+name = "reanalyze_ml"
+path = "src/bin/reanalyze_ml.rs"
+
 # === Debian/Ubuntu packaging ===
 [package.metadata.deb]
 maintainer = "Mesh Team"
