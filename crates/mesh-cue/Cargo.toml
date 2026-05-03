@@ -27,6 +27,12 @@ path = "src/bin/axis_eval.rs"
 name = "reanalyze_ml"
 path = "src/bin/reanalyze_ml.rs"
 
+# Dump track-id + path + drop_marker + title/artist to CSV — used by the
+# Python LLM-grading captioner (no Cozo Python driver, hence the dump).
+[[bin]]
+name = "dump_track_list"
+path = "src/bin/dump_track_list.rs"
+
 # === Debian/Ubuntu packaging ===
 [package.metadata.deb]
 maintainer = "Mesh Team"

@@ -194,6 +194,12 @@
           inherit pkgs;
         };
 
+        # LLM-based per-track intensity grading (Audio Flamingo 3) for
+        # building track-level priors. Dev-side only — never bundled.
+        gradeTracksApp = import ./nix/apps/grade-tracks.nix {
+          inherit pkgs;
+        };
+
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -318,6 +324,11 @@
           derive-aggression-axes = {
             type = "app";
             program = "${deriveAggressionAxesApp}/bin/derive-aggression-axes";
+          };
+          # LLM (Audio Flamingo 3) grading of every track for track-level priors
+          grade-tracks = {
+            type = "app";
+            program = "${gradeTracksApp}/bin/grade-tracks";
           };
           # nn~ PureData external (neural audio effects)
           build-nn-tilde = {
