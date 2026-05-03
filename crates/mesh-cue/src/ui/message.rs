@@ -27,6 +27,13 @@ pub enum Message {
 
     // Collection: Browser
     RefreshCollection,
+
+    // Startup: load text-tower intensity axis JSON and store its weights into
+    // pca_aggression_axis if the row is missing or stale. Non-blocking — runs
+    // in the background after launch.
+    EnsureIntensityAxisLoaded,
+    /// Result of EnsureIntensityAxisLoaded — error string on failure (logged only).
+    IntensityAxisLoaded(Result<(), String>),
     /// Phase 1: Metadata loaded (fast), now show UI
     TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
     /// Phase 2: Audio stems loaded (slow), now enable playback (Shared for RT-safe drop)

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Track preparation, BPM analysis, and playlist management for DJs"
 license.workspace = true
 authors.workspace = true
+default-run = "mesh-cue"
 
 [lib]
 name = "mesh_cue"

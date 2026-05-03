@@ -5,9 +5,97 @@
 //! and stores the projected vectors back in `ml_pca_embeddings` for fast HNSW queries.
 
 use iced::Task;
+use std::sync::Arc;
+use mesh_core::db::DatabaseService;
 use crate::pca;
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
+
+/// Load the active text-tower intensity axis JSON and store it into
+/// `pca_aggression_axis` if absent or wrong dim. Idempotent. Logs (but does
+/// not return) errors. Called at app startup AND at the end of "Build
+/// Similarity Index" — two independent paths to keep the axis fresh in the DB.
+///
+/// **Why not gate on calibration weights?** The calibration UI is currently
+/// disabled (it could overwrite the axis with Pearson-fit weights, which is
+/// the bug we hit on V11 rollout). When re-enabled in eval-only mode it will
+/// no longer write weights, so this loader can stay simple: if the existing
+/// row has the right dim AND the same first 8 floats as the on-disk axis,
+/// skip; otherwise overwrite.
+pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), String> {
+    let model_dir = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
+        Some(d) => d,
+        None => {
+            log::warn!("[AXIS] No MuQ-MuLan model dir — skipping intensity axis store");
+            return Ok(());
+        }
+    };
+    let axis_path = model_dir.join(
+        crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename()
+    );
+    if !axis_path.exists() {
+        log::warn!(
+            "[AXIS] No intensity axis JSON at {:?} — intensity scoring inactive. \
+             Run `nix run .#derive-aggression-axes` then `scripts/select-active-axis.sh <id>`.",
+            axis_path,
+        );
+        return Ok(());
+    }
+    let axis = crate::ml_analysis::IntensityAxis::load(&axis_path)
+        .map_err(|e| format!("load axis from {:?}: {}", axis_path, e))?;
+    log::info!(
+        "[AXIS] Active intensity axis: {} ({}) — formula: {}",
+        axis.variant_id, axis.name, axis.intensity_formula,
+    );
+
+    // Skip the write if the on-disk axis already matches what's stored —
+    // checked via length + first 8 floats. Saves a write on every launch.
+    if let Ok(Some((stored_weights, stored_corr))) = db.get_aggression_weights() {
+        let same_len = stored_weights.len() == axis.intensity_axis_vec.len();
+        let same_head = stored_weights.iter().take(8)
+            .zip(axis.intensity_axis_vec.iter().take(8))
+            .all(|(a, b)| (a - b).abs() < 1e-6);
+        if same_len && same_head {
+            log::info!(
+                "[AXIS] DB already has matching axis ({} dims, correlation={:.4}) — skip write",
+                stored_weights.len(), stored_corr,
+            );
+            return Ok(());
+        }
+    }
+
+    // Agreement rate against any stored calibration pairs (eval-only signal).
+    let pairs = db.get_all_calibration_pairs().unwrap_or_default();
+    let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
+        .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
+        .collect();
+    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement(
+        &axis.intensity_axis_vec,
+        |id| db.get_ml_embedding_raw(id).ok().flatten(),
+        &pair_triplets,
+        0.02,
+    );
+    let correlation_field = agreement.unwrap_or(1.0);
+    if let Some(rate) = agreement {
+        log::info!(
+            "[AXIS] vs {} stored calibration pairs: {:.1}% agreement",
+            pair_triplets.len(), rate * 100.0,
+        );
+    } else {
+        log::info!(
+            "[AXIS] No usable calibration pairs ({} stored) — storing axis with correlation=1.0",
+            pair_triplets.len(),
+        );
+    }
+
+    db.store_aggression_weights(&axis.intensity_axis_vec, correlation_field)
+        .map_err(|e| format!("store_aggression_weights: {e}"))?;
+    log::info!(
+        "[AXIS] Stored ({} dims, agreement/correlation={:.4})",
+        axis.intensity_axis_vec.len(), correlation_field,
+    );
+    Ok(())
+}
 
 impl MeshCueApp {
     /// Kick off the background PCA build from all ML embeddings in the library.
@@ -74,81 +162,14 @@ impl MeshCueApp {
 
                     log::info!("[PCA] Build complete: {} PCA embeddings stored (of {} total)", stored, total);
 
-                    // Aggression axis: pull the active text-tower-derived intensity
-                    // axis from the model dir and store it as the weights vector.
-                    // The old genre+mood Pearson fit is gone — its supervisor
-                    // (compute_track_aggression(genre)) returned 0 for every track
-                    // under MuQ-MuLan, so the fit had no signal source.
-                    //
-                    // The "correlation" field is repurposed as the calibration-pair
-                    // agreement rate (eval-only — calibration UI no longer drives
-                    // weight fitting). See documents/aggression-axis-text-tower-plan.md.
-                    log::info!("[PCA] Loading text-tower intensity axis...");
-                    let model_dir = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
-                        Some(d) => d,
-                        None => {
-                            log::warn!("[PCA] No MuQ-MuLan model dir — skipping intensity axis store");
-                            return Ok(());
-                        }
-                    };
-                    let axis_path = model_dir.join(
-                        crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename()
-                    );
-                    if !axis_path.exists() {
-                        log::warn!(
-                            "[PCA] No intensity axis JSON at {:?} — intensity scoring inactive. \
-                             Run `nix run .#derive-aggression-axes`, then copy a variant from \
-                             models/aggression-axes/ as {}.",
-                            axis_path,
-                            crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename(),
-                        );
-                        return Ok(());
-                    }
-                    let axis = match crate::ml_analysis::IntensityAxis::load(&axis_path) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            log::warn!("[PCA] Failed to load intensity axis from {:?}: {}", axis_path, e);
-                            return Ok(());
-                        }
-                    };
-                    log::info!(
-                        "[PCA] Active intensity axis: {} ({}) — formula: {}",
-                        axis.variant_id, axis.name, axis.intensity_formula,
-                    );
-
-                    // Agreement rate against any stored calibration pairs (eval-only).
-                    // Falls back to 1.0 when the user has no pairs yet — meaning
-                    // "we have no contradicting evidence", not "perfect fit".
-                    let pairs = db.get_all_calibration_pairs().unwrap_or_default();
-                    let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
-                        .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
-                        .collect();
-                    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement(
-                        &axis.intensity_axis_vec,
-                        |id| db.get_ml_embedding_raw(id).ok().flatten(),
-                        &pair_triplets,
-                        0.02, // equal-band: ±0.02 cosine units around 0
-                    );
-                    let correlation_field = agreement.unwrap_or(1.0);
-                    if let Some(rate) = agreement {
-                        log::info!(
-                            "[PCA] Intensity axis vs {} stored calibration pairs: {:.1}% agreement",
-                            pair_triplets.len(), rate * 100.0,
-                        );
-                    } else {
-                        log::info!(
-                            "[PCA] No usable calibration pairs ({} stored) — storing axis with correlation=1.0",
-                            pair_triplets.len(),
-                        );
-                    }
-
-                    if let Err(e) = db.store_aggression_weights(&axis.intensity_axis_vec, correlation_field) {
-                        log::warn!("[PCA] Failed to store aggression axis: {}", e);
-                    } else {
-                        log::info!(
-                            "[PCA] Stored intensity axis ({} dims, agreement/correlation={:.4})",
-                            axis.intensity_axis_vec.len(), correlation_field,
-                        );
+                    // Refresh the intensity axis too. Identical work to the
+                    // startup-time loader (which is the canonical path); kept
+                    // here as a belt-and-suspenders so users who hit "Build
+                    // Similarity Index" after swapping variant files via
+                    // scripts/select-active-axis.sh get an immediate refresh
+                    // without restarting mesh-cue.
+                    if let Err(e) = ensure_intensity_axis_in_db(&db) {
+                        log::warn!("[PCA] ensure_intensity_axis_in_db failed: {e}");
                     }
 
                     Ok(())

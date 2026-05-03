@@ -249,11 +249,18 @@ impl MeshCueApp {
             calibration: Default::default(),
         };
 
-        // Initial collection scan, playlist refresh, and background graph build
+        // Initial collection scan, playlist refresh, and background graph build.
+        // EnsureIntensityAxisLoaded runs in background — loads V11 (or whichever
+        // variant is active) from models/muq-mulan-aggression-axis.json and
+        // writes it into pca_aggression_axis if absent / wrong dim. Non-blocking
+        // so the UI doesn't freeze on first launch. Without this the axis only
+        // ever lands in the DB through "Build Similarity Index", which is the
+        // bug we hit when calibration weights overwrote V11.
         let cmd = Task::batch([
             Task::perform(async {}, |_| Message::RefreshCollection),
             Task::perform(async {}, |_| Message::RefreshPlaylists),
             Task::perform(async {}, |_| Message::BuildGraphEdges),
+            Task::perform(async {}, |_| Message::EnsureIntensityAxisLoaded),
         ]);
 
         (app, cmd)
@@ -644,6 +651,25 @@ impl MeshCueApp {
                 return self.handle_similarity_index_complete(result);
             }
 
+            // Startup: load text-tower intensity axis JSON and persist to DB.
+            Message::EnsureIntensityAxisLoaded => {
+                let db = self.domain.db_arc();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            crate::ui::handlers::similarity::ensure_intensity_axis_in_db(&db)
+                        }).await.map_err(|e| format!("axis-load task panicked: {e}"))?
+                    },
+                    Message::IntensityAxisLoaded,
+                );
+            }
+            Message::IntensityAxisLoaded(result) => {
+                match result {
+                    Ok(()) => log::info!("[STARTUP] Intensity axis ensured in DB"),
+                    Err(e) => log::warn!("[STARTUP] Intensity axis ensure failed: {e}"),
+                }
+            }
+
             // Graph View
             Message::SetBrowserTab(tab) => return self.handle_set_browser_tab(tab),
             Message::BuildGraphEdges => return self.handle_build_graph_edges(),
@@ -732,18 +758,23 @@ impl MeshCueApp {
                 return self.handle_calibration_coverage_check(uncovered);
             }
             Message::OpenCalibration => {
-                self.calibration.is_open = true;
-                self.calibration.explanation_shown = true;
+                // Disabled: the aggression axis is now derived from MuQ-MuLan's
+                // text tower (see documents/aggression-axis-text-tower-plan.md).
+                // Re-enabling the modal would let it overwrite the polar axis
+                // with calibration-fitted Pearson weights — exactly the bug we
+                // hit on V11 rollout. Restore once rescoped to eval-only or
+                // wired as an additive fine-tune layer.
+                log::info!("[CALIBRATION] OpenCalibration ignored — calibration UI disabled");
             }
             Message::CloseCalibration => {
                 if self.calibration.playing_side.is_some() {
                     self.audio.pause();
                 }
-                // CRITICAL: save weights before closing! Pairs are persisted
-                // per-answer but weights only get computed via batch retrain.
-                // Without this, X-ing out of the modal discards all the
-                // learned model state (we'd have pairs but no aggression axis).
-                if !self.calibration.weights.is_empty() {
+                // Calibration UI disabled — preserve the close path for when
+                // it's re-enabled, but do NOT overwrite the text-tower axis.
+                // (When re-enabled in eval-only mode, this branch should also
+                // not write weights; the axis stays canonical.)
+                if false && !self.calibration.weights.is_empty() {
                     let db = self.domain.db_arc();
                     self.batch_retrain_weights(); // final retrain for fresh weights
                     if let Err(e) = db.store_aggression_weights(

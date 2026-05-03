@@ -21,7 +21,18 @@ use super::super::state::calibration::{
 impl MeshCueApp {
     /// Run coverage detection in the background.
     /// Called on startup (after graph state loads) and after import/PCA build.
+    ///
+    /// **Currently disabled.** The aggression axis is now derived from
+    /// MuQ-MuLan's text tower (see documents/aggression-axis-text-tower-plan.md);
+    /// calibration-pair fitting would overwrite that axis with a worse
+    /// Pearson-fit and was the bug causing "rebuild PCA to get correct
+    /// scoring back". Kept disabled until we either rescope the modal to
+    /// eval-only (read pairs, never write weights) or wire it up as a
+    /// fine-tune layer on top of the polar axis.
     pub fn trigger_calibration_coverage_check(&self) -> Task<Message> {
+        log::debug!("[CALIBRATION] coverage check disabled (text-tower axis is canonical)");
+        return Task::none();
+        #[allow(unreachable_code)]
         if self.calibration.prompted_this_session {
             return Task::none();
         }
@@ -390,11 +401,10 @@ impl MeshCueApp {
                 self.calibration.completion_shown = true;
                 self.calibration.playing_side = None;
                 self.audio.pause();
-                // Persist the learned weights immediately
-                if !self.calibration.weights.is_empty() {
-                    let db = self.domain.db_arc();
-                    let _ = db.store_aggression_weights(&self.calibration.weights, self.calibration.model_accuracy);
-                }
+                // Calibration UI disabled (text-tower axis is canonical).
+                // store_aggression_weights call removed so calibration weights
+                // can't overwrite the polar axis even if this branch somehow
+                // executes.
                 // Record snapshot so next launch doesn't re-prompt
                 self.store_calibration_completion_snapshot();
                 return Task::none();
@@ -506,19 +516,11 @@ impl MeshCueApp {
         // Final batch retrain on all data
         self.batch_retrain_weights();
 
-        // Store final weights in DB
-        let db = self.domain.db_arc();
-        if !self.calibration.weights.is_empty() {
-            if let Err(e) = db.store_aggression_weights(&self.calibration.weights, self.calibration.model_accuracy) {
-                log::warn!("[CALIBRATION] Failed to store learned weights: {}", e);
-            } else {
-                log::info!(
-                    "[CALIBRATION] Stored learned weights ({} dims, accuracy={:.1}%)",
-                    self.calibration.weights.len(),
-                    self.calibration.model_accuracy * 100.0,
-                );
-            }
-        }
+        // Calibration UI disabled (text-tower axis is canonical).
+        // store_aggression_weights call removed; rebinding `db` keeps the
+        // surrounding code shape intact for when calibration is re-enabled
+        // in eval-only / fine-tune-layer mode.
+        let _db = self.domain.db_arc();
 
         // Record the completion snapshot — the next mesh-cue launch reads
         // this to decide whether to re-prompt for calibration. Skipped if
