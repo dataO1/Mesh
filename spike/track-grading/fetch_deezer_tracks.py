@@ -310,7 +310,7 @@ def main() -> int:
         n_records += len(records)
         n_done += 1
 
-        if n_done % 25 == 0 or (i + 1) == len(seeds):
+        if n_done % 10 == 0 or (i + 1) == len(seeds):
             elapsed = time.time() - start
             rate = n_done / max(elapsed, 0.01)
             eta_s = (len(seeds) - n_skipped_cache - n_done) / max(rate, 0.01)

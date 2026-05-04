@@ -19,7 +19,11 @@ set -euo pipefail
 
 # zlib path needed by the spike venv (Nix devshell sandbox).
 export LD_LIBRARY_PATH="/nix/store/c2qsgf2832zi4n29gfkqgkjpvmbmxam6-zlib-1.3.1/lib:${LD_LIBRARY_PATH:-}"
-PY="$HOME/.cache/mesh-spike/vllm-env/bin/python"
+# Force unbuffered stdout/stderr so progress prints flush through `tee`
+# in real time (otherwise Python block-buffers the pipe and you see
+# nothing for minutes at a time).
+export PYTHONUNBUFFERED=1
+PY="$HOME/.cache/mesh-spike/vllm-env/bin/python -u"
 
 OUT_DIR="/tmp/track-grading"
 LOG_DIR="$OUT_DIR/logs"
