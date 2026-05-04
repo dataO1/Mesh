@@ -438,21 +438,9 @@ fn reanalyze_metadata_track(
             log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
         }
 
-        // Intensity components — full-track multi-frame analysis (pure Rust, no subprocess).
-        // All 10 components computed from FFT frames across the track. No Essentia dependency.
-        const INTENSITY_RATE: u32 = 44100;
-        match AudioFileReader::open(path).and_then(|r| r.read_all_stems_to(INTENSITY_RATE)) {
-            Ok(feat_stems) => {
-                let mono_44 = create_mono_mix(&feat_stems);
-                let ic = crate::features::compute_intensity_components(&mono_44, INTENSITY_RATE as f32);
-                if let Err(e) = db.store_intensity_components(track_id, &ic) {
-                    log::warn!("reanalyze_metadata_track: Failed to store intensity components: {:?}", e);
-                }
-            }
-            Err(e) => {
-                log::warn!("reanalyze_metadata_track: Could not load stems for intensity computation: {:?}", e);
-            }
-        }
+        // Intensity is now derived from MuQ-MuLan embeddings via the V15
+        // axis at query time (DatabaseService::batch_project_intensity).
+        // No DSP intensity extraction here.
     }
 
     log::info!("reanalyze_metadata_track: Complete for {:?}", path);

@@ -278,6 +278,11 @@ fn get_file_metadata(path: &Path) -> Result<(i64, i64), DbError> {
 pub struct DatabaseService {
     db: MeshDb,
     collection_root: PathBuf,
+    /// V15+ MuQ-MuLan intensity axis loaded from the collection folder.
+    /// `None` if the collection has no axis JSON yet (intensity scoring
+    /// degrades gracefully — composite_intensity_v2 used to handle this
+    /// case, but post-migration we just return 0.5 for unknown tracks).
+    intensity_provider: Option<crate::intensity_axis::IntensityProvider>,
 }
 
 impl DatabaseService {
@@ -285,6 +290,10 @@ impl DatabaseService {
     ///
     /// The database file will be created at `collection_root/mesh.db`.
     /// Schema is initialized idempotently (safe to call multiple times).
+    ///
+    /// Also auto-loads the per-collection intensity axis JSON if present
+    /// at `collection_root/muq-mulan-aggression-axis.json`. Both mesh-cue
+    /// (analysis) and mesh-player (runtime) project the same axis this way.
     ///
     /// Returns an `Arc<Self>` for thread-safe sharing.
     pub fn new(collection_root: impl AsRef<Path>) -> Result<Arc<Self>, DbError> {
@@ -298,7 +307,14 @@ impl DatabaseService {
         log::info!("Opening database at {:?}", db_path);
         let db = MeshDb::open(&db_path)?;
 
-        Ok(Arc::new(Self { db, collection_root }))
+        let intensity_provider = crate::intensity_axis::IntensityProvider::load_for_collection(&collection_root)
+            .map_err(|e| {
+                log::warn!("Intensity axis not loaded ({}): intensity scoring will return neutral 0.5", e);
+                e
+            })
+            .ok();
+
+        Ok(Arc::new(Self { db, collection_root, intensity_provider }))
     }
 
     /// Create an in-memory database service (for testing)
@@ -306,7 +322,7 @@ impl DatabaseService {
         let collection_root = collection_root.as_ref().to_path_buf();
         let db = MeshDb::in_memory()?;
 
-        Ok(Arc::new(Self { db, collection_root }))
+        Ok(Arc::new(Self { db, collection_root, intensity_provider: None }))
     }
 
     /// Get the collection root path
@@ -499,14 +515,11 @@ impl DatabaseService {
         BatchQuery::batch_insert_saved_loops(&self.db, track_id, &track.saved_loops)?;
         BatchQuery::batch_insert_stem_links(&self.db, track_id, &remapped_links)?;
 
-        // 5. Sync ML analysis data + intensity components
+        // 5. Sync ML analysis data. Intensity is no longer stored as
+        // DSP components — it's projected at query time from the
+        // MuQ-MuLan embedding via the V15 axis.
         if let Ok(Some(ml_data)) = source_db.get_ml_analysis(source_track_id) {
             let _ = self.store_ml_analysis(track_id, &ml_data);
-        }
-        if let Ok(components) = source_db.batch_get_intensity_components(&[source_track_id]) {
-            if let Some(ic) = components.get(&source_track_id) {
-                let _ = self.store_intensity_components(track_id, ic);
-            }
         }
 
         // 6. Sync tags (batch insert — single query instead of N)
@@ -1125,69 +1138,30 @@ impl DatabaseService {
         Ok(rows.into_iter().map(Track::from_row_only).collect())
     }
 
-    /// Store intensity components for a track.
-    pub fn store_intensity_components(&self, track_id: i64, ic: &crate::db::schema::IntensityComponents) -> Result<(), DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("track_id".to_string(), DataValue::from(track_id));
-        params.insert("spectral_flux".to_string(), DataValue::from(ic.spectral_flux as f64));
-        params.insert("flatness".to_string(), DataValue::from(ic.flatness as f64));
-        params.insert("spectral_centroid".to_string(), DataValue::from(ic.spectral_centroid as f64));
-        params.insert("dissonance".to_string(), DataValue::from(ic.dissonance as f64));
-        params.insert("crest_factor".to_string(), DataValue::from(ic.crest_factor as f64));
-        params.insert("energy_variance".to_string(), DataValue::from(ic.energy_variance as f64));
-        params.insert("harmonic_complexity".to_string(), DataValue::from(ic.harmonic_complexity as f64));
-        params.insert("spectral_rolloff".to_string(), DataValue::from(ic.spectral_rolloff as f64));
-        params.insert("centroid_variance".to_string(), DataValue::from(ic.centroid_variance as f64));
-        params.insert("flux_variance".to_string(), DataValue::from(ic.flux_variance as f64));
-        self.db.run_script(r#"
-            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
-              energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance] <-
-                [[$track_id, $spectral_flux, $flatness, $spectral_centroid, $dissonance, $crest_factor,
-                  $energy_variance, $harmonic_complexity, $spectral_rolloff, $centroid_variance, $flux_variance]]
-            :put track_intensity {
-                track_id =>
-                spectral_flux, flatness, spectral_centroid, dissonance,
-                crest_factor, energy_variance, harmonic_complexity, spectral_rolloff,
-                centroid_variance, flux_variance
+    /// Project per-track intensity through the loaded V15+ MuQ-MuLan
+    /// axis. Returns `intensity ∈ [0, 1]` (project_normalised) per
+    /// requested track that has both an embedding and a loaded axis.
+    /// Tracks missing either are absent from the result map.
+    pub fn batch_project_intensity(&self, track_ids: &[i64]) -> HashMap<i64, f32> {
+        let Some(provider) = &self.intensity_provider else {
+            return HashMap::new();
+        };
+        let mut out = HashMap::with_capacity(track_ids.len());
+        for &tid in track_ids {
+            if let Ok(Some(emb)) = self.get_ml_embedding_raw(tid) {
+                if emb.len() == crate::intensity_axis::EMBEDDING_DIM {
+                    out.insert(tid, provider.project_normalised(&emb));
+                }
             }
-        "#, params)?;
-        Ok(())
+        }
+        out
     }
 
-    /// Batch-fetch intensity components for multiple tracks.
-    pub fn batch_get_intensity_components(&self, track_ids: &[i64]) -> Result<HashMap<i64, crate::db::schema::IntensityComponents>, DbError> {
-        if track_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
-        let mut params = BTreeMap::new();
-        params.insert("ids".to_string(), DataValue::List(id_values));
-        let result = self.db.run_query(r#"
-            ?[track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
-              energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance] :=
-                *track_intensity{track_id, spectral_flux, flatness, spectral_centroid, dissonance, crest_factor,
-                                 energy_variance, harmonic_complexity, spectral_rolloff, centroid_variance, flux_variance},
-                track_id in $ids
-        "#, params)?;
-        let mut map = HashMap::new();
-        for row in &result.rows {
-            if let Some(tid) = row[0].get_int() {
-                map.insert(tid, crate::db::schema::IntensityComponents {
-                    spectral_flux: row[1].get_float().unwrap_or(0.0) as f32,
-                    flatness: row[2].get_float().unwrap_or(0.0) as f32,
-                    spectral_centroid: row[3].get_float().unwrap_or(0.0) as f32,
-                    dissonance: row[4].get_float().unwrap_or(0.0) as f32,
-                    crest_factor: row[5].get_float().unwrap_or(0.0) as f32,
-                    energy_variance: row[6].get_float().unwrap_or(0.0) as f32,
-                    harmonic_complexity: row[7].get_float().unwrap_or(0.0) as f32,
-                    spectral_rolloff: row[8].get_float().unwrap_or(0.0) as f32,
-                    centroid_variance: row[9].get_float().unwrap_or(0.0) as f32,
-                    flux_variance: row[10].get_float().unwrap_or(0.0) as f32,
-                });
-            }
-        }
-        Ok(map)
+    /// Reference to the loaded intensity axis (or None if absent).
+    pub fn intensity_provider(&self) -> Option<&crate::intensity_axis::IntensityProvider> {
+        self.intensity_provider.as_ref()
     }
+
 
     // ========================================================================
     // PCA Aggression Axis

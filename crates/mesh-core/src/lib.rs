@@ -6,6 +6,7 @@ pub mod types;
 pub mod effect;
 pub mod audio_file;
 pub mod timestretch;
+pub mod intensity_axis;
 #[cfg(feature = "pd-effects")]
 pub mod pd;
 

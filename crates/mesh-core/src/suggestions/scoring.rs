@@ -397,31 +397,13 @@ pub fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
     0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
 
-// ─── Composite Intensity + Penalty Functions ─────��───────────────
-
-/// Compute composite intensity from individual components (v2).
-///
-/// All components are raw [0, 1] values stored per-track in DB.
-/// The composite is computed at query time so weights can be tuned without reanalysis.
-pub fn composite_intensity_v2(ic: &crate::db::IntensityComponents) -> f32 {
-    // Weights tuned against human-ranked DnB aggression judgments.
-    // Grit/compression dominate (0.65); texture/dynamics are secondary.
-    // Variance features (evar, cvar, fvar) set to 0.0 — they measure temporal
-    // dynamics (jazzy variation), which inversely correlates with perceived
-    // aggression in electronic music. Kept at 0.0 rather than removed so
-    // they remain documented and can be re-enabled if rhythm features are added.
-    (0.15 * ic.spectral_flux             // timbral chop — moderate aggression signal
-    + 0.25 * ic.flatness                 // distortion/noise — primary aggression marker
-    + 0.10 * ic.spectral_centroid        // brightness/harshness
-    + 0.20 * ic.dissonance               // spectral roughness — strong aggression marker
-    + 0.15 * ic.crest_factor             // compression = wall-of-sound = aggressive
-    + 0.00 * ic.energy_variance          // DISABLED: dynamic range ≠ aggression
-    + 0.05 * (1.0 - ic.harmonic_complexity)  // atonal noise content
-    + 0.04 * ic.spectral_rolloff         // high-frequency energy
-    + 0.04 * ic.centroid_variance        // filter sweeps — minor texture signal
-    + 0.02 * ic.flux_variance)           // chop inconsistency — minor texture signal
-    .clamp(0.0, 1.0)
-}
+// ─── Intensity Reward + Penalty Functions ───────────────────────────────
+//
+// Intensity inputs are now scalars projected from MuQ-MuLan embeddings
+// via the V15 axis (see DatabaseService::batch_project_intensity and
+// `documents/intensity-axis-pipeline-runbook.md`). The pre-V15 DSP-component
+// composite (composite_intensity_v2) and the never-called per-component
+// reward functions were removed in the V15 migration.
 
 /// Intensity reward [0, 1] that matches energy level at center and steers direction at extremes.
 ///
@@ -519,138 +501,6 @@ pub fn similarity_reward(hnsw_dist: f32, energy_bias: f32, reach: f32) -> f32 {
     let delta = (hnsw_dist - target).abs();
     let bell = (-(delta / SIGMA).powf(POW)).exp();
     FLOOR + (1.0 - FLOOR) * bell
-}
-
-/// Per-component intensity reward: weighted Euclidean distance between ranked component vectors.
-///
-/// Rewards tracks that are similar on EVERY axis individually, not just on the blended composite.
-/// A gritty+smooth track won't match a clean+choppy seed even if their composites are equal.
-///
-/// At center: small distance = high reward (similar character).
-/// At peak: reward candidates whose ranked components are each HIGHER than seed.
-/// At drop: reward candidates whose ranked components are each LOWER than seed.
-/// Component weights for per-component intensity matching.
-/// Same weights as composite_intensity_v2.
-fn intensity_component_pairs(
-    cand_ic: &crate::db::IntensityComponents,
-    seed_ic: &crate::db::IntensityComponents,
-) -> [(f32, f32, f32); 10] {
-    [
-        (0.15, cand_ic.spectral_flux,        seed_ic.spectral_flux),
-        (0.25, cand_ic.flatness,             seed_ic.flatness),
-        (0.10, cand_ic.spectral_centroid,    seed_ic.spectral_centroid),
-        (0.20, cand_ic.dissonance,           seed_ic.dissonance),
-        (0.15, cand_ic.crest_factor,         seed_ic.crest_factor),
-        (0.00, cand_ic.energy_variance,      seed_ic.energy_variance),
-        (0.05, 1.0 - cand_ic.harmonic_complexity, 1.0 - seed_ic.harmonic_complexity),
-        (0.04, cand_ic.spectral_rolloff,     seed_ic.spectral_rolloff),
-        (0.04, cand_ic.centroid_variance,    seed_ic.centroid_variance),
-        (0.02, cand_ic.flux_variance,        seed_ic.flux_variance),
-    ]
-}
-
-/// Per-component intensity reward with directional one-sided linear falloff.
-///
-/// **Center**: weighted Euclidean distance between ranked component vectors (match character).
-///
-/// **Extremes**: one-sided linear reward per component.
-///   - Target = interpolation from seed toward library extreme (0.0 for drop, 1.0 for peak).
-///     Reach controls how far: Tight=50%, Medium=75%, Open=100% of the way.
-///   - Wrong direction (above seed at drop / below at peak) = sharp linear penalty to 0.
-///   - Right direction = gentle linear falloff from target (1.0) to seed (moderate) to extreme (still OK).
-///   - The entire "less aggressive" zone scores well, with target zone preferred.
-pub fn intensity_reward_per_component(
-    cand_ic: &crate::db::IntensityComponents,
-    seed_ic: &crate::db::IntensityComponents,
-    energy_bias: f32,
-    blend_crossover: f32,
-    intensity_reach: f32,
-) -> f32 {
-    let weights = intensity_component_pairs(cand_ic, seed_ic);
-    let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
-
-    // Center: weighted Euclidean distance → reward (similar character)
-    let dist_sq: f32 = weights.iter()
-        .map(|(w, c, s)| w * (c - s).powi(2))
-        .sum();
-    let match_reward = 1.0 - dist_sq.sqrt().min(1.0);
-
-    // Extremes: one-sided linear reward per component.
-    //
-    // Target: slider position interpolates from seed (center) to library extreme
-    // (full peak → 1.0, full drop → 0.0). The slider itself controls how far.
-    //
-    // Reach controls acceptance width around the target:
-    //   Tight (0.15) = narrow zone, only very close to target scores well
-    //   Open (0.50) = wide zone, broad acceptance in the right direction
-    //
-    // One-sided: wrong direction from seed gets sharp penalty to 0.
-    let is_peak = energy_bias >= 0.0;
-
-    let directional_reward: f32 = weights.iter()
-        .map(|(w, c, s)| {
-            if *w < 1e-6 { return 0.0; }
-
-            // Target: blend_t interpolates from seed toward extreme
-            let target = if is_peak {
-                s + (1.0 - s) * blend_t   // center: seed, full peak: 1.0
-            } else {
-                s * (1.0 - blend_t)        // center: seed, full drop: 0.0
-            };
-
-            // One-sided linear falloff:
-            let delta = if is_peak { c - s } else { s - c }; // positive = right direction
-
-            if delta < 0.0 {
-                // Wrong direction: sharp linear penalty
-                w * (1.0 + delta).max(0.0)
-            } else {
-                // Right direction: reward based on distance from target
-                // Width of acceptance zone scales with intensity_reach
-                let target_delta = (c - target).abs();
-                let width = intensity_reach.max(0.10); // minimum width to avoid division issues
-                let reward = (1.0 - target_delta / width).max(0.0);
-                w * reward
-            }
-        })
-        .sum();
-
-    match_reward * (1.0 - blend_t) + directional_reward * blend_t
-}
-
-/// Hybrid intensity reward: per-component distance at center, composite direction at extremes.
-pub fn intensity_reward_hybrid(
-    cand_ic: &crate::db::IntensityComponents,
-    seed_ic: &crate::db::IntensityComponents,
-    cand_composite: f32,
-    seed_composite: f32,
-    energy_bias: f32,
-    blend_crossover: f32,
-    intensity_reach: f32,
-) -> f32 {
-    let blend_t = (energy_bias.abs() / blend_crossover).clamp(0.0, 1.0);
-
-    // Center: per-component distance (match character)
-    let per_comp = intensity_reward_per_component(cand_ic, seed_ic, 0.0, blend_crossover, intensity_reach);
-
-    // Extreme: composite with one-sided linear falloff
-    let is_peak = energy_bias >= 0.0;
-    let target = if is_peak {
-        seed_composite + (1.0 - seed_composite) * blend_t
-    } else {
-        seed_composite * (1.0 - blend_t)
-    };
-
-    let delta = if is_peak { cand_composite - seed_composite } else { seed_composite - cand_composite };
-    let width = intensity_reach.max(0.10);
-    let composite_reward = if delta < 0.0 {
-        (1.0 + delta).max(0.0)
-    } else {
-        let target_delta = (cand_composite - target).abs();
-        (1.0 - target_delta / width).max(0.0)
-    };
-
-    per_comp * (1.0 - blend_t) + composite_reward * blend_t
 }
 
 /// Stem complement component — bipolar [0, 1].

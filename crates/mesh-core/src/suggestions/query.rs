@@ -1030,7 +1030,7 @@ fn query_opener_suggestions(
 
         let ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
         let stem_map     = source.db.batch_get_stem_energy(&ids).unwrap_or_default();
-        let intensity_map = source.db.batch_get_intensity_components(&ids).unwrap_or_default();
+        let intensity_map = source.db.batch_project_intensity(&ids);
 
         for track in &tracks {
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }
@@ -1048,9 +1048,7 @@ fn query_opener_suggestions(
                 .copied()
                 .unwrap_or((0.2, 0.3, 0.25, 0.25));
 
-            let intensity = intensity_map.get(&id)
-                .map(composite_intensity_v2)
-                .unwrap_or(0.5);
+            let intensity = intensity_map.get(&id).copied().unwrap_or(0.5);
 
             let long_intro     = (intro_bars / 64.0).min(1.0);
             let other_interest = gauss(other, 0.25, 0.12);

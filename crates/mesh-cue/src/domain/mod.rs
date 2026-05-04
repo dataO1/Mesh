@@ -832,13 +832,13 @@ impl MeshCueDomain {
             .collect();
         if row_ids.is_empty() { return; }
 
-        let intensity_map = self.db_service.batch_get_intensity_components(&row_ids).unwrap_or_default();
+        let intensity_map = self.db_service.batch_project_intensity(&row_ids);
 
         for row in rows.iter_mut() {
             if let Some(path) = &row.track_path {
                 if let Some(&id) = path_to_id.get(path) {
-                    if let Some(ic) = intensity_map.get(&id) {
-                        row.intensity = Some(mesh_core::suggestions::scoring::composite_intensity_v2(ic));
+                    if let Some(&intensity) = intensity_map.get(&id) {
+                        row.intensity = Some(intensity);
                     }
                 }
             }

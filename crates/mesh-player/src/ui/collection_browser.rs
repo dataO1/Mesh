@@ -1311,13 +1311,16 @@ impl CollectionBrowserState {
             .collect();
 
         if !row_ids.is_empty() {
-            let intensity_map = db.batch_get_intensity_components(&row_ids).unwrap_or_default();
+            // V15+ MuQ-MuLan axis projection. db.batch_project_intensity
+            // loads the per-collection axis JSON at startup; per-track
+            // projection is one dot product against the cached embedding.
+            let intensity_map = db.batch_project_intensity(&row_ids);
 
             for row in &mut self.tracks {
                 if let Some(path) = &row.track_path {
                     if let Some(id) = resolve_id(path) {
-                        if let Some(ic) = intensity_map.get(&id) {
-                            row.intensity = Some(mesh_core::suggestions::scoring::composite_intensity_v2(ic));
+                        if let Some(&intensity) = intensity_map.get(&id) {
+                            row.intensity = Some(intensity);
                         }
                     }
                 }

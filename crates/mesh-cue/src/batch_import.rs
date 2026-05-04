@@ -677,9 +677,9 @@ fn process_single_track(
     // Select BPM audio: drums-only if available, otherwise full mix
     let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
 
-    // Compute multi-frame intensity components BEFORE the subprocess consumes mono_samples.
-    // Pure Rust (realfft) — 20 frames sampled across the track at 44100 Hz.
-    let intensity_base = crate::features::compute_intensity_components(&mono_samples, 44100.0);
+    // Intensity is now derived at query time by projecting MuQ-MuLan
+    // embeddings onto the V15 axis (see DatabaseService::batch_project_intensity).
+    // No DSP-based intensity components extracted here.
 
     // Analyze audio in isolated subprocess (Essentia for key, LUFS, features, BPM, beat grid)
     let analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
@@ -855,12 +855,6 @@ fn process_single_track(
                 "process_single_track: '{}' inserted into database (id={})",
                 base_name, track_id
             );
-
-            // Store full-track multi-frame intensity components (computed before subprocess).
-            // All 10 values are from the multi-frame analysis — no Essentia overwrite needed.
-            if let Err(e) = config.db_service.store_intensity_components(track_id, &intensity_base) {
-                log::warn!("process_single_track: Failed to store intensity components for '{}': {}", base_name, e);
-            }
 
             // Store ML analysis results and auto-tag
             if let Some(ref ml) = ml_result {

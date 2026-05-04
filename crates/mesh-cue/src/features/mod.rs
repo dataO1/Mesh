@@ -1,8 +1,10 @@
 //! Audio Feature Extraction Module
 //!
-//! Extracts audio features using Essentia algorithms for intensity scoring
-//! and IntensityComponents computation. The features are used locally to seed
-//! multi-frame intensity analysis — similarity search uses EffNet PCA embeddings.
+//! Extracts audio features using Essentia algorithms (key, BPM, LUFS).
+//! Intensity scoring no longer goes through DSP components — it's now
+//! projected at query time from MuQ-MuLan embeddings via the V15 axis
+//! (see `crates/mesh-core/src/intensity_axis.rs` and the
+//! `intensity-axis-pipeline-runbook.md`).
 //!
 //! ## Thread Safety
 //!
@@ -15,6 +17,5 @@ pub use extraction::{
     AudioFeatures,
     extract_audio_features,
     extract_audio_features_in_subprocess,
-    compute_intensity_components,
     FeatureExtractionError,
 };

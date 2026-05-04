@@ -227,30 +227,6 @@ pub struct HarmonicMatch {
     pub match_type: HarmonicMatchType,
 }
 
-// ============================================================================
-// ML Analysis Data
-// ============================================================================
-
-/// ML analysis results for a track (voice detection, genre, mood, audio characteristics)
-///
-/// This struct is used across crates (mesh-core, mesh-cue, mesh-player) to pass
-/// Per-track intensity component values for composite scoring.
-/// All values are raw [0, 1] scalars, multi-frame averaged where applicable.
-#[derive(Debug, Clone, Default)]
-pub struct IntensityComponents {
-    pub spectral_flux: f32,
-    pub flatness: f32,
-    pub spectral_centroid: f32,
-    pub dissonance: f32,
-    pub crest_factor: f32,
-    pub energy_variance: f32,
-    pub harmonic_complexity: f32,
-    pub spectral_rolloff: f32,
-    /// Variance of per-frame spectral centroid — measures filter sweeps vs static timbre
-    pub centroid_variance: f32,
-    /// Variance of per-frame spectral flux — measures consistent chop vs occasional hits
-    pub flux_variance: f32,
-}
 
 /// ML analysis results. It has no iced dependencies.
 ///
