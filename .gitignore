@@ -13,3 +13,7 @@ analysis-export.json
 vampnet/
 reports
 crates/mesh-core/src/bin/history_stats.rs
+
+# Spotify Web API credentials (per-developer secret; load from
+# ~/.config/mesh-research/spotify.env or this local fallback)
+.spotify.env
