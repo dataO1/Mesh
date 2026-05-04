@@ -222,45 +222,120 @@ The trade-off vs round 6:
 - `documents/aggression-axis-eval-round-7.md` — final results report
   (replacing this plan section)
 
-## Training corpus — open question
+## Training corpus — decided + built
 
-The current 909-track Mesh corpus (90% DnB) is too narrow for the axes
-to generalise. **Round 7 needs a much larger, genre-diverse training
-corpus** before the axes can be expected to transfer cleanly to other
-users' libraries.
+Round-6 confirmed the MuQ-MuLan embedding has substantial intensity
+signal we weren't extracting linearly (V15 linear probe alone beat V11
+by +8.6 pp pairwise agreement). That gated the round-7 corpus
+investment, and we built it.
 
-**Key constraint specific to Mesh:** the target user is a DJ. Most free
-music corpora (FMA, MTG-Jamendo, MagnaTagATune) are heavily indie /
-folk / classical / world and **don't really cover DJ-relevant music**
-(commercial dance, big-room, neuro-DnB, peak-time techno, drum & bass
-remixes of pop tracks, etc.). Training axes only on free corpora
-risks discovering axes that don't fire on DJ music — defeating the
-core use case.
+### Strategy: everynoise → Deezer (not Spotify, not free corpora)
 
-Two corpus strategies under consideration:
+Round-7 corpus is a **DJ-relevant subset of everynoise.com expanded via
+Deezer's public API**. Specifically:
 
-**Strategy A — Mesh-curated DJ corpus.** Build our own training set by
-downloading from DJ promo pools, label-licensed pools, Beatport top-
-charts (with legal licensing), or curated Discogs lists across the
-electronic-music genre tree. Target: 5k-15k tracks weighted toward DJ
-genres, with a tail of adjacent genres (pop, hip-hop, rock) for
-generalisation. Highest signal for the actual use case; highest
-acquisition effort and licensing scrutiny.
+1. **everynoise.com** — scraped 6291 genre cells (each with a Spotify
+   playlist ID, a 30 s preview URL, atlas coordinates encoding 2 audio
+   dimensions, and an example artist+track). everynoise is the most
+   comprehensive genre/sub-genre atlas in the wild.
+2. **categorize_genres.py** — three-tier classifier picks the
+   DJ-relevant subset using `HARD_BLOCK > INCLUDE > SOFT_BLOCK`
+   precedence. Result: **2116 INCLUDE genres** (33% of everynoise),
+   spanning house family (98), techno (59), DnB (17), dubstep (11),
+   trance (33), hardcore (72), electro (108), idm (4), phonk (9),
+   hyperpop (12), all the way to regional hip-hop (228 + 311 rap),
+   afrobeats (6), reggaeton (7), kuduro/kompa/kizomba, mahraganat,
+   plus punk (182) / metal (378) / emo (25) / goth (9) per the
+   "don't exclude punk and metal per-se" rule the user set.
+3. **Deezer search + radio expansion** — per genre, search Deezer for
+   the everynoise example_track, take the first match, then call
+   `/artist/{id}/radio` for 9 similar tracks (deduped). Total: ~21k
+   tracks at 10 per seed.
+4. **Preview MP3 download** — Deezer serves 30 s previews from a
+   Google-Frontend CDN (`cdnt-preview.dzcdn.net`). Download in parallel
+   (32 workers); ~10 GB total.
 
-**Strategy B — Free corpora + DJ tail.** Use FMA-medium + MTG-Jamendo
-(~40k tracks, broad coverage) for breadth, plus the existing 909-track
-DnB corpus and any future Mesh-curated DJ pool for depth. Lower
-acquisition cost; the axes get coverage of "music in general" but may
-underweight the DJ-specific dimensions.
+### Why not Spotify
 
-**Adjacent value either way:** non-DJ music in the training corpus
-isn't wasted — it's directly useful for adjacent Mesh features like
-vocal extraction (training data for source separation), genre
-detection, and beat-grid robustness across diverse styles.
+Tested with a free Spotify dev app late-2024 / 2025: every
+`/playlists/{id}/tracks` request returned HTTP 403 "Active premium
+subscription required for the owner of the app." Spotify's policy now
+requires the dev-account holder to have an active Premium subscription
+before public-playlist reads work, and the propagation after enabling
+takes a few hours. We didn't have Premium; we abandoned the path. The
+working Spotify client is left at `spike/track-grading/fetch_spotify_tracks.py`
+in case the policy changes or someone runs the pipeline with Premium —
+it correctly handles the auth, just gets 403'd by the server.
 
-Decision deferred until round 6 results are in. If round 6 confirms
-the embedding has signal we're not extracting linearly, the corpus
-question becomes the gating factor for round 7.
+### Why not free corpora alone
+
+FMA-medium (~25k CC tracks) + MTG-Jamendo (~55k CC tracks) skew indie /
+folk / classical / experimental electronic. They underweight the DJ
+genres Mesh actually targets (commercial dance, neuro-DnB, peak-time
+techno, drum & bass, etc.). Training axes on free-corpora-only would
+risk discovering dimensions that don't fire on DJ music. Skipping FMA
+and Jamendo for round 7 — they remain useful for adjacent Mesh
+features (vocal extraction, source separation) but don't belong in the
+intensity-axis training corpus.
+
+### Empirical verification: previews are hook-aware, not random
+
+Probed 8 already-downloaded Deezer previews with librosa for per-frame
+RMS shape, mean loudness, and onset rate:
+
+```
+category         track                                rms_dB    shape    onset/s
+ambient synth    Jogging House — Flight               -19.5     flat     1.83
+ambient synth    Jogging House — Strings              -25.1     flat     1.40
+afrobeats        KCee — Pullover (Remix)               -8.9     flat     5.44
+afrobeat         Antibalas — Battle of the Spec       -14.6     flat     4.07
+ambient house    Khotin — Groove 32                   -13.3     flat     5.74
+ambient house    Khotin — WEM Lagoon Jump             -10.5     flat     1.97
+ambient house    Khotin — Shopping List               -16.1     flat     0.40
+alt-christian    Shane & Shane — Knowing You          -29.7     rising   1.87
+```
+
+7/8 had **flat** RMS shape — the signature of a chorus, drop, or
+sustained section. The lone "rising" was a slow worship track with no
+clear hook. RMS levels match expected genre energy (ambient quiet, pop
+afrobeats loud, worship very quiet).
+
+So Deezer's clip-selection algorithm is hook/chorus-aware for most
+modern produced music — comparable in spirit to Mesh's own
+`drop_marker`-centered 30 s clip, just selected server-side. Edge cases
+(slow vocal music, classical buildups) get whole-track-start samples;
+acceptable noise at 21k corpus size.
+
+### Sample budget
+
+10 tracks per genre × 2116 genres = **~21k tracks total**. Justification:
+- Multi-task k=12 linear probes train cleanly on ~1700 examples per
+  axis (after dedup) — 21k provides comfortable margin
+- ~10 GB at 470 KB/preview, fits anywhere
+- Wall time ~50-60 min end-to-end on a residential connection (Phase 1
+  search ~9 min rate-gated to 10 req/s, Phase 2 download ~30-40 min at
+  32 parallel workers)
+- Re-running with different categorisation rules is cheap (per-seed
+  cache + per-file cache → resume-safe)
+
+### Files committed for the build
+
+- `spike/track-grading/scrape_everynoise.py` — phase 0
+- `spike/track-grading/categorize_genres.py` — phase 0 (HARD_BLOCK /
+  INCLUDE / SOFT_BLOCK rule)
+- `spike/track-grading/fetch_deezer_tracks.py` — phase 1 (generic seed
+  adapter, search + radio)
+- `spike/track-grading/download_previews.py` — phase 2 (parallel HTTP)
+- `spike/track-grading/build_corpus.sh` — wrapper that runs all phases
+- `spike/track-grading/fetch_spotify_tracks.py` — Spotify alternative,
+  blocked by their Premium policy
+
+Outputs land at `/tmp/track-grading/`:
+- `everynoise_genres.json` (full scrape, 6291 entries)
+- `everynoise_dj_genres.json` (INCLUDE subset, 2116 entries)
+- `deezer/corpus_tracks.json` (the manifest)
+- `audio/dz_<id>.mp3` (the 21k MP3s)
+- `logs/{fetch,download}.log`
 
 ## Follow-on rounds (speculative)
 

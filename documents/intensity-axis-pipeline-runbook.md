@@ -194,6 +194,12 @@ cp models/muq-mulan-aggression-axis.json \
 | `spike/track-grading/train_head_r6.py` | 9 | trains MLP (512→128→64→1) + linear probe (512→1) with RankNet pairwise margin loss; 5-fold CV + final retrain on full data; outputs V*.csv files |
 | `spike/track-grading/export_axis_json.py` | 10 | retrains V15 linear probe, exports to polar IntensityAxis JSON format with V11's sub_axes copied for UI sub-controls |
 | `spike/track-grading/grade.py` | (legacy) | round-3 absolute-scoring with AF3; kept as `nix run .#grade-tracks` for diagnostic comparisons; not in active pipeline |
+| `spike/track-grading/scrape_everynoise.py` | r7-prep | scrapes 6291 genre cells from everynoise.com → JSON with playlist_id, preview_url, atlas position, example_track |
+| `spike/track-grading/categorize_genres.py` | r7-prep | three-tier classifier (HARD_BLOCK / INCLUDE / SOFT_BLOCK) → 2116 DJ-relevant genres |
+| `spike/track-grading/fetch_deezer_tracks.py` | r7-prep | generic seed-list adapter (everynoise format or flat list); per seed → Deezer search + `/artist/{id}/radio` → 10 tracks; rate-gated 10 req/s; resume-safe |
+| `spike/track-grading/download_previews.py` | r7-prep | parallel HTTP downloader (32 workers default) for any manifest with id+url columns; atomic writes; skip-existing |
+| `spike/track-grading/build_corpus.sh` | r7-prep | one-shot wrapper chaining scrape → categorize → fetch → download with banner output + tee'd logs |
+| `spike/track-grading/fetch_spotify_tracks.py` | (blocked) | Spotify equivalent of fetch_deezer_tracks.py; blocked by Spotify's Premium-required policy on dev apps; left in place if policy changes or you have Premium |
 
 ## Re-training on a different library
 
@@ -234,23 +240,131 @@ but requires extending the runtime:
 Defer to round 8 (productisation) — the marginal gain (V14 vs V15 = ~3 pp)
 doesn't justify shipping today's V15 as a partial fix.
 
-## Round-7 axis discovery — placeholder
+## Round-7 axis discovery — corpus prep
 
-Round 7 will run **per-axis** LLM tournaments ("which is more distorted?",
-"which is more bass-heavy?", ...) → multi-task linear probes derive k
-linear directions in the 512-d MuQ-MuLan space → joint blend learns the
-final intensity from those k axes. This replaces the current 6 hand-named
-axes with empirically-discovered axes that are still interpretable
-(linear directions) but no longer hand-picked.
+Round 7 needs a multi-genre training corpus far broader than the 909
+DnB-heavy Mesh tracks rounds 2-6 used. We chose a **DJ-relevant subset
+of everynoise.com + Deezer for audio fetch**. No Spotify (their Web API
+gating now requires Premium + ~24h propagation, see "API choices" below).
 
-When round 7 runs, results land in `documents/aggression-axis-eval-round-7.md`
-and the deployed axis migrates from V15 (single learned axis) to V16
-(k learned axes + learned blend).
+### Pipeline
 
-Cross-library deployment hooks (round 8) will rely on round 7's axis
-factorisation: the k axes ship as a 36 KB pretrained blob; per-user
-libraries refit only the k blend weights via the existing calibration UI
-(no GPU needed user-side).
+```
+   1. scrape_everynoise.py            → /tmp/track-grading/everynoise_genres.json
+                                         (6291 genres × {playlist_id, preview_url,
+                                          example_track, atlas position})
+              ▼
+   2. categorize_genres.py            → /tmp/track-grading/everynoise_dj_genres.json
+                                         HARD_BLOCK > INCLUDE > SOFT_BLOCK rule;
+                                         result: 2116 INCLUDE / 1920 BLOCK / 2255 NEUTRAL
+              ▼
+   3. fetch_deezer_tracks.py          → /tmp/track-grading/deezer/corpus_tracks.json
+                                         per seed: search → /artist/{id}/radio →
+                                         10 tracks (1 seed + 9 radio); cached per
+                                         seed for resume; rate-gated 10 req/s
+              ▼
+   4. download_previews.py            → /tmp/track-grading/audio/dz_<id>.mp3
+                                         32 parallel HTTP workers (CDN, separate
+                                         from API quota); ~10 GB total
+              ▼
+            corpus ready for MuQ-MuLan embedding extraction +
+            per-axis Qwen3-Omni LLM tournaments (round 7 proper)
+```
+
+The whole corpus build is wrapped:
+```bash
+bash spike/track-grading/build_corpus.sh
+# Phase 0 (scrape, if needed) + Phase 1 (Deezer search) + Phase 2 (download)
+# Total wall time: ~50-60 min on a residential connection.
+```
+
+### API choices and why
+
+**Spotify Web API — abandoned.** Tested with a free dev account in
+late-2024-/-2025: every `/playlists/{id}/tracks` call returned HTTP 403
+"Active premium subscription required for the owner of the app." The dev
+app must be bound to a Spotify Premium account before public-playlist
+reads work, and the policy change propagates ~few hours after Premium is
+activated. This blocked the cleanest "everynoise → Spotify playlist
+expansion → preview MP3" path. Script left at
+`spike/track-grading/fetch_spotify_tracks.py` if Premium becomes
+available later — it's wired correctly, just blocked by the policy.
+
+**Deezer public API — chosen.** No auth, no Premium, no OAuth required
+for read-only. Anonymous limit ~50 req / 5 sec for `api.deezer.com`;
+preview MP3s served from a separate Google-Frontend CDN
+(`cdnt-preview.dzcdn.net`) with no per-IP throttling in practice. Each
+preview is a content-addressed 30 s, ~470 KB MP3 — deterministic per
+track ID, so re-fetching is idempotent.
+
+**Audio quality of Deezer previews — empirically verified.** The 30 s
+clip is *not* random and *not* always the first 30 s. Probed 8 tracks
+across categories (ambient synth, ambient house, afrobeat, afrobeats
+pop, alternative Christian) by computing per-frame RMS shape, mean
+loudness, and onset rate:
+
+```
+ambient synth  Jogging House — Flight              -19.5 dB  flat   1.83 onset/s
+ambient synth  Jogging House — Strings             -25.1     flat   1.40
+afrobeats      KCee — Pullover (Remix)              -8.9     flat   5.44
+afrobeat       Antibalas — Battle of the Spec      -14.6     flat   4.07
+ambient house  Khotin — Groove 32                  -13.3     flat   5.74
+ambient house  Khotin — WEM Lagoon Jump            -10.5     flat   1.97
+ambient house  Khotin — Shopping List              -16.1     flat   0.40
+alt-christian  Shane & Shane — Knowing You         -29.7     rising 1.87
+```
+
+7/8 had **flat** RMS shape (the signature of chorus / drop / sustained
+section); the lone "rising" was a slow worship track with no clear hook.
+RMS levels matched expected genre energy (ambient quiet, pop afrobeats
+loud, slow worship very quiet). Conclusion: Deezer's selection is
+hook-aware on most modern produced music, comparable in spirit to our
+own `drop_marker`-centered 30 s clip — different mechanism, same goal.
+
+### Categorisation rule (round-7 corpus)
+
+`spike/track-grading/categorize_genres.py` defines three lists:
+- **INCLUDE_TERMS**: house, techno, trance, dnb, dubstep, garage,
+  hardcore, hardstyle, electro, edm, idm, ambient, downtempo, phonk,
+  hyperpop, synthwave, reggaeton, afrobeats, dub, hip-hop, rap, drill,
+  reggae, plus punk/metal/emo/screamo/post-punk/goth (per the
+  user-explicit "don't exclude punk and metal per-se").
+- **HARD_BLOCK_TERMS**: specific compounds where the include word is a
+  modifier of a non-DJ noun (e.g. "garage rock", "indie rock",
+  "blues rock", "country rock", "folk rock") — these override INCLUDE.
+- **SOFT_BLOCK_TERMS**: broad listening genres only matched when no
+  INCLUDE hit (jazz, blues, soul, country, folk, gospel, classical,
+  rock, indie, ska, etc.).
+
+Precedence: `HARD_BLOCK > INCLUDE > SOFT_BLOCK > NEUTRAL`. NEUTRAL is
+default-excluded. Result on the 6291-genre everynoise scrape:
+**2116 INCLUDE / 1920 BLOCK / 2255 NEUTRAL**.
+
+### Sample budget
+
+Default is **10 tracks per genre = ~21k tracks**. Justified by:
+- Multi-task linear probes for k=12 axes train cleanly on ~1700 examples
+  per axis (after dedup); 10/genre × 2116 = ~21k gives comfortable margin
+- ~10 GB of audio at 470 KB/preview — fits anywhere
+- Wall time ~1 hour end-to-end (search + download)
+- Small enough that re-running with different categorisation rules is cheap
+
+### When round-7 axis discovery runs
+
+The corpus produced by `build_corpus.sh` is the input to round-7's
+per-axis LLM tournament: for each candidate axis (distortion, density,
+darkness, ...) run a Qwen3-Omni pairwise tournament *only on questions
+about that axis*, then learn linear probes per axis, then jointly fit
+the final blend. See round-7 plan in
+`documents/aggression-axis-eval-round-7.md` for the full design.
+
+When round 7 completes, results replace the placeholder in that doc and
+the deployed axis migrates from V15 (single learned axis on Mesh's 909
+tracks) to V16 (k learned axes from ~21k multi-genre tracks + learned
+blend). Cross-library deployment hooks (round 8) will rely on round 7's
+factorisation: the k axes ship as a ~36 KB pretrained blob, per-user
+libraries refit only the k blend weights via the existing calibration
+UI (no GPU needed user-side).
 
 ## Backups + rollback
 
