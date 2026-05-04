@@ -266,3 +266,13 @@ the pair is genuinely ambiguous and should be marked EQUAL.
    "loud-bass = intense" and override the hand-prior signal?
 3. Should we add a second LLM judge (e.g., Audio Flamingo 3 in pairwise mode
    if we can resolve its 1:1 constraint, or SALMONN-13B) to cross-validate?
+
+## Cross-references
+
+- [Round 6 plan](aggression-axis-eval-round-6.md) — single regression head
+  on raw MuQ-MuLan embeddings, supervised by round-5 BT priors. Targets
+  ~75-80% pairwise agreement; sacrifices interpretability.
+- [Round 7 plan](aggression-axis-eval-round-7.md) — LLM-supervised axis
+  discovery + joint blend optimisation. Targets ~80-85% pairwise agreement
+  AND an interpretable, defensible axis basis. The more ambitious successor
+  to round 6 and the answer to "are our 6 named axes the right basis?".

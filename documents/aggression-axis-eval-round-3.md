@@ -213,3 +213,18 @@ If we ever revisit this:
 - `crates/mesh-cue/src/bin/dump_track_list.rs` — Rust→CSV bridge
 - `nvidia/audio-flamingo-3-hf` — model in HF cache
   (`~/.cache/mesh-spike/hf/`), ~16 GB
+
+## Cross-references
+
+The Option A recommendation here was implemented across rounds 4 and 5
+with vLLM + Qwen3-Omni instead of the user-driven calibration UI:
+
+- [Round 4](aggression-axis-eval-round-4.md) — first pairwise pipeline
+  via vLLM Qwen3-Omni-30B-AWQ, anchored tournament, 5446 directed pairs
+- [Round 5](aggression-axis-eval-round-5.md) — community-aware + active
+  learning. BT-vs-hand Spearman improved from +0.36 → +0.41; saturated
+  tracks dropped 282 → 83.
+- [Round 6 plan](aggression-axis-eval-round-6.md) — first attempt to
+  break the 63% pairwise-agreement ceiling via a learned head.
+- [Round 7 plan](aggression-axis-eval-round-7.md) — LLM-supervised axis
+  discovery, the answer to whether the polar axes are correct.

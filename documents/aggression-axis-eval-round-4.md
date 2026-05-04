@@ -269,3 +269,16 @@ sampling beats brute force by an order of magnitude.
   committed — regenerable in 13 min)
 - vLLM env at `~/.cache/mesh-spike/vllm-env/` (not committed)
 - Model in HF cache at `~/.cache/mesh-spike/hf/hub/models--cpatonn--Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit` (~26 GB, not committed)
+
+## Cross-references
+
+- [Round 5](aggression-axis-eval-round-5.md) — community-aware + active-
+  learning sampling. Replaces the 3-anchor scaffold here with the
+  calibration UI's existing planner. BT-vs-hand Spearman jumped +0.36 →
+  +0.41; saturated tracks dropped 282 → 83.
+- [Round 6 plan](aggression-axis-eval-round-6.md) — single regression
+  head, expected to break the ~63% pairwise-agreement ceiling that V6/V11
+  hit here.
+- [Round 7 plan](aggression-axis-eval-round-7.md) — axis discovery via
+  per-axis LLM tournaments. The empirical answer to whether our 6 named
+  axes are the right basis.
