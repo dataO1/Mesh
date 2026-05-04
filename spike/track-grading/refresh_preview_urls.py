@@ -65,8 +65,10 @@ def main() -> int:
     min_gap = 1.0 / max(args.rate_rps, 0.1)
 
     n_ok = n_fail = 0
+    consecutive_fail = 0
     last_call = 0.0
     start = time.time()
+    bail_threshold = 8  # bail if this many in a row fail (DNS outage / Deezer down)
 
     for i, row in enumerate(need_refresh):
         # rate gate
@@ -79,9 +81,30 @@ def main() -> int:
         try:
             r = sess.get(f"https://api.deezer.com/track/{tid}", timeout=15).json()
         except Exception as e:
-            n_fail += 1
-            if i < 5: print(f"  fail {tid}: {e}", file=sys.stderr)
+            n_fail += 1; consecutive_fail += 1
+            err = str(e)
+            if i < 5 or consecutive_fail >= bail_threshold:
+                print(f"  fail {tid}: {err[:120]}", file=sys.stderr)
+            if consecutive_fail >= bail_threshold:
+                # Distinguish DNS / connection failures from rate-limit (which
+                # would also burst-fail). DNS failures keep failing; bail.
+                hint = ""
+                if "name resolution" in err.lower() or "resolve" in err.lower():
+                    hint = "  (DNS resolver down — check /etc/resolv.conf)"
+                elif "connection" in err.lower():
+                    hint = "  (network unreachable — check connectivity)"
+                print(f"\n[refresh] BAIL: {bail_threshold} consecutive failures.{hint}",
+                      file=sys.stderr)
+                print(f"[refresh] partial progress preserved — {n_ok} URLs already "
+                      f"refreshed in memory. Re-run when network recovers.",
+                      file=sys.stderr)
+                # Save progress so far
+                tmp = args.manifest.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(manifest, indent=2))
+                tmp.rename(args.manifest)
+                return 2
             continue
+        consecutive_fail = 0
         new_preview = r.get("preview")
         if new_preview:
             row["preview_url"] = new_preview
