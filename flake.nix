@@ -200,13 +200,6 @@
           inherit pkgs;
         };
 
-        # LLM-as-judge pairwise intensity comparator (Audio Flamingo 3).
-        # Sidesteps the absolute-scale collapse of grade-tracks by asking
-        # for relative judgments instead.
-        judgePairsApp = import ./nix/apps/judge-pairs.nix {
-          inherit pkgs;
-        };
-
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -336,11 +329,6 @@
           grade-tracks = {
             type = "app";
             program = "${gradeTracksApp}/bin/grade-tracks";
-          };
-          # Pairwise LLM judge — sidesteps absolute-scale collapse
-          judge-pairs = {
-            type = "app";
-            program = "${judgePairsApp}/bin/judge-pairs";
           };
           # nn~ PureData external (neural audio effects)
           build-nn-tilde = {
