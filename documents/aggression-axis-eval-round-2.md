@@ -2,6 +2,11 @@
 
 Companion to `documents/aggression-axis-text-tower-plan.md` and the round-1
 notes appended to `documents/muq-mulan-integration-open-questions.md`.
+Successor rounds: [round 3](aggression-axis-eval-round-3.md),
+[round 4](aggression-axis-eval-round-4.md),
+[round 5](aggression-axis-eval-round-5.md),
+[round 6 plan](aggression-axis-eval-round-6.md),
+[round 7 plan](aggression-axis-eval-round-7.md).
 
 ## What changed since round 1
 
