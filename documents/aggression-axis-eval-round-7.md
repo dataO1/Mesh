@@ -222,18 +222,68 @@ The trade-off vs round 6:
 - `documents/aggression-axis-eval-round-7.md` — final results report
   (replacing this plan section)
 
+## Training corpus — open question
+
+The current 909-track Mesh corpus (90% DnB) is too narrow for the axes
+to generalise. **Round 7 needs a much larger, genre-diverse training
+corpus** before the axes can be expected to transfer cleanly to other
+users' libraries.
+
+**Key constraint specific to Mesh:** the target user is a DJ. Most free
+music corpora (FMA, MTG-Jamendo, MagnaTagATune) are heavily indie /
+folk / classical / world and **don't really cover DJ-relevant music**
+(commercial dance, big-room, neuro-DnB, peak-time techno, drum & bass
+remixes of pop tracks, etc.). Training axes only on free corpora
+risks discovering axes that don't fire on DJ music — defeating the
+core use case.
+
+Two corpus strategies under consideration:
+
+**Strategy A — Mesh-curated DJ corpus.** Build our own training set by
+downloading from DJ promo pools, label-licensed pools, Beatport top-
+charts (with legal licensing), or curated Discogs lists across the
+electronic-music genre tree. Target: 5k-15k tracks weighted toward DJ
+genres, with a tail of adjacent genres (pop, hip-hop, rock) for
+generalisation. Highest signal for the actual use case; highest
+acquisition effort and licensing scrutiny.
+
+**Strategy B — Free corpora + DJ tail.** Use FMA-medium + MTG-Jamendo
+(~40k tracks, broad coverage) for breadth, plus the existing 909-track
+DnB corpus and any future Mesh-curated DJ pool for depth. Lower
+acquisition cost; the axes get coverage of "music in general" but may
+underweight the DJ-specific dimensions.
+
+**Adjacent value either way:** non-DJ music in the training corpus
+isn't wasted — it's directly useful for adjacent Mesh features like
+vocal extraction (training data for source separation), genre
+detection, and beat-grid robustness across diverse styles.
+
+Decision deferred until round 6 results are in. If round 6 confirms
+the embedding has signal we're not extracting linearly, the corpus
+question becomes the gating factor for round 7.
+
 ## Follow-on rounds (speculative)
 
-**Round 8** — cross-library generalisation: pick 3-5 libraries with
-distinct genre profiles (DnB, jazz, electronic, folk). Run blend-weight
-fine-tune on each. Report Spearman vs hand-judged labels per library.
-Validate that round-7 axes hold up across genres.
+**Round 8 — productisation for end users without GPUs.** Ship the
+round-7 pretrained axes (~36 KB) plus 3-5 starter blend profiles
+(~12 floats each). Auto-detect library type via clustering on
+imported MuQ-MuLan embeddings, pick the closest starter blend. Revive
+the existing calibration UI in `crates/mesh-cue/src/ui/state/
+calibration.rs` to update the 12 blend weights from user pairwise
+clicks (and optional implicit signals like skip rate, listen-through).
+**Critical: zero LLM compute on the end-user machine.** All heavy
+training stays at the dev side; users get pretrained axes + on-device
+CPU embedding + small per-user blend refit.
 
 **Round 9** — uncertainty-driven ensemble: train multiple round-7
 models with different seeds / prompt variations. For each track,
 compute prediction variance across the ensemble. Tracks with high
 variance → flag for human review or ask Qwen with a different prompt
 phrasing.
+
+**Round 10 (later)** — drift handling: schedule periodic centralised
+re-training of the round-7 axes as the reference corpus grows, push
+updated axis weights to users, allow blend re-fit on top.
 
 ## Cross-references
 
