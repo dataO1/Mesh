@@ -70,6 +70,9 @@ def parse_args():
     p.add_argument("--smoke-mode", action="store_true")
     p.add_argument("--workers", type=int, default=8,
                    help="concurrent inflight requests (vLLM batches them)")
+    p.add_argument("--plan-file", type=Path, default=None,
+                   help="CSV from plan_pairs_v2.py (track_a,track_b,tier,score) "
+                        "— overrides anchored-tournament generation")
     return p.parse_args()
 
 
@@ -218,7 +221,14 @@ def main() -> int:
         f"{lev}={meta[tid]['title']}" for lev, tid in anchors))
 
     pairs: list[tuple[int, int, str]] = []
-    if args.smoke_mode:
+    if args.plan_file:
+        with args.plan_file.open() as f:
+            for r in csv.DictReader(f):
+                a, b = int(r["track_a"]), int(r["track_b"])
+                if a in meta and b in meta:
+                    pairs.append((a, b, r.get("tier", "plan")))
+        print(f"[judge-vllm] loaded {len(pairs)} directed pairs from plan file")
+    elif args.smoke_mode:
         SMOKE = [
             ("FCKD", "Faded", "expect Hyper > ZHU"),
             ("How You Move", "Butternuts", "expect Charlotte > liquid"),
