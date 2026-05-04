@@ -61,6 +61,19 @@ n_tracks=$("$PY" -c "import json; print(len(json.load(open('$DEEZER_DIR/corpus_t
 echo
 echo "[summary] phase 1 produced $n_tracks unique tracks"
 
+# Phase 1.5: refresh expired preview URLs.
+# Deezer's preview URLs are time-signed (`exp=<unix_ts>` ~30-45 min TTL).
+# By the time Phase 2 reaches the tail of the manifest, the URLs at the
+# tail have expired and return HTTP 403. The refresh step re-queries
+# Deezer for any track without a downloaded MP3 and updates the manifest
+# in place. Idempotent + resume-safe; cheap to run unconditionally.
+banner "Phase 1.5/3 — refreshing any expired Deezer preview URLs"
+echo "  log file: $LOG_DIR/refresh.log"
+echo
+"$PY" spike/track-grading/refresh_preview_urls.py \
+  --manifest "$DEEZER_DIR/corpus_tracks.json" \
+  --audio-dir "$AUDIO_DIR" 2>&1 | tee "$LOG_DIR/refresh.log"
+
 # Phase 2: download preview MP3s in parallel.
 banner "Phase 2/3 — downloading $n_tracks preview MP3s (32 workers)"
 echo "  log file: $LOG_DIR/download.log"
@@ -69,6 +82,25 @@ echo
 "$PY" spike/track-grading/download_previews.py --workers 32 \
   --manifest "$DEEZER_DIR/corpus_tracks.json" \
   --out-dir "$AUDIO_DIR" 2>&1 | tee "$LOG_DIR/download.log"
+
+# If the download had to refresh a few URLs because of in-flight
+# expiration too, do one more cycle. Idempotent — usually a no-op.
+remaining=$("$PY" -c "
+import json
+from pathlib import Path
+m = json.load(open('$DEEZER_DIR/corpus_tracks.json'))
+audio = Path('$AUDIO_DIR')
+print(sum(1 for t in m if not (audio / f'dz_{t[\"deezer_track_id\"]}.mp3').exists()))
+")
+if [ "$remaining" -gt 0 ]; then
+  banner "Phase 2.5/3 — second pass: $remaining tracks still missing, refreshing + retrying"
+  "$PY" spike/track-grading/refresh_preview_urls.py \
+    --manifest "$DEEZER_DIR/corpus_tracks.json" \
+    --audio-dir "$AUDIO_DIR" 2>&1 | tee -a "$LOG_DIR/refresh.log"
+  "$PY" spike/track-grading/download_previews.py --workers 32 \
+    --manifest "$DEEZER_DIR/corpus_tracks.json" \
+    --out-dir "$AUDIO_DIR" 2>&1 | tee -a "$LOG_DIR/download.log"
+fi
 
 # Phase 3: summary.
 banner "Phase 3/3 — summary"
