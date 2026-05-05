@@ -1,0 +1,115 @@
+{
+  "_meta": {
+    "format_version": 2,
+    "schema": "polar-Kway-ranking",
+    "model": "cpatonn/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit",
+    "k_clips_per_call": 4,
+    "system": "You are an expert music analyst.",
+    "max_tokens": 120,
+    "temperature": 0.0,
+    "judge_template": "You hear FOUR short clips from a DJ's track library, presented in order: clip A first, then clip B, then clip C, then clip D.\n\nThis question is about a single perceptual dimension: {axis_id}.\n- LOW pole:  {low_pole}\n- HIGH pole: {high_pole}\n\nFor each clip, decide where it sits on the LOW ↔ HIGH scale, then ORDER all four clips from CLOSEST to LOW pole (least toward HIGH) to CLOSEST to HIGH pole (most toward HIGH).\n\nReply with EXACTLY one line: four letters in order, lowest-pole first, no separator. Use each letter (A, B, C, D) exactly once.\nExample: \"BACD\" means B is least toward HIGH, then A, then C, then D is most toward HIGH.\n\nThen on a second line, one short justification (≤25 words).\n",
+    "n_calls_per_axis": 12000,
+    "_pair_budget_rationale": "16 axes × 12000 K=4 calls = 192000 LLM calls. Each call yields 6 pair observations (4 choose 2) for ~72000 pair labels per axis. Bootstrap 20% uniform (2400 calls) + BALD 80% (9600 calls) per axis. Wall ~10 hr at 12 inflight, ~2.0 s per call. Coverage: ~8 games/track on the full 15314-track corpus. Replaces round-7 1500 pairwise pairs/axis on 1424 tracks.",
+    "bootstrap_fraction": 0.20,
+    "ordinal_anchor_calls_per_axis": 100,
+    "convention": "LOW pole = less intense / less aggressive end. HIGH pole = more intense / more aggressive end. The blend optimiser learns the sign at training time; the LOW→HIGH ordering is for human interpretability and prompt clarity, not for label sign."
+  },
+  "axes": [
+    {
+      "id": "timbre_roughness",
+      "low_pole":  "clean, smooth tone with no distortion, fuzz, clipping, or saturation",
+      "high_pole": "distorted, fuzzy, heavily saturated or clipped tone",
+      "rationale": "non-linear processing on pitched material; replaces the round-7 'distortion' axis with explicit clean anti-pole"
+    },
+    {
+      "id": "mood_polarity",
+      "low_pole":  "bright, uplifting, major-key, hopeful or joyful mood",
+      "high_pole": "dark, brooding, minor-key, ominous or shadowy mood",
+      "rationale": "tonal mood + frequency emphasis; round-7 darkness was the only non-redundant axis, polar form should keep it sharp"
+    },
+    {
+      "id": "textural_density",
+      "low_pole":  "sparse texture: few elements, breathing room, minimalist arrangement",
+      "high_pole": "dense texture: many simultaneous layers, busy, packed arrangement",
+      "rationale": "number of concurrent voices; polar anti-pole separates 'busy' from 'loud'"
+    },
+    {
+      "id": "rhythm_grid",
+      "low_pole":  "steady pulse, four-on-the-floor, predictable subdivisions, on-grid",
+      "high_pole": "syncopated, breakbeat, polyrhythmic, displaced accents, off-grid",
+      "rationale": "groove complexity / syncopation; round-7 had real signal here"
+    },
+    {
+      "id": "vocal_aggression",
+      "low_pole":  "clean sung vocals OR no vocals OR melodic singing",
+      "high_pole": "shouted, screamed, growled, or harsh-effected vocals",
+      "rationale": "vocal performance intensity; absent-vocal tracks fall on the LOW pole by design"
+    },
+    {
+      "id": "dynamic_envelope",
+      "low_pole":  "dynamic loudness with quiet-loud-quiet contrast and breathing room",
+      "high_pole": "flat, brick-walled, loudness-uniform, no dynamic rest",
+      "rationale": "loudness envelope / mastering; orthogonal to peak loudness"
+    },
+    {
+      "id": "bass_presence",
+      "low_pole":  "thin, light low-end with little or no sub-bass",
+      "high_pole": "heavy sub-bass and kick presence, chest-pushing low-end",
+      "rationale": "sub-bass / kick body"
+    },
+    {
+      "id": "tempo_perception",
+      "low_pole":  "relaxed, floating, slow-feeling regardless of measured BPM",
+      "high_pole": "urgent, frantic, fast-feeling regardless of measured BPM",
+      "rationale": "perceived (not measured) speed"
+    },
+    {
+      "id": "melodic_anchoring",
+      "low_pole":  "tonal, singable, clear key, hummable melody",
+      "high_pole": "atonal, fragmented, no clear key, non-melodic",
+      "rationale": "pitch organisation; consolidates round-7 atonality + harmonic_dissonance with explicit singable anti-pole"
+    },
+    {
+      "id": "melodic_complexity",
+      "low_pole":  "intricate, through-composed, lots of melodic variation, harder to predict",
+      "high_pole": "simple, repetitive hook or riff, in-your-face, predictable",
+      "rationale": "user hypothesis: simple melody correlates with aggression (Prodigy / hardcore use simple riffs; jazz / prog use intricate ones)"
+    },
+    {
+      "id": "noise_layer",
+      "low_pole":  "purely pitched material, no noise or non-pitched FX layers",
+      "high_pole": "heavy non-pitched layers (white noise, hiss, noise FX, glitches)",
+      "rationale": "non-pitched sound design; distinct from timbre_roughness which is processing of pitched material"
+    },
+    {
+      "id": "harmonic_motion",
+      "low_pole":  "active chord changes, frequent modulations, harmonic movement",
+      "high_pole": "static drone, repeated chord, no harmonic motion",
+      "rationale": "harmonic stasis; flipped from intuition because static is the higher-intensity pole (peak techno, doom drone, hardstyle are all static)"
+    },
+    {
+      "id": "drop_architecture",
+      "low_pole":  "continuous-energy flow, no buildup-and-drop structure, ambient or through-composed",
+      "high_pole": "explicit buildup-and-drop architecture, peak-then-release dynamics",
+      "rationale": "DJ-track form; very DJ-relevant, captures 'club banger' shape"
+    },
+    {
+      "id": "production_polish",
+      "low_pole":  "lo-fi, raw, dusty, unpolished, tape-warm or rough mix",
+      "high_pole": "hi-fi, polished, mastered, modern-mixed, transparent",
+      "rationale": "production-era axis; orthogonal to most aggression-related axes, cross-library generalisation aid"
+    },
+    {
+      "id": "acoustic_synthesis",
+      "low_pole":  "organic acoustic instruments dominate (guitar, piano, drum kit, strings, voice)",
+      "high_pole": "synthetic, electronic, sampled, sound-design dominant (synths, drum machines, FX)",
+      "rationale": "instrument-source axis; captures acoustic vs electronic genre macro-structure"
+    },
+    {
+      "id": "onset_density",
+      "low_pole":  "smooth, legato, few sharp transients, sustained tones",
+      "high_pole": "percussive, attack-heavy, transient-rich, articulated",
+      "rationale": "attack vs sustain; distinct from rhythm_grid (subdivision) and from textural_density (number of voices)"
+    }
+  ]
+}

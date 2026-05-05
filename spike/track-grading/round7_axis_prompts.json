@@ -1,0 +1,98 @@
+{
+  "_meta": {
+    "format_version": 1,
+    "model": "cpatonn/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit",
+    "judge_template": "You hear two short clips from a DJ's track library: clip A first, then clip B.\n\n{question}\n\nReply with EXACTLY one token on a single line:\n  A     — clip A is more {axis_label}\n  B     — clip B is more {axis_label}\n  EQUAL — about equally {axis_label}\n\nThen on a second line, one short justification (≤20 words).\n",
+    "system": "You are an expert music analyst.",
+    "max_tokens": 80,
+    "temperature": 0.0,
+    "n_pairs_per_axis": 1500,
+    "_pair_budget_rationale": "12 axes × 1500 directed pairs × ~1.5 s/pair / 12 inflight workers ≈ 38 min wall-clock total on RTX 5090. Bilateral (A→B + B→A) halves discriminative power per directed pair but cancels positional bias → 750 unique pairs per axis covering ~1500 unique tracks (out of 15k). Past round-5: ~10k pairs at 1.48 s median wall-time per pair; each axis's 1500 examples is enough to L2-regularize a 512-d linear probe, with the joint blend leveraging cross-axis information for the final ranking."
+  },
+  "axes": [
+    {
+      "id": "aggression",
+      "label": "aggressive",
+      "question": "Which clip is MORE AGGRESSIVE — harsher, more distorted, more in-your-face, more confrontational? Don't compare for tempo alone; focus on harshness, weight, and energy.",
+      "rationale": "control axis — should reproduce round-5 BT ranking; baseline check the new corpus + new prompts",
+      "expected_top_genres": ["hardcore", "neuro dnb", "speedcore", "blackened metal", "phonk drift"]
+    },
+    {
+      "id": "distortion",
+      "label": "distorted",
+      "question": "Which clip has MORE DISTORTION — more clipping, fuzz, saturation, harsh overtones, or driven amp character? Focus on the textural roughness of individual sounds, not how busy or fast the mix is.",
+      "rationale": "non-linear processing on instruments / synths",
+      "expected_top_genres": ["industrial", "dubstep", "blackened death metal", "noise", "phonk"]
+    },
+    {
+      "id": "density",
+      "label": "dense",
+      "question": "Which clip is MORE DENSE — more simultaneous sounds layered, busier texture, more elements competing for the same frequency space? Don't conflate with loud or distorted; a dense clip can be quiet.",
+      "rationale": "number of concurrent voices / textural busyness",
+      "expected_top_genres": ["liquid funk", "breakcore", "drill and bass", "math rock", "free jazz-ish"]
+    },
+    {
+      "id": "darkness",
+      "label": "dark",
+      "question": "Which clip is MORE DARK — more minor-key, lower in pitch, more shadowy / brooding / ominous in mood? Focus on tonal mood and frequency emphasis, not how loud or aggressive.",
+      "rationale": "key, mode, low-end emphasis, mood",
+      "expected_top_genres": ["dark techno", "horrorcore", "doom metal", "darkwave", "midwest emo"]
+    },
+    {
+      "id": "noisiness",
+      "label": "noisy",
+      "question": "Which clip has MORE NOISE — more inharmonic / atonal layers like white noise, static, hiss, glitches, or non-pitched FX? Distortion of pitched material doesn't count; this is about non-pitched, sound-design layers.",
+      "rationale": "non-pitched sound layers (vs distortion which is non-linear processing of pitched content)",
+      "expected_top_genres": ["noise", "harsh noise wall", "musique concrète", "industrial", "powerelectronics"]
+    },
+    {
+      "id": "atonality",
+      "label": "atonal",
+      "question": "Which clip is MORE ATONAL — less anchored to a clear key or melody, more dissonant or chromatic, harder to hum along to? Focus on pitch organisation, not on whether the sounds themselves are noisy.",
+      "rationale": "pitched-vs-unpitched / chord ambiguity (Mesh’s existing axis definition)",
+      "expected_top_genres": ["atonal techno", "free jazz", "noise", "modern classical", "industrial"]
+    },
+    {
+      "id": "bass_weight",
+      "label": "bass-heavy",
+      "question": "Which clip is MORE BASS-HEAVY — more sub-bass energy, more kick presence, more low-end weight pushing the chest? Focus on the bottom of the spectrum, not on whether the mids are aggressive.",
+      "rationale": "sub-bass / kick body",
+      "expected_top_genres": ["dubstep", "trap", "drum and bass", "uk grime", "miami bass"]
+    },
+    {
+      "id": "tempo_intensity",
+      "label": "fast-feeling",
+      "question": "Which clip FEELS FASTER — more urgent, more frantic, higher subjective tempo regardless of measured BPM? Focus on the perceived urgency, not the strict beats-per-minute.",
+      "rationale": "perceived (not measured) speed",
+      "expected_top_genres": ["speedcore", "frenchcore", "happy hardcore", "drum and bass", "footwork"]
+    },
+    {
+      "id": "rhythmic_complexity",
+      "label": "rhythmically complex",
+      "question": "Which clip is MORE RHYTHMICALLY COMPLEX — more breakbeat / polyrhythm / syncopation / shifting accents, vs a simpler four-on-the-floor or straight pulse? Focus on rhythmic intricacy, not how fast or loud.",
+      "rationale": "groove complexity / syncopation",
+      "expected_top_genres": ["jungle", "footwork", "math rock", "idm", "breakcore"]
+    },
+    {
+      "id": "vocal_intensity",
+      "label": "vocally intense",
+      "question": "Which clip has MORE VOCAL INTENSITY — more screaming, growling, shouting, aggressive rapping, harsh vocal effects? A clip with no vocals counts as low. Focus on the vocal performance, not the instrumental.",
+      "rationale": "vocal aggression / presence",
+      "expected_top_genres": ["death metal", "hardcore punk", "drill", "powerviolence", "harsh noise"]
+    },
+    {
+      "id": "dynamic_compression",
+      "label": "loudness-flat",
+      "question": "Which clip sounds MORE COMPRESSED / LOUDNESS-FLAT — loud throughout with little dynamic range, vs having quiet-loud-quiet contrast? Focus on the loudness envelope, not on how busy or distorted.",
+      "rationale": "loudness uniformity / brick-wall mastering",
+      "expected_top_genres": ["edm", "trap", "metalcore", "modern radio rock", "phonk"]
+    },
+    {
+      "id": "harmonic_dissonance",
+      "label": "harmonically dissonant",
+      "question": "Which clip has MORE HARMONIC DISSONANCE — more clashing chord intervals, tension chords, tritones, semitone clusters? This is about pitch relationships in the chords, not about noise or atonality.",
+      "rationale": "chord-level tension (distinct from atonality which is pitched-vs-unpitched)",
+      "expected_top_genres": ["jazz fusion", "math rock", "modern classical", "atonal techno", "djent"]
+    }
+  ]
+}

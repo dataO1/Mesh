@@ -52,7 +52,7 @@ exec "$VENV/bin/python" -m vllm.entrypoints.openai.api_server \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.92 \
   --enforce-eager \
-  --limit-mm-per-prompt '{"audio": 2, "image": 0, "video": 0}' \
+  --limit-mm-per-prompt '{"audio": 4, "image": 0, "video": 0}' \
   --trust-remote-code \
   --host 0.0.0.0 \
   --port "$PORT"

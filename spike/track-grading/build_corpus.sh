@@ -23,7 +23,9 @@ export LD_LIBRARY_PATH="/nix/store/c2qsgf2832zi4n29gfkqgkjpvmbmxam6-zlib-1.3.1/l
 # in real time (otherwise Python block-buffers the pipe and you see
 # nothing for minutes at a time).
 export PYTHONUNBUFFERED=1
-PY="$HOME/.cache/mesh-spike/vllm-env/bin/python -u"
+# Single binary path — `-u` would be a flag, but PYTHONUNBUFFERED=1 above
+# achieves the same effect and keeps "$PY" usable as a single executable.
+PY="$HOME/.cache/mesh-spike/vllm-env/bin/python"
 
 OUT_DIR="/tmp/track-grading"
 LOG_DIR="$OUT_DIR/logs"
