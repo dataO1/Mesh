@@ -41,8 +41,35 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
+import contextlib
 import numpy as np
 import soundfile as sf
+
+
+@contextlib.contextmanager
+def _silence_c_stderr():
+    """Briefly redirect process-level stderr fd to /dev/null.
+
+    libsndfile delegates MP3 decoding to libmpg123, which emits noisy
+    `[src/libmpg123/id3.c:...] warning: ID3v2: unrealistic small tag lengh`
+    lines to stderr from C — bypassing Python's `warnings`/logging stack.
+    The Deezer previews trip this on essentially every file. We silence
+    the fd around the decode call only; real Python errors after the
+    `with` block reach the terminal as usual.
+
+    Trade-off: stderr is process-global, so any stderr printed from
+    other threads during the ~50-200 ms decode window is also dropped.
+    For our use (caption sweep / pointwise tournament) the cost is nil.
+    """
+    saved = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull_fd)
+        os.close(saved)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from judges import (  # noqa: E402
@@ -58,7 +85,8 @@ def load_audio(path: Path, target_sr: int) -> np.ndarray | None:
     if not path.exists():
         return None
     try:
-        wav, sr = sf.read(str(path), dtype="float32", always_2d=False)
+        with _silence_c_stderr():
+            wav, sr = sf.read(str(path), dtype="float32", always_2d=False)
         if wav.ndim > 1:
             wav = wav.mean(axis=1)
         if sr != target_sr:
