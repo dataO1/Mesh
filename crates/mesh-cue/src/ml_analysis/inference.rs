@@ -208,37 +208,29 @@ impl MlAnalyzer {
             .and_then(|b| b.commit_from_file(&onnx_path))
             .map_err(|e| format!("Failed to load MuQ-MuLan ONNX: {}", e))?;
 
-        // Best-effort: load the active intensity-axis variant if present.
-        // Absent axis is non-fatal — embedding extraction still works,
-        // only intensity scoring degrades.
+        // Active intensity axis: per-cache user override → embedded default.
+        // The embedded default (V18.1 MLP at the time of writing) is baked
+        // into the binary at build time via include_bytes!, so this never
+        // returns None in practice — embedding-time peak-clip selection
+        // always has an axis to consult.
         let axis_path = model_dir.join(MlModelType::MuQMulanLarge.aggression_axis_filename());
         let intensity_axis = if axis_path.exists() {
             match IntensityAxis::load(&axis_path) {
                 Ok(axis) => {
-                    log::info!(
-                        "Loaded intensity axis '{}' ({}) from {:?}",
-                        axis.variant_id, axis.name, axis_path
-                    );
+                    log::info!("Loaded intensity axis from user override {:?}", axis_path);
                     Some(axis)
                 }
                 Err(e) => {
                     log::warn!(
-                        "Failed to load intensity axis from {:?}: {} \
-                         — intensity scoring will be inactive",
+                        "Failed to load user override {:?}: {} — falling back to embedded default",
                         axis_path, e
                     );
-                    None
+                    IntensityAxis::embedded_default().ok()
                 }
             }
         } else {
-            log::info!(
-                "No intensity axis JSON at {:?} — intensity scoring inactive \
-                 (run `nix run .#derive-aggression-axes` and copy a variant \
-                 from models/aggression-axes/ into the cache as {})",
-                axis_path,
-                MlModelType::MuQMulanLarge.aggression_axis_filename(),
-            );
-            None
+            log::info!("No user override at {:?} — using embedded default", axis_path);
+            IntensityAxis::embedded_default().ok()
         };
 
         log::info!(
@@ -259,7 +251,32 @@ impl MlAnalyzer {
     ///
     /// Slices the mel into up to `MUQ_MULAN_MAX_CLIPS` evenly-spaced 1000-frame
     /// clips (10 s @ 24 kHz/hop 240), normalizes each with the sidecar stats,
-    /// runs ONNX per clip, and averages the per-clip 512-d outputs.
+    /// runs MuQ-MuLan ONNX per clip, then picks ONE clip's 512-d embedding to
+    /// store as the track-level vector.
+    ///
+    /// **Aggregation strategy: peak-clip-by-intensity** (added 2026-05-08
+    /// after deploying V18.1).
+    ///
+    /// Round-7.6 V18.1 was trained on 30 s Deezer previews — Deezer's preview
+    /// heuristic picks roughly the catchiest 30 s of each track, usually the
+    /// drop. So the teacher and the 3 jurors learned to score peak-energy
+    /// windows. Mesh-cue's deployment used to mean-average the 6 per-clip
+    /// embeddings, which smeared intro / breakdown / outro into the drop
+    /// signal and pulled core-neurofunk drops down from p80+ to p51-p72 on
+    /// the user's library (see `documents/round-7-6-training-log.md`
+    /// § "Post-deploy hand verification").
+    ///
+    /// Project each clip embedding through V18.1, take the clip with the
+    /// highest projected intensity, and use that single clip's 512-d vec as
+    /// the track-level embedding. This matches the "DJ intensity" semantic
+    /// (how hard does the track hit at its peak) and aligns the deployment
+    /// distribution with the training distribution.
+    ///
+    /// If the intensity axis isn't loaded for some reason (build / cache
+    /// edge case), fall back to the previous mean-average behaviour so
+    /// embedding extraction still works for similarity / clustering uses
+    /// that don't care about peak-vs-mean. This branch never fires in
+    /// practice because the embedded default is always available.
     pub fn analyze(
         &mut self,
         mel: &MelSpectrogramResult,
@@ -289,7 +306,36 @@ impl MlAnalyzer {
             clip_embeddings.push(self.run_clip(clip)?);
         }
 
-        let embedding = average_embeddings(&clip_embeddings);
+        let embedding = match self.intensity_axis.as_ref() {
+            Some(axis) if clip_embeddings.len() > 1 => {
+                // Score every clip, pick the peak.
+                let mut peak_idx = 0usize;
+                let mut peak_score = f32::NEG_INFINITY;
+                for (i, emb) in clip_embeddings.iter().enumerate() {
+                    let s = axis.project(emb);
+                    if s > peak_score {
+                        peak_score = s;
+                        peak_idx = i;
+                    }
+                }
+                log::debug!(
+                    "ML: peak-clip {} of {} (score={:.4}) selected as track embedding",
+                    peak_idx + 1, clip_embeddings.len(), peak_score,
+                );
+                clip_embeddings.into_iter().nth(peak_idx).unwrap()
+            }
+            // Single-clip track or no axis — nothing to pick. Use it as-is.
+            _ if clip_embeddings.len() == 1 => clip_embeddings.into_iter().next().unwrap(),
+            // Multi-clip but no axis available (shouldn't happen with the
+            // embedded default in place). Fall back to mean.
+            _ => {
+                log::debug!(
+                    "ML: no intensity axis loaded — falling back to mean of {} clips",
+                    clip_embeddings.len(),
+                );
+                average_embeddings(&clip_embeddings)
+            }
+        };
 
         Ok(MlAnalysisResult {
             // Genre / classification fields stay empty — MuQ-MuLan has no
