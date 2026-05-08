@@ -780,3 +780,166 @@ re-encoding the audio anyway).
   uses the user's own pairwise feedback to fine-tune the deployed axis.
 - DEAM external arousal anchor — also orthogonal, validates the axis
   against an academic ground-truth dataset.
+
+---
+
+# Tune the audio-clip timeframe shared by intensity + similarity
+
+Both intensity scoring and PCA-based similarity inherit from the **same
+upstream 512d** in `ml_embeddings`. That vec is currently the peak-clip
+output of `MUQ_MULAN_MAX_CLIPS=6 × MUQ_MULAN_CLIP_FRAMES=1000` (6 ×
+10 s). Picked 2026-05-08 to align with V18.1's training distribution
+(Deezer 30 s previews → catchiest 30 s).
+
+Open question: is **10 s the right window** for both downstream uses,
+or should we tune it differently for intensity vs similarity?
+
+## Why the question matters
+
+- **For intensity**: a 10 s window catches a single drop pattern
+  cleanly, but might miss the build-up / drop-relationship that defines
+  some genres (riddim breakdown → drop). A 30 s contiguous window
+  captures a full musical phrase. Trade-off: longer window → more
+  context but more "average" pulled in. The training distribution was
+  effectively 30 s contiguous, so matching that should help.
+
+- **For similarity**: 10 s windows might cluster on micro-timbre (drum
+  pattern matches drum pattern); 30 s windows might cluster on macro
+  structure (build-drop matches build-drop). For DJ "find me a similar
+  track to mix into" use, micro-timbre is probably what you want —
+  10 s is closer. But for "find me a track with the same vibe across
+  the whole song", longer is better.
+
+## Plan
+
+1. **Bench peak-clip-by-intensity at three window lengths** on the
+   user's library (no retraining needed):
+   - Current: 6 × 10 s, peak by V18.1 score → already in production
+   - 30 s: 2 × 30 s contiguous (matches training distribution exactly)
+   - 5 s: 12 × 5 s (more candidate windows, finer-grained peak)
+
+   Compare `aggression_inspect` numbers (aggressive_mean −
+   liquid_mean separation) across the three. Tier 1 already gives us
+   ~+50pp → +60pp expected; longer windows might push further.
+
+2. **Bench similarity** with the same three settings by spot-checking
+   "given this neuro track, what are the 10 nearest neighbours?" for
+   ~20 hand-picked seed tracks across DnB sub-genres. Eyeball whether
+   10 s vs 30 s clusters feel more correct.
+
+3. **Pick the operating point.** Likely candidates:
+   - **30 s for both** if the training-distribution-match matters more
+     than fine-grained similarity. Simplest.
+   - **30 s peak for intensity, 10 s peak for similarity**: requires
+     storing two embeddings per track (or computing similarity at
+     query time from the stored 6 clips, which means the DB schema
+     gains a `clips` column or we accept query-time decode cost).
+     Adds complexity for a win we may not need.
+   - **10 s for both** if the peak-of-10s window is already enough
+     and the training mismatch is dominated by other factors.
+
+## Where the knob lives
+
+- `crates/mesh-cue/src/ml_analysis/inference.rs:70-72`:
+  ```rust
+  const MUQ_MULAN_CLIP_FRAMES: usize = 1000;  // 10 s @ 24 kHz / hop 240
+  const MUQ_MULAN_MAX_CLIPS: usize = 6;
+  ```
+- The mel hop_length (240) is also relevant — 30s = 3000 frames at the
+  same hop. MuQ-MuLan's training window was `clip_secs=10` per the
+  reference, so going beyond 10 s per clip is technically off-distribution
+  for the encoder itself (worth checking how it handles 30 s — may still
+  work since it's a transformer, but no guarantees).
+
+## Cost
+
+- Per-clip run cost is roughly proportional to clip length (transformer
+  attention is O(n²) on length but n is small here). 30s clips ≈ 3-9×
+  per-clip cost. Total compute for the 6→2 clip switch is similar.
+- Re-analysis: ~3 min wall on 909 tracks at the current settings; bigger
+  clips would push to ~5-10 min. Tractable.
+
+## Decide after
+
+After we measure how V18.1 + 6×10s peak-clip lands on the user's library
+post-reanalysis. If the +60pp target is hit, this whole TODO is academic
+(don't fix what works). If it's not hit, the clip-window tuning is the
+next cheap lever before retraining the model.
+
+---
+
+# DB-locking errors during batch ML reanalysis
+
+Observed 2026-05-08 during the V18.1+peak-clip reanalysis pass on the
+user's 909-track library:
+
+```
+ERROR mesh_cue::reanalysis] Failed to store ML analysis: Query("database is locked (code 5)")
+ERROR mesh_cue::reanalysis] Failed to store ML embedding for ".../52_Billain - Cosmic Gate.flac": Query("database is locked (code 5)")
+```
+
+**Tracks that hit this DON'T get their new embedding written.** Stale
+mean-pooled vec stays in the DB. After re-analysis "completes", any
+track that hit the lock contention is silently using the old aggregation,
+and the inspector / similarity index will misrepresent them.
+
+**Root cause hypothesis** (from `crates/mesh-core/src/db/mod.rs:46-48`):
+> CozoDB's SQLite backend doesn't support concurrent writers — concurrent
+> `run_script` calls from different threads cause "database is locked"
+> errors. The write lock is transparent to callers.
+
+So MeshDb has a process-internal `Mutex` (`write_lock`) to serialise
+writes. The fact that lock errors *still* leak through means either:
+
+1. Some write path bypasses the mutex (calls `run_script` on
+   `db_instance` directly without going through the wrapper).
+2. The mutex is held but a SQLite-level busy-timeout is firing because
+   another process (or reader) is touching the same DB file.
+3. The reanalysis batch runs concurrent rayon workers, each going
+   through the lock, but a long-held lock from one worker times out
+   the others' SQLite-level busy retries.
+
+**Effects observed:**
+- Track `52_Billain - Cosmic Gate.flac` failed both `store_ml_analysis`
+  AND the subsequent `store_ml_embedding` — two distinct write attempts,
+  both got busy-locked at ~21:43:00. Suggests the write contention is
+  long-lived (not a momentary blip).
+- Other tracks in the same batch wrote successfully — so the
+  contention is sporadic, not total deadlock.
+
+## Plan
+
+1. **Quick win: retry-with-backoff on busy errors.** Wrap `store_ml_*`
+   calls in a 3-attempt retry with 100ms / 500ms / 2000ms backoff.
+   Cozo + SQLite busy errors are transient by definition; retries
+   convert most into successes. ~10 lines in `crates/mesh-cue/src/reanalysis.rs`.
+
+2. **Root cause: serialise rayon batch writes.** Inspect
+   `run_batch_reanalysis` (crates/mesh-cue/src/reanalysis.rs:175). If
+   it dispatches work via rayon and each worker calls
+   `store_ml_embedding` independently, the writes contend on
+   MeshDb's internal mutex. Fix: collect (track_id, embedding) tuples
+   in workers, batch-insert from a single thread at the end.
+   Or use `db.batch_insert_*` if such an API exists / can be added.
+
+3. **Reanalysis logging hardening.** When a write fails, the failure
+   should be VERY visible — currently it's an error log line that's
+   easy to miss in the firehose. Add a final summary that lists every
+   failed track_id so the user can re-run just those:
+   ```
+   [reanalyze] DONE: 905 succeeded, 4 failed (DB lock):
+     - 52_Billain - Cosmic Gate.flac
+     - ...
+   [reanalyze] re-run with --only-ids <these> to retry just the failures
+   ```
+
+4. **Affected tracks for this run:** unknown without grepping the full
+   log. The user may want to re-trigger reanalysis on the failures
+   individually or just re-run the whole batch (idempotent with the
+   peak-clip pooling — re-analysing a track simply overwrites its
+   stored 512d).
+
+## Out of scope
+
+- Replacing SQLite with a concurrent-write backend (would invalidate
+  the whole CozoDB choice). Not the right tradeoff for the scale.
