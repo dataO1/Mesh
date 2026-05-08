@@ -337,13 +337,35 @@ pub fn compute_pair_agreement(
     pairs: &[(i64, i64, i32)],
     equal_band: f32,
 ) -> Option<f32> {
+    // Linear-axis specialisation. The vec-shape gate (va/vb len == axis.len)
+    // is the original V15 contract; modern callers should prefer the
+    // `_with` variant below which is arch-agnostic.
+    compute_pair_agreement_with(
+        |emb| {
+            if emb.len() != axis.len() { return f32::NAN; }
+            project_aggression(emb, axis)
+        },
+        embed_lookup, pairs, equal_band,
+    )
+}
+
+/// Closure-based variant of `compute_pair_agreement`. Lets callers supply
+/// a scoring function (e.g. `IntensityAxis::project`) so MLP models — for
+/// which there is no single "axis vec" — can still be evaluated against
+/// stored calibration pairs. NaN scores are treated as missing (skipped).
+pub fn compute_pair_agreement_with(
+    score: impl Fn(&[f32]) -> f32,
+    embed_lookup: impl Fn(i64) -> Option<Vec<f32>>,
+    pairs: &[(i64, i64, i32)],
+    equal_band: f32,
+) -> Option<f32> {
     let mut total = 0usize;
     let mut agree = 0usize;
     for (a, b, choice) in pairs {
         let (Some(va), Some(vb)) = (embed_lookup(*a), embed_lookup(*b)) else { continue };
-        if va.len() != axis.len() || vb.len() != axis.len() { continue; }
-        let sa = project_aggression(&va, axis);
-        let sb = project_aggression(&vb, axis);
+        let sa = score(&va);
+        let sb = score(&vb);
+        if !sa.is_finite() || !sb.is_finite() { continue; }
         let delta = sa - sb; // positive = A scored more aggressive than B
         let user_says_a = *choice == 0;
         let user_says_b = *choice == 1;

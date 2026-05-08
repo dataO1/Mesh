@@ -587,3 +587,69 @@ artifacts only (not shipped to users).
 - Embedding script: `spike/track-grading/embed_captions.py`
 - Methodology note: `documents/` (this is a research/spike output; rolling
   details live in the Obsidian "Mesh — Caption-as-Feature Methodology" note).
+
+---
+
+# V18.2 — Lever 2: bigger audio encoder (MAEST/MULE) for the intensity axis
+
+V18.1 (deployed 2026-05-08) shipped a 2-layer MLP student over MuQ-MuLan-512d
+audio embeddings. Test PA = 0.8113 → 0.8174 (+0.6 pp over V18 linear baseline).
+
+The capacity lever is now exhausted: hidden=128/256/512 sweep showed the gain
+saturates at h=128. The remaining +12.26 pp distillation gap (teacher 0.940 →
+student 0.817) is **information-bottlenecked** — MuQ-MuLan was trained for
+contrastive music-text similarity, not intensity discrimination, so no amount
+of student capacity reconstructs caption-derived intensity signal from the
+512d audio embedding.
+
+**Next lever: swap the audio encoder.** Phase 2 of the embedding-models work
+already underway (`documents/embedding-models-research.md`).
+
+## Plan
+
+1. **Encoder bake-off** — re-encode the 39913-track corpus with each of:
+   - MAEST-768d (Music Audio-Embedding Spectral Transformer) — music-track
+     classification objective, ~300M params, GPU.
+   - MULE-1.7k+d (Music Universal Linear Embedding) — deeper temporal
+     context, ~1B params, GPU.
+   - MuQ-MuLan-large-512d (current baseline, for delta).
+   Atomic resume + L2-norm sanity check per `embed_corpus_mulan.py` shape.
+
+2. **V18.2 train** — same teacher-student topology, captions/jurors/consensus
+   reused from `data/round7_6/`:
+   - linear probe for direct comparison vs V18 (G1 spec compliance)
+   - 2-layer MLP for direct comparison vs V18.1
+   On each new encoder, both arches.
+
+3. **Compare** — held-out test PA on the same 3985-track split. Expected gain
+   per the spec / lit: +2-4 pp on the new encoders (cumulative with the MLP
+   ~0.84-0.88 PA). Closes most of the G6 distillation gap.
+
+4. **Production deploy** — winning encoder becomes the active embedding.
+   Requires:
+   - Update `crates/mesh-cue/src/ml_analysis/inference.rs` to load the new
+     ONNX/safetensors checkpoint instead of MuQ-MuLan.
+   - Update `crates/mesh-core/src/intensity_axis.rs::EMBEDDING_DIM` to match.
+   - Update `mesh-cue` batch_import to use the new encoder for newly-imported
+     tracks.
+   - Re-encode existing user libraries on first launch after the upgrade
+     (background batch import job, ~1 hr per 10k tracks).
+
+## Cost / risk
+
+- Encoder bake-off: ~3-6 hr GPU per encoder (39913 × 30s clips at typical
+  batch throughput).
+- V18.2 train: deterministic, ~10s wall, all data already snapshotted in
+  `data/round7_6/`.
+- Production rollout: needs background re-embedding of user libraries.
+  Schema-compatible if `EMBEDDING_DIM` stays 512. Bigger dim (MAEST-768,
+  MULE-1.7k) needs a DB migration on the `ml_embeddings` table.
+
+## File pointers
+
+- Spec: `documents/round-7-6-pipeline-spec.md` §765-768 (escalation rule)
+- V18.1 training log: `documents/round-7-6-v18-1-mlp-experiment.md`
+- Embedding models research: `documents/embedding-models-research.md`
+- Current intensity_axis Rust loader: `crates/mesh-core/src/intensity_axis.rs`
+  (already supports both V15-class and V18+ schemas; MLP weights in JSON →
+  no Rust change needed for V18.2 if it stays linear-or-MLP).

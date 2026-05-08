@@ -48,29 +48,40 @@ pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), Stri
         axis.variant_id, axis.name, axis.intensity_formula,
     );
 
-    // Skip the write if the on-disk axis already matches what's stored —
-    // checked via length + first 8 floats. Saves a write on every launch.
-    if let Ok(Some((stored_weights, stored_corr))) = db.get_aggression_weights() {
-        let same_len = stored_weights.len() == axis.intensity_axis_vec.len();
-        let same_head = stored_weights.iter().take(8)
-            .zip(axis.intensity_axis_vec.iter().take(8))
-            .all(|(a, b)| (a - b).abs() < 1e-6);
-        if same_len && same_head {
-            log::info!(
-                "[AXIS] DB already has matching axis ({} dims, correlation={:.4}) — skip write",
-                stored_weights.len(), stored_corr,
-            );
-            return Ok(());
+    // Linear vs MLP: the DB cache `pca_aggression_axis` was a V11/V15-era
+    // table that stored the linear projection vector directly. V18.1
+    // ships an MLP, so there's no single vector to cache. For MLP we
+    // skip the DB write entirely; the runtime always reads V18.1 from
+    // the JSON on disk via `IntensityProvider`, so the cache is a pure
+    // optimisation that we don't need for the new model.
+    let linear_vec = axis.as_linear_vec();
+
+    if let Some(vec) = linear_vec {
+        // Skip the write if the on-disk axis already matches what's stored —
+        // checked via length + first 8 floats. Saves a write on every launch.
+        if let Ok(Some((stored_weights, stored_corr))) = db.get_aggression_weights() {
+            let same_len = stored_weights.len() == vec.len();
+            let same_head = stored_weights.iter().take(8)
+                .zip(vec.iter().take(8))
+                .all(|(a, b)| (a - b).abs() < 1e-6);
+            if same_len && same_head {
+                log::info!(
+                    "[AXIS] DB already has matching axis ({} dims, correlation={:.4}) — skip write",
+                    stored_weights.len(), stored_corr,
+                );
+                return Ok(());
+            }
         }
     }
 
-    // Agreement rate against any stored calibration pairs (eval-only signal).
+    // Agreement rate against any stored calibration pairs (eval-only
+    // signal). Closure-based so it works for linear OR MLP models.
     let pairs = db.get_all_calibration_pairs().unwrap_or_default();
     let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
         .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
         .collect();
-    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement(
-        &axis.intensity_axis_vec,
+    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement_with(
+        |emb| axis.project(emb),
         |id| db.get_ml_embedding_raw(id).ok().flatten(),
         &pair_triplets,
         0.02,
@@ -88,12 +99,20 @@ pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), Stri
         );
     }
 
-    db.store_aggression_weights(&axis.intensity_axis_vec, correlation_field)
-        .map_err(|e| format!("store_aggression_weights: {e}"))?;
-    log::info!(
-        "[AXIS] Stored ({} dims, agreement/correlation={:.4})",
-        axis.intensity_axis_vec.len(), correlation_field,
-    );
+    if let Some(vec) = linear_vec {
+        db.store_aggression_weights(vec, correlation_field)
+            .map_err(|e| format!("store_aggression_weights: {e}"))?;
+        log::info!(
+            "[AXIS] Stored ({} dims, agreement/correlation={:.4})",
+            vec.len(), correlation_field,
+        );
+    } else {
+        log::info!(
+            "[AXIS] MLP axis ({}, agreement={:.4}) — DB cache skipped \
+             (live projection reads V18.1 JSON directly)",
+            axis.variant_id, correlation_field,
+        );
+    }
     Ok(())
 }
 
