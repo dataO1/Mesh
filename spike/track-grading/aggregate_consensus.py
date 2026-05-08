@@ -217,13 +217,26 @@ def dawid_skene_em(
         z_new = np.where(den > 0, num / np.maximum(den, 1e-12), z)
 
         # M: σ² = mean (x - z)² over covered tracks
+        # Hard σ² floor (SIGMA2_MIN) prevents the runaway-feedback fixed
+        # point where one source's σ² collapses to ~0, making its
+        # precision (1/σ²) explode to ~10⁹ and dominate the next E-step,
+        # which then echoes that single source as z, etc. Was observed
+        # 2026-05-08 with the local Mistral juror @ σ²=0 → reliability
+        # 1.000, every other source pinned at 0.000. Floor is set to
+        # the variance of a 1/sqrt(12)-spread uniform on [0, 1] minus a
+        # plausibly-tight bound, so a "very good" judge can still get
+        # σ²=SIGMA2_MIN but no source can ever bypass other jurors.
+        SIGMA2_MIN = 0.001   # implies max precision = 1000 (vs ~30-150 for healthy jurors)
         sigma2_new = sigma2.copy()
         for s in range(S):
             mask = cov[s]
             if mask.sum() == 0:
                 sigma2_new[s] = 1.0
                 continue
-            sigma2_new[s] = float(np.mean((X[s, mask] - z_new[mask]) ** 2)) + 1e-9
+            sigma2_new[s] = max(
+                float(np.mean((X[s, mask] - z_new[mask]) ** 2)),
+                SIGMA2_MIN,
+            )
 
         delta = float(np.max(np.abs(sigma2_new - sigma2)))
         sigma2 = sigma2_new

@@ -378,10 +378,15 @@ case "$STAGE" in
     INT_NPZS=()
     for p in "$BASE"/round7_6_caption_intensity*.npz; do
       [ -e "$p" ] || continue
-      # Skip the smoke variant unless explicitly requested
-      case "$p" in
-        *_smoke.npz) continue ;;
-      esac
+      # Skip ALL smoke variants. The earlier glob `*_smoke.npz` only
+      # matched files whose tag is exactly "smoke"; it missed _smoke_b5,
+      # _smoke_b10, _smoke_local, _smoke_remote_nemotron etc. Match any
+      # `_smoke` substring instead (using the bash =~ operator).
+      base=$(basename "$p")
+      if [[ "$base" == *_smoke* ]]; then
+        echo "[v18-train]   skipping smoke artifact: $base"
+        continue
+      fi
       INT_NPZS+=(--cap-intensity "$p")
     done
     if [ "${#INT_NPZS[@]}" -eq 0 ]; then
