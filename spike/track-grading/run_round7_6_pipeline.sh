@@ -54,7 +54,7 @@ case "$STAGE" in
     echo "=== caption smoke (200 tracks, ~5-15 min depending on caption length) ==="
     $RUN run_judge_caption.py \
       --tracks-subset smoke-200 \
-      --max-tokens 192 \
+      --max-tokens 1024 \
       --temperature 0.7 \
       --top-p 0.9 \
       --workers 8
@@ -81,10 +81,10 @@ case "$STAGE" in
       echo "ERROR: Music Flamingo vLLM serve not responding at :8001" >&2
       exit 1
     fi
-    echo "=== caption full corpus (~15k tracks, ~7 hr at 0.6 c/s with 256-tok captions) ==="
+    echo "=== caption full corpus (~22k tracks, ~10-12 hr at 0.5-0.7 c/s with 1024-tok captions) ==="
     $RUN run_judge_caption.py \
       --tracks-subset all \
-      --max-tokens 192 \
+      --max-tokens 1024 \
       --temperature 0.7 \
       --top-p 0.9 \
       --workers 8
