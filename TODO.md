@@ -653,3 +653,130 @@ already underway (`documents/embedding-models-research.md`).
 - Current intensity_axis Rust loader: `crates/mesh-core/src/intensity_axis.rs`
   (already supports both V15-class and V18+ schemas; MLP weights in JSON →
   no Rust change needed for V18.2 if it stays linear-or-MLP).
+
+---
+
+# Corpus strengthening — full-length tracks instead of 30 s previews
+
+## The problem
+
+Round-7.6 V18.1 training used **30-second Deezer preview MP3s** as the
+audio source. Mesh-cue's deployed inference path uses **full-length
+audio files** (3-7 min typical), embedded as **6 evenly-spaced 10 s
+clips, mean-averaged**. Different distributions:
+
+- Training: peak-energy 30 s window per track (Deezer's preview heuristic
+  picks roughly "the catchiest 30 s" — usually the drop)
+- Deployment: a mean over the entire track structure (intros + drops +
+  breakdowns + outros)
+
+Hand-verified on the user's 909-track DnB library
+(`documents/round-7-6-training-log.md` § "Post-deploy hand verification"):
+canonical neurofunk drops ("Modern Propaganda", "Running Blind") land at
+p51-p53 on V18.1 instead of p80+ where they should be, because the mean
+dilutes their drop intensity. Aggressive-mean / liquid-mean separation is
++50 pp (strong) vs the spec's +60 pp "excellent" target.
+
+## Two fixes, ordered by cost
+
+### Tier 1 (cheap, ships immediately): peak-clip pooling at inference
+
+Instead of mean-averaging the 6 clip embeddings, project each clip
+through V18.1 and take the **maximum-intensity clip's score** as the
+track's intensity. Operationally aligns "track intensity" with "peak-clip
+intensity", which is what the teacher was trained to recognise.
+
+- Implementation: ~10 lines in `crates/mesh-cue/src/ml_analysis/inference.rs`
+  — replace `average_embeddings(...)` with a "score-then-max" loop using
+  the loaded `IntensityProvider`.
+- Cost: 6× the projection per track. V18.1 MLP at h=128 is ~1.4 µs / track,
+  so 6× → ~8.4 µs / track. Still 12,000× under the G9 budget (100 ms /
+  1000 tracks).
+- Risk: low. The 6-clip embedding extraction stays unchanged; only the
+  aggregation step changes. DB schema unaffected (still stores 512d audio
+  vec; we just project differently).
+- Expected effect: aggressive-mean percentile 58 → 75, separation +50 pp →
+  +60 pp.
+
+**Decided 2026-05-08: ship Tier 1 immediately.** Tracked separately in the
+"V18.1 inference: peak-clip pooling" TODO above.
+
+### Tier 2 (heavy, real fix): full-length corpus for training
+
+The proper way to eliminate the train/inference distribution mismatch is
+to make training match deployment: re-build the round-7 corpus with
+full-length tracks instead of 30 s previews, embed them with the same
+6-clip mean-pool the deployed app uses, and retrain V18.x on those.
+
+#### Cost evaluation
+
+Storage:
+- 39913 tracks × ~5 min × 320 kbps MP3 ≈ ~12 GB at typical bit-rate.
+- 39913 × 512d × 4 bytes audio_emb = 80 MB (already what we have).
+- 39913 × ~10 caption-embedding-style features ≈ trivial.
+- Total: **~12 GB audio + ~80 MB embeddings**, manageable.
+
+Acquisition:
+- Deezer previews are the only thing the API gives anonymously. Full
+  tracks need either (a) a Deezer Premium subscription's authenticated
+  download API (terms of service question) or (b) a different corpus
+  source entirely.
+- Alternatives:
+  - **MTG-Jamendo** — open-license full-length tracks, ~55k clips, BUT
+    skewed toward instrumental + library-music genres (bias risk on the
+    aggression axis).
+  - **FMA-large** — 100k+ tracks under CC license. Wider genre coverage.
+  - **MARBLE benchmark** — has full-length splits, includes metal/punk
+    audio that's well-represented for the high-intensity tail.
+  - User's own library — privacy-preserving, perfect distribution match
+    for the deployed model, but not redistributable for training-data
+    sharing.
+
+GPU re-spend:
+- MF caption sweep on 40k full tracks @ 6 clips = 6× audio compute per
+  track. Currently 6 hr at 30 s previews → ~36 hr at full tracks.
+  Manageable (single overnight run).
+- 3 caption-text-LLM jurors stay the same (caption length doesn't change
+  much for full-track captions if MF prompt is unchanged).
+- Audio embedding (MuQ-MuLan) over 6× more audio → ~26 min × 6 = ~2.6 hr.
+  Manageable.
+
+Total Tier 2 cost: ~50-60 hr GPU spread over a few days, plus the corpus
+acquisition decision.
+
+#### Plan
+
+1. **Decide corpus source.** Likely candidates: extend the existing Deezer
+   manifest with full-track downloads (legal review needed), or migrate
+   to MTG-Jamendo / FMA-large with a re-balanced seed list to keep
+   genre coverage. **Decision needed before any GPU work.**
+
+2. **Re-encode + re-caption.** Same scripts (`embed_corpus_mulan.py`,
+   `run_judge_caption.py`) work on full-track audio with no code change —
+   they already pad/truncate appropriately.
+
+3. **Re-rate jurors.** Caption text → 3 jurors → consensus. ~5-8 hr
+   wall (mostly the local Mistral pass).
+
+4. **Retrain V18.x.** Same teacher/student topology, same
+   `data/round7_6/` snapshot of captions+jurors+features. ~10 s wall.
+
+5. **Compare V18.1 (preview-trained) vs V18.x (full-track-trained) on
+   the user's 909-track library.** Hand-verify whether the
+   aggressive-mean percentile gap closes from +50 pp toward the +60 pp
+   "excellent" target.
+
+#### When to do this
+
+After Tier 1 ships and we measure how much of the gap it closes alone.
+If Tier 1 gets us to +60 pp on the user's library, Tier 2 is unnecessary.
+If Tier 1 only closes part of the gap, Tier 2 becomes the next lever
+(probably alongside the V18.2 / Lever 2 encoder swap, since both require
+re-encoding the audio anyway).
+
+## Out of scope here
+
+- Per-user calibration (Round-7.7 sketched in the spec) — orthogonal,
+  uses the user's own pairwise feedback to fine-tune the deployed axis.
+- DEAM external arousal anchor — also orthogonal, validates the axis
+  against an academic ground-truth dataset.

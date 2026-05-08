@@ -276,3 +276,142 @@ Step 3 reproduces V18 deterministically (seed=42 across split, EM, teacher, stud
 - `data/round7_6/logs/embed_resume.log` — audio embedding extension log
 - `models/aggression-axes/V18_round7_6_consensus_distilled.json` — deployed model
 - `documents/round-7-6-pipeline-spec.md` — full spec with V18-release update notes
+- `documents/round-7-6-v18-1-mlp-experiment.md` — V18.1 capacity-bake-off
+
+---
+
+## Post-deploy hand verification on the user's DnB library (2026-05-08)
+
+After deploying V18.1 to mesh-cue / mesh-player, ran `cargo run -p mesh-core
+--bin aggression_inspect` against the personal collection at
+`/home/data01/Music/mesh-collection` (909 tracks, mostly DnB across the
+liquid → neurofunk → industrial spectrum + some non-DnB electronic).
+
+### Distribution sanity (passed)
+
+```
+total tracks scored: 909
+  min:      +0.244     (NTO — La clé des champs, French ambient electronic)
+  p10:      +0.595
+  p25:      +0.701
+  median:   +0.780     (skewed high — expected for a DnB-dominant library)
+  p75:      +0.842
+  p90:      +0.883
+  max:      +0.974     (Mob Tactics — Dirtgrub, neuro/jump-up DnB)
+  mean ± σ: +0.758 ± 0.117
+```
+
+Range covers ~73 % of the [0, 1] band, std=0.117 comparable to the
+training-corpus jurors (0.166-0.210). No collapse, no saturation.
+
+### Genre boundary (strong pass)
+
+The bottom 15 tracks are predominantly **non-DnB** electronic:
+
+- NTO, Stephan Bodzin, Boris Brejcha, Oliver Koletzki — melodic / minimal
+  techno + deep house. Correctly identified as low-intensity.
+- ZHU, Trentemøller, Lulu Rouge, Emika — moody electronica / pop. Correct.
+- Random Movement (Fuzzy Teeth) — only liquid-DnB track in the bottom 15.
+  Correct: liquid is the lowest-intensity DnB sub-genre.
+
+The top 15 are recognizable peak-time DnB:
+
+- Mob Tactics (Dirtgrub), Synergy (Overdose), Pythius / Black Sun Empire
+  (Mysterion), Noisia (Friendly Intentions, Omnivore), Teddy Killerz
+  (Layer, Darkness) — all correctly clustered at the high end.
+
+### Sanity-check separation (passed strong, not excellent)
+
+```
+known_aggressive (Current Value, Billain, Neonlight, Mefjus, Phace,
+                  Noisia, Black Sun Empire, Audio, Teddy Killerz):
+  mean percentile = 58.6 % (over 122 tracks)
+
+known_liquid (Random Movement, Calibre, LSB, Logistics, BCee,
+              Etherwood, Marcus Intalex):
+  mean percentile = 8.3 % (over 17 tracks)
+
+separation: aggressive_mean − liquid_mean = +50.3 pp
+```
+
+Spec calls >40pp "strong", >60pp "excellent". V18.1 lands at +50pp:
+strong but not excellent. The bottom-tier separation is essentially
+perfect (liquid mean at p8.3 is exactly where it should be), but the
+top-tier cluster is sitting at p58 instead of the ~p80 you'd expect for
+canonical neurofunk.
+
+### Methodology misfit identified: train-vs-inference clip distribution
+
+**Root cause of the mid-pack neurofunk clustering**, found by inspecting
+`crates/mesh-cue/src/ml_analysis/inference.rs:374-405` (the deployed
+`extract_clips` + `average_embeddings` path) against
+`spike/track-grading/embed_corpus_mulan.py:80-95` (the training-time
+embedder):
+
+| | Training (round-7.6 spike) | Deployment (mesh-cue inference) |
+|---|---|---|
+| Source audio | 30-second Deezer previews | Full track files (3-7 min typical) |
+| Sampling | One contiguous 30 s window | 6 evenly-spaced 10 s clips across the whole track |
+| Aggregation | Single MuQ-MuLan forward → 512d | Mean of 6 per-clip MuQ-MuLan outputs |
+
+**Effect**: Deezer's preview heuristic picks the catchiest 30 s — usually
+the drop. So the teacher and the 3 jurors learned to score
+*peak-energy windows*. At deployment, the model receives a *mean-averaged*
+embedding that smears intro / breakdown / outro into the drop.
+
+For peak-time DnB tracks with substantial non-drop content (intro buildups,
+half-time breakdowns, fade-outs), the average pulls the embedding away
+from the high-intensity region of the embedding space. The model still
+ranks the track correctly *relative to other tracks with similar
+structure*, but it doesn't reach the full extreme range.
+
+Confirmed with concrete examples:
+
+- Current Value — Rethink (canonical neurofunk single, all-drop): p53.5
+- Black Sun Empire — Modern Propaganda (canonical neurofunk single): p52.1
+- Noisia — Running Blind (textbook neurofunk): p51.7
+- Noisia — Omnivore (more extreme): p99.3 ✓
+- Noisia — Friendly Intentions (Original): p97.7 ✓
+
+The "extreme" tracks of the same artists land at the top tier, but the
+"merely very hard" ones don't, because their non-drop portions dilute
+the average more.
+
+**For DJ-intensity scoring this is the wrong aggregator.** What matters
+operationally is "how hard does this track hit at its peak", because
+that's what determines where you'd cue it in a set.
+
+### Fix decision (2026-05-08): peak-clip pooling at inference
+
+Instead of mean-averaging the 6 clip embeddings, project each clip
+through V18.1 and take the **maximum-intensity clip's score** as the
+track's intensity. Costs ~6× the projection (still microseconds at the
+G9 budget), but operationally aligns "track intensity" with "peak-clip
+intensity" — which is what the teacher was trained to recognise.
+
+Implementation: change `inference.rs::average_embeddings(...)` /
+its caller to project each clip independently, return the max. The DB
+schema doesn't need to change (we still store the picked clip's 512d
+vec). V18.1 weights don't need to change either.
+
+Expected effect: aggressive_mean percentile climbs from 58.6 → 70-80,
+liquid_mean stays low, separation widens from +50 pp toward +60 pp
+(the spec's "excellent" target).
+
+Tracked as TODO item: see `TODO.md` § "Corpus strengthening — full-length
+support". A longer-term fix is to make the training corpus match the
+deployment corpus shape (full-length tracks instead of 30 s previews),
+which would eliminate the train/inference distribution mismatch entirely
+but requires re-downloading + re-encoding the corpus (cost analysis in
+the TODO entry).
+
+### Library scaling (verified)
+
+V18.1 is a fixed function `f: 512d → scalar`. Adding tracks to the
+library doesn't shift the score of any existing track: a 0.785
+"Modern Propaganda" score is identical regardless of what else is on
+disk. **Percentile ranks** do shift — adding more extreme tracks would
+push existing high-intensity tracks down in rank — but that's bucket
+arithmetic, not model drift. Library-invariant absolute scores are
+the right behaviour: a track scored 0.85 means "high intensity" the
+same way for every user.
