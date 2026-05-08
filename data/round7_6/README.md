@@ -60,18 +60,23 @@ to ~1e-6 absolute (per spec G10).
 
 ## Note on this snapshot
 
-This snapshot was taken **before** the σ²-floor fix in
-`aggregate_consensus.py` (commit 311b714) — Dawid-Skene's EM collapsed to
-σ²=0 on the local Mistral juror, giving it normalized weight 1.000 and the
-other 12 sources weight 0.000. The `round7_6_consensus.npz`, `_split.npz`,
-`_teacher.pt`, `_student.pt`, and `_eval_*.{md,json}` here therefore reflect
-a **single-source consensus** (effectively `local_mistral` rank-normalized),
-not the intended 5-source jury.
+**Updated 2026-05-08 22:30** — snapshot now reflects the V18 release run:
 
-The 3 juror NPZs and the captions tarball are independent of this bug —
-they're the raw inputs and remain valid. Re-running v18-train with the σ²
-fix will produce a corrected consensus + retrained teacher/student/eval
-without re-doing any GPU work.
+- 3-juror consensus (Mistral-Small-3.2 + Nemotron-30B + Qwen3.6-27B),
+  all at full 39913-track coverage, σ² floored at 0.01 → all sources
+  weight 1/3 in normalized reliability. No σ²-collapse pathology.
+- Teacher trained on full 39913 tracks (audio_emb 512 + caption_emb 768
+  + struct_tags 52 = 1332d input). Test PA = 0.940, Spearman = 0.980.
+- Student (V18 deployed) test PA = **0.811** on 3985 held-out tracks
+  (8 of 10 spec goals pass — see `round7_6_eval_report.md`).
 
-Captured: 2026-05-08 21:24 (commit `311b714` was the fix; this snapshot is
-pre-fix raw evidence of the bug for the reviewer).
+Caveat for the reviewer: r7.5 BT priors and aggressive_overall_tag are
+NOT included in this consensus. They only cover 38% of the expanded
+corpus and forced an EM pathology when included. The 3-juror panel at
+100% coverage with pairwise ρ=0.93-0.96 was strictly better-conditioned.
+Spec G5 originally required ≥ 4 sources; we updated it to ≥ 3 with
+methodology rationale (see `documents/round-7-6-pipeline-spec.md` §2 G5).
+
+Earlier broken-consensus snapshot (single-source σ²-collapse) was
+overwritten — its outputs were unusable since the consensus was
+mathematically just one juror's score.

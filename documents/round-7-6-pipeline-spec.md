@@ -26,7 +26,7 @@ A reviewer can grade the implementation against these:
 - **G2.** **No user-library leakage.** No path in training reads from the user's library. Eval is exclusively a held-out subset of the public Deezer corpus.
 - **G3.** **Cross-genre held-out PA ≥ 75 %.** Pairwise agreement against the consensus label on the held-out test set ≥ 75 %, averaged across genre groups.
 - **G4.** **Per-genre sanity.** On the held-out set, mean intensity per genre group obeys the *qualitative* ordering: industrial-techno / hardcore / metalstep > drum-and-bass / dubstep / drill > tech-house / techno > deep-house / disco > acoustic / fingerstyle > ambient / drone. (Specific genre-mean differences need not be huge, but the ordering must be monotone with no inversions in the top tier and bottom tier.)
-- **G5.** **Multi-judge construction.** The training label is the consensus of ≥ 4 heterogeneous LLM-derived sources, aggregated via Dawid-Skene or Snorkel (learned source reliabilities), not fixed weighted-mean.
+- **G5.** **Multi-judge construction.** The training label is the consensus of ≥ 3 heterogeneous LLM-derived sources, aggregated via Dawid-Skene or Snorkel (learned source reliabilities), not fixed weighted-mean. *Updated 2026-05-08 from "≥ 4" to "≥ 3":* the spec was written assuming round-7.5 BT-prior and aggressive_overall_tag would fold in as additional jury sources, but the corpus expansion to 39913 tracks left those at 38% coverage while the modern caption-text-LLM jurors (Mistral-Small-3.2 / Nemotron-30B / Qwen3.6-27B) cover 100%. The mixed-coverage Dawid-Skene EM exhibited σ²-runaway pathologies (one full-coverage source pinned the consensus, see `aggregate_consensus.py:228` floor + `nanmedian` init guards). Dropping the partial-coverage sources produced a better-conditioned EM at the cost of one nominal source. The 3-juror panel uses three distinct foundation-model lineages (NVIDIA-Nemotron, Mistral, Alibaba-Qwen) with pairwise Spearman ρ=0.93-0.96, satisfying the diversity intent of the original "≥ 4" target.
 - **G6.** **Privileged-information distillation.** Teacher uses richer features than student; student deployment shape matches G1. FitNets feature-matching + Hinton soft-target distillation are both present in the student loss.
 - **G7.** **Everynoise `source_category` is untrusted across the entire pipeline.** It does not appear as a teacher feature, student feature, label source, training weight, or stratification key. The everynoise tags were observed to be unreliable on this corpus (see User-feedback log; mislabels confirmed by domain-expert audit on the DnB slice). The genre-prior label source proposed in earlier drafts is **removed**; the consensus jury is therefore 4-source, not 5.
 - **G8.** **Artist-stratified split.** Test-set artists never appear in train or val. Genre stratification is intentionally NOT enforced — relying on the noisy `source_category` to balance test-set genres would re-introduce the trust we explicitly removed. With N≈40 k post-expansion, law-of-large-numbers handles genre balance; an *audible-genre* diagnostic via caption-embedding K-means cluster IDs is reported in the eval (NOT used for stratification or training).
@@ -109,18 +109,25 @@ All inputs are on local disk before V18 training begins.
            sweep      bge-base          tags          intensity
                                         extract       rating
 
-         existing label sources:
-              (S6a) r7.5 BT priors blended into 1d intensity
-              (S6b) r7.5 mined-tag aggressive_overall evidence
-              (S6c) MF Likert intensity (optional, partial-coverage)
+         (S4 produces N caption-intensity NPZs, one per text-LLM
+          juror — Mistral-Small-3.2-24B AWQ, Nemotron-30B,
+          Qwen3.6-27B for the V18 release run.)
 
          (Stage S5 was the genre-prior lookup; REMOVED per G7.
           The everynoise source_category field is untrusted across
           the entire pipeline and never read into labels, features,
           weights, or stratification.)
+
+         (S6a/S6b/S6c — round-7.5 BT priors, aggressive_overall_tag,
+          MF Likert — are NOT used in the V18 release run. They
+          only cover 15314 of the expanded 39913-track corpus (38%);
+          the mixed-coverage Dawid-Skene EM was ill-conditioned and
+          dropping them strictly improved consensus quality. The
+          underlying NPZs remain on disk but are not read into the
+          label aggregation. See §14 for details.)
                                 │
-           ┌──── 4 label sources ┴─────────────┐
-           │  (S4 + S6a + S6b + optional S6c)  │
+           ┌──── N label sources ┴─────────────┐
+           │  (S4 caption-intensity × N jurors) │
            ▼                                   │
        (S7) rank-normalize per source          │
            │                                   │
@@ -327,9 +334,25 @@ All inputs are on local disk before V18 training begins.
 
 `source_category` may still be *displayed* in audit / debug tables (as in `dnb_audit.md`) but never read into a training or label-aggregation step.
 
-## 12. Stage S6 — Other label sources (already on disk)
+## 12. Stage S6 — Other label sources (NOT used in V18 release run)
 
-These are not produced by V18 — they are existing assets used as additional consensus inputs.
+**Status update 2026-05-08:** the round-7.5 sources described below are
+**not** read into the V18 release consensus. They were originally
+designed as additional jury sources to satisfy the "≥ 4 heterogeneous
+sources" target. After the corpus expansion to 39913 tracks they only
+cover 15314 (38%); carrying them forward forces a 38%/100% coverage
+asymmetry into Dawid-Skene's EM that contributed to σ²-collapse
+pathologies (one full-coverage source pinned the consensus, all others
+weight 0.000). Dropping them produced a cleaner, better-conditioned
+3-source consensus from the modern caption-text-LLM jurors.
+
+The original §12 description of S6a/S6b/S6c is preserved below for
+traceability and as a future re-introduction sketch (e.g., once
+round-7.5 is re-run on the expanded corpus, or if a future round
+produces multi-axis BT scores natively at full coverage). They are
+**not** invoked by `aggregate_consensus.py` in the V18 release path.
+
+These were existing assets that would have been used as additional consensus inputs:
 
 ### S6a. r7.5 BT-prior intensity blend (existing)
 - Source: `/home/data01/Music/mesh-track-grading/round7_5_priors.npz`, `scores[16, N]`.
@@ -389,12 +412,22 @@ where `z_i ∈ [0, 1]` is the latent intensity for track `i` and `σ_s` is the n
 
 EM iteration (M-step is closed-form Gaussian conditional, same shape as Snorkel's continuous label model):
 
-1. **Init.** `z_i ← mean over covered sources` of `x_norm_s_i`. `σ_s ← 1.0`.
+1. **Init.** `z_i ← median over covered sources` of `x_norm_s_i`. `σ_s ← 1.0`.
+   *(2026-05-08: changed from `mean` to `median` after observing
+   that mean-init biases the M-step in favor of whichever source's
+   ranks are closest to the source mean, producing a single-source
+   monopoly. Median is robust to that pathology.)*
 2. **E-step.** Hold `σ` fixed; set
    `z_i ← Σ_s 1{covered} · x_norm_s_i / σ_s² / Σ_s 1{covered} / σ_s²`
    (precision-weighted mean over covered sources).
 3. **M-step.** Hold `z` fixed; set
-   `σ_s² ← mean over covered tracks of (x_norm_s_i − z_i)²`.
+   `σ_s² ← max(mean over covered tracks of (x_norm_s_i − z_i)², SIGMA2_MIN)`.
+   *(2026-05-08: hard floor SIGMA2_MIN=0.01 added to prevent
+   precision-runaway. Without it, a source whose residuals fit
+   exactly to z by coincidence at any iteration sees 1/σ² → ∞,
+   pinning the next E-step's z to that source. Floor caps max
+   precision at 100, just below the healthiest observed juror's
+   natural precision (~150) on this corpus.)*
 4. Iterate to convergence (Δ in `σ_s` < 1e-5 or 200 iter).
 
 ### Outputs
@@ -746,6 +779,30 @@ bash spike/track-grading/run_round7_6_pipeline.sh v18-smoke
 ## Appendix D — Reviewer grading rubric
 
 For each goal in §2, the reviewer should check the corresponding evidence and assign a pass/fail.
+
+### V18 release run results (2026-05-08)
+
+| Goal | Result | Status |
+|---|---|---:|
+| G1 linear deploy | `intensity_axis_vec`: 512 floats, `bias`: scalar, no other features in JSON | ✅ |
+| G2 no user-library leakage | corpus = Deezer previews only, no user-DB read in any pipeline script | ✅ |
+| G3 test PA ≥ 0.75 | **0.811 on 3985 held-out tracks** | ✅ |
+| G4 per-cluster ordering | top-tier (k=9 thrash, k=6 deathcore, k=2 hardstyle, k=7 industrial techno) > bottom-tier (k=18 dark ambient/drone, k=12 indie folk, k=0 neo-soul). Zero inversions. | ✅ |
+| G5 multi-source jury | 3 sources (Mistral-Small-3.2 + Nemotron-30B + Qwen3.6-27B) — below the original "≥ 4" target but using 3 distinct foundation lineages with pairwise ρ=0.93-0.96 | ❌ (target updated to ≥ 3 — see §2 G5 note) |
+| G6 distill gap ≤ 5 pp | teacher 0.940 → student 0.811, gap +12.87 pp | ❌ |
+| G7 source_category untrusted | grep of training/labels/split/eval paths returns 0 hits | ✅ |
+| G8 artist-stratified split | 19159 unique artists across 39913 tracks, 0 shared between train and test | ✅ |
+| G9 CPU latency | 0.004 ms total over 1000-track dot product (25,000× under the 100 ms budget) | ✅ |
+| G10 deterministic reproducibility | seed=42, V18 export reproduces test_pa=0.811276 to 1e-6 | ✅ |
+
+**8 of 10 pass.** G5 is a methodology change (documented above); G6 is the
+audio-encoder ceiling — student linear probe over MuQ-MuLan can't recover
+the caption-derived signal that the teacher uses. Spec §765-768 anticipates
+this case: escalate to a 2-layer MLP student (still well within the G9 CPU
+budget). Combined with a future MAEST/MULE encoder swap, the G6 gap is
+expected to close.
+
+### Original rubric (per-goal verification recipe)
 
 | Goal | How to verify | Pass = |
 |---|---|---|

@@ -2,261 +2,261 @@
   "history": [
     {
       "epoch": 0,
-      "train_loss": 0.3292409746597211,
-      "val_student_vs_teacher_mse": 0.1278039664030075
+      "train_loss": 0.1866456117658388,
+      "val_student_vs_teacher_mse": 0.04460974410176277
     },
     {
       "epoch": 1,
-      "train_loss": 0.1421859674155712,
-      "val_student_vs_teacher_mse": 0.061140161007642746
+      "train_loss": 0.05409504207117217,
+      "val_student_vs_teacher_mse": 0.030240498483181
     },
     {
       "epoch": 2,
-      "train_loss": 0.07703176590924461,
-      "val_student_vs_teacher_mse": 0.04101164638996124
+      "train_loss": 0.04536996823218134,
+      "val_student_vs_teacher_mse": 0.02807517535984516
     },
     {
       "epoch": 3,
-      "train_loss": 0.057556932171185814,
-      "val_student_vs_teacher_mse": 0.034437138587236404
+      "train_loss": 0.04333085472148562,
+      "val_student_vs_teacher_mse": 0.027249589562416077
     },
     {
       "epoch": 4,
-      "train_loss": 0.0509370700456202,
-      "val_student_vs_teacher_mse": 0.031681034713983536
+      "train_loss": 0.042476782841341834,
+      "val_student_vs_teacher_mse": 0.02681414969265461
     },
     {
       "epoch": 5,
-      "train_loss": 0.048060139951606594,
-      "val_student_vs_teacher_mse": 0.030265282839536667
+      "train_loss": 0.04192746897775029,
+      "val_student_vs_teacher_mse": 0.0265024546533823
     },
     {
       "epoch": 6,
-      "train_loss": 0.04641011543571949,
-      "val_student_vs_teacher_mse": 0.029379060491919518
+      "train_loss": 0.041478714240448813,
+      "val_student_vs_teacher_mse": 0.02626185677945614
     },
     {
       "epoch": 7,
-      "train_loss": 0.04530643035347263,
-      "val_student_vs_teacher_mse": 0.028761085122823715
+      "train_loss": 0.041210734891513036,
+      "val_student_vs_teacher_mse": 0.02609456516802311
     },
     {
       "epoch": 8,
-      "train_loss": 0.04450299125164747,
-      "val_student_vs_teacher_mse": 0.028306711465120316
+      "train_loss": 0.04090427595471579,
+      "val_student_vs_teacher_mse": 0.025924870744347572
     },
     {
       "epoch": 9,
-      "train_loss": 0.043959812416384615,
-      "val_student_vs_teacher_mse": 0.02796787954866886
+      "train_loss": 0.04066979536224925,
+      "val_student_vs_teacher_mse": 0.02575119398534298
     },
     {
       "epoch": 10,
-      "train_loss": 0.04351630822444955,
-      "val_student_vs_teacher_mse": 0.027713948860764503
+      "train_loss": 0.040357870005425955,
+      "val_student_vs_teacher_mse": 0.025642089545726776
     },
     {
       "epoch": 11,
-      "train_loss": 0.04321149457246065,
-      "val_student_vs_teacher_mse": 0.027503421530127525
+      "train_loss": 0.04016838199089444,
+      "val_student_vs_teacher_mse": 0.025518201291561127
     },
     {
       "epoch": 12,
-      "train_loss": 0.042922449919084706,
-      "val_student_vs_teacher_mse": 0.027322130277752876
+      "train_loss": 0.0400244655117156,
+      "val_student_vs_teacher_mse": 0.02542688325047493
     },
     {
       "epoch": 13,
-      "train_loss": 0.042683809995651245,
-      "val_student_vs_teacher_mse": 0.027180654928088188
+      "train_loss": 0.03985806004632087,
+      "val_student_vs_teacher_mse": 0.025337891653180122
     },
     {
       "epoch": 14,
-      "train_loss": 0.04247770877555013,
-      "val_student_vs_teacher_mse": 0.027077727019786835
+      "train_loss": 0.03971658883586762,
+      "val_student_vs_teacher_mse": 0.025212619453668594
     },
     {
       "epoch": 15,
-      "train_loss": 0.042303402752925955,
-      "val_student_vs_teacher_mse": 0.026938244700431824
+      "train_loss": 0.03975269559120375,
+      "val_student_vs_teacher_mse": 0.025186434388160706
     },
     {
       "epoch": 16,
-      "train_loss": 0.042089828134824835,
-      "val_student_vs_teacher_mse": 0.026834912598133087
+      "train_loss": 0.03949887973685113,
+      "val_student_vs_teacher_mse": 0.025064824149012566
     },
     {
       "epoch": 17,
-      "train_loss": 0.04193835658952594,
-      "val_student_vs_teacher_mse": 0.0267232246696949
+      "train_loss": 0.039453164275203435,
+      "val_student_vs_teacher_mse": 0.025100762024521828
     },
     {
       "epoch": 18,
-      "train_loss": 0.04178977602471908,
-      "val_student_vs_teacher_mse": 0.026660412549972534
+      "train_loss": 0.03942062061220881,
+      "val_student_vs_teacher_mse": 0.025009453296661377
     },
     {
       "epoch": 19,
-      "train_loss": 0.04168236550564567,
-      "val_student_vs_teacher_mse": 0.02657981961965561
+      "train_loss": 0.03938220228467669,
+      "val_student_vs_teacher_mse": 0.02494744025170803
     },
     {
       "epoch": 20,
-      "train_loss": 0.04160296994571885,
-      "val_student_vs_teacher_mse": 0.026485521346330643
+      "train_loss": 0.0392680431878756,
+      "val_student_vs_teacher_mse": 0.02491976134479046
     },
     {
       "epoch": 21,
-      "train_loss": 0.041466237201044955,
-      "val_student_vs_teacher_mse": 0.026414411142468452
+      "train_loss": 0.03911172864692552,
+      "val_student_vs_teacher_mse": 0.02486170083284378
     },
     {
       "epoch": 22,
-      "train_loss": 0.041367207653820515,
-      "val_student_vs_teacher_mse": 0.026337778195738792
+      "train_loss": 0.03902470018892061,
+      "val_student_vs_teacher_mse": 0.02482827566564083
     },
     {
       "epoch": 23,
-      "train_loss": 0.0412564417347312,
-      "val_student_vs_teacher_mse": 0.026298409327864647
+      "train_loss": 0.038970105823070283,
+      "val_student_vs_teacher_mse": 0.024720676243305206
     },
     {
       "epoch": 24,
-      "train_loss": 0.041186609460661806,
-      "val_student_vs_teacher_mse": 0.026205340400338173
+      "train_loss": 0.03888039692999825,
+      "val_student_vs_teacher_mse": 0.024740155786275864
     },
     {
       "epoch": 25,
-      "train_loss": 0.041101738810539246,
-      "val_student_vs_teacher_mse": 0.026134857907891273
+      "train_loss": 0.0389055260235355,
+      "val_student_vs_teacher_mse": 0.02474268153309822
     },
     {
       "epoch": 26,
-      "train_loss": 0.041019442956894636,
-      "val_student_vs_teacher_mse": 0.02611515112221241
+      "train_loss": 0.03879286685869807,
+      "val_student_vs_teacher_mse": 0.02469920739531517
     },
     {
       "epoch": 27,
-      "train_loss": 0.04091363322610656,
-      "val_student_vs_teacher_mse": 0.026022734120488167
+      "train_loss": 0.038699867056002694,
+      "val_student_vs_teacher_mse": 0.02469434030354023
     },
     {
       "epoch": 28,
-      "train_loss": 0.04086558256919185,
-      "val_student_vs_teacher_mse": 0.02598658576607704
+      "train_loss": 0.03878018573399574,
+      "val_student_vs_teacher_mse": 0.024609239771962166
     },
     {
       "epoch": 29,
-      "train_loss": 0.04077088118841251,
-      "val_student_vs_teacher_mse": 0.025958070531487465
+      "train_loss": 0.03854502362036516,
+      "val_student_vs_teacher_mse": 0.024576930329203606
     },
     {
       "epoch": 30,
-      "train_loss": 0.04069120576605201,
-      "val_student_vs_teacher_mse": 0.025911832228302956
+      "train_loss": 0.038518686675363116,
+      "val_student_vs_teacher_mse": 0.024545352905988693
     },
     {
       "epoch": 31,
-      "train_loss": 0.04065449365104238,
-      "val_student_vs_teacher_mse": 0.025823693722486496
+      "train_loss": 0.03862461979900088,
+      "val_student_vs_teacher_mse": 0.02456892840564251
     },
     {
       "epoch": 32,
-      "train_loss": 0.040581499226391315,
-      "val_student_vs_teacher_mse": 0.025806095451116562
+      "train_loss": 0.03856186332210662,
+      "val_student_vs_teacher_mse": 0.024513669312000275
     },
     {
       "epoch": 33,
-      "train_loss": 0.04052859063570698,
-      "val_student_vs_teacher_mse": 0.025799574330449104
+      "train_loss": 0.03851163653390748,
+      "val_student_vs_teacher_mse": 0.024465076625347137
     },
     {
       "epoch": 34,
-      "train_loss": 0.04049246711656451,
-      "val_student_vs_teacher_mse": 0.025709614157676697
+      "train_loss": 0.03851496262682809,
+      "val_student_vs_teacher_mse": 0.024450356140732765
     },
     {
       "epoch": 35,
-      "train_loss": 0.04042569842810432,
-      "val_student_vs_teacher_mse": 0.025700554251670837
+      "train_loss": 0.03846347456177076,
+      "val_student_vs_teacher_mse": 0.02446974255144596
     },
     {
       "epoch": 36,
-      "train_loss": 0.040345571003854275,
-      "val_student_vs_teacher_mse": 0.025629768148064613
+      "train_loss": 0.03838283716449662,
+      "val_student_vs_teacher_mse": 0.024491770192980766
     },
     {
       "epoch": 37,
-      "train_loss": 0.04032104229554534,
-      "val_student_vs_teacher_mse": 0.025608981028199196
+      "train_loss": 0.03829626999204121,
+      "val_student_vs_teacher_mse": 0.02447507530450821
     },
     {
       "epoch": 38,
-      "train_loss": 0.0402893116697669,
-      "val_student_vs_teacher_mse": 0.02557813748717308
+      "train_loss": 0.0383384826164397,
+      "val_student_vs_teacher_mse": 0.02446850575506687
     },
     {
       "epoch": 39,
-      "train_loss": 0.04024257961039742,
-      "val_student_vs_teacher_mse": 0.025543155148625374
+      "train_loss": 0.038226462338888455,
+      "val_student_vs_teacher_mse": 0.02439274452626705
     },
     {
       "epoch": 40,
-      "train_loss": 0.040188763911525406,
-      "val_student_vs_teacher_mse": 0.02551807276904583
+      "train_loss": 0.03830047445519576,
+      "val_student_vs_teacher_mse": 0.02440561354160309
     },
     {
       "epoch": 41,
-      "train_loss": 0.04012203682214022,
-      "val_student_vs_teacher_mse": 0.025464707985520363
+      "train_loss": 0.03821286748326014,
+      "val_student_vs_teacher_mse": 0.024392982944846153
     },
     {
       "epoch": 42,
-      "train_loss": 0.04009663686156273,
-      "val_student_vs_teacher_mse": 0.025438884273171425
+      "train_loss": 0.03817646737609591,
+      "val_student_vs_teacher_mse": 0.024374207481741905
     },
     {
       "epoch": 43,
-      "train_loss": 0.04004394247507056,
-      "val_student_vs_teacher_mse": 0.025405656546354294
+      "train_loss": 0.03827526769231236,
+      "val_student_vs_teacher_mse": 0.024406401440501213
     },
     {
       "epoch": 44,
-      "train_loss": 0.0399902764086922,
-      "val_student_vs_teacher_mse": 0.025394251570105553
+      "train_loss": 0.03815991301385183,
+      "val_student_vs_teacher_mse": 0.02435954101383686
     },
     {
       "epoch": 45,
-      "train_loss": 0.03995848152165612,
-      "val_student_vs_teacher_mse": 0.02535991556942463
+      "train_loss": 0.0382489479841694,
+      "val_student_vs_teacher_mse": 0.0242707971483469
     },
     {
       "epoch": 46,
-      "train_loss": 0.03995450694734851,
-      "val_student_vs_teacher_mse": 0.025357013568282127
+      "train_loss": 0.03808921321280419,
+      "val_student_vs_teacher_mse": 0.024300822988152504
     },
     {
       "epoch": 47,
-      "train_loss": 0.03987947261581818,
-      "val_student_vs_teacher_mse": 0.025320228189229965
+      "train_loss": 0.03817598929717427,
+      "val_student_vs_teacher_mse": 0.02438674494624138
     },
     {
       "epoch": 48,
-      "train_loss": 0.03987689890588323,
-      "val_student_vs_teacher_mse": 0.025279967114329338
+      "train_loss": 0.03813431104497304,
+      "val_student_vs_teacher_mse": 0.024391913786530495
     },
     {
       "epoch": 49,
-      "train_loss": 0.039797889379163585,
-      "val_student_vs_teacher_mse": 0.025264553725719452
+      "train_loss": 0.038078971443668244,
+      "val_student_vs_teacher_mse": 0.024276692420244217
     }
   ],
-  "best_epoch": 49,
-  "best_val_student_teacher_mse": 0.025264553725719452,
-  "test_pa_consensus": 0.8116034147410067,
-  "test_spearman_consensus": 0.8194230746606925,
-  "test_pa_teacher_consensus": 0.9311135414661347,
-  "distillation_gap_pp": 0.11951012672512795,
+  "best_epoch": 45,
+  "best_val_student_teacher_mse": 0.0242707971483469,
+  "test_pa_consensus": 0.8112755460172224,
+  "test_spearman_consensus": 0.8183540835502603,
+  "test_pa_teacher_consensus": 0.940004517493066,
+  "distillation_gap_pp": 0.1287289714758436,
   "loss_weights": {
     "out": 1.0,
     "fit": 0.5,
@@ -265,5 +265,5 @@
   },
   "temperature": 2.0,
   "label_smoothing": 0.05,
-  "wall_seconds": 1.0915241241455078
+  "wall_seconds": 2.565978765487671
 }
