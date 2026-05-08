@@ -204,9 +204,16 @@ def dawid_skene_em(
     X = np.stack([sources[s] for s in src_names], axis=0)   # [S, N]
     cov = ~np.isnan(X)                                       # [S, N]
 
-    # Init z = nanmean across sources; σ² = 1
+    # Init z = nanmedian across sources; σ² = 1.
+    # nanmedian (vs nanmean) is robust to a single juror with ranks
+    # tightly clustered around the EM-init point — using mean was
+    # observed 2026-05-08 to give that juror a precision-runaway by
+    # the M-step of iter 1, which the σ²-floor only partially stops.
+    # Median breaks that symmetry: every juror's per-track residual
+    # against the median-init z is the same expected magnitude, so
+    # no single source jumps ahead in the first M-step.
     sigma2 = np.ones(S, dtype=np.float64)
-    z = np.nanmean(X, axis=0)
+    z = np.nanmedian(X, axis=0)
     z[np.isnan(z)] = 0.5
 
     for it in range(max_iter):
@@ -222,11 +229,18 @@ def dawid_skene_em(
         # precision (1/σ²) explode to ~10⁹ and dominate the next E-step,
         # which then echoes that single source as z, etc. Was observed
         # 2026-05-08 with the local Mistral juror @ σ²=0 → reliability
-        # 1.000, every other source pinned at 0.000. Floor is set to
-        # the variance of a 1/sqrt(12)-spread uniform on [0, 1] minus a
-        # plausibly-tight bound, so a "very good" judge can still get
-        # σ²=SIGMA2_MIN but no source can ever bypass other jurors.
-        SIGMA2_MIN = 0.001   # implies max precision = 1000 (vs ~30-150 for healthy jurors)
+        # 1.000, every other source pinned at 0.000.
+        #
+        # The first attempt floored at 0.001 (max precision 1000), but
+        # that's still ~7× higher than a healthy juror's precision (~150),
+        # so even at the floor a single juror grabs ~70% of the weight.
+        # Set the floor to 0.01 (max precision 100), which is *just* below
+        # the healthiest observed juror precision (qwen36 ≈ 232 on this
+        # corpus). At that level, no single juror can monopolize even at
+        # the floor, but a genuinely well-calibrated juror still gets
+        # the highest weight in the panel. Combined with nanmedian init
+        # above, both runaway paths are blocked.
+        SIGMA2_MIN = 0.01   # max precision = 100, ≈ 1× a healthy juror
         sigma2_new = sigma2.copy()
         for s in range(S):
             mask = cov[s]
