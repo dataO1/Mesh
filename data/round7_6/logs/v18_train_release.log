@@ -1,0 +1,128 @@
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_b100.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_b10.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_b20.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_b50.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_b5.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_local.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke.npz
+[v18-train]   skipping smoke artifact: round7_6_caption_intensity_smoke_remote_nemotron.npz
+=== S6+S7+S8: build consensus intensity (Dawid-Skene jury) ===
+[v18-train] caption-intensity sources (3 modern jurors, full 40k coverage):
+  /home/data01/Music/mesh-track-grading/round7_6_caption_intensity_local_minstral.npz
+  /home/data01/Music/mesh-track-grading/round7_6_caption_intensity_nemotron.npz
+  /home/data01/Music/mesh-track-grading/round7_6_caption_intensity_qwen36.npz
+[agg] r7.5 inputs not provided — skipping S6a/S6b sources
+[capint]  S4 — caption-text-LLM intensity: mean=0.688 std=0.182
+[capint]  registered as jury source: caption_text_llm_local_minstral  (/home/data01/Music/mesh-track-grading/round7_6_caption_intensity_local_minstral.npz)
+[capint]  S4 — caption-text-LLM intensity: mean=0.643 std=0.166
+[capint]  registered as jury source: caption_text_llm_nemotron  (/home/data01/Music/mesh-track-grading/round7_6_caption_intensity_nemotron.npz)
+[capint]  S4 — caption-text-LLM intensity: mean=0.635 std=0.210
+[capint]  registered as jury source: caption_text_llm_qwen36  (/home/data01/Music/mesh-track-grading/round7_6_caption_intensity_qwen36.npz)
+[agg] N=39913 unique track IDs across sources
+[s7] rank-normalized 3 sources
+     caption_text_llm_local_minstral  coverage=39913/39913 (100.0%)
+     caption_text_llm_nemotron  coverage=39913/39913 (100.0%)
+     caption_text_llm_qwen36    coverage=39913/39913 (100.0%)
+[ds] converged at iter 2  Δσ²=0.00e+00
+
+[s8] per-source noise σ²:
+     source                           σ²    reliability (1/σ²)    normalized
+     caption_text_llm_local_minstral    0.0100              100.0000         0.333
+     caption_text_llm_nemotron    0.0100              100.0000         0.333
+     caption_text_llm_qwen36      0.0100              100.0000         0.333
+
+[consensus] z stats: mean=0.500  std=0.283  min=0.000  max=1.000
+[agg] wrote /home/data01/Music/mesh-track-grading/round7_6_consensus.npz
+
+=== S9: artist-stratified split (NOT genre-stratified, per G7) ===
+[split] 39913 labelled tracks, 19159 unique artists
+[split] track-level distribution:
+   train:  31931 tracks ( 80.0%)  15249 artists
+   val  :   3997 tracks ( 10.0%)   1958 artists
+   test :   3985 tracks ( 10.0%)   1952 artists
+[split] wrote /home/data01/Music/mesh-track-grading/round7_6_split.npz
+
+=== S10: train teacher (privileged: audio + caption + struct, full 40k) ===
+[teacher] device: cuda  (cudnn.deterministic=True)
+[teacher] aligned: 39913 tracks across all features
+[teacher] feature dims: audio=512 caption=768 struct=52 r75tags=0; axis heads=0
+[teacher] X shape=(39913, 1332)  y_int range=[0.000,1.000]
+[teacher] train=31931 val=3997 test=3985
+[teacher] model params: 374_273
+  ep   0  train=0.0477  val_int=0.0096  best@0
+  ep   5  train=0.0055  val_int=0.0051  best@5
+  ep  10  train=0.0049  val_int=0.0047  best@9
+  ep  15  train=0.0046  val_int=0.0045  best@15
+  ep  20  train=0.0042  val_int=0.0041  best@20
+  ep  25  train=0.0040  val_int=0.0040  best@25
+  ep  30  train=0.0038  val_int=0.0038  best@30
+  ep  35  train=0.0037  val_int=0.0037  best@35
+  ep  40  train=0.0035  val_int=0.0035  best@40
+  ep  45  train=0.0034  val_int=0.0034  best@45
+  ep  50  train=0.0033  val_int=0.0034  best@50
+  ep  55  train=0.0032  val_int=0.0034  best@53
+  ep  60  train=0.0031  val_int=0.0032  best@60
+  ep  65  train=0.0030  val_int=0.0033  best@64
+  ep  70  train=0.0029  val_int=0.0032  best@66
+  ep  75  train=0.0028  val_int=0.0031  best@73
+  ep  80  train=0.0028  val_int=0.0030  best@80
+  ep  85  train=0.0027  val_int=0.0030  best@85
+  ep  90  train=0.0027  val_int=0.0030  best@86
+  ep  95  train=0.0026  val_int=0.0030  best@93
+  ep  99  train=0.0026  val_int=0.0029  best@99
+[teacher] trained in 11.6s; best val_int_mse=0.0029 @ ep 99
+[teacher] TEST PA=0.9400  Spearman=0.9801
+[teacher] wrote /home/data01/Music/mesh-track-grading/round7_6_teacher.pt + metrics + preds
+
+=== S11: distill student (linear probe over MuQ-MuLan only) ===
+[student] device: cuda  (cudnn.deterministic=True)
+[student] aligned 39913 tracks
+[student] audio_dim=512  teacher_penultimate_dim=128
+[student] splits: train=31931 val=3997 test=3985
+  ep   0  train=0.1866  val_S↔T_mse=0.0446  best@0
+  ep   5  train=0.0419  val_S↔T_mse=0.0265  best@5
+  ep  10  train=0.0404  val_S↔T_mse=0.0256  best@10
+  ep  15  train=0.0398  val_S↔T_mse=0.0252  best@15
+  ep  20  train=0.0393  val_S↔T_mse=0.0249  best@20
+  ep  25  train=0.0389  val_S↔T_mse=0.0247  best@23
+  ep  30  train=0.0385  val_S↔T_mse=0.0245  best@30
+  ep  35  train=0.0385  val_S↔T_mse=0.0245  best@34
+  ep  40  train=0.0383  val_S↔T_mse=0.0244  best@39
+  ep  45  train=0.0382  val_S↔T_mse=0.0243  best@45
+  ep  49  train=0.0381  val_S↔T_mse=0.0243  best@45
+[student] trained in 2.6s; best val_S↔T_mse=0.0243
+[student] TEST PA (vs consensus): student=0.8113 teacher=0.9400  gap=+0.1287
+[student] TEST Spearman: 0.8184
+[student] wrote /home/data01/Music/mesh-track-grading/round7_6_student.pt + metrics
+
+=== S12: held-out eval + caption-emb K-means cluster diagnostic ===
+[eval] student vec dim=(512,), bias=+0.1565
+[eval] 39913 tracks aligned
+[eval] test=3985
+[g9-bench] 1000 tracks via numpy dot: total=0.004 ms (0.00 µs/track)
+
+=== Held-out test PA (vs consensus, N_test=3985) ===
+  student (V18):    0.8113
+  teacher:          0.9400
+  V15 (deployed):   0.7013
+  V17b polar blend: 0.7270
+  distill gap:      +0.1287 pp
+  student Spearman: 0.8184
+  student R²:       0.6739
+
+[eval] K-means clustering caption_emb into 20 clusters ...
+[eval] reading captions for cluster themes ...
+
+[eval] wrote /home/data01/Music/mesh-track-grading/round7_6_eval_report.md
+[eval] wrote /home/data01/Music/mesh-track-grading/round7_6_eval.json
+
+=== S13: V18 export ===
+[export] student vec: 512d, bias=+0.1565
+[export] reported test PA: 0.811276
+[export] reproduced test PA from V18 JSON: 0.811276
+[export] reproduction OK ✓
+[export] wrote models/aggression-axes/V18_round7_6_consensus_distilled.json
+
+=== round-7.6 V18 done ===
+Eval report: /home/data01/Music/mesh-track-grading/round7_6_eval_report.md
+V18 JSON:    models/aggression-axes/V18_round7_6_consensus_distilled.json

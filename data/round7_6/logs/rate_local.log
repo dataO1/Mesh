@@ -1,0 +1,12 @@
+[rate] 200 captions on disk, 0 already rated, 200 pending
+[rate] model=gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ, workers=16
+[rate] dispatching across 16 workers ...
+  [146/200] ok=147 fail=0 tput=4.79 c/s
+
+=== caption→text-LLM intensity done ===
+ok:    200 / 200
+fail:  0
+score range: [0.140, 0.945]
+score std:   0.173
+wall: 38.8s (5.16 c/s)
+[rate] wrote /home/data01/Music/mesh-track-grading/round7_6_caption_intensity_smoke_local.npz
