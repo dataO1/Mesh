@@ -76,14 +76,18 @@ done
 #       at 9.5% with 6 seqs (1.6%/seq), so 12 seqs lands at ~20% — well
 #       within the 24 GB 5090 budget. Caption sweep client uses --workers 16
 #       so there's a small queue to keep the GPU saturated.
-# R5 — `max_num_seqs` raised 12→24 (caption-full perf bench, 2026-05-08).
-#       Going from 6→12 seqs took gen throughput 263→490 tok/s (1.86× —
-#       93% scaling efficiency), so there's clear headroom. KV cache at
-#       12 seqs was 17% (1.4%/seq), so 24 seqs projects to ~35% — still
-#       safe. Beyond ~24 seqs, prefill scheduling becomes the bottleneck
-#       and scaling efficiency drops; bumping to 32+ doesn't pay off.
-#       Caption sweep client uses --workers 32 to keep a small queue.
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-24}"
+# R5 — `max_num_seqs` raised 12→24→48 in two steps. Live measurements:
+#         seqs   gen tok/s   KV %   caption c/s
+#          6        263       9.5      0.44
+#         12        490      17        0.74   (1.86× / 1.68×)
+#         24        830      35        1.13   (1.69× / 1.53×)
+#         48     ~1200      ~70       ~1.6    (projected — 1.45× / 1.4×)
+#       Diminishing returns are visible but each doubling still buys ~50%
+#       more c/s. Going past 48 puts KV at >80%, which triggers vLLM
+#       preemption — back off to 36 if you see "Preempted: N" log lines or
+#       KV consistently above 75%. Caption sweep client uses --workers 64
+#       to keep a small queue ahead of the 48 in-flight slots.
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-48}"
 MM_CACHE_GB="${MM_CACHE_GB:-2}"
 
 # `rote_timestamps` is synthesized by a local vLLM patch
