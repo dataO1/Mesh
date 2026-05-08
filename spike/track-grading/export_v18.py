@@ -46,11 +46,54 @@ def main(args) -> int:
     import torch
 
     state = torch.load(args.student_pt, map_location="cpu", weights_only=True)
-    W = state["intensity.weight"].numpy().squeeze().astype(np.float32)
-    b = float(state["intensity.bias"].numpy().squeeze())
-    if W.shape != (512,):
-        sys.exit(f"unexpected student vec shape: {W.shape}, expected (512,)")
-    print(f"[export] student vec: 512d, bias={b:+.4f}")
+
+    # Detect arch from state_dict layout. The old linear student stores the
+    # head as `intensity.weight` / `intensity.bias` (a single nn.Linear).
+    # The new mlp student (added 2026-05-08, spec §765-768 escalation) stores
+    # it as a Sequential, so keys look like `intensity.0.weight`,
+    # `intensity.0.bias`, `intensity.3.weight`, `intensity.3.bias`.
+    if "intensity.weight" in state:
+        arch = "linear"
+    elif "intensity.0.weight" in state and "intensity.3.weight" in state:
+        arch = "mlp"
+    else:
+        sys.exit(f"unrecognized student state_dict keys: {list(state.keys())[:8]}")
+    print(f"[export] detected arch: {arch}")
+
+    if arch == "linear":
+        W = state["intensity.weight"].numpy().squeeze().astype(np.float32)
+        b = float(state["intensity.bias"].numpy().squeeze())
+        if W.shape != (512,):
+            sys.exit(f"unexpected student vec shape: {W.shape}, expected (512,)")
+        print(f"[export] student vec: 512d, bias={b:+.4f}")
+
+        def score_fn(audio_arr: np.ndarray) -> np.ndarray:
+            return audio_arr @ W + b
+
+    else:  # mlp
+        W1 = state["intensity.0.weight"].numpy().astype(np.float32)   # (hidden, 512)
+        b1 = state["intensity.0.bias"].numpy().astype(np.float32)     # (hidden,)
+        W2 = state["intensity.3.weight"].numpy().astype(np.float32)   # (1, hidden)
+        b2 = float(state["intensity.3.bias"].numpy().squeeze())       # scalar
+        if W1.shape[1] != 512:
+            sys.exit(f"unexpected mlp W1 shape: {W1.shape}, expected (?, 512)")
+        if W2.shape[0] != 1:
+            sys.exit(f"unexpected mlp W2 shape: {W2.shape}, expected (1, ?)")
+        hidden = W1.shape[0]
+        print(f"[export] student mlp: 512 → {hidden} (GELU) → 1, bias={b2:+.4f}")
+        # GELU approximation matching torch.nn.GELU default ('none', not 'tanh'):
+        # gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+        from math import sqrt
+        SQRT2 = sqrt(2.0)
+        from scipy.special import erf as _erf
+
+        def _gelu(x: np.ndarray) -> np.ndarray:
+            return 0.5 * x * (1.0 + _erf(x / SQRT2))
+
+        def score_fn(audio_arr: np.ndarray) -> np.ndarray:
+            h = audio_arr @ W1.T + b1            # (N, hidden)
+            h = _gelu(h)                         # dropout is identity at inference
+            return (h @ W2.T + b2).squeeze(-1)   # (N,)
 
     # ── Reproduce test PA from the JSON-extracted vec ────────────────
     # Use the EXACT test track IDs persisted by eval (so the intersection
@@ -75,7 +118,7 @@ def main(args) -> int:
 
     aud = np.stack([audio_arr[audio_tid_to_i[t]] for t in test_tids], axis=0)
     y   = np.array([cs_arr[cs_tid_to_i[t]] for t in test_tids], dtype=np.float32)
-    score = aud @ W + b
+    score = score_fn(aud)
 
     n = len(score)
     ds = score[:, None] - score[None, :]; dy = y[:, None] - y[None, :]
@@ -106,8 +149,7 @@ def main(args) -> int:
         "version": "V18_round7_6_consensus_distilled",
         "embedding": "muq-mulan",
         "embedding_dim": 512,
-        "intensity_axis_vec": [float(x) for x in W.tolist()],
-        "bias": b,
+        "model_type": arch,            # "linear" or "mlp"
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "trained_on_corpus": "deezer-everynoise-expanded-2026-05-07",
         "label_sources": label_sources,
@@ -118,12 +160,33 @@ def main(args) -> int:
         "distillation_gap_pp": eval_report["metrics"].get("distillation_gap_pp"),
         "per_cluster_pa": per_cluster_pa,
         "license_note": (
-            "MF caption used at training time only; deployed weights are linear "
-            "over MuQ-MuLan; user-redistributable subject to MuQ-MuLan license."
+            "MF caption used at training time only; deployed weights are over "
+            "MuQ-MuLan only; user-redistributable subject to MuQ-MuLan license."
         ),
         "deprecates": ["V15", "V17b"],
         "spec": "documents/round-7-6-pipeline-spec.md",
     }
+    if arch == "linear":
+        payload["intensity_axis_vec"] = [float(x) for x in W.tolist()]
+        payload["bias"] = b
+    else:  # mlp
+        payload["mlp"] = {
+            "hidden_dim": int(hidden),
+            "activation": "gelu",
+            "dropout_train_only": True,
+            # Layer 1: in (512) → hidden
+            "W1": [[float(x) for x in row] for row in W1.tolist()],
+            "b1": [float(x) for x in b1.tolist()],
+            # Layer 2: hidden → out (1)
+            "W2": [[float(x) for x in row] for row in W2.tolist()],
+            "b2": b2,
+            # Inference: y = W2 @ gelu(W1 @ audio_emb + b1) + b2
+            "inference_pseudocode": (
+                "h = audio_emb @ W1.T + b1; "
+                "h = 0.5 * h * (1 + erf(h / sqrt(2))); "  # exact GELU
+                "y = h @ W2.T + b2"
+            ),
+        }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2))
     print(f"[export] wrote {args.out}")

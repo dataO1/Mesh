@@ -47,6 +47,23 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--patience", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
+    # Distinct output stems let us train multiple students in parallel
+    # (e.g. linear V18 baseline + V18.1 MLP experiment) without overwriting
+    # each other's checkpoints.
+    p.add_argument("--out-stem", default="round7_6_student",
+                   help="basename for student.pt + student_metrics.json (default: round7_6_student)")
+    # Architecture knobs — added 2026-05-08 to escalate per spec §765-768.
+    # Linear is the original spec G1; mlp is the spec-anticipated escalation
+    # for closing the G6 distillation gap when linear-probe ceiling falls
+    # short. CPU latency is ~0.05 ms/track at hidden=128 → still 2000× under
+    # the G9 budget of 100 ms/1000 tracks.
+    p.add_argument("--student-arch", choices=["linear", "mlp"], default="linear",
+                   help="linear: V18 spec G1 (Linear(512→1)); "
+                        "mlp: 2-layer (Linear(512→hidden)→GELU→Dropout→Linear(hidden→1))")
+    p.add_argument("--hidden-dim", type=int, default=128,
+                   help="hidden width for --student-arch mlp")
+    p.add_argument("--dropout", type=float, default=0.3,
+                   help="dropout in mlp hidden layer")
     return p.parse_args()
 
 
@@ -112,18 +129,49 @@ def main(args) -> int:
 
     # ── Build student + FitNets adapter ────────────────────────────────
     class Student(nn.Module):
-        """Linear probe for deployment + a training-time penultimate
-        projection (512 → pen_dim) that lets us match the teacher's
-        penultimate features. The projection is DISCARDED at export."""
-        def __init__(self, in_dim, pen_dim):
+        """Student over the audio embedding only.
+
+        Two architectures:
+
+          - 'linear' (V18 spec G1): a single Linear(in_dim → 1) for the
+            intensity head. Deployable as `audio_emb @ vec + bias`.
+
+          - 'mlp' (spec §765-768 escalation, 2026-05-08 V18.1): a 2-layer
+            MLP `Linear(in_dim → hidden) → GELU → Dropout → Linear(hidden → 1)`.
+            CPU cost still <0.05 ms/track at hidden=128 (well under the G9
+            100 ms/1000-track budget). Closes part of the G6 distillation gap
+            by giving the student capacity to learn nonlinear interactions
+            in the audio embedding (e.g. AND-gates between
+            high-frequency-energy and low-pitch features).
+
+        In both cases we also have a training-time `pen_proj` that maps the
+        audio embedding into the teacher's penultimate space for FitNets
+        feature matching. It is DISCARDED at export.
+        """
+        def __init__(self, in_dim, pen_dim, arch, hidden, dropout):
             super().__init__()
-            self.intensity = nn.Linear(in_dim, 1)         # deployed shape
+            self.arch = arch
+            if arch == "linear":
+                self.intensity = nn.Linear(in_dim, 1)
+            elif arch == "mlp":
+                self.intensity = nn.Sequential(
+                    nn.Linear(in_dim, hidden),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(hidden, 1),
+                )
+            else:
+                raise ValueError(f"unknown arch {arch!r}")
             self.pen_proj  = nn.Linear(in_dim, pen_dim)   # training-only
 
         def forward(self, x):
             return self.intensity(x).squeeze(-1), self.pen_proj(x)
 
-    model = Student(A, pen_dim).to(device)
+    model = Student(A, pen_dim, args.student_arch, args.hidden_dim, args.dropout).to(device)
+    n_params = sum(p.numel() for p in model.intensity.parameters())
+    print(f"[student] arch={args.student_arch}  intensity-head params={n_params:_}")
+    if args.student_arch == "mlp":
+        print(f"[student]   hidden_dim={args.hidden_dim}  dropout={args.dropout}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     Xt = torch.from_numpy(X).to(device)
@@ -221,8 +269,8 @@ def main(args) -> int:
     # ── Persist (keep both heads in checkpoint; export drops pen_proj) ─
     args.out_dir.mkdir(parents=True, exist_ok=True)
     import torch
-    torch.save(model.state_dict(), args.out_dir / "round7_6_student.pt")
-    (args.out_dir / "round7_6_student_metrics.json").write_text(json.dumps({
+    torch.save(model.state_dict(), args.out_dir / f"{args.out_stem}.pt")
+    (args.out_dir / f"{args.out_stem}_metrics.json").write_text(json.dumps({
         "history": history,
         "best_epoch": best_epoch,
         "best_val_student_teacher_mse": best_val,
@@ -230,6 +278,10 @@ def main(args) -> int:
         "test_spearman_consensus": test_rho,
         "test_pa_teacher_consensus": teacher_test_pa,
         "distillation_gap_pp": teacher_test_pa - test_pa,
+        "arch": args.student_arch,
+        "hidden_dim": args.hidden_dim if args.student_arch == "mlp" else None,
+        "dropout": args.dropout if args.student_arch == "mlp" else None,
+        "intensity_head_params": int(sum(p.numel() for p in model.intensity.parameters())),
         "loss_weights": {
             "out": args.lambda_out, "fit": args.lambda_fit,
             "kd": args.lambda_kd,   "ls": args.lambda_ls,
@@ -238,7 +290,7 @@ def main(args) -> int:
         "label_smoothing": args.label_smooth,
         "wall_seconds": wall,
     }, indent=2))
-    print(f"[student] wrote {args.out_dir}/round7_6_student.pt + metrics")
+    print(f"[student] wrote {args.out_dir}/{args.out_stem}.pt + metrics")
     return 0
 
 

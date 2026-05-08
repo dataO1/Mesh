@@ -1,0 +1,88 @@
+warning: Git tree '/home/data01/Projects/Mesh' is dirty
+
+╔════════════════════════════════════════════════════════════════════╗
+║   Mesh ML-spike   vllm 0.20.1 · transformers 5.7.0 · py 3.11.15    ║
+╠══ Round-7.6 V18 pipeline (run from project root) ══════════════════╣
+║                                                                    ║
+║  1. Start Music Flamingo (terminal A)                              ║
+║       bash spike/track-grading/serve_music_flamingo.sh   # :8001   ║
+║                                                                    ║
+║  2. Caption sweep (terminal B in devshell)             ~7 hr       ║
+║       bash spike/track-grading/run_round7_6_pipeline.sh caption-full
+║                                                                    ║
+║  3. Text-LLM rating — N independent jurors. Each tag writes its own║
+║     NPZ; step 5 (v18-train) auto-aggregates them via Dawid-Skene.  ║
+║                                                                    ║
+║  ★ START 3A + 3B AS SOON AS STEP 1 IS UP — they run on REMOTE GPUs ║
+║    (Spark 1, Spark 2), so they share nothing with caption-full and ║
+║    overlap fully with step 2. The streaming runner polls the       ║
+║    captions dir every 5 min and exits ~20 min after step 2 ends.   ║
+║                                                                    ║
+║     3A) Spark 2 / Nemotron-30B (terminal C, parallel with step 2)  ║
+║       export TEXT_LLM_URL=http://172.16.54.147:8000/v1/chat/completions
+║       export TEXT_LLM_MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+║       export TEXT_LLM_TAG=nemotron  TEXT_LLM_NO_THINK=1            ║
+║       ./...pipeline.sh caption-rate-streaming                      ║
+║                                                                    ║
+║     3B) Spark 1 / Qwen3.6-27B (terminal D, parallel with step 2)   ║
+║       export TEXT_LLM_URL=http://172.16.51.90:8000/v1/chat/completions
+║       export TEXT_LLM_MODEL=sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP
+║       export TEXT_LLM_TAG=qwen36  TEXT_LLM_NO_THINK=1  TEXT_LLM_WORKERS=16
+║       ./...pipeline.sh caption-rate-streaming                      ║
+║                                                                    ║
+║     3C) Local Mistral-Small-3.2-24B AWQ — SEQUENTIAL, after step 2:║
+║       pkill -f 'python.*api_server'         # frees GPU from MF    ║
+║       TEXT_LLM_MODEL=gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ \║
+║         bash spike/track-grading/serve_text_llm.sh   # :8002       ║
+║       TEXT_LLM_TAG=local_mistral \                                 ║
+║         bash ...pipeline.sh caption-rate                           ║
+║     (Devstral-Small-2507 ships bf16-only ~48 GB → won't fit 24 GB  ║
+║      5090. Mistral-Small-3.2 is Devstral's pre-code-fine-tune base.║
+║      For natural-language intensity rating the base is fine —      ║
+║      arguably better-calibrated than the code-tuned variant.)      ║
+║                                                                    ║
+║     Tail-latency tweak: STABLE_SECS=300 POLL_SECS=60 ./...streaming║
+║                                                                    ║
+║  4. Free GPU before teacher training                               ║
+║       pkill -f 'python.*api_server'                                ║
+║                                                                    ║
+║  5. Train V18 (consensus→teacher→student→eval→export) ~2 hr        ║
+║       bash spike/track-grading/run_round7_6_pipeline.sh v18-train  ║
+║                                                                    ║
+║  6. Inspect                                                        ║
+║       less <mesh-track-grading>/round7_6_eval_report.md            ║
+║       ls   models/aggression-axes/V18_round7_6_*.json              ║
+║                                                                    ║
+╠══ Helpers ═════════════════════════════════════════════════════════╣
+║  Smoke:   ./...pipeline.sh v18-smoke   (200 cached captions)       ║
+║  Logs:    tail -F <mesh-track-grading>/logs/*.log                  ║
+║  GPU:     nvidia-smi   Health: curl -sf localhost:{8001,8002}/health
+║  Stop:    pkill -f 'python.*api_server'    (servers; orchestrator: ^C)
+║  Resume:  caps + rate are per-track resume-safe across days;       ║
+║             re-run the same command and it skips finished work.    ║
+║             Train (S10/S11) re-runs from disk in <2 hr.            ║
+║  Pin:     nix/mlspike-requirements.txt (sha256 8c2a799e7f35b63e)   ║
+║  Spec:    documents/round-7-6-pipeline-spec.md                     ║
+╚════════════════════════════════════════════════════════════════════╝
+
+[student] device: cuda  (cudnn.deterministic=True)
+[student] aligned 39913 tracks
+[student] audio_dim=512  teacher_penultimate_dim=128
+[student] splits: train=31931 val=3997 test=3985
+[student] arch=mlp  intensity-head params=65_793
+[student]   hidden_dim=128  dropout=0.3
+  ep   0  train=0.1028  val_S↔T_mse=0.0278  best@0
+  ep   5  train=0.0408  val_S↔T_mse=0.0250  best@4
+  ep  10  train=0.0397  val_S↔T_mse=0.0241  best@10
+  ep  15  train=0.0391  val_S↔T_mse=0.0238  best@15
+  ep  20  train=0.0384  val_S↔T_mse=0.0236  best@18
+  ep  25  train=0.0382  val_S↔T_mse=0.0233  best@23
+  ep  30  train=0.0376  val_S↔T_mse=0.0233  best@26
+  ep  35  train=0.0376  val_S↔T_mse=0.0231  best@34
+  ep  40  train=0.0370  val_S↔T_mse=0.0229  best@40
+  ep  45  train=0.0369  val_S↔T_mse=0.0228  best@41
+  ep  49  train=0.0367  val_S↔T_mse=0.0229  best@41
+[student] trained in 3.6s; best val_S↔T_mse=0.0228
+[student] TEST PA (vs consensus): student=0.8174 teacher=0.9400  gap=+0.1226
+[student] TEST Spearman: 0.8264
+[student] wrote /home/data01/Music/mesh-track-grading/round7_6_student_mlp.pt + metrics

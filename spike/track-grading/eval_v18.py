@@ -97,10 +97,34 @@ def main(args) -> int:
     sp_tid_to_split = {int(t): str(sp_split[i]) for i, t in enumerate(sp_tids)}
 
     # ── Load student weights ───────────────────────────────────────────
+    # Auto-detect arch (linear vs mlp) so we can eval either V18 baseline
+    # or V18.1 MLP from the same code path. Matches export_v18.py.
     state = torch.load(args.student_pt, map_location="cpu", weights_only=True)
-    W = state["intensity.weight"].numpy().squeeze()   # [audio_dim]
-    b = float(state["intensity.bias"].numpy().squeeze())
-    print(f"[eval] student vec dim={W.shape}, bias={b:+.4f}")
+    if "intensity.weight" in state:
+        student_arch = "linear"
+        W = state["intensity.weight"].numpy().squeeze()
+        b = float(state["intensity.bias"].numpy().squeeze())
+        print(f"[eval] student arch=linear, vec dim={W.shape}, bias={b:+.4f}")
+
+        def student_score_fn(audio: np.ndarray) -> np.ndarray:
+            return audio @ W + b
+    elif "intensity.0.weight" in state and "intensity.3.weight" in state:
+        student_arch = "mlp"
+        W1 = state["intensity.0.weight"].numpy().astype(np.float32)
+        b1 = state["intensity.0.bias"].numpy().astype(np.float32)
+        W2 = state["intensity.3.weight"].numpy().astype(np.float32)
+        b2 = float(state["intensity.3.bias"].numpy().squeeze())
+        from math import sqrt
+        from scipy.special import erf as _erf
+        SQRT2 = sqrt(2.0)
+        print(f"[eval] student arch=mlp, hidden={W1.shape[0]}, bias={b2:+.4f}")
+
+        def student_score_fn(audio: np.ndarray) -> np.ndarray:
+            h = audio @ W1.T + b1
+            h = 0.5 * h * (1.0 + _erf(h / SQRT2))   # GELU (exact)
+            return (h @ W2.T + b2).squeeze(-1)
+    else:
+        sys.exit(f"unrecognized student state_dict keys: {list(state.keys())[:8]}")
 
     # ── V15 / V17b reference vectors ──────────────────────────────────
     v15 = json.loads(args.v15.read_text())
@@ -134,7 +158,7 @@ def main(args) -> int:
     print(f"[eval] test={len(test_idx)}")
 
     # ── Score with each model ─────────────────────────────────────────
-    student_score = aud @ W + b
+    student_score = student_score_fn(aud)
     v15_score = aud @ v15_vec
     v17b_score = aud @ v17b_vec
 
@@ -144,12 +168,12 @@ def main(args) -> int:
     bench_idx = rng_bench.choice(len(track_ids), size=min(1000, len(track_ids)),
                                  replace=False)
     aud_bench = np.ascontiguousarray(aud[bench_idx], dtype=np.float32)
-    W_cpu = W.astype(np.float32)
-    # Warm
-    _ = aud_bench @ W_cpu + b
+    # Warm + bench through the same scoring fn used for real eval, so the
+    # numbers reflect the actual deployed cost (linear or mlp).
+    _ = student_score_fn(aud_bench)
     t0 = _time.perf_counter()
     for _ in range(10):
-        _ = aud_bench @ W_cpu + b
+        _ = student_score_fn(aud_bench)
     t1 = _time.perf_counter()
     g9_total_ms = ((t1 - t0) / 10) * 1000
     g9_per_track_us = (g9_total_ms / len(bench_idx)) * 1000
