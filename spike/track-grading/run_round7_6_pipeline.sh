@@ -119,14 +119,15 @@ case "$STAGE" in
     #     TEXT_LLM_MODEL=Qwen/Qwen3-32B-Instruct                # or whatever's served
     #     TEXT_LLM_API_KEY=...
     REMOTE_FLAGS=""
-    # Default workers: 24 for local vLLM (3-7B model fits well at higher
-    # concurrency), 16 for remote endpoints (per the 2026-05-07 throughput
-    # bench — beyond 16 the server queues without tput gain). Override via
+    # Default workers: 64 for local vLLM (matches MAX_NUM_SEQS=48 in
+    # serve_text_llm.sh with a small queue ahead of the in-flight slots),
+    # 16 for remote endpoints (per the 2026-05-07 throughput bench —
+    # beyond 16 the Spark server queues without tput gain). Override via
     # TEXT_LLM_WORKERS.
     if [ -n "${TEXT_LLM_URL:-}" ]; then
       WORKERS="${TEXT_LLM_WORKERS:-16}"
     else
-      WORKERS="${TEXT_LLM_WORKERS:-24}"
+      WORKERS="${TEXT_LLM_WORKERS:-64}"
     fi
     if [ -n "${TEXT_LLM_URL:-}" ]; then
       echo "[caption-rate] using remote text-LLM at: $TEXT_LLM_URL"

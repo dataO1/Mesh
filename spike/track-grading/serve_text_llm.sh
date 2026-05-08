@@ -78,19 +78,35 @@ if [[ "$MODEL" == *[Mm]istral* ]]; then
   fi
 fi
 
-# --enforce-eager: vLLM 0.20.1's torch.compile/inductor path on Blackwell
-# SM120 needs `ptxas-blackwell` which isn't bundled with the current torch/
-# triton wheels; the engine crashes during profile_run with InductorError:
-# "Cannot find ptxas-blackwell". Eager mode skips AOT compilation entirely.
-# For our workload (1-2 token decode), the perf hit is small — most time is
-# in prefill anyway. Drop this flag if/when Triton ships ptxas-blackwell.
+# Concurrency knobs — env-tunable so you can rescale without editing.
+# Defaults are tuned for AWQ-int4 24B Mistral on RTX 5090 Mobile (24 GB):
+#   max_num_seqs=48 + workers=64 → ~5-8 c/s on 1024-token caption prompts
+#   max_num_seqs=32 + workers=24 → ~2 c/s (previous, undersized)
+# KV cache scales linearly: at 9 running seqs we observed 16.2% (1.8%/seq),
+# so 48 seqs projects to ~85% — pushing the limit but inside the budget.
+# If you see KV >90% or "Preempted: N" lines, drop MAX_NUM_SEQS to 32.
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-48}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
+
+# torch.compile / CUDA graphs path — previously disabled because vLLM
+# 0.20.1 needed `ptxas-blackwell` which isn't bundled with stock Triton on
+# Blackwell SM120. We've since patched the bundled triton ELFs (see
+# nix/devshell-mlspike.nix shellHook → patchelf step), so AOT compilation
+# now works on this box. Re-enabling CUDA graphs gives +25-40% throughput
+# on small max_num_seqs. Set FORCE_EAGER=1 to fall back to eager if you
+# see InductorError or "Cannot find ptxas-blackwell" at startup.
+EAGER_FLAG=""
+if [ "${FORCE_EAGER:-0}" = "1" ]; then
+  EAGER_FLAG="--enforce-eager"
+fi
+
 exec "$VENV/bin/python" -m vllm.entrypoints.openai.api_server \
   --model "$MODEL" \
   --dtype bfloat16 \
   --max-model-len 4096 \
-  --max-num-seqs 32 \
-  --gpu-memory-utilization 0.85 \
-  --enforce-eager \
+  --max-num-seqs "$MAX_NUM_SEQS" \
+  --gpu-memory-utilization "$GPU_MEM_UTIL" \
+  $EAGER_FLAG \
   --trust-remote-code \
   $EXTRA \
   --host 0.0.0.0 \
