@@ -192,8 +192,11 @@ case "$STAGE" in
     last_count=-1
     last_change=$(date +%s)
     while true; do
+      # Use `find` instead of `ls .../*.json`: at 25k+ files the glob
+      # overflows the kernel's ARG_MAX (~2 MB) and silently returns 0,
+      # which makes the loop think the captions dir is empty.
       if [ -d "$CAPS_DIR" ]; then
-        cur=$(ls "$CAPS_DIR"/*.json 2>/dev/null | wc -l)
+        cur=$(find "$CAPS_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l)
       else
         cur=0
       fi
@@ -229,7 +232,7 @@ case "$STAGE" in
     BASE=/home/data01/Music/mesh-track-grading
     CAPS="$BASE/round7_6_captions/music_flamingo"
     [ -d "$CAPS" ] || { echo "ERROR: $CAPS missing — run caption-smoke first" >&2; exit 1; }
-    n_caps=$(ls "$CAPS"/*.json 2>/dev/null | wc -l)
+    n_caps=$(find "$CAPS" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l)
     echo "[v18-smoke] $n_caps captions present"
     if [ "$n_caps" -lt 100 ]; then
       echo "ERROR: only $n_caps captions; need at least 100 for a smoke test" >&2
