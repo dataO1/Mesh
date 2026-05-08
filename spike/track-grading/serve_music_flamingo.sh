@@ -62,7 +62,7 @@ done
 # across calls touching the same track ID — big win under BALD where each
 # track participates in many tuples.
 
-# Tuning notes (perf audit, 2026-05-07):
+# Tuning notes (perf audit, 2026-05-07 → 2026-05-08):
 # R1 — `--enforce-eager` removed to let vLLM build CUDA graphs (+25-40% decode
 #       throughput on 7B bf16 with small max_num_seqs). Adds ~30-60s warm-up
 #       at server start; ~500 MB extra VRAM for graph captures.
@@ -71,7 +71,12 @@ done
 #       track exactly once (encoder cache hit rate is 0% by construction). For
 #       tournament/Likert sweeps (where the same track appears in many tuples),
 #       set MM_CACHE_GB=6 in env.
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-6}"
+# R4 — `max_num_seqs` raised 6→12 after switching caption sweep to
+#       max_tokens=1024. With longer per-call generation, observed KV cache
+#       at 9.5% with 6 seqs (1.6%/seq), so 12 seqs lands at ~20% — well
+#       within the 24 GB 5090 budget. Caption sweep client uses --workers 16
+#       (R5 below) so there's a small queue to keep the GPU saturated.
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-12}"
 MM_CACHE_GB="${MM_CACHE_GB:-2}"
 
 # `rote_timestamps` is synthesized by a local vLLM patch
