@@ -30,7 +30,7 @@ than absolute scoring) and keep V11 as the default.
   `crates/mesh-cue/src/bin/dump_track_list.rs`), decodes 30 s of audio
   centered around `tracks.drop_marker`, runs AF3 with a single-line
   text-format prompt, parses `INTENSITY: N | GENRE: X | NOTES: Y`.
-  Resumable via per-track JSON files in `/tmp/track-grading/<id>.json`.
+  Resumable via per-track JSON files in `/home/data01/Music/mesh-track-grading/<id>.json`.
   Aggregates to `documents/axis-eval-results/llm-priors.csv` and
   `llm-grading-raw.jsonl`.
 

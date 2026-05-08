@@ -363,7 +363,7 @@ acceptable noise at 21k corpus size.
 - `spike/track-grading/fetch_spotify_tracks.py` — Spotify alternative,
   blocked by their Premium policy
 
-Outputs land at `/tmp/track-grading/`:
+Outputs land at `/home/data01/Music/mesh-track-grading/`:
 - `everynoise_genres.json` (full scrape, 6291 entries)
 - `everynoise_dj_genres.json` (INCLUDE subset, 2116 entries)
 - `deezer/corpus_tracks.json` (the manifest)
@@ -548,7 +548,7 @@ fine-tuning.
   with per-axis questions, expected genres, rationale
 - `spike/track-grading/run_per_axis_tournaments.py` — community-aware
   bilateral pair sampler + vLLM-judge runner (resume-safe, per-pair
-  JSON cache under `/tmp/track-grading/round7_pairs/<axis_id>/`)
+  JSON cache under `/home/data01/Music/mesh-track-grading/round7_pairs/<axis_id>/`)
 - `spike/track-grading/build_bt_priors_r7.py` — per-axis Hunter-MM BT
   with Gamma(2,1) prior, vectorised in NumPy (~5 s per axis)
 - `spike/track-grading/train_axes_r7.py` — multi-task `Linear(512, 12)`
@@ -568,18 +568,18 @@ fine-tuning.
   step's Python script (single source of truth for the venv quirks)
 - `models/aggression-axes/V16_round7_blend.json` — round-7 axis,
   schema-validated, `intensity_axis_vec` unit-norm, 12 sub-axes
-- `/tmp/track-grading/round7_axes.npz` — raw 12 × 512 directions + CV
+- `/home/data01/Music/mesh-track-grading/round7_axes.npz` — raw 12 × 512 directions + CV
   metrics (re-runnable input for any future blend objective)
-- `/tmp/track-grading/round7_priors.npz` — BT priors per axis
-- `/tmp/track-grading/round7_blend.npz` — blend weights + scaling
-- `/tmp/track-grading/embeddings/corpus_muq_mulan.npz` — 15314 × 512
+- `/home/data01/Music/mesh-track-grading/round7_priors.npz` — BT priors per axis
+- `/home/data01/Music/mesh-track-grading/round7_blend.npz` — blend weights + scaling
+- `/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz` — 15314 × 512
   embeddings keyed by deezer_track_id (re-usable for any future axis
   experiment, no need to re-embed)
-- `/tmp/track-grading/round7_interpretation.md` — top/bottom 20 per
+- `/home/data01/Music/mesh-track-grading/round7_interpretation.md` — top/bottom 20 per
   axis (human readable, used to validate axis names)
-- `/tmp/track-grading/round7_cross_library.md` — V15 vs V16 ranks on
+- `/home/data01/Music/mesh-track-grading/round7_cross_library.md` — V15 vs V16 ranks on
   the user library, per-axis projections of all 909 user tracks
-- `/tmp/track-grading/round7_train_metrics.json` — per-fold CV scores
+- `/home/data01/Music/mesh-track-grading/round7_train_metrics.json` — per-fold CV scores
 
 ### Round-7 verdict
 

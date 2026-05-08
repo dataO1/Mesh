@@ -32,11 +32,11 @@ Inputs:
     features + intensity column)
   - documents/axis-eval-results/llm-pair-priors.txt (round-4 BT priors as
     cold-start seeds)
-  - /tmp/track-grading/pairs_vllm/*.json (round-4 cached judgments — used
+  - /home/data01/Music/mesh-track-grading/pairs_vllm/*.json (round-4 cached judgments — used
     for transitive-closure pruning)
 
 Outputs:
-  - /tmp/track-grading/round5_plan.csv  (track_a, track_b, tier, score)
+  - /home/data01/Music/mesh-track-grading/round5_plan.csv  (track_a, track_b, tier, score)
 """
 from __future__ import annotations
 
@@ -67,9 +67,9 @@ def parse_args():
     p.add_argument("--bt-priors", type=Path,
                    default=Path("documents/axis-eval-results/llm-pair-priors.txt"))
     p.add_argument("--existing-pairs", type=Path,
-                   default=Path("/tmp/track-grading/pairs_vllm"))
+                   default=Path("/home/data01/Music/mesh-track-grading/pairs_vllm"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round5_plan.csv"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round5_plan.csv"))
     p.add_argument("--phase2-budget", type=int, default=PHASE2_BUDGET)
     return p.parse_args()
 

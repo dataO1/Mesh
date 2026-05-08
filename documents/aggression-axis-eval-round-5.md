@@ -253,8 +253,8 @@ the pair is genuinely ambiguous and should be marked EQUAL.
 - `documents/axis-eval-results/llm-pair-priors-r5.csv` — committed, full table
 - `spike/track-grading/plan_pairs_v2.py` — community-aware planner
 - `spike/track-grading/judge_pairs_vllm.py` — `--plan-file` mode added
-- `/tmp/track-grading/round5_plan.csv` — the planner's pair queue (regen'able)
-- `/tmp/track-grading/pairs_vllm/*.json` — 10450 per-pair JSON judgments
+- `/home/data01/Music/mesh-track-grading/round5_plan.csv` — the planner's pair queue (regen'able)
+- `/home/data01/Music/mesh-track-grading/pairs_vllm/*.json` — 10450 per-pair JSON judgments
   (cumulative round 4 + round 5; not committed, regenerable in 30 min)
 
 ## Open questions for round 6

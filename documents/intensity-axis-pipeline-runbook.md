@@ -26,15 +26,15 @@ vs the held-out 47 hand-anchors.
        │ 0. Prerequisites: vllm env + Qwen3-Omni weights + DB   │
        └─────────────┬──────────────────────────────────────────┘
                      ▼
-   1. dump_track_list                  → /tmp/track-grading/_track-list.csv
+   1. dump_track_list                  → /home/data01/Music/mesh-track-grading/_track-list.csv
                      ▼
-   2. plan_pairs_v2.py                 → /tmp/track-grading/round5_plan.csv
+   2. plan_pairs_v2.py                 → /home/data01/Music/mesh-track-grading/round5_plan.csv
        (community detection +
         active-learning queue)
                      ▼
    3. serve_qwen3_omni.sh              → vLLM @ localhost:8000 (long-running)
                      ▼
-   4. judge_pairs_vllm.py              → /tmp/track-grading/pairs_vllm/*.json
+   4. judge_pairs_vllm.py              → /home/data01/Music/mesh-track-grading/pairs_vllm/*.json
        --plan-file ...                   (5000-10000 pair judgments)
                      ▼
    5. build_bt_priors.py               → documents/axis-eval-results/
@@ -47,7 +47,7 @@ vs the held-out 47 hand-anchors.
        documents/axis-eval-results/        variants vs the new priors
        llm-pair-priors.txt
                      ▼
-   8. dump_embeddings.py               → /tmp/track-grading/embeddings.npz
+   8. dump_embeddings.py               → /home/data01/Music/mesh-track-grading/embeddings.npz
                      ▼
    9. train_head_r6.py                 → V14_mlp_head_r6.csv,
        (5-fold CV + final retrain)       V15_linear_probe_r6.csv,
@@ -121,14 +121,14 @@ PY=~/.cache/mesh-spike/vllm-env/bin/python
 cargo build --release -p mesh-cue --bin dump_track_list
 ./target/release/dump_track_list \
     --collection ~/Music/mesh-collection \
-    --out /tmp/track-grading/_track-list.csv
+    --out /home/data01/Music/mesh-track-grading/_track-list.csv
 
 # 2. Generate pair plan (community detection + active-learning queue).
 #    First run: omit --bt-priors so it falls back to BT=5.0 for everyone.
 $PY spike/track-grading/plan_pairs_v2.py \
     --features documents/axis-eval-results/V11_neuro_dnb_tuned.PRE-V15.json \
-    --bt-priors /tmp/track-grading/empty.txt   # OK if missing — handled
-# ↑ outputs /tmp/track-grading/round5_plan.csv
+    --bt-priors /home/data01/Music/mesh-track-grading/empty.txt   # OK if missing — handled
+# ↑ outputs /home/data01/Music/mesh-track-grading/round5_plan.csv
 
 # 3. Start vLLM server (long-running; leave in another terminal).
 nohup bash spike/track-grading/serve_qwen3_omni.sh > /tmp/vllm-serve.log 2>&1 &
@@ -136,14 +136,14 @@ nohup bash spike/track-grading/serve_qwen3_omni.sh > /tmp/vllm-serve.log 2>&1 &
 
 # 4. Run pairwise grader (8 parallel workers, ~7 pairs/sec).
 $PY spike/track-grading/judge_pairs_vllm.py \
-    --plan-file /tmp/track-grading/round5_plan.csv \
+    --plan-file /home/data01/Music/mesh-track-grading/round5_plan.csv \
     --workers 8
-# ↑ writes /tmp/track-grading/pairs_vllm/<a>_vs_<b>.json (per-pair, resumable)
+# ↑ writes /home/data01/Music/mesh-track-grading/pairs_vllm/<a>_vs_<b>.json (per-pair, resumable)
 
 # 5. Build BT priors (Hunter MM with Gamma(2,1) Bayesian smoothing).
 $PY spike/track-grading/build_bt_priors.py \
-    --pairs-dir /tmp/track-grading/pairs_vllm \
-    --meta /tmp/track-grading/_track-list.csv \
+    --pairs-dir /home/data01/Music/mesh-track-grading/pairs_vllm \
+    --meta /home/data01/Music/mesh-track-grading/_track-list.csv \
     --out-prefix documents/axis-eval-results/llm-pair-priors-rN
 # ↑ writes llm-pair-priors-rN.{txt,csv}
 
@@ -159,13 +159,13 @@ $PY scripts/compare-variants.py \
 
 # 8. Dump 512-d embeddings for the tracks with BT priors.
 $PY spike/track-grading/dump_embeddings.py
-# ↑ writes /tmp/track-grading/embeddings.npz
+# ↑ writes /home/data01/Music/mesh-track-grading/embeddings.npz
 
 # 9. Train MLP + linear-probe heads with 5-fold CV.
 $PY spike/track-grading/train_head_r6.py \
     --priors documents/axis-eval-results/llm-pair-priors-rN.txt
 # ↑ writes V14_mlp_head_rN.csv (MLP) + V15_linear_probe_rN.csv (linear)
-#   + /tmp/track-grading/round6_metrics.json (CV scores)
+#   + /home/data01/Music/mesh-track-grading/round6_metrics.json (CV scores)
 
 # 10. Export the linear probe to a polar-format JSON the runtime accepts.
 $PY spike/track-grading/export_axis_json.py
@@ -250,20 +250,20 @@ gating now requires Premium + ~24h propagation, see "API choices" below).
 ### Pipeline
 
 ```
-   1. scrape_everynoise.py            → /tmp/track-grading/everynoise_genres.json
+   1. scrape_everynoise.py            → /home/data01/Music/mesh-track-grading/everynoise_genres.json
                                          (6291 genres × {playlist_id, preview_url,
                                           example_track, atlas position})
               ▼
-   2. categorize_genres.py            → /tmp/track-grading/everynoise_dj_genres.json
+   2. categorize_genres.py            → /home/data01/Music/mesh-track-grading/everynoise_dj_genres.json
                                          HARD_BLOCK > INCLUDE > SOFT_BLOCK rule;
                                          result: 2116 INCLUDE / 1920 BLOCK / 2255 NEUTRAL
               ▼
-   3. fetch_deezer_tracks.py          → /tmp/track-grading/deezer/corpus_tracks.json
+   3. fetch_deezer_tracks.py          → /home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json
                                          per seed: search → /artist/{id}/radio →
                                          10 tracks (1 seed + 9 radio); cached per
                                          seed for resume; rate-gated 10 req/s
               ▼
-   4. download_previews.py            → /tmp/track-grading/audio/dz_<id>.mp3
+   4. download_previews.py            → /home/data01/Music/mesh-track-grading/audio/dz_<id>.mp3
                                          32 parallel HTTP workers (CDN, separate
                                          from API quota); ~10 GB total
               ▼
@@ -392,3 +392,329 @@ mesh-cue picks up the change on next launch.
   command sequence + the file map. The runbook should always reflect
   the *current* working pipeline, not the historical one (rounds are
   for history).
+
+---
+
+## Round 7.6 / V18 operator runbook
+
+Round 7.6 is the multi-source LLM-jury intensity pipeline. Captions ←
+Music Flamingo (audio→text). Intensity ← two text LLMs (local Mistral +
+remote Spark2 Nemotron) on a fine 0–19 (20-bucket) scale. Multi-source
+Dawid-Skene EM gives `consensus_intensity ∈ [0,1]` per track. A teacher
+MLP (audio + caption + struct + r7.5 features → intensity + 16 axes)
+distils to a 512-d student probe (audio-only, ships in V18.json).
+
+`serve_text_llm.sh` is intentionally model-agnostic — caller picks the
+model via `TEXT_LLM_MODEL` (no quietly-wrong default).
+
+### Services in scope (RTX 5090 Mobile, 24 GB)
+
+| Service | URL | Model | Notes |
+|---|---|---|---|
+| Music Flamingo (caption gen) | `:8001` | `nvidia/audio-flamingo-3` | Optional once captions are cached. ~14 GB bf16. |
+| Local text LLM (juror A) | `:8002` | `gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ` | True AWQ-Marlin, text-only, no Pixtral. ~14 GB. |
+| Remote text LLM (juror B) | `172.16.54.147:8000` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` | Spark2; remote, no local GPU cost. |
+
+### Start
+
+```bash
+# 0. Stop any GPU squatter (e.g. systemd llama-server) before vLLM:
+systemctl stop llama-server-qwen36.service        # if it auto-respawns: --user mask first
+
+# 1. Local Mistral juror (foreground or & ; logs to file).
+TEXT_LLM_MODEL="gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ" \
+  bash spike/track-grading/serve_text_llm.sh \
+  > /home/data01/Music/mesh-track-grading/logs/vllm_mistral.log 2>&1 &
+
+# 2. (Optional) MF only when re-extracting captions; skip otherwise.
+bash spike/track-grading/serve_music_flamingo.sh \
+  > /home/data01/Music/mesh-track-grading/logs/vllm_mf.log 2>&1 &
+
+# 3. Smoke pipeline (200 tracks, ~5 min total once services are up).
+TEXT_LLM_MODEL="gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ" \
+TEXT_LLM_TAG=local \
+  bash spike/track-grading/run_round7_6_pipeline.sh caption-rate
+TEXT_LLM_URL="http://172.16.54.147:8000/v1/chat/completions" \
+TEXT_LLM_MODEL="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4" \
+TEXT_LLM_TAG=remote_nemotron \
+  bash spike/track-grading/run_round7_6_pipeline.sh caption-rate
+bash spike/track-grading/run_round7_6_pipeline.sh v18-smoke
+```
+
+`v18-smoke` runs S2→S13 end-to-end and writes everything under
+`*_smoke.*` paths. Drop `_smoke` and switch to `v18-train` for production.
+
+### Monitor
+
+```bash
+# vLLM serve health + GPU
+curl -sf http://localhost:8002/health && echo READY
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv | tail -1
+
+# Live log tail (filtered so you don't drown)
+tail -F /home/data01/Music/mesh-track-grading/logs/vllm_mistral.log \
+  | grep -E "Application startup|Engine.*ready|ERROR|Failed core proc|out of memory"
+
+# Caption-rate progress (count vs corpus)
+ls /home/data01/Music/mesh-track-grading/round7_6_captions/music_flamingo/ | wc -l
+```
+
+### Stop
+
+```bash
+# vLLM (local) + any background spike script:
+pkill -f vllm.entrypoints.openai
+pkill -f caption_intensity_rating.py
+
+# If GPU still busy after vLLM teardown, find culprit:
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+### Validate after a smoke run
+
+```bash
+# Each stage's NPZ shape, range, distinct, raw-response sample
+python3 -c '
+import numpy as np
+d = np.load("/home/data01/Music/mesh-track-grading/round7_6_caption_intensity_smoke_local.npz", allow_pickle=True)
+print(f"N={len(d[\"track_ids\"])}  score=[{d[\"score\"].min():.3f},{d[\"score\"].max():.3f}]  "
+      f"std={d[\"score\"].std():.3f}  distinct={len(np.unique(np.round(d[\"score\"],4)))}")
+print("raw[:6]:", d["raw_first_token"][:6].tolist())
+'
+# (replace path to validate _remote_nemotron, consensus, teacher_metrics, etc.)
+```
+
+### Key findings logged this round
+
+- **20-bucket scale wins.** Held-out CV ridge regression
+  (audio_emb → score, 5-fold × 20 seeds, N=118) shows R² saturates at
+  0.39 between b20 and b50; b5/b10 lose ~0.08 R² (clearly too coarse);
+  b100 anchors to multiples of 5 and drops slightly. Locked in
+  `caption_intensity_rating.py` as the production default. See
+  `bench_resolution.py`.
+- **`gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ` is the working
+  upload.** True AWQ-GEMM (vLLM auto-promotes to Marlin on SM120),
+  text-only (no Pixtral processor), ~14 GB. Other public AWQ variants
+  of this model are mislabelled `compressed-tensors` and produce
+  gibberish (e.g. `jeffcookio/...-awq-sym`).
+- **Cross-juror agreement ρ(local Mistral, remote Nemotron) = 0.944** on
+  200 captions; mean delta 5.6%, max 24%. Different anchoring patterns
+  (Mistral uses 12/14/15/17, Nemotron clusters at 13) — that's the
+  decorrelation we want.
+- **EM σ² collapse on smoke corpus.** With only 200/15314 tracks
+  captioned, the multi-source EM gives all weight to the highest-
+  reliability source (local Mistral, σ²≈0). Re-validate on a full-
+  corpus run before drawing conclusions about juror weighting.
+- **NixOS runtime quirks (resolved, kept here so future-you doesn't
+  rediscover):**
+  - vLLM 0.20.1 wheels bundle `triton/backends/nvidia/bin/{ptxas,
+    ptxas-blackwell, nvdisasm, cuobjdump}` linked against generic
+    glibc; won't run on NixOS without `nix-ld`. **Fix:** patchelf
+    `--set-interpreter` to a `/nix/store/*glibc-2.4*/lib/ld-linux-x86-64.so.2`,
+    `--set-rpath` to the matching glibc/lib. One-shot per venv;
+    redo on every fresh `pip install`.
+  - vLLM on Blackwell SM120 needs `--enforce-eager` because
+    `torch.compile` + Triton can't always resolve `ptxas-blackwell`
+    even after the patchelf fix. Eager mode skips the whole inductor
+    path. Negligible perf cost for 1–2 token decode.
+  - When invoking python tools *outside* the serve script, prepend
+    `LD_LIBRARY_PATH="$(ls /nix/store/*zlib-1.3*/lib/libz.so.1 | sort -V | tail -1 | xargs dirname):$LD_LIBRARY_PATH"`
+    or numpy's C-extensions can't find `libz.so.1`.
+- **`caption_intensity_rating.py` atomic write was broken (now fixed).**
+  `np.savez(tmp_path)` auto-appended `.npz` so `os.replace` failed.
+  Fix uses a file handle. Every prior run silently lost the rename —
+  recoverable from `*.npz.tmp.npz` files in the directory if you find
+  one.
+- **Music Flamingo serve needs `--skip-mm-profiling` on vLLM 0.20.1.**
+  Without it, startup raises:
+  `KeyError: 'MusicFlamingoProcessor output must include rote_timestamps.'`
+  Cause: vLLM 0.20.1's MM-profiling pass calls the HF processor on dummy
+  audio at startup and validates `rote_timestamps` in the output dict.
+  transformers 5.7.0's processor doesn't emit that key on dummy runs,
+  so the check fails before inference ever starts. Real audio requests
+  go through a different code path and work fine. The flag is in
+  `serve_music_flamingo.sh`; if the script ever drops it again, look
+  here. NOT a transformers-version problem; do NOT install the
+  lashahub fork.
+- **Caption corpus is currently 200 tracks** (`round7_6_captions/
+  music_flamingo/*.json`). Audio embeddings (`embeddings/
+  corpus_muq_mulan.npz`) cover 15314 tracks, 118 of which are
+  captioned. The V18 teacher trains on that 118-track intersection
+  (93 train / 16 val / 9 test, artist-stratified). Production needs a
+  much larger caption sweep before V18 is meaningful at scale.
+
+### V18 smoke artefacts (this round, on disk)
+
+```
+/home/data01/Music/mesh-track-grading/
+  round7_6_caption_intensity_smoke_local.npz                # juror A (Mistral)
+  round7_6_caption_intensity_smoke_remote_nemotron.npz      # juror B (Nemotron)
+  round7_6_consensus_smoke.npz                              # multi-source EM
+  round7_6_teacher_smoke.pt                                 # teacher MLP
+  round7_6_teacher_preds_smoke.npz
+  round7_6_teacher_metrics_smoke.json                       # test_pa 0.6389, ρ +0.43
+  round7_6_student_smoke.pt
+  round7_6_student_metrics_smoke.json                       # student PA 0.28 (undertrained @20 ep)
+  round7_6_eval_report_smoke.md
+  round7_6_eval_smoke.json                                  # K-means K=5 themes
+models/aggression-axes/V18_SMOKE_TEST.json                  # exported V18 (no-deploy)
+```
+
+---
+
+## Round 7.6 / V18 — full-corpus production run (15,314 tracks)
+
+The smoke covers 200 tracks. Production targets the entire 15,314-track
+r7.5 corpus. Wall time is dominated by **Music Flamingo caption
+generation (~7-8 hr)**; the rating + downstream (~1.5 hr combined) can
+overlap if you rate against the remote Spark2 Nemotron while MF is
+captioning. Local Mistral can't run concurrently with MF on the 24 GB
+RTX 5090 (each is ~14 GB) — defer it to after MF stops.
+
+### Phase 0 — pre-flight (once)
+
+```bash
+# Free GPU (kill anything that auto-respawns first):
+sudo systemctl stop llama-server-qwen36.service
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+
+# Confirm the remote Spark2 juror is reachable:
+curl -sf -m 5 http://172.16.54.147:8000/v1/models \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
+
+# Make a logs dir if absent:
+mkdir -p /home/data01/Music/mesh-track-grading/logs
+```
+
+### Phase 1 — Music Flamingo caption sweep (~7-8 hr)
+
+```bash
+# Start MF (port 8001).
+bash spike/track-grading/serve_music_flamingo.sh \
+  > /home/data01/Music/mesh-track-grading/logs/vllm_mf.log 2>&1 &
+# Wait for /health to return 200 (~3 min cold start).
+until curl -sf http://localhost:8001/health -o /dev/null; do sleep 10; done; echo "MF READY"
+
+# In a SEPARATE terminal — full caption sweep + auto-embed + struct tags.
+# Resumable: re-run after a crash and it'll skip captions that already exist.
+bash spike/track-grading/run_round7_6_pipeline.sh caption-full \
+  2>&1 | tee /home/data01/Music/mesh-track-grading/logs/caption_full.log
+```
+
+Expect ~0.6 captions/sec with `--max-tokens 192`. Monitor:
+
+```bash
+# Caption count progress (should rise toward 15,314):
+ls /home/data01/Music/mesh-track-grading/round7_6_captions/music_flamingo/ | wc -l
+# Live errors:
+tail -F /home/data01/Music/mesh-track-grading/logs/vllm_mf.log \
+  | grep -E "ERROR|Failed|out of memory"
+```
+
+### Phase 2 — Concurrent remote rating (overlaps Phase 1, ~46 min wall)
+
+The remote juror runs on Spark2; it costs nothing locally and processes
+captions in parallel with MF generating new ones. Run this in a third
+terminal once Phase 1 has dropped at least a few hundred captions to
+disk:
+
+```bash
+TEXT_LLM_URL="http://172.16.54.147:8000/v1/chat/completions" \
+TEXT_LLM_MODEL="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4" \
+TEXT_LLM_TAG=remote_nemotron \
+TEXT_LLM_NO_THINK=1 \
+POLL_SECS=300 STABLE_SECS=1800 \
+  bash spike/track-grading/run_round7_6_pipeline.sh caption-rate-streaming \
+  2>&1 | tee /home/data01/Music/mesh-track-grading/logs/rate_remote.log
+```
+
+The streaming wrapper polls every 5 min; it exits when no new captions
+appear for 30 min (so it lasts about as long as Phase 1). Output:
+`round7_6_caption_intensity_remote_nemotron.npz` (resume-safe).
+
+### Phase 3 — stop MF, start local Mistral, rate (~46 min)
+
+After Phase 1 ends (caption count plateaus at 15,314 and the
+`caption-full` command exits):
+
+```bash
+pkill -f "vllm.entrypoints.openai.*8001"
+nvidia-smi --query-gpu=memory.used --format=csv | tail -1   # confirm free
+
+TEXT_LLM_MODEL="gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ" \
+  bash spike/track-grading/serve_text_llm.sh \
+  > /home/data01/Music/mesh-track-grading/logs/vllm_mistral.log 2>&1 &
+until curl -sf http://localhost:8002/health -o /dev/null; do sleep 10; done; echo "Mistral READY"
+
+TEXT_LLM_TAG=local_mistral \
+  bash spike/track-grading/run_round7_6_pipeline.sh caption-rate \
+  2>&1 | tee /home/data01/Music/mesh-track-grading/logs/rate_local.log
+```
+
+Output: `round7_6_caption_intensity_local_mistral.npz`.
+
+### Phase 4 — V18 train end-to-end (~30 min)
+
+Builds full-corpus consensus, trains teacher, distils student, runs
+held-out eval, exports V18 JSON. The orchestrator's `v18-train` stage
+auto-discovers every `round7_6_caption_intensity*.npz` (excluding the
+`_smoke` variants) and registers them as jury sources:
+
+```bash
+bash spike/track-grading/run_round7_6_pipeline.sh v18-train \
+  2>&1 | tee /home/data01/Music/mesh-track-grading/logs/v18_train.log
+```
+
+Final artefact: `models/aggression-axes/V18_round7_6_consensus_distilled.json`
+(no-deploy — copy over `models/muq-mulan-aggression-axis.json` only after
+reviewing `round7_6_eval_report.md`).
+
+### Stop / interrupt safety
+
+- Every long stage is **resume-safe**: `caption-full` skips captions
+  already on disk; `caption-rate-streaming` skips track_ids already in
+  the output NPZ. Crash and re-run — no work lost.
+- Kill switches:
+  ```bash
+  pkill -f vllm.entrypoints.openai           # any vLLM serve
+  pkill -f run_judge_caption.py              # MF caption gen
+  pkill -f caption_intensity_rating.py       # rater (any juror)
+  ```
+- If VRAM stays busy after kill, find the squatter:
+  `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`
+
+### Wall-time budget (one box, no parallelism with Phase 1)
+
+| Phase | Duration | Concurrent? |
+|---|---|---|
+| 1 — MF caption sweep | ~7-8 hr | yes (1 + 2 overlap) |
+| 2 — remote Nemotron rating | ~46 min (or as long as Phase 1) | yes |
+| 3 — local Mistral rating | ~46 min | sequential (after Phase 1) |
+| 4 — V18 train + distill + eval + export | ~30 min | sequential |
+| **Total** | **~9-10 hr** | (Phase 1 dominates) |
+
+### Validation pass after the production run
+
+```bash
+# Each juror's full output:
+python3 -c '
+import numpy as np
+for tag in ("local_mistral","remote_nemotron"):
+  d = np.load(f"/home/data01/Music/mesh-track-grading/round7_6_caption_intensity_{tag}.npz", allow_pickle=True)
+  print(f"{tag:>18s}: N={len(d[\"track_ids\"])}  range=[{d[\"score\"].min():.3f},{d[\"score\"].max():.3f}]  std={d[\"score\"].std():.3f}  distinct={len(np.unique(np.round(d[\"score\"],4)))}")
+'
+
+# Consensus + EM weighting (the σ² collapse caveat from smoke should
+# rebalance here — both jurors at full coverage):
+python3 -c '
+import numpy as np
+d = np.load("/home/data01/Music/mesh-track-grading/round7_6_consensus.npz", allow_pickle=True)
+print("sources:", [str(s) for s in d["source_names"]])
+print("σ²:     ", [f"{x:.4f}" for x in d["source_sigma2"]])
+print("rel:    ", [f"{x:.2e}" for x in d["source_reliabilities"]])
+'
+
+# Final teacher + student metrics:
+cat /home/data01/Music/mesh-track-grading/round7_6_teacher_metrics.json | python3 -m json.tool | head -20
+cat /home/data01/Music/mesh-track-grading/round7_6_eval_report.md | head -40
+```

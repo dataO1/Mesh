@@ -31,7 +31,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-EMB_PATH = Path("/tmp/track-grading/embeddings.npz")
+EMB_PATH = Path("/home/data01/Music/mesh-track-grading/embeddings.npz")
 PRIORS_PATH = Path("documents/axis-eval-results/llm-pair-priors-r5.txt")
 V11_PATH = Path("models/muq-mulan-aggression-axis.json")  # current default, source of sub_axes
 OUT_PATH = Path("models/aggression-axes/V15_linear_probe_r6.json")

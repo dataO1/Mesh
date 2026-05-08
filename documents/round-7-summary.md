@@ -116,9 +116,9 @@ Three concrete next moves, ordered by ROI:
 
 - This summary: `documents/round-7-summary.md`
 - Full round-7 doc with method + results: `documents/aggression-axis-eval-round-7.md`
-- Per-axis top/bottom 20 + correlation matrix: `/tmp/track-grading/round7_interpretation.md`
-- V15 vs V16 + per-axis projection on your library: `/tmp/track-grading/round7_cross_library.md`
+- Per-axis top/bottom 20 + correlation matrix: `/home/data01/Music/mesh-track-grading/round7_interpretation.md`
+- V15 vs V16 + per-axis projection on your library: `/home/data01/Music/mesh-track-grading/round7_cross_library.md`
 - Deployable axis: `models/aggression-axes/V16_round7_blend.json`
 - All scripts: `spike/track-grading/{embed_corpus_mulan,run_per_axis_tournaments,build_bt_priors_r7,train_axes_r7,joint_blend_r7,interpret_axes_r7,cross_library_r7,compare_v15_v16,export_axis_r7,run_r7_step}.{py,sh}`
-- Logs: `/tmp/track-grading/logs/{embed,vllm,tournament}.log`
-- Raw artefacts (npz/json reusable for future blends): `/tmp/track-grading/`
+- Logs: `/home/data01/Music/mesh-track-grading/logs/{embed,vllm,tournament}.log`
+- Raw artefacts (npz/json reusable for future blends): `/home/data01/Music/mesh-track-grading/`

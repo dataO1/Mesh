@@ -40,9 +40,9 @@ $RUN interpret_axes_r7_5.py
 
 echo "=== 6/8 cross_library_r7.py (re-purposed for r7.5 inputs) ==="
 $RUN cross_library_r7.py \
-  --axes-file /tmp/track-grading/round7_5_axes.npz \
-  --blend-file /tmp/track-grading/round7_5_blend.npz \
-  --out /tmp/track-grading/round7_5_cross_library.md
+  --axes-file /home/data01/Music/mesh-track-grading/round7_5_axes.npz \
+  --blend-file /home/data01/Music/mesh-track-grading/round7_5_blend.npz \
+  --out /home/data01/Music/mesh-track-grading/round7_5_cross_library.md
 
 echo "=== 7/8 export_axis_r7_5.py (V17 JSON, NOT auto-deployed) ==="
 $RUN export_axis_r7_5.py --no-deploy
@@ -53,14 +53,14 @@ $RUN compare_v15_v16_v17.py
 echo
 echo "=== round-7.5 done ==="
 echo "Outputs:"
-echo "  /tmp/track-grading/round7_5_priors.npz"
-echo "  /tmp/track-grading/round7_5_tags.npz"
-echo "  /tmp/track-grading/round7_5_axes.npz"
-echo "  /tmp/track-grading/round7_5_blend.npz"
-echo "  /tmp/track-grading/round7_5_predictions.csv"
-echo "  /tmp/track-grading/round7_5_train_metrics.json"
-echo "  /tmp/track-grading/round7_5_interpretation.md"
-echo "  /tmp/track-grading/round7_5_cross_library.md"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_priors.npz"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_tags.npz"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_axes.npz"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_blend.npz"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_predictions.csv"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_train_metrics.json"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_interpretation.md"
+echo "  /home/data01/Music/mesh-track-grading/round7_5_cross_library.md"
 echo "  models/aggression-axes/V17_round7_5_polar_blend.json"
 echo
 echo "V15 stays deployed at <collection>/muq-mulan-aggression-axis.json."

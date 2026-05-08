@@ -357,3 +357,233 @@ Top-quality realistic path: **MuQ-MuLan as primary similarity + MULE as
 HNSW-indexed fallback for the long tail + LAION-CLAP for text query.**
 Two-stage retrieval (cheap MULE recall → MuQ-MuLan rerank top-K) avoids
 running the 700M model over the full library on every query.
+
+---
+
+# Round-7.6 V18 — General-purpose intensity axis (caption-as-feature + judge-jury distill)
+
+**Single source of truth**: `documents/round-7-6-pipeline-spec.md` (the spec
+document the reviewer grades the implementation against). The summary below is
+a working checklist; the spec is the contract.
+
+**Goal**: a CPU-deployable linear probe over MuQ-MuLan (or future MAEST) that
+produces a single scalar intensity score, generalizing across DJ genres + adjacent
+(electronic/dance/DnB/techno/house/rock/ambient). NOT user-library-fitted —
+that's an optional follow-up tool for users with NVIDIA GPUs (see "Round-7.7
+optional user-fit pipeline" below).
+
+Methodology grounded in established research patterns (Verga et al. 2024 PoLL,
+Lopez-Paz et al. 2016 LUPI distillation, Romero et al. 2015 FitNets, Ratner et
+al. 2017 Snorkel, Hinton 2015 KD). See Obsidian
+"Mesh — Caption-as-Feature Methodology" for the full design + citations, and
+`documents/round-7-6-pipeline-spec.md` for the per-stage spec + grading rubric.
+
+## Pipeline (V18-fresh, NOT user-fit)
+
+1. **Caption sweep** (~8 hr at 0.5 c/s on RTX 5090 Mobile bf16)
+   - All 15314 Deezer tracks → MF rich captions, T=0.7 top_p=0.9 max_tokens=256
+   - Atomic JSON cache, resume-safe
+   - Outputs: `/home/data01/Music/mesh-track-grading/round7_6_captions/music_flamingo/`
+
+2. **Per-track feature extraction** (~10 min total, CPU)
+   - bge-base-en-v1.5 sentence embedding over caption → 768d
+   - Regex/keyword extraction of structured tags (instrumentation, mood, vocal type, ~50 multi-hot dims)
+
+3. **Build consensus intensity label** via heterogeneous LLM-judge jury (4 sources)
+   - r7.5 BT priors blended into 1d intensity (existing V17b path)
+   - MF Likert 16-axis (existing 200-track smoke; extend cheaply if needed; ~3 hr if full)
+   - MF caption → text-LLM intensity rating (1-5 with logprobs; small text LLM swap on vLLM, ~30 min for full corpus)
+   - r7.5 mined-tag `aggressive_overall` evidence (already on disk, free)
+   - **Aggregate** via Snorkel / Dawid-Skene (learned per-source reliability), NOT fixed weighted-mean
+   - **Rank-normalize** (beta-CDF) per source before aggregation; z-score breaks on Likert ceiling/floor
+   - **Note**: a 5th proposed source — hand-crafted `source_category`-based intensity prior — was REMOVED per G7. Domain-expert audit (DnB slice) confirmed everynoise tags are unreliable on this corpus. `source_category` is never read as a label, feature, weight, or stratification key.
+
+4. **Train teacher** (privileged information)
+   - Inputs: `[MuQ-MuLan(512), caption_emb(768), structured_tags(~50), r7.5_tags(13)]` = ~1340d
+   - **Drop `genre_OH` as a teacher feature** — would cause label leakage (genre is in the consensus label too)
+   - Outputs: 16 axis heads + 1 intensity head (+ multi-task aux)
+   - Multi-task loss against per-axis r7.5 BT priors + consensus intensity
+
+5. **Distill student** (deployment shape)
+   - Inputs: MuQ-MuLan(512) only — matches V15/V17b shape, CPU-cheap
+   - Losses: output-MSE + **penultimate-layer feature MSE (FitNets)** + **soft-target T-scaled (Hinton)** + label smoothing
+   - The student must transfer caption/tag knowledge through MuQ-MuLan space
+   - This is the LUPI pattern (Vapnik 2009); empirically retains 70-90% of teacher when teacher's privileged features are correlated with student inputs (captions of music are largely derivable from audio, so gap should be small)
+
+6. **Artist-stratified split**
+   - By **artist only** — test-set artists never appear in train or val (MARBLE / GTZAN-vs-FMA artist-leakage pitfall)
+   - Genre stratification intentionally NOT enforced — `source_category` is untrusted, and forcing balance via untrusted tags would re-inject the noise we just removed
+   - 80% train / 10% val / 10% test (track-count balanced)
+   - Test set never touched until final eval
+
+7. **Held-out eval**
+   - PA on the held-out test set (primary metric)
+   - **Per-cluster** intensity histogram sanity (caption-emb K-means clusters, NOT source_category): top-tier clusters dominated by industrial / hardcore / metalstep > mid-tier clusters > bottom-tier dominated by ambient / acoustic
+   - V18-fresh vs V15 vs V17b on held-out (all three projected from MuQ-MuLan)
+
+## Compute budget (~10 hr, mostly caption sweep)
+
+| Stage | Time |
+|---|---:|
+| Caption sweep (15314 × 256 tok @ 0.5 c/s) | ~8 hr |
+| Caption embedding (bge-base CPU) | 5 min |
+| Caption text-LLM intensity rating | 30 min |
+| Caption structured-tag extraction | 5 min |
+| Rank-normalize + Dawid-Skene aggregation (4 sources) | 10 min |
+| Artist-stratified split | 5 min |
+| Teacher training | 30 min |
+| Student distillation | 30 min |
+| Held-out eval + sanity | 10 min |
+
+## Status
+
+- [x] Caption sweep code wired up (`spike/track-grading/run_judge_caption.py`)
+- [x] Caption embedder wired up (`spike/track-grading/embed_captions.py`)
+- [x] Phase-1 smoke transfer test wired up (`train_probe_caption_smoke.py`)
+- [x] Pipeline orchestrator (`run_round7_6_pipeline.sh caption-smoke|caption-full`)
+- [x] Music Flamingo serve fixed (vLLM PR #39011 patched in)
+- [ ] Phase-1 caption smoke (200 tracks, ~10 min wall)
+- [ ] Caption text-LLM intensity rating module
+- [ ] Snorkel / Dawid-Skene label aggregation script
+- [ ] Stratified (genre × artist) split logic in `train_axes_r7_5.py`
+- [ ] Teacher-student distillation training script (FitNets + Hinton soft-target)
+- [ ] Held-out eval + per-genre histogram script
+- [ ] V18 export
+- [ ] Comparison harness V15 vs V17b vs V18 on held-out
+
+## Optional follow-ups (not blocking V18 release)
+
+- [ ] **DEAM arousal external validation** — DEAM dataset has 1802 song excerpts
+  with human-labeled valence/arousal. Compute V18 scores on DEAM, correlate
+  against arousal. Independent calibration check. ~1-2 hr.
+- [ ] **Human-pair anchor** — collect 200-500 pairwise human judgments on
+  held-out test tracks. Calibrate V18 final scalar via isotonic regression
+  against the human anchor. ~1 day.
+- [ ] **Ablation studies**: V18 with vs without caption_emb in teacher; with vs
+  without each label source. Quantifies what's pulling weight.
+
+## Round-7.7 (optional, future): per-user fitting
+
+Separate optional pipeline for users with NVIDIA GPUs who want their library
+calibrated to their personal sense of intensity. Takes V18 + a few user-rated
+anchor tracks → fine-tunes the linear vector with a small LR + L2-anchor on V18.
+Single-script tool, runs as a one-time import operation. Ships after V18 has
+proven itself general-purpose.
+
+## Deprecated paths (kept for reproducibility, do not run)
+
+- **K=4 N-way ranking with Music Flamingo**: architecturally infeasible; MF
+  caps at audio=1 per prompt. Pipeline cmd `smoke|full|post` exits with
+  deprecation warning.
+- **Pointwise 0–100 (raw-int) rating with MF**: collapses on subjective axes
+  (3 of 16 axes returned exactly 50 for every track in the 200-track smoke).
+  MF was never trained on scalar rating; "50" is the modal-token attractor
+  under greedy decoding. Cmd `pointwise-smoke --mode raw-int`, deprecated.
+- **Pointwise 5-bucket Likert with logprob recovery**: works (every axis
+  becomes continuous, see Obsidian "Music Flamingo Pointwise Findings"), but
+  caps at narrow stds on subjective axes. Replaced by caption-as-feature.
+  Cmd `pointwise-smoke|pointwise-full --mode likert`, deprecated but
+  reproducible.
+- **User-library calibration head**: was an early V18 design. Dropped per
+  goal (general-purpose, not user-fit). Moved to optional Round-7.7.
+
+---
+
+# Music Flamingo as a music-understanding asset (NEW — 2026-05-07)
+
+NVIDIA Music Flamingo (`nvidia/music-flamingo-2601-hf`, 7B audio-LM, deployed
+local at `~/.cache/mesh-spike/vllm-env`, port 8001) produces extraordinarily
+rich, accurate captions on the Mesh corpus. Discovered while building the
+round-7.6 caption-as-feature path for the intensity axis; the captions
+themselves are valuable far beyond that one experiment.
+
+**On 30-second clips MF correctly identifies:** specific (sub-)genre,
+instrumentation, mix/production style, vocal characteristics, structural
+events. See `documents/aggression-axis-caption-examples.md` (or generate fresh
+via `bash spike/track-grading/run_round7_6_pipeline.sh caption-smoke`).
+
+### Example captions (from 10-track smoke)
+
+> **Vladimir Dubyshkin — Belissimo** (Industrial Techno)
+> "This track is a high-energy Industrial Techno piece that fuses the relentless
+> drive of classic techno four-on-the-floor rhythms with the abrasive, machine-like
+> textures of industrial music. The production is built around a pounding kick
+> drum that thumps on every quarter-note, paired with a heavily distorted synth
+> bass that anchors the groove. Sharp, clipped electronic percussion — crisp
+> hi-hats, metallic clicks, and glitch-y percussive hits — adds rhythmic intricacy,
+> while a repetitive, heavily processed synth motif cuts through the mix with a
+> gritty, metallic timbre. The overall mix is raw and gritty, with aggressive
+> compression and a tight low-end..."
+
+> **Mall Grab — Can't Get You Outta My Mind** (Deep House)
+> "This track is a polished Deep House piece that leans toward a melodic, soulful
+> sub-genre, blending warm, atmospheric synth pads with a classic four-on-the-floor
+> groove. The production is high-fidelity and clean, featuring a wide stereo field
+> that lets the deep synth bass and crisp electronic drums sit firmly in the centre
+> while airy pads and subtle percussive textures expand outward. Vocals are
+> performed by a female mezzo-soprano with a smooth, slightly breathy timbre. The
+> delivery is melodic and soulful, treated with moderate reverb and delay..."
+
+> **Jack Rose — Sunflower River Blues** (Acoustic Fingerstyle Guitar)
+> "This track is an instrumental solo-guitar piece that blends Acoustic Fingerstyle
+> with Contemporary Classical Guitar aesthetics, creating a contemplative,
+> minimalist acoustic work. The sole voice is a nylon-string classical guitar,
+> recorded with a raw, intimate mic technique that captures the natural resonance
+> of the instrument. The mix is narrow and centred, placing the guitar
+> front-and-centre with minimal reverb, allowing subtle finger-noise and dynamic
+> nuance to be heard clearly..."
+
+> **Loscil — First Narrows** (Dark Ambient)
+> "This track is a Dark Ambient / Drone composition that blends deep, evolving
+> synth textures with a subtle, industrial-tinged sound design. The soundscape is
+> built from massive, sustained synth drones that dominate the low-mid range,
+> layered with shimmering, metallic timbres and occasional high-frequency glints.
+> Deep sub-bass frequencies underpin the whole piece, while sparse, processed
+> percussive clicks and metallic resonances add texture without establishing a
+> groove. The mix is highly polished, employing extensive reverb and delay to
+> create a cavernous, three-dimensional space..."
+
+(Caveat: MF *hallucinates* specific BPM, duration, and harmonic progressions —
+those numeric claims are training-data priors, not measurements. The
+descriptive vocabulary is the signal. Don't use the numeric claims as features.)
+
+### Use cases for Mesh (beyond round-7.6 intensity)
+
+- [ ] **Genre / sub-genre detection from captions** — regex/keyword extraction
+  covers the full everynoise hierarchy. Cleaner than the current `genre_seed`
+  field; can fill gaps where everynoise had no label. Validate against existing
+  tags on overlap, see if MF can fill the gaps elsewhere.
+- [ ] **Track-level tagging** — multi-label extraction of instrumentation, mood,
+  vocal type, mix descriptors. Surface in mesh-cue browser as filter chips.
+- [ ] **Suggestion-graph augmentation** — caption embedding cosine similarity
+  enters the suggestion graph as a new edge weight, complementary to MuQ-MuLan
+  similarity + key/BPM scoring. A/B vs current scoring on a manual test set.
+- [ ] **Semantic search / browse** — "find tracks that sound like dusty boom-bap
+  with female vocal", embedded via bge-base against caption_emb, retrieve by
+  cosine. Better than the current keyword search over genre/title.
+- [ ] **Auxiliary multi-task labels for the deployed axis** — train heads for
+  genre, mood, vocal-type. Even if not displayed, they regularize the shared
+  representation and help the deployed intensity probe.
+- [ ] **Sub-genre clustering** — cluster caption embeddings → discover natural
+  sub-genres in the user's library, beyond everynoise tags.
+- [ ] **DJ-aware playlist generation** — caption text is rich enough to drive an
+  LLM-based "build me a 90-min set: dark opener, peak at industrial techno around
+  60min, cool to ambient" workflow. Captions as the LLM's per-track context.
+- [ ] **Cache caption + caption_emb in `mesh-collection` DB** — `track.caption_text`
+  + `track.caption_emb` blob alongside ml_embeddings. Reusable across all features.
+
+### License caveat
+
+NVIDIA Music Flamingo is **CC-BY-NC-4.0 / NVIDIA OneWay Noncommercial Academic** —
+research and labels-only. For commercial Mesh deployment, distill caption-derived
+features into a permissive student model, or treat the captions as labels-time
+artifacts only (not shipped to users).
+
+### File map (where the captions live)
+
+- Captions: `/home/data01/Music/mesh-track-grading/round7_6_captions/music_flamingo/<track_id>.json`
+- 768d caption embeddings: `/home/data01/Music/mesh-track-grading/round7_6_caption_emb*.npz`
+- Generation script: `spike/track-grading/run_judge_caption.py`
+- Embedding script: `spike/track-grading/embed_captions.py`
+- Methodology note: `documents/` (this is a research/spike output; rolling
+  details live in the Obsidian "Mesh — Caption-as-Feature Methodology" note).

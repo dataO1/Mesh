@@ -11,8 +11,8 @@ future scraper that produces a similar manifest works without rewriting.
 Usage:
   ~/.cache/mesh-spike/vllm-env/bin/python spike/track-grading/download_previews.py
   ~/.cache/mesh-spike/vllm-env/bin/python spike/track-grading/download_previews.py \\
-    --manifest /tmp/track-grading/deezer/corpus_tracks.json \\
-    --out-dir /tmp/track-grading/audio --workers 16
+    --manifest /home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json \\
+    --out-dir /home/data01/Music/mesh-track-grading/audio --workers 16
 """
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ from pathlib import Path
 import requests
 
 
-DEFAULT_MANIFEST = Path("/tmp/track-grading/deezer/corpus_tracks.json")
-DEFAULT_OUT_DIR  = Path("/tmp/track-grading/audio")
+DEFAULT_MANIFEST = Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json")
+DEFAULT_OUT_DIR  = Path("/home/data01/Music/mesh-track-grading/audio")
 
 
 def parse_args():

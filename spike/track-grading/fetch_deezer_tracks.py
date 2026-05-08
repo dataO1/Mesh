@@ -52,8 +52,8 @@ from pathlib import Path
 import requests
 
 
-DEFAULT_INPUT = Path("/tmp/track-grading/everynoise_dj_genres.json")
-DEFAULT_OUT_DIR = Path("/tmp/track-grading/deezer")
+DEFAULT_INPUT = Path("/home/data01/Music/mesh-track-grading/everynoise_dj_genres.json")
+DEFAULT_OUT_DIR = Path("/home/data01/Music/mesh-track-grading/deezer")
 
 
 def parse_args():
@@ -238,16 +238,45 @@ def main() -> int:
     client = DeezerClient(rate_rps=args.rate_rps)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    n_done = n_skipped_cache = n_no_match = 0
+    n_done = n_skipped_cache = n_topped_up = n_no_match = 0
     n_records = 0
     start = time.time()
 
     for i, (cat, artist, title) in enumerate(seeds):
         seed_query = f"{artist} - {title}"
         cache = cache_path(args.out_dir, cat, artist, title)
+
+        # Resume / top-up policy:
+        #   - cache missing                      → fresh fetch (existing path)
+        #   - cache present + --force            → fresh fetch
+        #   - cache present + tracks >= target   → skip
+        #   - cache present + tracks <  target   → top up (NEW): keep existing
+        #     records, query artist_radio/artist_top for additional tracks
+        #     deduplicated against the existing IDs, append, save.
+        existing_records: list[dict] = []
+        existing_ids: set[int] = set()
+        was_no_match = False
         if cache.exists() and not args.force:
-            n_skipped_cache += 1
-            continue
+            try:
+                blob = json.loads(cache.read_text())
+            except Exception:
+                blob = {}
+            if blob.get("no_match"):
+                # Stale "no_match" markers stay no_match — re-search would
+                # almost certainly fail again; keeping cheap.
+                n_skipped_cache += 1
+                continue
+            if blob.get("error"):
+                # Errored seeds: treat as fresh fetch on retry.
+                pass
+            else:
+                existing_records = blob.get("tracks", []) or []
+                existing_ids = {int(r["deezer_track_id"]) for r in existing_records
+                                if r.get("deezer_track_id") is not None}
+                if len(existing_records) >= args.tracks_per_seed:
+                    n_skipped_cache += 1
+                    continue
+                # else: fall through to top-up
 
         try:
             seed = client.search_track(artist, title)
@@ -255,26 +284,32 @@ def main() -> int:
             print(f"  [{i+1}] search FAILED for {seed_query!r}: {e}",
                   file=sys.stderr)
             cache.write_text(json.dumps({"error": str(e), "seed": seed_query,
-                                          "tracks": []}))
+                                          "tracks": existing_records}))
             n_done += 1; continue
 
         if not seed:
-            cache.write_text(json.dumps({"no_match": True, "seed": seed_query,
-                                         "tracks": []}))
-            n_no_match += 1; n_done += 1; continue
+            # Only mark no_match on first attempt; if we already had records,
+            # keep them.
+            if not existing_records:
+                cache.write_text(json.dumps({"no_match": True, "seed": seed_query,
+                                             "tracks": []}))
+                n_no_match += 1
+            n_done += 1; continue
 
         seed_id = seed.get("id")
-        records: list[dict] = []
-        seed_rec = deezer_to_record(seed, cat, seed_query, "seed")
-        if seed_rec:
-            records.append(seed_rec)
+        records: list[dict] = list(existing_records)  # start from cache
+        seen_ids: set[int] = set(existing_ids)
+        if seed_id and seed_id not in seen_ids:
+            seed_rec = deezer_to_record(seed, cat, seed_query, "seed")
+            if seed_rec:
+                records.append(seed_rec)
+                seen_ids.add(seed_id)
 
         # Pull similar tracks via the seed artist's radio endpoint, then
         # fall back to the artist's top tracks if radio is sparse (very
         # niche artists sometimes have no similar-artist graph).
         seed_artist_id = (seed.get("artist") or {}).get("id")
         need = args.tracks_per_seed - len(records)
-        seen_ids = {seed_id}
         if need > 0 and seed_artist_id:
             try:
                 radio = client.artist_radio(int(seed_artist_id), limit=need + 10)
@@ -307,7 +342,12 @@ def main() -> int:
             "seed": seed_query, "category": cat,
             "n_returned": len(records), "tracks": records,
         }, indent=2))
-        n_records += len(records)
+        # Distinguish "fresh fetch" from "top-up" in the progress log.
+        if existing_records:
+            n_topped_up += 1
+            n_records += (len(records) - len(existing_records))
+        else:
+            n_records += len(records)
         n_done += 1
 
         if n_done % 10 == 0 or (i + 1) == len(seeds):
@@ -315,9 +355,10 @@ def main() -> int:
             rate = n_done / max(elapsed, 0.01)
             eta_s = (len(seeds) - n_skipped_cache - n_done) / max(rate, 0.01)
             print(f"  [{n_done + n_skipped_cache}/{len(seeds)}] "
-                  f"records+{n_records}  "
+                  f"new_records+{n_records}  "
                   f"({rate:.1f} seeds/s  eta {eta_s/60:.1f} min  "
-                  f"no_match={n_no_match}  cached={n_skipped_cache})")
+                  f"no_match={n_no_match}  cached={n_skipped_cache}  "
+                  f"topped_up={n_topped_up})")
 
     # Aggregate
     print()

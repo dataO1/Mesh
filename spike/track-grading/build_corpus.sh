@@ -27,7 +27,7 @@ export PYTHONUNBUFFERED=1
 # achieves the same effect and keeps "$PY" usable as a single executable.
 PY="$HOME/.cache/mesh-spike/vllm-env/bin/python"
 
-OUT_DIR="/tmp/track-grading"
+OUT_DIR="/home/data01/Music/mesh-track-grading"
 LOG_DIR="$OUT_DIR/logs"
 mkdir -p "$LOG_DIR"
 

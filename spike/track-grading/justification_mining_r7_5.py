@@ -1,6 +1,6 @@
 """Round-7.5 justification mining → multi-label tag matrix.
 
-For each per-call JSON in /tmp/track-grading/round7_5_pairs/<axis>/, the LLM
+For each per-call JSON in /home/data01/Music/mesh-track-grading/round7_5_pairs/<axis>/, the LLM
 left a short justification line (≤25 words). We parse that text into structured
 feature tags and aggregate per-track to use as auxiliary multi-label supervision
 in the linear-probe training step.
@@ -30,7 +30,7 @@ Each track gets a tag-vector aggregated across all the calls that touched it
 (majority vote across mentions, with confidence = mention count). This becomes
 the auxiliary BCE target during probe training.
 
-Output: /tmp/track-grading/round7_5_tags.npz
+Output: /home/data01/Music/mesh-track-grading/round7_5_tags.npz
   track_ids : int64[N]
   tag_names : object[T]
   tag_evidence : float32[N, T]   (signed: +X confidence for tag, -X for opposite)
@@ -101,14 +101,14 @@ TAG_PATTERNS = [
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--pairs-root", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_pairs"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_tags.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_tags.npz"))
     p.add_argument("--include-r7", action="store_true",
                    help="also mine round-7 (single-axis) per-pair JSONs from "
-                        "/tmp/track-grading/round7_pairs/ as additional evidence")
+                        "/home/data01/Music/mesh-track-grading/round7_pairs/ as additional evidence")
     p.add_argument("--r7-pairs-root", type=Path,
-                   default=Path("/tmp/track-grading/round7_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_pairs"))
     return p.parse_args()
 
 

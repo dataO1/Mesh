@@ -38,13 +38,13 @@ def parse_args():
     p.add_argument("--db-path",
                    default="/home/data01/Music/mesh-collection/mesh.db")
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_axes.npz"))
     p.add_argument("--blend-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_blend.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_blend.npz"))
     p.add_argument("--v15-axis", type=Path,
                    default=Path("models/aggression-axes/V15_linear_probe_r6.json"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_cross_library.md"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_cross_library.md"))
     p.add_argument("--top-n", type=int, default=15)
     return p.parse_args()
 

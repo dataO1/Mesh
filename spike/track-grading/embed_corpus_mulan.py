@@ -1,7 +1,7 @@
 """Embed all round-7 corpus MP3s into 512-d MuQ-MuLan vectors.
 
-Reads:  /tmp/track-grading/audio/dz_<deezer_track_id>.mp3
-Writes: /tmp/track-grading/embeddings/corpus_muq_mulan.npz
+Reads:  /home/data01/Music/mesh-track-grading/audio/dz_<deezer_track_id>.mp3
+Writes: /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz
         with arrays:
           - track_ids : int64   [N]
           - embeddings: float32 [N, 512]   (L2-normalised by the model)
@@ -47,11 +47,11 @@ CLIP_SECS = 10     # MuQ-MuLan internal clip length
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--audio-dir", type=Path,
-                   default=Path("/tmp/track-grading/audio"))
+                   default=Path("/home/data01/Music/mesh-track-grading/audio"))
     p.add_argument("--manifest", type=Path,
-                   default=Path("/tmp/track-grading/deezer/corpus_tracks.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--batch-size", type=int, default=32,
                    help="audio waveforms per forward pass")
     p.add_argument("--limit", type=int, default=None,

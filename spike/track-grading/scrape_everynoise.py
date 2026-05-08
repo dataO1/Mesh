@@ -14,7 +14,7 @@ attributes encoding:
   - inner text     — the genre name
   - <a href>       — sometimes points to a per-genre engenremap-*.html subpage
 
-Output: /tmp/track-grading/everynoise_genres.json — one entry per genre with
+Output: /home/data01/Music/mesh-track-grading/everynoise_genres.json — one entry per genre with
 all of the above. Used as the seed list for round-7 corpus building.
 
 Usage:
@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 
 
 URL = "https://everynoise.com/"
-OUT_PATH = Path("/tmp/track-grading/everynoise_genres.json")
+OUT_PATH = Path("/home/data01/Music/mesh-track-grading/everynoise_genres.json")
 
 
 def parse_style(style: str) -> dict:

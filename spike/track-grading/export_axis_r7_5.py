@@ -18,11 +18,11 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--blend", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_blend.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_blend.npz"))
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_axes.npz"))
     p.add_argument("--metrics", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_train_metrics.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_train_metrics.json"))
     p.add_argument("--out", type=Path,
                    default=Path("models/aggression-axes/V17_round7_5_polar_blend.json"))
     p.add_argument("--deploy-collection", type=Path,

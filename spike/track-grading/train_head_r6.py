@@ -1,16 +1,16 @@
 """Round 6 — train MLP and linear-probe heads on MuQ-MuLan embeddings.
 
 Inputs:
-  - /tmp/track-grading/embeddings.npz   (track_ids[N], embeddings[N, 512])
+  - /home/data01/Music/mesh-track-grading/embeddings.npz   (track_ids[N], embeddings[N, 512])
   - documents/axis-eval-results/llm-pair-priors-r5.txt  (BT priors as labels)
 
 Outputs:
-  - /tmp/track-grading/predictions_mlp.csv     (track_id, predicted_intensity)
-  - /tmp/track-grading/predictions_linear.csv  (linear-probe baseline)
+  - /home/data01/Music/mesh-track-grading/predictions_mlp.csv     (track_id, predicted_intensity)
+  - /home/data01/Music/mesh-track-grading/predictions_linear.csv  (linear-probe baseline)
   - documents/axis-eval-results/V14_mlp_head_r6.csv     (in V*.csv format
        for compare-variants.py)
   - documents/axis-eval-results/V15_linear_probe_r6.csv (linear-probe baseline)
-  - /tmp/track-grading/round6_metrics.json    (CV scores, both models)
+  - /home/data01/Music/mesh-track-grading/round6_metrics.json    (CV scores, both models)
 
 Loss: pairwise margin (RankNet-style). For all (i,j) with |y_i - y_j| > 0.5,
 penalise predictions that disagree on the order of i,j by margin proportional
@@ -36,11 +36,11 @@ from sklearn.model_selection import StratifiedKFold
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings.npz"))
     p.add_argument("--priors", type=Path,
                    default=Path("documents/axis-eval-results/llm-pair-priors-r5.txt"))
     p.add_argument("--out-dir", type=Path,
-                   default=Path("/tmp/track-grading"))
+                   default=Path("/home/data01/Music/mesh-track-grading"))
     p.add_argument("--variant-dir", type=Path,
                    default=Path("documents/axis-eval-results"))
     p.add_argument("--epochs", type=int, default=400)
@@ -200,7 +200,7 @@ def main() -> int:
     args.variant_dir.mkdir(parents=True, exist_ok=True)
 
     title_lookup: dict[int, tuple[str, str]] = {}
-    track_list = Path("/tmp/track-grading/_track-list.csv")
+    track_list = Path("/home/data01/Music/mesh-track-grading/_track-list.csv")
     if track_list.exists():
         with track_list.open() as f:
             for r in csv.DictReader(f):

@@ -6,8 +6,8 @@ Each call's `ranking_low_to_high` is a 4-letter sequence; combined with
 
 Uses Hunter-MM BT with Gamma(2, 1) prior, vectorised in NumPy.
 
-Inputs:  /tmp/track-grading/round7_5_pairs/<axis>/*.json  (one per call)
-Outputs: /tmp/track-grading/round7_5_priors.npz
+Inputs:  /home/data01/Music/mesh-track-grading/round7_5_pairs/<axis>/*.json  (one per call)
+Outputs: /home/data01/Music/mesh-track-grading/round7_5_priors.npz
   axes        : object[K=16]      (axis ids in column order)
   track_ids   : int64[N]          (only tracks present in any axis)
   scores      : float32[K, N]     (raw BT, geomean-normalised)
@@ -35,9 +35,9 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--pairs-root", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_pairs"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_priors.npz"))
     p.add_argument("--max-iter", type=int, default=600)
     p.add_argument("--tol", type=float, default=1e-7)
     return p.parse_args()

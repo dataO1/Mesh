@@ -28,7 +28,7 @@ all work cleanly).
 
 - **`spike/track-grading/dump_embeddings.py`** — dumps the 512-dim
   MuQ-MuLan embeddings for the 909 round-5 tracks from the mesh CozoDB
-  to `/tmp/track-grading/embeddings.npz`. Uses the `pycozo` Python SDK.
+  to `/home/data01/Music/mesh-track-grading/embeddings.npz`. Uses the `pycozo` Python SDK.
 - **`spike/track-grading/train_head_r6.py`** — trains both the linear
   probe and the MLP via RankNet pairwise margin loss. 5-fold CV
   stratified by BT-prior bucket. Pure CPU — training is <30 sec total
@@ -225,9 +225,9 @@ Production checklist before shipping:
   linear probe baseline
 - `spike/track-grading/dump_embeddings.py` — embedding dumper
 - `spike/track-grading/train_head_r6.py` — training + CV harness
-- `/tmp/track-grading/embeddings.npz` — 909 × 512 float32 (regen'able
+- `/home/data01/Music/mesh-track-grading/embeddings.npz` — 909 × 512 float32 (regen'able
   in 2 sec from the mesh DB)
-- `/tmp/track-grading/round6_metrics.json` — full CV scores
+- `/home/data01/Music/mesh-track-grading/round6_metrics.json` — full CV scores
 
 ## Cross-references
 

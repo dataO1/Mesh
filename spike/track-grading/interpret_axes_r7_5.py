@@ -18,13 +18,13 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_axes.npz"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--manifest", type=Path,
-                   default=Path("/tmp/track-grading/deezer/corpus_tracks.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_interpretation.md"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_interpretation.md"))
     p.add_argument("--top-n", type=int, default=20)
     return p.parse_args()
 

@@ -64,7 +64,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--collection", type=Path,
                    default=Path.home() / "Music" / "mesh-collection")
-    p.add_argument("--out-dir", type=Path, default=Path("/tmp/track-grading"))
+    p.add_argument("--out-dir", type=Path, default=Path("/home/data01/Music/mesh-track-grading"))
     p.add_argument("--limit-tracks", type=int, default=None)
     p.add_argument("--extra-random-pairs", type=int, default=0)
     p.add_argument("--smoke-mode", action="store_true")

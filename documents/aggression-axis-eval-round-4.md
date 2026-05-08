@@ -265,7 +265,7 @@ sampling beats brute force by an order of magnitude.
 - `spike/track-grading/judge_pairs_vllm.py` — pair grader HTTP client
 - `spike/track-grading/build_bt_priors.py` — BT MLE → priors
 - `spike/track-grading/validate_bt_priors.py` — Spearman vs hand-anchors
-- `/tmp/track-grading/pairs_vllm/*.json` — 5446 per-pair JSONs (not
+- `/home/data01/Music/mesh-track-grading/pairs_vllm/*.json` — 5446 per-pair JSONs (not
   committed — regenerable in 13 min)
 - vLLM env at `~/.cache/mesh-spike/vllm-env/` (not committed)
 - Model in HF cache at `~/.cache/mesh-spike/hf/hub/models--cpatonn--Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit` (~26 GB, not committed)

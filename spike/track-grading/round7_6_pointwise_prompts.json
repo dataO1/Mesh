@@ -1,0 +1,97 @@
+{
+  "_meta": {
+    "format_version": 1,
+    "schema": "single-audio-pointwise",
+    "model": "nvidia/music-flamingo-2601-hf",
+    "k_clips_per_call": 1,
+    "system": "You are a careful music analyst with strong perception of timbre, mood, rhythm, and production style.",
+    "max_tokens": 16,
+    "temperature": 0.0,
+    "score_template": "Rate this clip on a single perceptual dimension: {axis_id}.\n\n0  = {low_pole}\n100 = {high_pole}\n50 = balanced / neither extreme\n\nUse the FULL 0-100 range. Avoid clustering on round numbers (25, 50, 75) unless the clip really is at that point.\n\nReply with ONE integer 0-100, no other text.",
+    "likert_template": "Rate this clip on the dimension '{axis_id}'.\n\n1 = very LOW: {low_pole}\n2 = leans LOW\n3 = balanced / neither extreme\n4 = leans HIGH\n5 = very HIGH: {high_pole}\n\nReply with one digit (1, 2, 3, 4, or 5), nothing else.",
+    "_design_rationale": "Music Flamingo only accepts 1 audio per prompt (architectural limit of the AudioFlamingo3 backbone). K=4 N-way ranking is therefore impossible. Pointwise scoring on each (track, axis) cell is the cleanest substitute: the linear probe trains directly against the (N, 16) score matrix in place of BT priors. Anchor lines push against MF's tendency to default to round numbers; explicit '50 = balanced' gives the model a midpoint to avoid the 0-vs-100 collapse seen in coarse-grained pointwise prompts elsewhere.",
+    "convention": "LOW pole (0) = less intense / less aggressive end. HIGH pole (100) = more intense / more aggressive end. Sign is learned by the joint blender at training time; the 0→100 direction here is for human interpretability and to keep the prompt unambiguous."
+  },
+  "axes": [
+    {
+      "id": "timbre_roughness",
+      "low_pole":  "clean, smooth tone with no distortion, fuzz, clipping, or saturation",
+      "high_pole": "distorted, fuzzy, heavily saturated or clipped tone"
+    },
+    {
+      "id": "mood_polarity",
+      "low_pole":  "bright, uplifting, major-key, hopeful or joyful mood",
+      "high_pole": "dark, brooding, minor-key, ominous or shadowy mood"
+    },
+    {
+      "id": "textural_density",
+      "low_pole":  "sparse texture: few elements, breathing room, minimalist arrangement",
+      "high_pole": "dense texture: many simultaneous layers, busy, packed arrangement"
+    },
+    {
+      "id": "rhythm_grid",
+      "low_pole":  "steady pulse, four-on-the-floor, predictable subdivisions, on-grid",
+      "high_pole": "syncopated, breakbeat, polyrhythmic, displaced accents, off-grid"
+    },
+    {
+      "id": "vocal_aggression",
+      "low_pole":  "clean sung vocals OR no vocals OR melodic singing voice",
+      "high_pole": "shouted, screamed, growled, or harsh-effected vocal delivery"
+    },
+    {
+      "id": "dynamic_envelope",
+      "low_pole":  "dynamic loudness with quiet-loud-quiet contrast and headroom",
+      "high_pole": "flat, brick-walled, loudness-uniform, no dynamic range"
+    },
+    {
+      "id": "bass_presence",
+      "low_pole":  "thin, light low-end with little or no sub-bass",
+      "high_pole": "heavy sub-bass and kick presence, chest-pushing low end"
+    },
+    {
+      "id": "tempo_perception",
+      "low_pole":  "relaxed, floating, slow-feeling regardless of measured BPM",
+      "high_pole": "urgent, frantic, fast-feeling regardless of measured BPM"
+    },
+    {
+      "id": "melodic_anchoring",
+      "low_pole":  "tonal, singable, clear key, hummable melody",
+      "high_pole": "atonal, fragmented, no clear key, non-melodic"
+    },
+    {
+      "id": "melodic_complexity",
+      "low_pole":  "intricate, through-composed, lots of melodic variation",
+      "high_pole": "simple, repetitive hook or riff, in-your-face, predictable"
+    },
+    {
+      "id": "noise_layer",
+      "low_pole":  "purely pitched material, no noise or non-pitched FX",
+      "high_pole": "heavy non-pitched layers (white noise, hiss, noise FX, risers)"
+    },
+    {
+      "id": "harmonic_motion",
+      "low_pole":  "active chord changes, frequent modulations, harmonically mobile",
+      "high_pole": "static drone, repeated chord, no harmonic motion"
+    },
+    {
+      "id": "drop_architecture",
+      "low_pole":  "continuous-energy flow, no buildup-and-drop structure",
+      "high_pole": "explicit buildup-and-drop architecture, peak-then-release form"
+    },
+    {
+      "id": "production_polish",
+      "low_pole":  "lo-fi, raw, dusty, unpolished, tape-warm or rough mix",
+      "high_pole": "hi-fi, polished, mastered, modern-mixed, transparent"
+    },
+    {
+      "id": "acoustic_synthesis",
+      "low_pole":  "organic acoustic instruments dominate (guitar, piano, drum kit, strings)",
+      "high_pole": "synthetic, electronic, sampled, sound-design dominated"
+    },
+    {
+      "id": "onset_density",
+      "low_pole":  "smooth, legato, few sharp transients, sustained tones",
+      "high_pole": "percussive, attack-heavy, transient-rich, articulated"
+    }
+  ]
+}

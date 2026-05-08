@@ -30,9 +30,9 @@ import requests
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--manifest", type=Path,
-                   default=Path("/tmp/track-grading/deezer/corpus_tracks.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json"))
     p.add_argument("--audio-dir", type=Path,
-                   default=Path("/tmp/track-grading/audio"))
+                   default=Path("/home/data01/Music/mesh-track-grading/audio"))
     p.add_argument("--prefix", default="dz_")
     p.add_argument("--rate-rps", type=float, default=10.0,
                    help="Deezer API rate cap (anonymous limit ~10/s)")

@@ -15,8 +15,8 @@ ALSO didn't match the include set, which it can't if it contains
 weren't going to be included anyway. Documented for clarity.
 
 Outputs:
-  /tmp/track-grading/everynoise_dj_genres.json     — the included subset
-  /tmp/track-grading/everynoise_excluded_sample.json  — sample of excluded
+  /home/data01/Music/mesh-track-grading/everynoise_dj_genres.json     — the included subset
+  /home/data01/Music/mesh-track-grading/everynoise_excluded_sample.json  — sample of excluded
                                                        genres for spot-check
 """
 from __future__ import annotations
@@ -26,9 +26,9 @@ import sys
 from pathlib import Path
 
 
-IN_PATH = Path("/tmp/track-grading/everynoise_genres.json")
-OUT_INCLUDED = Path("/tmp/track-grading/everynoise_dj_genres.json")
-OUT_EXCLUDED_SAMPLE = Path("/tmp/track-grading/everynoise_excluded_sample.json")
+IN_PATH = Path("/home/data01/Music/mesh-track-grading/everynoise_genres.json")
+OUT_INCLUDED = Path("/home/data01/Music/mesh-track-grading/everynoise_dj_genres.json")
+OUT_EXCLUDED_SAMPLE = Path("/home/data01/Music/mesh-track-grading/everynoise_excluded_sample.json")
 
 
 # Core DJ-relevant terms (broad net). Any genre whose name contains any of

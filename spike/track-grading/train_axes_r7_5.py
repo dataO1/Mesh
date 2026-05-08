@@ -14,14 +14,14 @@ features that predict tags from the same justifications that produced the
 BT scores, which usually buys 1–2 pp on the main pairwise-agreement metric.
 
 Inputs:
-  /tmp/track-grading/embeddings/corpus_muq_mulan.npz
-  /tmp/track-grading/round7_5_priors.npz
-  /tmp/track-grading/round7_5_tags.npz   (tag_evidence per track)
+  /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz
+  /home/data01/Music/mesh-track-grading/round7_5_priors.npz
+  /home/data01/Music/mesh-track-grading/round7_5_tags.npz   (tag_evidence per track)
 
 Outputs:
-  /tmp/track-grading/round7_5_axes.npz   (16 directions + biases + CV stats)
-  /tmp/track-grading/round7_5_predictions.csv
-  /tmp/track-grading/round7_5_train_metrics.json
+  /home/data01/Music/mesh-track-grading/round7_5_axes.npz   (16 directions + biases + CV stats)
+  /home/data01/Music/mesh-track-grading/round7_5_predictions.csv
+  /home/data01/Music/mesh-track-grading/round7_5_train_metrics.json
 
 Per-track tag target: if a track has |evidence_signed| ≥ MIN_EVIDENCE for a
 tag, target = 1.0 if evidence > 0 else 0.0. Tracks below the evidence floor
@@ -43,17 +43,17 @@ import torch.nn.functional as F
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--priors", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_priors.npz"))
     p.add_argument("--tags", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_tags.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_tags.npz"))
     p.add_argument("--out-axes", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_axes.npz"))
     p.add_argument("--out-preds", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_predictions.csv"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_predictions.csv"))
     p.add_argument("--out-metrics", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_train_metrics.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_train_metrics.json"))
     p.add_argument("--epochs", type=int, default=600)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight-decay", type=float, default=1e-3)
@@ -61,6 +61,10 @@ def parse_args():
     p.add_argument("--margin-floor", type=float, default=0.5)
     p.add_argument("--lambda-aux", type=float, default=0.3,
                    help="weight of auxiliary tag-prediction BCE loss")
+    p.add_argument("--batch-size", type=int, default=2048,
+                   help="mini-batch of tracks per epoch (pairwise loss is "
+                        "O(B^2) so memory scales as B^2; 2048 fits in <2GB "
+                        "GPU at K=16 axes float32, vs N^2=15314^2 = 14GB)")
     p.add_argument("--min-tag-evidence", type=float, default=2.0,
                    help="minimum |signed evidence| to use track as a tag-supervision example")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -245,13 +249,26 @@ def main() -> int:
         M_va = M[:, va]
 
         best = {"per_axis_pa": [0.0] * K, "per_axis_rho": [0.0] * K}
+        N_tr = X_tr.shape[0]
+        B = min(args.batch_size, N_tr)
+        rng_local = np.random.default_rng(args.seed + fold)
         for ep in range(args.epochs):
             model.train()
             opt.zero_grad()
-            s, tg = model(X_tr)
-            loss_main = pairwise_margin_loss_multi(s, Y_tr, M_tr, args.margin_floor)
+            # Mini-batch the pairwise loss: pairwise matrices are O(B^2) so
+            # full-batch on N=15k blows past 24GB GPU. B=2048 keeps peak
+            # ~1.5GB while still giving each epoch a stable estimate.
+            idx = rng_local.choice(N_tr, size=B, replace=False)
+            idx_t = torch.from_numpy(idx).long().to(device)
+            X_b = X_tr[idx_t]
+            Y_b = Y_tr[:, idx_t]
+            M_b = M_tr[:, idx_t]
+            s, tg = model(X_b)
+            loss_main = pairwise_margin_loss_multi(s, Y_b, M_b, args.margin_floor)
             if T > 0 and args.lambda_aux > 0:
-                loss_aux = tag_bce_loss(tg, Yt_tr, Mt_tr)
+                Yt_b = Yt_tr[idx_t]
+                Mt_b = Mt_tr[idx_t]
+                loss_aux = tag_bce_loss(tg, Yt_b, Mt_b)
                 loss = loss_main + args.lambda_aux * loss_aux
             else:
                 loss = loss_main
@@ -297,13 +314,23 @@ def main() -> int:
     M_all = torch.from_numpy(M).to(device)
     Yt_all = torch.from_numpy(Y_tag).to(device)
     Mt_all = torch.from_numpy(M_tag).to(device)
+    N_all = X_all.shape[0]
+    B = min(args.batch_size, N_all)
+    rng_full = np.random.default_rng(args.seed)
     for ep in range(args.epochs):
         model.train()
         opt.zero_grad()
-        s, tg = model(X_all)
-        loss_main = pairwise_margin_loss_multi(s, Y_all, M_all, args.margin_floor)
+        idx = rng_full.choice(N_all, size=B, replace=False)
+        idx_t = torch.from_numpy(idx).long().to(device)
+        X_b = X_all[idx_t]
+        Y_b = Y_all[:, idx_t]
+        M_b = M_all[:, idx_t]
+        s, tg = model(X_b)
+        loss_main = pairwise_margin_loss_multi(s, Y_b, M_b, args.margin_floor)
         if T > 0 and args.lambda_aux > 0:
-            loss_aux = tag_bce_loss(tg, Yt_all, Mt_all)
+            Yt_b = Yt_all[idx_t]
+            Mt_b = Mt_all[idx_t]
+            loss_aux = tag_bce_loss(tg, Yt_b, Mt_b)
             loss = loss_main + args.lambda_aux * loss_aux
         else:
             loss_aux = torch.tensor(0.0)

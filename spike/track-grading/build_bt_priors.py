@@ -1,6 +1,6 @@
 """Convert per-pair JSON judgments → BT-MLE intensity scores → priors file.
 
-Inputs:  /tmp/track-grading/pairs_vllm/*.json  (one per directed pair)
+Inputs:  /home/data01/Music/mesh-track-grading/pairs_vllm/*.json  (one per directed pair)
 Outputs: documents/axis-eval-results/llm-pair-priors.txt   (anchors format
          tid|name|prior, prior ∈ [0, 10])
          documents/axis-eval-results/llm-pair-priors.csv   (full table:
@@ -16,8 +16,8 @@ scripts/compare-variants.py the same way hand-priors do.
 
 Usage:
   python build_bt_priors.py
-  python build_bt_priors.py --pairs-dir /tmp/track-grading/pairs_vllm \\
-                            --meta /tmp/track-grading/_track-list.csv \\
+  python build_bt_priors.py --pairs-dir /home/data01/Music/mesh-track-grading/pairs_vllm \\
+                            --meta /home/data01/Music/mesh-track-grading/_track-list.csv \\
                             --out-prefix documents/axis-eval-results/llm-pair-priors
 """
 from __future__ import annotations
@@ -34,9 +34,9 @@ from pathlib import Path
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--pairs-dir", type=Path,
-                   default=Path("/tmp/track-grading/pairs_vllm"))
+                   default=Path("/home/data01/Music/mesh-track-grading/pairs_vllm"))
     p.add_argument("--meta", type=Path,
-                   default=Path("/tmp/track-grading/_track-list.csv"))
+                   default=Path("/home/data01/Music/mesh-track-grading/_track-list.csv"))
     p.add_argument("--out-prefix", type=Path,
                    default=Path("documents/axis-eval-results/llm-pair-priors"))
     p.add_argument("--max-iter", type=int, default=500)

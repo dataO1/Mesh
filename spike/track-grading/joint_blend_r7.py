@@ -6,12 +6,12 @@ will load. Trained against the aggression-axis BT priors as the target
 ranking; uses ListMLE loss for direct ranking optimisation.
 
 Inputs:
-  /tmp/track-grading/round7_axes.npz       (axes, directions[K, D], biases[K])
-  /tmp/track-grading/embeddings/corpus_muq_mulan.npz
-  /tmp/track-grading/round7_priors.npz     (priors_0_10[K, M] for target axis)
+  /home/data01/Music/mesh-track-grading/round7_axes.npz       (axes, directions[K, D], biases[K])
+  /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz
+  /home/data01/Music/mesh-track-grading/round7_priors.npz     (priors_0_10[K, M] for target axis)
 
 Outputs:
-  /tmp/track-grading/round7_blend.npz
+  /home/data01/Music/mesh-track-grading/round7_blend.npz
     axes        : object[K]
     directions  : float32[K, D]   (unchanged)
     biases      : float32[K]      (unchanged)
@@ -35,14 +35,14 @@ import torch.nn.functional as F
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_axes.npz"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--priors", type=Path,
-                   default=Path("/tmp/track-grading/round7_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_priors.npz"))
     p.add_argument("--target-axis", default="aggression")
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_blend.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_blend.npz"))
     p.add_argument("--epochs", type=int, default=2000)
     p.add_argument("--lr", type=float, default=5e-2)
     p.add_argument("--list-size", type=int, default=64,

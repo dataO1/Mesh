@@ -20,7 +20,7 @@ Run:
 
 Defaults:
   --collection ~/Music/mesh-collection
-  --out-dir    /tmp/track-grading
+  --out-dir    /home/data01/Music/mesh-track-grading
 
 Resumability: skips tracks whose <out_dir>/<track_id>.json already exists.
 Use --reanalyze to force re-running everything.
@@ -72,7 +72,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--collection", type=Path,
                    default=Path.home() / "Music" / "mesh-collection")
-    p.add_argument("--out-dir", type=Path, default=Path("/tmp/track-grading"))
+    p.add_argument("--out-dir", type=Path, default=Path("/home/data01/Music/mesh-track-grading"))
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--resume", action="store_true",
                    help="(default behavior — skip tracks already graded)")

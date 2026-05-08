@@ -12,7 +12,7 @@ For each of the 16 polar axes in `round7_5_axis_prompts.json`:
         with ~5–10 game target across the run).
      Re-fit BT every `BT_REFIT_EVERY` calls so the uncertainty estimate
      stays current.
-  4. Persist per-call JSON under `/tmp/track-grading/round7_5_pairs/<axis>/`
+  4. Persist per-call JSON under `/home/data01/Music/mesh-track-grading/round7_5_pairs/<axis>/`
      with full ranking + every-pair derived observation + LLM justification
      (preserved verbatim for round-7.5 mining step).
 
@@ -78,14 +78,34 @@ HEALTH_URL = VLLM_URL.rsplit("/v1/", 1)[0] + "/health"
 REQUEST_TIMEOUT = 240
 LETTERS = ("A", "B", "C", "D")  # K=4 fixed for now; re-derive if K changes
 
-# How often to re-fit BT during the active phase. Smaller = more responsive
-# uncertainty tracking, larger = cheaper. 100 hits the sweet spot: BT solver
-# converges in <1 s on N≤2000 unique tracks even at the tail of the run.
-BT_REFIT_EVERY = 100
+# How often to re-fit BT during the active phase. Increased to 300 for the
+# r7.5 full-corpus run because BT_MM cost scales O(N^2 * iters) and N grows
+# to ~15k, putting refits at multi-second cost. 300 is a fine compromise:
+# BALD's uncertainty estimates don't shift meaningfully over 100 calls.
+BT_REFIT_EVERY = 300
 # BALD scoring parameters.
 TUPLE_CANDIDATES_PER_PICK = 64        # propose this many random tuples, score, pick best
 LOW_COVERAGE_BONUS_WEIGHT = 0.4       # how much we boost under-sampled tracks
 TARGET_GAMES_PER_TRACK = 8            # convergence aim for BT scores
+# Cap on the working set BALD samples from when scoring candidate tuples.
+# Without this, every BALD pick rebuilds an N=15314 dict + samples from a
+# 15k-element list 64 times → ~500 ms per pick × 12 workers = main runtime
+# bottleneck once N grows. 500 keeps BALD high-quality (it picks from a fresh
+# random slice each call) while bounding cost to ~10 ms per pick.
+BALD_WORKING_SET = 500
+# Cap on the number of tracks fed into the in-flight BT refit. The final
+# post-axis BT solve uses all tracks; only the in-flight refits downsample
+# to the most-played tracks (where the uncertainty estimate is most
+# informative for BALD anyway). Bumped to 8000 since BLAS multithreading +
+# float32 makes this cheap enough to do continuously.
+BT_REFIT_TOP_TRACKS = 8000
+# Continuous-refit minimum sleep between successive refits, in seconds.
+# With BLAS at 16 threads and N=8000 the refit takes ~3–6 s; this small gap
+# lets workers commit fresh pair_wins before the next snapshot.
+CONTINUOUS_REFIT_GAP_SEC = 0.5
+# Min number of pair observations before the continuous refit starts firing
+# (avoids running BT on near-empty input during the bootstrap phase).
+CONTINUOUS_REFIT_MIN_PAIRS = 200
 
 
 def parse_args():
@@ -93,12 +113,12 @@ def parse_args():
     p.add_argument("--prompts-file", type=Path,
                    default=Path("spike/track-grading/round7_5_axis_prompts.json"))
     p.add_argument("--audio-dir", type=Path,
-                   default=Path("/tmp/track-grading/audio"))
+                   default=Path("/home/data01/Music/mesh-track-grading/audio"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"),
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"),
                    help="L2-normalised MuQ-MuLan embeddings; used for BALD candidate proposal")
     p.add_argument("--out-dir", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_pairs"))
     p.add_argument("--calls-per-axis", type=int, default=None,
                    help="override n_calls_per_axis from prompts file")
     p.add_argument("--bootstrap-fraction", type=float, default=None,
@@ -186,20 +206,29 @@ def vllm_judge_kway(prompt_text: str, b64_clips: list[str]) -> str:
 def bt_mm(wins: dict[tuple[int, int], float],
           tracks: list[int],
           max_iter: int = 200, tol: float = 1e-6,
-          prior_strength: float = 1.0) -> dict[int, float]:
+          prior_strength: float = 1.0,
+          dtype=np.float32) -> dict[int, float]:
+    """BT-MLE via Hunter's MM iteration with Gamma(2,1) prior.
+
+    `dtype` defaults to float32 because the in-flight refits during the
+    tournament are cheap (8k tracks, ~5 s) and only feed BALD's coarse
+    uncertainty estimate. The final per-axis solve in build_bt_priors_r7_5
+    uses default float64 elsewhere if precision matters; here the min-max
+    normalisation downstream eats the ~1e-6 quantisation error.
+    """
     if not tracks:
         return {}
     idx = {t: i for i, t in enumerate(tracks)}
     n = len(tracks)
-    W = np.zeros((n, n), dtype=np.float64)
+    W = np.zeros((n, n), dtype=dtype)
     for (a, b), w in wins.items():
         if a in idx and b in idx:
             W[idx[a], idx[b]] += w
     N_mat = W + W.T
     W_row = W.sum(axis=1)
-    a_prior = 1.0 + prior_strength
-    b_prior = prior_strength
-    s = np.ones(n, dtype=np.float64)
+    a_prior = dtype(1.0 + prior_strength)
+    b_prior = dtype(prior_strength)
+    s = np.ones(n, dtype=dtype)
     for _ in range(max_iter):
         S = s[:, None] + s[None, :]
         S[S == 0] = 1.0
@@ -253,6 +282,11 @@ def bald_pick_tuple(track_ids: np.ndarray,
         sys.exit(f"need ≥4 tracks for K=4, have {len(track_ids)}")
 
     track_list = list(map(int, track_ids))
+    # Subsample to a fixed working set so BALD picks stay cheap even as N
+    # grows to 15k. We get a fresh random slice each call → coverage is
+    # preserved across many calls, but per-call cost is bounded.
+    if len(track_list) > BALD_WORKING_SET:
+        track_list = rng.sample(track_list, BALD_WORKING_SET)
     best = None
     best_score = -1e18
 
@@ -312,6 +346,14 @@ def run_axis(axis: dict,
     seen_tuples: set[str] = set()
     bt_scores: dict[int, float] = {}
     state_lock = threading.Lock()
+    # Single-element list as a mutable bool for the background refit flag
+    # (avoids `nonlocal` since we mutate it from a nested closure).
+    refit_in_progress = [False]
+    # Continuous-refit lifecycle flag — set to True at axis end so the
+    # background refit thread exits its loop.
+    stop_continuous_refit = [False]
+    # Diagnostic: last successful refit's N (for the periodic progress line).
+    refit_stats = [0]
 
     # Resume: scan existing per-call JSONs for this axis and replay them
     existing = list((out_dir / aid).glob("*.json")) if (out_dir / aid).exists() else []
@@ -340,6 +382,18 @@ def run_axis(axis: dict,
     print(f"[{aid}] resumed {n_resumed} prior calls "
           f"({n_resumed_invalid} invalid), {len(games_count)} unique tracks touched")
 
+    # Budget floor: if cached calls already meet/exceed the target, the axis
+    # is done — skip it. Treats n_calls as a target floor, not a delta.
+    # (Prior runs may have over-shot the budget; we don't want to add more.)
+    if n_resumed >= n_calls:
+        print(f"  [{aid}] already at/past target ({n_resumed} ≥ {n_calls}), skipping")
+        return {
+            "axis": aid, "n_calls": n_calls, "n_done": n_resumed,
+            "n_ok": 0, "n_resumed": n_resumed, "n_skipped_resumed": 0,
+            "n_parse_fail": 0, "n_infer_fail": 0, "n_decode_fail": 0,
+            "n_unique_tracks": len(games_count), "wall_min": 0.0,
+        }
+
     # Compute initial BT if we have anything
     if pair_wins:
         seen_tracks = sorted(set(t for pair in pair_wins for t in pair))
@@ -366,10 +420,13 @@ def run_axis(axis: dict,
                 audio_cache[tid] = b64
         return b64
 
-    # Plan: bootstrap_calls uniform, then BALD-driven up to n_calls total
-    bootstrap_calls = int(round(n_calls * bootstrap_fraction))
-    print(f"[{aid}] plan: {n_calls} calls = {bootstrap_calls} bootstrap + "
-          f"{n_calls - bootstrap_calls} BALD")
+    # Plan: schedule only the REMAINING calls (n_calls is the target floor,
+    # not a delta added on top of resumed work).
+    remaining = max(0, n_calls - n_resumed)
+    bootstrap_calls = int(round(remaining * bootstrap_fraction))
+    print(f"[{aid}] plan: {remaining} additional calls "
+          f"(target {n_calls}, resumed {n_resumed}) = "
+          f"{bootstrap_calls} bootstrap + {remaining - bootstrap_calls} BALD")
 
     # Pre-build the bootstrap tuple list (uniform random, no replacement on
     # tuple_key). Each tuple is shuffled into a random presentation order to
@@ -384,8 +441,13 @@ def run_axis(axis: dict,
 
     def make_tuple_bald() -> tuple[int, int, int, int]:
         for _ in range(20):
+            # Quick snapshot under the lock, then score WITHOUT the lock so
+            # 12 workers can run BALD picks concurrently. NumPy reductions
+            # release the GIL during the matrix math, giving real parallelism.
             with state_lock:
-                cand = bald_pick_tuple(corpus_track_ids, bt_scores, games_count, rng)
+                bt_snapshot = dict(bt_scores)
+                games_snapshot = dict(games_count)
+            cand = bald_pick_tuple(corpus_track_ids, bt_snapshot, games_snapshot, rng)
             if tuple_key(cand) not in seen_tuples:
                 return cand
         return cand  # accept collision
@@ -472,19 +534,20 @@ def run_axis(axis: dict,
             for t in track_tuple:
                 games_count[t] += 1
             state["ok"] += 1; state["done"] += 1
-            # periodic BT refit to keep BALD's uncertainty estimate fresh
-            if state["ok"] % BT_REFIT_EVERY == 0:
-                seen_tracks = sorted(set(t for pair in pair_wins for t in pair))
-                bt_scores.clear()
-                bt_scores.update(bt_mm(pair_wins, seen_tracks, max_iter=80))
+            # Periodic progress print (BT refit happens continuously in a
+            # separate background thread launched at axis start; see
+            # _continuous_refit below). This block only handles logging.
+            if state["ok"] % 100 == 0:
                 el = time.time() - start
                 rate = state["ok"] / max(el, 0.001)
-                eta = (n_calls - n_resumed - state["ok"]) / max(rate, 0.001)
+                eta = max(0.0, remaining - state["ok"]) / max(rate, 0.001)
+                last_refit_n = refit_stats[0]
                 print(f"  [{aid}] {n_resumed + state['ok']}/{n_calls}  "
                       f"ok={state['ok']} parse_fail={state['fail_parse']} "
                       f"infer_fail={state['fail_infer']} "
                       f"({rate:.2f}/s, eta {eta/60:.1f} min, "
-                      f"unique_tracks={len(games_count)})")
+                      f"unique_tracks={len(games_count)}, "
+                      f"last_refit_N={last_refit_n})")
 
         record = {
             "axis": aid,
@@ -502,6 +565,38 @@ def run_axis(axis: dict,
         tmp = cache.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(record, indent=2))
         tmp.rename(cache)
+
+    # ── Continuous BT refit thread ────────────────────────────────────────
+    # Replaces the periodic-trigger model. Fires repeatedly while the axis
+    # is running, snapshots pair_wins under the lock, releases the lock, then
+    # runs BLAS-multithreaded BT_MM on up to BT_REFIT_TOP_TRACKS most-played
+    # tracks. Atomic-swaps the new scores back when done. Uses idle CPU cycles
+    # productively — the in-flight refit runs in parallel with the LLM-bound
+    # workers, and BLAS uses 16 cores during the matrix ops.
+    def _continuous_refit():
+        while not stop_continuous_refit[0]:
+            time.sleep(CONTINUOUS_REFIT_GAP_SEC)
+            with state_lock:
+                if len(pair_wins) < CONTINUOUS_REFIT_MIN_PAIRS:
+                    continue
+                # Quick snapshot under the lock; release before BT_MM runs.
+                seen_tracks = sorted(set(t for pair in pair_wins for t in pair))
+                if len(seen_tracks) > BT_REFIT_TOP_TRACKS:
+                    seen_tracks = sorted(seen_tracks,
+                                         key=lambda t: -games_count.get(t, 0)
+                                         )[:BT_REFIT_TOP_TRACKS]
+                wins_snapshot = dict(pair_wins)
+                refit_in_progress[0] = True
+            try:
+                new_scores = bt_mm(wins_snapshot, seen_tracks, max_iter=80)
+            finally:
+                with state_lock:
+                    bt_scores.clear()
+                    bt_scores.update(new_scores)
+                    refit_stats[0] = len(new_scores)
+                    refit_in_progress[0] = False
+    refit_thread = threading.Thread(target=_continuous_refit, daemon=True)
+    refit_thread.start()
 
     print(f"  [{aid}] running {workers} concurrent workers ...")
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -524,10 +619,13 @@ def run_axis(axis: dict,
 
         # BALD phase: schedule in chunks so the BT refit cycle gives BALD
         # fresh uncertainty data. Each BALD-chunk is BT_REFIT_EVERY tuples.
-        bald_total = n_calls - bootstrap_calls
+        bald_total = remaining - bootstrap_calls
         ofs = bootstrap_calls
+        # Continuous refit means we no longer need a tight sync barrier per
+        # 200 calls. Schedule larger chunks (1000) so workers keep firing and
+        # the refit thread runs in parallel without ever stalling the queue.
         while bald_total > 0:
-            chunk = min(BT_REFIT_EVERY * 2, bald_total)  # 2x because workers parallelise
+            chunk = min(1000, bald_total)
             futures = []
             for i in range(chunk):
                 tup = make_tuple_bald()
@@ -537,7 +635,15 @@ def run_axis(axis: dict,
                 pass
             bald_total -= chunk
 
-    # Final pass: clean BT solve on all collected pairs.
+    # Stop the continuous refit thread and wait for any in-flight refit to
+    # complete before doing the final clean solve.
+    stop_continuous_refit[0] = True
+    while refit_in_progress[0]:
+        time.sleep(0.5)
+    refit_thread.join(timeout=30)
+
+    # Final pass: clean BT solve on all collected pairs (full corpus, full
+    # iterations, default float32 — caller can re-solve in float64 if needed).
     seen_tracks = sorted(set(t for pair in pair_wins for t in pair))
     if seen_tracks:
         bt_scores.clear()

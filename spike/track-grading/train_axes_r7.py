@@ -1,20 +1,20 @@
 """Round-7 multi-task linear probes from corpus embeddings + per-axis BT priors.
 
 Inputs:
-  /tmp/track-grading/embeddings/corpus_muq_mulan.npz  (track_ids, embeddings[N, D])
-  /tmp/track-grading/round7_priors.npz                (axes, track_ids, priors_0_10[K, M])
+  /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz  (track_ids, embeddings[N, D])
+  /home/data01/Music/mesh-track-grading/round7_priors.npz                (axes, track_ids, priors_0_10[K, M])
 
 Trains K linear heads (D → 1) jointly using a multi-task RankNet-style margin
 loss over all (track_i, track_j) pairs per axis. Uses 5-fold CV stratified
 by aggression-axis bucket. Final retrain on full data.
 
 Outputs:
-  /tmp/track-grading/round7_axes.npz
+  /home/data01/Music/mesh-track-grading/round7_axes.npz
     axes        : object[K]
     directions  : float32[K, D]   (each L2-normalised)
     biases      : float32[K]
     train_meta  : object          (CV scores, metrics)
-  /tmp/track-grading/round7_predictions.csv  (track_id, axis_1_norm, axis_2_norm, ...)
+  /home/data01/Music/mesh-track-grading/round7_predictions.csv  (track_id, axis_1_norm, axis_2_norm, ...)
 
 Architecture choice: single Linear(D, K) layer = K linear probes sharing
 the same input but with independent rows. No nonlinearity, no shared
@@ -36,15 +36,15 @@ import torch.nn.functional as F
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--priors", type=Path,
-                   default=Path("/tmp/track-grading/round7_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_priors.npz"))
     p.add_argument("--out-axes", type=Path,
-                   default=Path("/tmp/track-grading/round7_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_axes.npz"))
     p.add_argument("--out-preds", type=Path,
-                   default=Path("/tmp/track-grading/round7_predictions.csv"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_predictions.csv"))
     p.add_argument("--out-metrics", type=Path,
-                   default=Path("/tmp/track-grading/round7_train_metrics.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_train_metrics.json"))
     p.add_argument("--epochs", type=int, default=600)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight-decay", type=float, default=1e-3)

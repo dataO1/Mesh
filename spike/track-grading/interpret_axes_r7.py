@@ -1,12 +1,12 @@
 """Round-7 axis interpretation: top/bottom 20 tracks per learned axis.
 
 Reads:
-  /tmp/track-grading/round7_axes.npz          (axes, directions[K, D])
-  /tmp/track-grading/embeddings/corpus_muq_mulan.npz  (track_ids, embeddings)
-  /tmp/track-grading/deezer/corpus_tracks.json (artist+title+seed lookup)
+  /home/data01/Music/mesh-track-grading/round7_axes.npz          (axes, directions[K, D])
+  /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz  (track_ids, embeddings)
+  /home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json (artist+title+seed lookup)
 
 Writes:
-  /tmp/track-grading/round7_interpretation.md
+  /home/data01/Music/mesh-track-grading/round7_interpretation.md
 
 For each axis: project all corpus tracks onto the learned direction, sort,
 print top-20 / bottom-20 with artist+title+genre_seed. Also compute the
@@ -26,13 +26,13 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_axes.npz"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--manifest", type=Path,
-                   default=Path("/tmp/track-grading/deezer/corpus_tracks.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_interpretation.md"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_interpretation.md"))
     p.add_argument("--top-n", type=int, default=20)
     return p.parse_args()
 

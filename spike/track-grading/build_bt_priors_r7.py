@@ -5,7 +5,7 @@ For each axis subdirectory under `round7_pairs/<axis_id>/*.json`, run BT-MM
 [0, 10]. Outputs a single NPZ with all axes for downstream multi-task
 training.
 
-Outputs: /tmp/track-grading/round7_priors.npz
+Outputs: /home/data01/Music/mesh-track-grading/round7_priors.npz
   axes        : object[K]   (axis ids in column order)
   track_ids   : int64[N]    (only tracks that appeared in any pair)
   scores      : float32[K, N]  (raw BT score, geomean-normalised)
@@ -15,7 +15,7 @@ Outputs: /tmp/track-grading/round7_priors.npz
 
 Usage:
   python build_bt_priors_r7.py
-  python build_bt_priors_r7.py --pairs-root /tmp/track-grading/round7_pairs
+  python build_bt_priors_r7.py --pairs-root /home/data01/Music/mesh-track-grading/round7_pairs
 """
 from __future__ import annotations
 
@@ -32,11 +32,11 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--pairs-root", type=Path,
-                   default=Path("/tmp/track-grading/round7_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_pairs"))
     p.add_argument("--manifest", type=Path,
-                   default=Path("/tmp/track-grading/deezer/corpus_tracks.json"))
+                   default=Path("/home/data01/Music/mesh-track-grading/deezer/corpus_tracks.json"))
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_priors.npz"))
     p.add_argument("--max-iter", type=int, default=600)
     p.add_argument("--tol", type=float, default=1e-7)
     return p.parse_args()

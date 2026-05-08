@@ -2,7 +2,7 @@
 
 Reads `ml_embeddings` relation from the mesh CozoDB (SQLite-backed),
 filters to the 909 tracks present in `llm-pair-priors-r5.txt`, writes
-to /tmp/track-grading/embeddings.npz with two arrays:
+to /home/data01/Music/mesh-track-grading/embeddings.npz with two arrays:
   - track_ids: int64 [N]
   - embeddings: float32 [N, 512]
 
@@ -21,7 +21,7 @@ from pycozo.client import Client
 
 DB_PATH = "/home/data01/Music/mesh-collection/mesh.db"
 PRIORS_PATH = Path("documents/axis-eval-results/llm-pair-priors-r5.txt")
-OUT_PATH = Path("/tmp/track-grading/embeddings.npz")
+OUT_PATH = Path("/home/data01/Music/mesh-track-grading/embeddings.npz")
 
 
 def main() -> int:

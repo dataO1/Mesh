@@ -83,10 +83,10 @@ def resolve_credentials(args) -> tuple[str, str]:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--genres", type=Path,
-                   default=Path("/tmp/track-grading/everynoise_dj_genres.json"),
+                   default=Path("/home/data01/Music/mesh-track-grading/everynoise_dj_genres.json"),
                    help="output of categorize_genres.py")
     p.add_argument("--out-dir", type=Path,
-                   default=Path("/tmp/track-grading/spotify"),
+                   default=Path("/home/data01/Music/mesh-track-grading/spotify"),
                    help="cache + final output directory")
     p.add_argument("--tracks-per-genre", type=int, default=10,
                    help="how many preview-having tracks to keep per genre")

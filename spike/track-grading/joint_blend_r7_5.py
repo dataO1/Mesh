@@ -8,12 +8,12 @@ aggression score, by default `timbre_roughness` (the cleanest single axis
 for "in-your-face energy") OR an explicit external target if provided.
 
 Inputs:
-  /tmp/track-grading/round7_5_axes.npz
-  /tmp/track-grading/embeddings/corpus_muq_mulan.npz
-  /tmp/track-grading/round7_5_priors.npz
+  /home/data01/Music/mesh-track-grading/round7_5_axes.npz
+  /home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz
+  /home/data01/Music/mesh-track-grading/round7_5_priors.npz
 
 Output:
-  /tmp/track-grading/round7_5_blend.npz
+  /home/data01/Music/mesh-track-grading/round7_5_blend.npz
 """
 from __future__ import annotations
 
@@ -31,18 +31,18 @@ import torch.nn.functional as F
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--axes-file", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_axes.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_axes.npz"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"))
     p.add_argument("--priors", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_priors.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_priors.npz"))
     p.add_argument("--target-axis", default="timbre_roughness",
                    help="axis whose BT priors are the blend target (default: "
                         "timbre_roughness, since round-7.5 dropped 'aggression' "
                         "as redundant). Try 'vocal_aggression' or a specific axis "
                         "to optimise other intensity definitions.")
     p.add_argument("--out", type=Path,
-                   default=Path("/tmp/track-grading/round7_5_blend.npz"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_5_blend.npz"))
     p.add_argument("--epochs", type=int, default=2000)
     p.add_argument("--lr", type=float, default=5e-2)
     p.add_argument("--list-size", type=int, default=64)

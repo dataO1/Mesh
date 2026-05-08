@@ -5,7 +5,7 @@ For each of the k axes defined in `round7_axis_prompts.json`:
   2. For each directed pair (a, b), POST the per-axis prompt + 30 s WAVs
      of clip A and clip B to the local vLLM server.
   3. Cache each judgement as JSON in
-     `/tmp/track-grading/round7_pairs/<axis_id>/<a>_vs_<b>.json`.
+     `/home/data01/Music/mesh-track-grading/round7_pairs/<axis_id>/<a>_vs_<b>.json`.
 
 Runs sequentially over axes, parallelism inside an axis (vLLM batches
 async-engine inflight requests).
@@ -49,12 +49,12 @@ def parse_args():
     p.add_argument("--prompts-file", type=Path,
                    default=Path("spike/track-grading/round7_axis_prompts.json"))
     p.add_argument("--audio-dir", type=Path,
-                   default=Path("/tmp/track-grading/audio"))
+                   default=Path("/home/data01/Music/mesh-track-grading/audio"))
     p.add_argument("--embeddings", type=Path,
-                   default=Path("/tmp/track-grading/embeddings/corpus_muq_mulan.npz"),
+                   default=Path("/home/data01/Music/mesh-track-grading/embeddings/corpus_muq_mulan.npz"),
                    help="used for community-aware sampling (kmeans on embeddings)")
     p.add_argument("--out-dir", type=Path,
-                   default=Path("/tmp/track-grading/round7_pairs"))
+                   default=Path("/home/data01/Music/mesh-track-grading/round7_pairs"))
     p.add_argument("--pairs-per-axis", type=int, default=None,
                    help="override n_pairs_per_axis from prompts file")
     p.add_argument("--n-clusters", type=int, default=24,
