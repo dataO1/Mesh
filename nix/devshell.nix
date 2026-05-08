@@ -166,6 +166,12 @@ pkgs.mkShell {
     echo "║  Nix packages read version from Cargo.toml automatically.            ║"
     echo "║                                                                      ║"
     echo "║  Dry run first:  cargo release patch --dry-run                       ║"
+    echo "╠═══════════════════════════════════════════════════════════════════════╣"
+    echo "║  ML / spike work (vLLM, Music Flamingo, intensity rating):           ║"
+    echo "║    nix develop .#mlspike                                             ║"
+    echo "║      → bootstraps ~/.cache/mesh-spike/vllm-env, sets LD/CUDA env,    ║"
+    echo "║        patches vLLM for MF rote_timestamps. Use it for any           ║"
+    echo "║        spike/track-grading/serve_*.sh script.                        ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

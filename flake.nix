@@ -229,6 +229,15 @@
           inherit pkgs common rustToolchain;
         };
 
+        # ML/spike devshell — vLLM + transformers stack for spike/track-grading/.
+        # Auto-bootstraps the venv at ~/.cache/mesh-spike/vllm-env on entry,
+        # patchelf's bundled triton ELFs for NixOS, applies the MF rote_timestamps
+        # patch, and exports the LD_LIBRARY_PATH / TRITON_LIBCUDA_PATH env vars
+        # the serve scripts need. Enter with: nix develop .#mlspike
+        mlspikeShell = import ./nix/devshell-mlspike.nix {
+          inherit pkgs;
+        };
+
       in
       {
         # Export packages
@@ -240,6 +249,7 @@
         };
 
         devShells.default = devShell;
+        devShells.mlspike = mlspikeShell;
 
         # For CI/CD or quick checks
         checks = {
