@@ -57,7 +57,7 @@ case "$STAGE" in
       --max-tokens 1024 \
       --temperature 0.7 \
       --top-p 0.9 \
-      --workers 16
+      --workers 32
 
     echo
     echo "=== embedding captions with bge-base-en-v1.5 ==="
@@ -81,13 +81,13 @@ case "$STAGE" in
       echo "ERROR: Music Flamingo vLLM serve not responding at :8001" >&2
       exit 1
     fi
-    echo "=== caption full corpus (~40k tracks, ~17-19 hr at ~0.6-0.7 c/s with 1024-tok captions, 16 workers) ==="
+    echo "=== caption full corpus (~40k tracks, ~9-11 hr at ~1.2-1.4 c/s with 1024-tok captions, 32 workers) ==="
     $RUN run_judge_caption.py \
       --tracks-subset all \
       --max-tokens 1024 \
       --temperature 0.7 \
       --top-p 0.9 \
-      --workers 16
+      --workers 32
 
     echo
     echo "=== embedding captions ==="
