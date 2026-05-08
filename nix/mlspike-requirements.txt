@@ -1,85 +1,23 @@
 # Mesh ML-spike pinned Python requirements — declarative, reproducible.
 #
 # Generated from a known-good ~/.cache/mesh-spike/vllm-env on 2026-05-08
-# (after MF rote_timestamps patch + Spark2 Nemotron text-LLM smoke passed).
+# (after MF rote_timestamps patch + Spark2 Nemotron text-LLM smoke passed,
+# and after muq + sentence-transformers + audio extras were added for the
+# round-7.6 V18 corpus pass).
 #
 # The mlspike devshell installs from this file — every transitive dep is
 # pinned, so a fresh bootstrap on a different machine produces the same
-# venv. To upgrade: bump the top-level package(s) by hand, run
-#   nix develop .#mlspike --command pip freeze > nix/mlspike-requirements.txt
-# from a clean venv, review the diff, commit.
+# venv. To upgrade: bump the top-level package(s) by hand, then regenerate
+# from a CLEAN venv (NOT through the devshell, which writes a banner to
+# stdout and would corrupt the file):
+#   "$HOME/.cache/mesh-spike/vllm-env/bin/pip" freeze > nix/mlspike-requirements.txt
+# Review the diff, commit.
 #
 # Top-level packages (the ones we explicitly install — everything else is
-# transitive): vllm[audio], transformers, sentence-transformers,
+# transitive): vllm[audio], transformers, sentence-transformers, muq,
 # soundfile, librosa, scikit-learn, pycozo, cozo_embedded, beautifulsoup4,
 # lxml, spotipy.
 #
-
-╔════════════════════════════════════════════════════════════════════╗
-║   Mesh ML-spike   vllm 0.20.1 · transformers 5.7.0 · py 3.11.15    ║
-╠══ Round-7.6 V18 pipeline (run from project root) ══════════════════╣
-║                                                                    ║
-║  1. Start Music Flamingo (terminal A)                              ║
-║       bash spike/track-grading/serve_music_flamingo.sh   # :8001   ║
-║                                                                    ║
-║  2. Caption sweep (terminal B in devshell)             ~7 hr       ║
-║       bash spike/track-grading/run_round7_6_pipeline.sh caption-full
-║                                                                    ║
-║  3. Text-LLM rating — N independent jurors. Each tag writes its own║
-║     NPZ; step 5 (v18-train) auto-aggregates them via Dawid-Skene.  ║
-║                                                                    ║
-║  ★ START 3A + 3B AS SOON AS STEP 1 IS UP — they run on REMOTE GPUs ║
-║    (Spark 1, Spark 2), so they share nothing with caption-full and ║
-║    overlap fully with step 2. The streaming runner polls the       ║
-║    captions dir every 5 min and exits ~20 min after step 2 ends.   ║
-║                                                                    ║
-║     3A) Spark 2 / Nemotron-30B (terminal C, parallel with step 2)  ║
-║       export TEXT_LLM_URL=http://172.16.54.147:8000/v1/chat/completions
-║       export TEXT_LLM_MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
-║       export TEXT_LLM_TAG=nemotron  TEXT_LLM_NO_THINK=1            ║
-║       ./...pipeline.sh caption-rate-streaming                      ║
-║                                                                    ║
-║     3B) Spark 1 / Qwen3.6-27B (terminal D, parallel with step 2)   ║
-║       export TEXT_LLM_URL=http://172.16.51.90:8000/v1/chat/completions
-║       export TEXT_LLM_MODEL=sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP
-║       export TEXT_LLM_TAG=qwen36  TEXT_LLM_NO_THINK=1  TEXT_LLM_WORKERS=16
-║       ./...pipeline.sh caption-rate-streaming                      ║
-║                                                                    ║
-║     3C) Local Mistral-Small-3.2-24B AWQ — SEQUENTIAL, after step 2:║
-║       pkill -f 'python.*api_server'         # frees GPU from MF    ║
-║       TEXT_LLM_MODEL=gghfez/Mistral-Small-3.2-24B-Instruct-hf-AWQ \║
-║         bash spike/track-grading/serve_text_llm.sh   # :8002       ║
-║       TEXT_LLM_TAG=local_mistral \                                 ║
-║         bash ...pipeline.sh caption-rate                           ║
-║     (Devstral-Small-2507 ships bf16-only ~48 GB → won't fit 24 GB  ║
-║      5090. Mistral-Small-3.2 is Devstral's pre-code-fine-tune base.║
-║      For natural-language intensity rating the base is fine —      ║
-║      arguably better-calibrated than the code-tuned variant.)      ║
-║                                                                    ║
-║     Tail-latency tweak: STABLE_SECS=300 POLL_SECS=60 ./...streaming║
-║                                                                    ║
-║  4. Free GPU before teacher training                               ║
-║       pkill -f 'python.*api_server'                                ║
-║                                                                    ║
-║  5. Train V18 (consensus→teacher→student→eval→export) ~2 hr        ║
-║       bash spike/track-grading/run_round7_6_pipeline.sh v18-train  ║
-║                                                                    ║
-║  6. Inspect                                                        ║
-║       less <mesh-track-grading>/round7_6_eval_report.md            ║
-║       ls   models/aggression-axes/V18_round7_6_*.json              ║
-║                                                                    ║
-╠══ Helpers ═════════════════════════════════════════════════════════╣
-║  Smoke:   ./...pipeline.sh v18-smoke   (200 cached captions)       ║
-║  Logs:    tail -F <mesh-track-grading>/logs/*.log                  ║
-║  GPU:     nvidia-smi   Health: curl -sf localhost:{8001,8002}/health
-║  Stop:    pkill -f 'python.*api_server'    (servers; orchestrator: ^C)
-║  Resume:  caps + rate are per-track resume-safe across days;       ║
-║             re-run the same command and it skips finished work.    ║
-║             Train (S10/S11) re-runs from disk in <2 hr.            ║
-║  Pin:     nix/mlspike-requirements.txt (sha256 1a02d4171790db3a)   ║
-║  Spec:    documents/round-7-6-pipeline-spec.md                     ║
-╚════════════════════════════════════════════════════════════════════╝
-
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
 aiosignal==1.4.0
