@@ -38,6 +38,23 @@ pub const EMBEDDING_DIM: usize = 512;
 /// collection override location.
 pub const AXIS_FILENAME: &str = "muq-mulan-aggression-axis.json";
 
+/// The default intensity-axis JSON, embedded into the binary at build time.
+///
+/// Path is relative to *this source file*, so it resolves to the repo's
+/// `models/muq-mulan-aggression-axis.json` regardless of the build target
+/// (Linux .deb, Windows .zip, OrangePi 5 SD image — all the same blob).
+/// Currently V18.1 (MLP, hidden=128, deployed 2026-05-08).
+///
+/// Users can override this by placing their own JSON at
+/// `<collection_root>/muq-mulan-aggression-axis.json`; the override wins,
+/// see `IntensityProvider::load_for_collection`.
+///
+/// Updating: replace `models/muq-mulan-aggression-axis.json` and rebuild.
+/// `cargo` rebuilds dependents automatically because this `include_bytes!`
+/// counts as a source-file dependency.
+pub const EMBEDDED_AXIS_JSON: &[u8] =
+    include_bytes!("../../../models/muq-mulan-aggression-axis.json");
+
 /// Discriminated union of supported model kinds. Picked at load time.
 #[derive(Debug, Clone)]
 pub enum ModelKind {
@@ -159,24 +176,37 @@ impl IntensityAxis {
     pub fn load(path: &Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| format!("read {:?}: {}", path, e))?;
+        Self::parse_str(&raw, path)
+    }
 
+    /// Load the binary-embedded default axis (`EMBEDDED_AXIS_JSON`). Returns
+    /// the same `IntensityAxis` shape as `load`, just sourced from the
+    /// `include_bytes!` blob rather than disk. Cannot fail in practice
+    /// because the embedded JSON is validated at build time, but we still
+    /// return `Result` so callers don't have to assume.
+    pub fn embedded_default() -> Result<Self, String> {
+        let raw = std::str::from_utf8(EMBEDDED_AXIS_JSON)
+            .map_err(|e| format!("embedded axis is not valid UTF-8: {}", e))?;
+        Self::parse_str(raw, Path::new("<embedded>"))
+    }
+
+    fn parse_str(raw: &str, src: &Path) -> Result<Self, String> {
         // Peek at the JSON to decide which schema to parse against. V15
         // has `variant_id`; V18 has `version` (and usually `model_type`).
-        let head: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("parse {:?}: {}", path, e))?;
+        let head: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| format!("parse {:?}: {}", src, e))?;
         let is_v18 = head.get("version").is_some()
             && head.get("variant_id").is_none();
 
-        let axis = if is_v18 {
-            let v: V18Raw = serde_json::from_str(&raw)
-                .map_err(|e| format!("parse v18 {:?}: {}", path, e))?;
-            Self::from_v18(v, path)?
+        if is_v18 {
+            let v: V18Raw = serde_json::from_str(raw)
+                .map_err(|e| format!("parse v18 {:?}: {}", src, e))?;
+            Self::from_v18(v, src)
         } else {
-            let v: V15Raw = serde_json::from_str(&raw)
-                .map_err(|e| format!("parse v15 {:?}: {}", path, e))?;
-            Self::from_v15(v, path)?
-        };
-        Ok(axis)
+            let v: V15Raw = serde_json::from_str(raw)
+                .map_err(|e| format!("parse v15 {:?}: {}", src, e))?;
+            Self::from_v15(v, src)
+        }
     }
 
     fn from_v15(v: V15Raw, src: &Path) -> Result<Self, String> {
@@ -383,18 +413,53 @@ pub struct IntensityProvider {
 }
 
 impl IntensityProvider {
-    /// Resolve and load the axis from the collection folder.
-    pub fn load_for_collection(collection_root: &Path) -> Result<Self, String> {
+    /// Resolve and load the active intensity axis for a collection.
+    ///
+    /// Resolution order:
+    ///
+    /// 1. **User override** — `<collection_root>/muq-mulan-aggression-axis.json`
+    ///    if it exists. Lets advanced users drop in their own trained axis
+    ///    (V15 / V18 / V18.1 schemas all parse). If the file is malformed,
+    ///    we log the error and fall through to the embedded default — never
+    ///    leave the user with no axis at all.
+    ///
+    /// 2. **Embedded default** — the binary always contains the bundled
+    ///    V18.1 (or whatever the repo's `models/muq-mulan-aggression-axis.json`
+    ///    held at build time) via `include_bytes!`. Cannot fail in practice;
+    ///    we validated the JSON at build by parsing it in our test suite.
+    ///
+    /// Either path produces a usable `IntensityProvider`. The caller never
+    /// has to handle "no axis" — that's why this returns `Self`, not
+    /// `Result<Self>`. (The previous signature returned `Err` for missing
+    /// override and forced every call site to log + degrade. With an
+    /// always-present default, that ceremony goes away.)
+    pub fn load_for_collection(collection_root: &Path) -> Self {
         let candidate = collection_root.join(AXIS_FILENAME);
         if candidate.exists() {
-            let axis = IntensityAxis::load(&candidate)?;
-            log::info!(
-                "Loaded intensity axis '{}' ({}) from {:?}",
-                axis.variant_id, axis.name, candidate
-            );
-            return Ok(Self { axis: Arc::new(axis) });
+            match IntensityAxis::load(&candidate) {
+                Ok(axis) => {
+                    log::info!(
+                        "Loaded intensity axis '{}' from user override {:?}",
+                        axis.variant_id, candidate,
+                    );
+                    return Self { axis: Arc::new(axis) };
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to load user override {:?}: {} — falling back to embedded default",
+                        candidate, e,
+                    );
+                }
+            }
         }
-        Err(format!("no intensity axis at {:?}", candidate))
+        let axis = IntensityAxis::embedded_default()
+            .expect("embedded intensity axis JSON must parse — \
+                     this is validated at build by `cargo test -p mesh-core intensity_axis`");
+        log::info!(
+            "Loaded intensity axis '{}' from binary-embedded default",
+            axis.variant_id,
+        );
+        Self { axis: Arc::new(axis) }
     }
 
     /// Project a single embedding through the loaded axis.
@@ -568,6 +633,25 @@ mod tests {
         assert!(provider.project_normalised(&emb).abs() < 1e-6);
         emb[0] = 0.0;
         assert!((provider.project_normalised(&emb) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn embedded_default_parses_and_projects() {
+        // This is the critical "the .deb / .zip / SD-image bundles will all
+        // ship a working axis" test. Validates the binary-embedded blob at
+        // build time so we never push a release with a malformed default.
+        let axis = IntensityAxis::embedded_default()
+            .expect("embedded axis JSON must parse");
+        // Deployed as of 2026-05-08. Update this assertion when V18.2 lands.
+        assert!(axis.variant_id.contains("V18"),
+                "embedded default unexpectedly is {}", axis.variant_id);
+        assert_eq!(axis.embedding_dim, EMBEDDING_DIM);
+        // Project a unit-norm vector and check the result is finite + sane.
+        let mut emb = vec![0.0; EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let y = axis.project(&emb);
+        assert!(y.is_finite(), "embedded axis produced non-finite score: {}", y);
+        assert!(y.abs() < 100.0, "embedded axis score implausible: {}", y);
     }
 
     #[test]

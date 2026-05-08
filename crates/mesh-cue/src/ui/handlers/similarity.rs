@@ -23,26 +23,34 @@ use super::super::message::Message;
 /// row has the right dim AND the same first 8 floats as the on-disk axis,
 /// skip; otherwise overwrite.
 pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), String> {
-    let model_dir = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
-        Some(d) => d,
+    // Resolve the active axis with the same precedence the runtime uses:
+    //   1. Per-collection user override at <model_dir>/muq-mulan-aggression-axis.json
+    //   2. Binary-embedded default (V18.1 MLP at the time of writing).
+    // Only a malformed override JSON is fatal here — a missing file just
+    // means the user hasn't dropped a custom one, which is the normal case
+    // post-V18.1 (the embedded default carries the deployed model).
+    let axis = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
+        Some(model_dir) => {
+            let axis_path = model_dir.join(
+                crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename()
+            );
+            if axis_path.exists() {
+                let a = crate::ml_analysis::IntensityAxis::load(&axis_path)
+                    .map_err(|e| format!("load axis from {:?}: {}", axis_path, e))?;
+                log::info!("[AXIS] Loaded user override from {:?}", axis_path);
+                a
+            } else {
+                log::info!("[AXIS] No user override at {:?} — using embedded default", axis_path);
+                mesh_core::intensity_axis::IntensityAxis::embedded_default()
+                    .expect("embedded axis JSON must parse")
+            }
+        }
         None => {
-            log::warn!("[AXIS] No MuQ-MuLan model dir — skipping intensity axis store");
-            return Ok(());
+            log::info!("[AXIS] No MuQ-MuLan model dir — using embedded default");
+            mesh_core::intensity_axis::IntensityAxis::embedded_default()
+                .expect("embedded axis JSON must parse")
         }
     };
-    let axis_path = model_dir.join(
-        crate::ml_analysis::MlModelType::MuQMulanLarge.aggression_axis_filename()
-    );
-    if !axis_path.exists() {
-        log::warn!(
-            "[AXIS] No intensity axis JSON at {:?} — intensity scoring inactive. \
-             Run `nix run .#derive-aggression-axes` then `scripts/select-active-axis.sh <id>`.",
-            axis_path,
-        );
-        return Ok(());
-    }
-    let axis = crate::ml_analysis::IntensityAxis::load(&axis_path)
-        .map_err(|e| format!("load axis from {:?}: {}", axis_path, e))?;
     log::info!(
         "[AXIS] Active intensity axis: {} ({}) — formula: {}",
         axis.variant_id, axis.name, axis.intensity_formula,

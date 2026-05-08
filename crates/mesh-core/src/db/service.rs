@@ -307,12 +307,13 @@ impl DatabaseService {
         log::info!("Opening database at {:?}", db_path);
         let db = MeshDb::open(&db_path)?;
 
-        let intensity_provider = crate::intensity_axis::IntensityProvider::load_for_collection(&collection_root)
-            .map_err(|e| {
-                log::warn!("Intensity axis not loaded ({}): intensity scoring will return neutral 0.5", e);
-                e
-            })
-            .ok();
+        // Intensity axis: always succeeds — if the per-collection user
+        // override is missing/malformed, falls back to the binary-embedded
+        // default (V18.1 MLP at the time of writing). See
+        // `IntensityProvider::load_for_collection` doc.
+        let intensity_provider = Some(
+            crate::intensity_axis::IntensityProvider::load_for_collection(&collection_root)
+        );
 
         Ok(Arc::new(Self { db, collection_root, intensity_provider }))
     }
