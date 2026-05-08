@@ -394,15 +394,20 @@ case "$STAGE" in
       exit 1
     fi
     echo "=== S6+S7+S8: build consensus intensity (Dawid-Skene jury) ==="
-    echo "[v18-train] caption-intensity sources:"
+    echo "[v18-train] caption-intensity sources (3 modern jurors, full 40k coverage):"
     for ((i=1; i<${#INT_NPZS[@]}; i+=2)); do
       echo "  ${INT_NPZS[i]}"
     done
+    # Round-7.5 inputs (round7_5_priors / round7_5_tags / MF Likert) are NOT
+    # passed in. Rationale (decided 2026-05-08): r7.5 only covers 15314 of
+    # the expanded 39913-track corpus (38%), and on the overlap the modern
+    # 3-juror panel agrees with itself at ρ=0.93-0.96 — diversity is fine
+    # without legacy sources. Carrying r7.5 forces a 38%/100% coverage
+    # asymmetry into the EM that contributes to σ² collapse pathologies,
+    # and shrinks the teacher's training set from 40k to 15k. Drop them
+    # from this run; the underlying NPZs stay on disk untouched.
     $RUN aggregate_consensus.py \
-      --bt-priors "$BASE/round7_5_priors.npz" \
-      --bt-tags   "$BASE/round7_5_tags.npz" \
       "${INT_NPZS[@]}" \
-      --likert-root  "$BASE/round7_6_likert/music_flamingo" \
       --out "$BASE/round7_6_consensus.npz"
 
     echo
@@ -413,13 +418,15 @@ case "$STAGE" in
       --out "$BASE/round7_6_split.npz"
 
     echo
-    echo "=== S10: train teacher (privileged: audio + caption + struct + r75 tags) ==="
+    echo "=== S10: train teacher (privileged: audio + caption + struct, full 40k) ==="
+    # No --r75-priors / --r75-tags — the teacher trains on
+    # [audio_emb 512 + caption_emb 768 + struct_tags 52] = 1332d input
+    # over the full ~40k aligned tracks. Privileged-info asymmetry vs
+    # the audio-only student (G6) still holds via caption_emb + struct.
     $RUN train_v18_teacher.py \
       --audio-emb     "$BASE/embeddings/corpus_muq_mulan.npz" \
       --caption-emb   "$BASE/round7_6_caption_emb.npz" \
       --struct-tags   "$BASE/round7_6_caption_struct.npz" \
-      --r75-priors    "$BASE/round7_5_priors.npz" \
-      --r75-tags      "$BASE/round7_5_tags.npz" \
       --consensus     "$BASE/round7_6_consensus.npz" \
       --split         "$BASE/round7_6_split.npz" \
       --out-dir       "$BASE"

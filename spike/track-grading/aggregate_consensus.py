@@ -57,8 +57,15 @@ LIKERT_PRO_HIGH = PRO_HIGH_AXES
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--bt-priors", type=Path, required=True)
-    p.add_argument("--bt-tags", type=Path, required=True)
+    # Round-7.5 BT priors and mined tags are now optional consensus inputs.
+    # If omitted, the jury is composed only of the caption-intensity NPZs
+    # passed via --cap-intensity (and optionally MF Likert via --likert-root).
+    # Decided 2026-05-08: r7.5 only covers 38% of the 40k corpus; modern
+    # 3-juror panel at 100% coverage gives a cleaner consensus on its own.
+    p.add_argument("--bt-priors", type=Path, default=None,
+                   help="(optional) round-7.5 BT priors NPZ → S6a r7.5_bt_blend source")
+    p.add_argument("--bt-tags", type=Path, default=None,
+                   help="(optional) round-7.5 mined tags NPZ → S6b aggressive_overall_tag source")
     p.add_argument("--cap-intensity", type=Path, action="append", required=True,
                    help="path to a caption→text-LLM intensity NPZ; may be "
                         "specified multiple times (one per text-LLM source). "
@@ -266,8 +273,13 @@ def dawid_skene_em(
 
 def main(args) -> int:
     # ── Load all sources ────────────────────────────────────────────────
-    bt_tids, bt_score = load_btprior_intensity(args.bt_priors, args.bt_tags)
-    agg_tids, agg_score = load_aggressive_tag(args.bt_tags)
+    if args.bt_priors is not None and args.bt_tags is not None:
+        bt_tids, bt_score = load_btprior_intensity(args.bt_priors, args.bt_tags)
+        agg_tids, agg_score = load_aggressive_tag(args.bt_tags)
+    else:
+        print("[agg] r7.5 inputs not provided — skipping S6a/S6b sources")
+        bt_tids = np.array([], dtype=np.int64); bt_score = np.array([], dtype=np.float32)
+        agg_tids = np.array([], dtype=np.int64); agg_score = np.array([], dtype=np.float32)
     # One or more caption-intensity NPZs (S4). Each becomes its own jury slot.
     cap_sources: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for p in args.cap_intensity:
@@ -313,10 +325,11 @@ def main(args) -> int:
                 out[i] = v
         return out
 
-    raw = {
-        "r7.5_bt_blend":           expand(bt_tids, bt_score),
-        "aggressive_overall_tag":  expand(agg_tids, agg_score),
-    }
+    raw = {}
+    if len(bt_tids) > 0:
+        raw["r7.5_bt_blend"] = expand(bt_tids, bt_score)
+    if len(agg_tids) > 0:
+        raw["aggressive_overall_tag"] = expand(agg_tids, agg_score)
     for name, (tids, scores) in cap_sources.items():
         raw[name] = expand(tids, scores)
     if lik is not None:

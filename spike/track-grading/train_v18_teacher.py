@@ -34,8 +34,15 @@ def parse_args():
     p.add_argument("--audio-emb", type=Path, required=True)        # corpus_muq_mulan.npz
     p.add_argument("--caption-emb", type=Path, required=True)
     p.add_argument("--struct-tags", type=Path, required=True)
-    p.add_argument("--r75-priors", type=Path, required=True)       # for the 16 axis heads (aux)
-    p.add_argument("--r75-tags", type=Path, required=True)         # for the 13d tag feature
+    # Round-7.5 inputs are now optional. When omitted, the teacher trains
+    # without the 16-axis auxiliary head (β=0 effectively) and without the
+    # 13d r7.5 tag feature. Decided 2026-05-08 because r7.5 only covers
+    # 38% of the expanded 40k corpus, and forcing the alignment shrinks
+    # the teacher's training set to that subset. See pipeline-spec note.
+    p.add_argument("--r75-priors", type=Path, default=None,
+                   help="(optional) round-7.5 BT priors NPZ; enables 16-axis aux head")
+    p.add_argument("--r75-tags", type=Path, default=None,
+                   help="(optional) round-7.5 mined tags NPZ; adds 13d to teacher input")
     p.add_argument("--consensus", type=Path, required=True)        # primary target
     p.add_argument("--split", type=Path, required=True)
     p.add_argument("--out-dir", type=Path,
@@ -82,21 +89,29 @@ def main(args) -> int:
     st_arr  = s["tag_present"].astype(np.float32)        # boolean → 0/1
     st_tid_to_i = {int(t): i for i, t in enumerate(st_tids)}
 
-    rt = np.load(args.r75_tags, allow_pickle=True)
-    rt_tids = rt["track_ids"].astype(np.int64)
-    rt_arr  = rt["tag_evidence"].astype(np.float32)
-    # z-score r7.5 tags so feature scale is comparable to the others
-    rt_arr = (rt_arr - rt_arr.mean(axis=0)) / (rt_arr.std(axis=0) + 1e-6)
-    rt_tid_to_i = {int(t): i for i, t in enumerate(rt_tids)}
+    use_r75_tags = args.r75_tags is not None
+    use_r75_priors = args.r75_priors is not None
+    if use_r75_tags:
+        rt = np.load(args.r75_tags, allow_pickle=True)
+        rt_tids = rt["track_ids"].astype(np.int64)
+        rt_arr  = rt["tag_evidence"].astype(np.float32)
+        # z-score r7.5 tags so feature scale is comparable to the others
+        rt_arr = (rt_arr - rt_arr.mean(axis=0)) / (rt_arr.std(axis=0) + 1e-6)
+        rt_tid_to_i = {int(t): i for i, t in enumerate(rt_tids)}
+    else:
+        rt_tids = None; rt_arr = None; rt_tid_to_i = None
 
-    rp = np.load(args.r75_priors, allow_pickle=True)
-    rp_tids = rp["track_ids"].astype(np.int64)
-    axis_names = list(rp["axes"])
-    rp_scores = rp["scores"]                              # [16, N]
-    # z-score per axis
-    rp_z = (rp_scores - rp_scores.mean(axis=1, keepdims=True)) / \
-           (rp_scores.std(axis=1, keepdims=True) + 1e-6)
-    rp_tid_to_i = {int(t): i for i, t in enumerate(rp_tids)}
+    if use_r75_priors:
+        rp = np.load(args.r75_priors, allow_pickle=True)
+        rp_tids = rp["track_ids"].astype(np.int64)
+        axis_names = list(rp["axes"])
+        rp_scores = rp["scores"]                              # [16, N]
+        # z-score per axis
+        rp_z = (rp_scores - rp_scores.mean(axis=1, keepdims=True)) / \
+               (rp_scores.std(axis=1, keepdims=True) + 1e-6)
+        rp_tid_to_i = {int(t): i for i, t in enumerate(rp_tids)}
+    else:
+        rp_tids = None; axis_names = []; rp_z = None; rp_tid_to_i = None
 
     cs = np.load(args.consensus, allow_pickle=True)
     cs_tids = cs["track_ids"].astype(np.int64)
@@ -112,10 +127,12 @@ def main(args) -> int:
     common = (set(int(t) for t in audio_tids)
               & set(int(t) for t in cap_tids)
               & set(int(t) for t in st_tids)
-              & set(int(t) for t in rt_tids)
-              & set(int(t) for t in rp_tids)
               & set(int(t) for t in cs_tids)
               & set(sp_tid_to_split.keys()))
+    if use_r75_tags:
+        common &= set(int(t) for t in rt_tids)
+    if use_r75_priors:
+        common &= set(int(t) for t in rp_tids)
     track_ids = sorted(common)
     print(f"[teacher] aligned: {len(track_ids)} tracks across all features")
 
@@ -124,22 +141,24 @@ def main(args) -> int:
     A = audio_arr.shape[1]
     C = cap_arr.shape[1]
     S = st_arr.shape[1]
-    T = rt_arr.shape[1]
-    AX = rp_z.shape[0]
+    T = rt_arr.shape[1] if use_r75_tags else 0
+    AX = rp_z.shape[0] if use_r75_priors else 0
     print(f"[teacher] feature dims: audio={A} caption={C} struct={S} r75tags={T}; "
           f"axis heads={AX}")
 
     X = np.zeros((N, A + C + S + T), dtype=np.float32)
     y_int = np.zeros(N, dtype=np.float32)
-    y_axes = np.zeros((N, AX), dtype=np.float32)
+    y_axes = np.zeros((N, AX), dtype=np.float32) if AX > 0 else None
     splits = np.empty(N, dtype=object)
     for i, tid in enumerate(track_ids):
         X[i, :A]                = audio_arr[audio_tid_to_i[tid]]
         X[i, A:A+C]             = cap_arr[cap_tid_to_i[tid]]
         X[i, A+C:A+C+S]         = st_arr[st_tid_to_i[tid]]
-        X[i, A+C+S:A+C+S+T]     = rt_arr[rt_tid_to_i[tid]]
+        if use_r75_tags:
+            X[i, A+C+S:A+C+S+T] = rt_arr[rt_tid_to_i[tid]]
         y_int[i]                = cs_arr[cs_tid_to_i[tid]]
-        y_axes[i]               = rp_z[:, rp_tid_to_i[tid]]
+        if use_r75_priors:
+            y_axes[i]           = rp_z[:, rp_tid_to_i[tid]]
         splits[i]               = sp_tid_to_split[tid]
     print(f"[teacher] X shape={X.shape}  y_int range=[{y_int.min():.3f},{y_int.max():.3f}]")
 
@@ -157,15 +176,17 @@ def main(args) -> int:
             self.dropout = nn.Dropout(p)
             self.act = nn.GELU()
             self.head_int = nn.Linear(h2, 1)
-            self.head_axes = nn.Linear(h2, n_axes)
+            self.has_axes = n_axes > 0
+            self.head_axes = nn.Linear(h2, n_axes) if self.has_axes else None
 
         def forward(self, x, return_penultimate=False):
             h = self.act(self.fc1(x))
             h = self.dropout(h)
             penult = self.act(self.fc2(h))
+            ax = self.head_axes(penult) if self.has_axes else None
             if return_penultimate:
-                return self.head_int(penult).squeeze(-1), self.head_axes(penult), penult
-            return self.head_int(penult).squeeze(-1), self.head_axes(penult)
+                return self.head_int(penult).squeeze(-1), ax, penult
+            return self.head_int(penult).squeeze(-1), ax
 
     in_dim = X.shape[1]
     model = Teacher(in_dim, args.hidden1, args.hidden2, AX, args.dropout).to(device)
@@ -174,7 +195,7 @@ def main(args) -> int:
 
     Xt = torch.from_numpy(X).to(device)
     yi = torch.from_numpy(y_int).to(device)
-    ya = torch.from_numpy(y_axes).to(device)
+    ya = torch.from_numpy(y_axes).to(device) if y_axes is not None else None
     train_t = torch.from_numpy(train_idx).to(device)
     val_t = torch.from_numpy(val_idx).to(device)
 
@@ -189,8 +210,11 @@ def main(args) -> int:
             idx = train_t[perm[k:k+args.batch_size]]
             pred_int, pred_ax = model(Xt[idx])
             loss_int = nn.functional.mse_loss(pred_int, yi[idx])
-            loss_ax = nn.functional.mse_loss(pred_ax, ya[idx])
-            loss = args.alpha_intensity * loss_int + args.beta_axes * loss_ax
+            if model.has_axes:
+                loss_ax = nn.functional.mse_loss(pred_ax, ya[idx])
+                loss = args.alpha_intensity * loss_int + args.beta_axes * loss_ax
+            else:
+                loss = args.alpha_intensity * loss_int
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -201,7 +225,8 @@ def main(args) -> int:
         with torch.no_grad():
             pred_int_v, pred_ax_v = model(Xt[val_t])
             v_int = nn.functional.mse_loss(pred_int_v, yi[val_t]).item()
-            v_ax = nn.functional.mse_loss(pred_ax_v, ya[val_t]).item()
+            v_ax = (nn.functional.mse_loss(pred_ax_v, ya[val_t]).item()
+                    if model.has_axes else float("nan"))
         history.append({"epoch": epoch, "train_loss": train_loss,
                         "val_int_mse": v_int, "val_ax_mse": v_ax})
 
@@ -214,8 +239,9 @@ def main(args) -> int:
             break
 
         if epoch % 5 == 0 or epoch == args.epochs - 1:
+            ax_str = f"val_ax={v_ax:.4f}  " if model.has_axes else ""
             print(f"  ep {epoch:>3d}  train={train_loss:.4f}  "
-                  f"val_int={v_int:.4f}  val_ax={v_ax:.4f}  best@{best_epoch}")
+                  f"val_int={v_int:.4f}  {ax_str}best@{best_epoch}")
 
     wall = time.time() - t0
     print(f"[teacher] trained in {wall:.1f}s; best val_int_mse={best_val:.4f} "
@@ -242,7 +268,7 @@ def main(args) -> int:
     with torch.no_grad():
         pred_int_all, pred_ax_all, penult_all = model(Xt, return_penultimate=True)
     pred_int_np = pred_int_all.cpu().numpy()
-    pred_ax_np  = pred_ax_all.cpu().numpy()
+    pred_ax_np  = pred_ax_all.cpu().numpy() if pred_ax_all is not None else np.zeros((Xt.shape[0], 0), dtype=np.float32)
     penult_np   = penult_all.cpu().numpy()
 
     test_int_pred = pred_int_np[test_idx]
