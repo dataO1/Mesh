@@ -22,6 +22,12 @@ fn main() {
     //   <collection_root>            — defaults to ~/Music/mesh-collection
     //   --export-md <path>           — also dump full per-track ranking to file
     let mut export_md: Option<PathBuf> = None;
+    let mut outliers_md: Option<PathBuf> = None;
+    let mut outlier_k: usize = 15;
+    let mut outlier_top_n: usize = 30;
+    let mut baseline_scores: Option<PathBuf> = None;
+    let mut baseline_label: String = "baseline".into();
+    let mut active_label: String = "active".into();
     let mut positional: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -32,6 +38,40 @@ fn main() {
                 eprintln!("--export-md requires a path argument");
                 std::process::exit(2);
             }
+        } else if a == "--outliers" {
+            if let Some(p) = args.next() {
+                outliers_md = Some(PathBuf::from(p));
+            } else {
+                eprintln!("--outliers requires a path argument");
+                std::process::exit(2);
+            }
+        } else if a == "--outlier-k" {
+            if let Some(v) = args.next().and_then(|s| s.parse().ok()) {
+                outlier_k = v;
+            } else {
+                eprintln!("--outlier-k requires an integer");
+                std::process::exit(2);
+            }
+        } else if a == "--outlier-top-n" {
+            if let Some(v) = args.next().and_then(|s| s.parse().ok()) {
+                outlier_top_n = v;
+            } else {
+                eprintln!("--outlier-top-n requires an integer");
+                std::process::exit(2);
+            }
+        } else if a == "--baseline-scores" {
+            if let Some(p) = args.next() {
+                baseline_scores = Some(PathBuf::from(p));
+            } else {
+                eprintln!("--baseline-scores requires a path");
+                std::process::exit(2);
+            }
+        } else if a == "--baseline-label" {
+            if let Some(v) = args.next() { baseline_label = v; }
+            else { eprintln!("--baseline-label requires a string"); std::process::exit(2); }
+        } else if a == "--active-label" {
+            if let Some(v) = args.next() { active_label = v; }
+            else { eprintln!("--active-label requires a string"); std::process::exit(2); }
         } else {
             positional.push(a);
         }
@@ -279,6 +319,360 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("\n  ❌  failed to write export to {}: {}", out_path.display(), e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // ── 6. Optional kNN-residual outlier detection (--outliers) ───────────
+    // For each track, find its k nearest sonic neighbours by cosine
+    // similarity in 1024-d intensity-probe embedding space. Compare its own
+    // intensity score to the mean intensity of those neighbours. A track
+    // whose score is far above its neighbours' mean is "over-ranked": the
+    // model thinks it's more intense than its sonic siblings. Far below =
+    // under-ranked. Z-scored against the per-track neighbour σ.
+    //
+    // When `--baseline-scores <path>` is also supplied, the same kNN graph is
+    // re-scored against a second source of per-track scores (parsed from a
+    // baseline.md exported by --export-md). This isolates the *scoring*
+    // change between two model versions while holding the sonic-neighbourhood
+    // definition fixed — so V18.1 vs V18.X outliers are directly comparable.
+    if let Some(out_path) = outliers_md.as_ref() {
+        use std::io::Write;
+        eprintln!("\n  Running kNN-residual outlier detection (k={}) …", outlier_k);
+
+        // Gather (track_id, embedding, score_active, &Track).
+        let triples: Vec<(i64, Vec<f32>, f32, &mesh_core::db::Track)> = all_tracks.iter()
+            .filter_map(|t| {
+                let tid = t.id?;
+                let emb = db.get_ml_intensity_embedding_raw(tid).ok().flatten()?;
+                if emb.len() != mesh_core::intensity_axis::EMBEDDING_DIM { return None; }
+                let score = provider.project(&emb);
+                Some((tid, emb, score, t))
+            })
+            .collect();
+
+        // Optional baseline-scores join: HashMap<track_id, score>. Tracks
+        // missing from the baseline are flagged in the report as "no baseline".
+        let baseline_scores_map: Option<std::collections::HashMap<i64, f32>> = baseline_scores.as_ref().map(|p| {
+            let txt = std::fs::read_to_string(p).unwrap_or_else(|e| {
+                eprintln!("  ❌  failed to read --baseline-scores {}: {}", p.display(), e);
+                std::process::exit(1);
+            });
+            // Baseline tables look like:
+            //   | rank | percentile | score | track_id | artist | title | bpm | key | duration_s |
+            // We just want columns 3 (score) and 4 (track_id). Robust to header lines etc.
+            let mut map = std::collections::HashMap::new();
+            for line in txt.lines() {
+                if !line.starts_with('|') { continue; }
+                let cells: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
+                if cells.len() < 6 { continue; }
+                let score: Option<f32> = cells[3].parse().ok();
+                let tid: Option<i64> = cells[4].parse().ok();
+                if let (Some(s), Some(t)) = (score, tid) {
+                    map.insert(t, s);
+                }
+            }
+            eprintln!("  Loaded {} baseline scores from {}", map.len(), p.display());
+            map
+        });
+
+        // Pre-normalize embeddings → cosine similarity becomes a dot product.
+        let norms: Vec<Vec<f32>> = triples.iter().map(|(_, e, _, _)| {
+            let mag: f32 = e.iter().map(|x| x*x).sum::<f32>().sqrt().max(1e-12);
+            e.iter().map(|x| x / mag).collect()
+        }).collect();
+
+        let m = triples.len();
+        let k = outlier_k.min(m.saturating_sub(1));
+
+        // Per-track scoring sources. Active = live model. Baseline = parsed file.
+        // For tracks missing from the baseline, baseline_score = NaN and we
+        // exclude them from baseline aggregates.
+        let scores_active: Vec<f32> = triples.iter().map(|(_, _, s, _)| *s).collect();
+        let scores_baseline: Vec<f32> = triples.iter().map(|(tid, _, _, _)| {
+            baseline_scores_map.as_ref()
+                .and_then(|m| m.get(tid).copied())
+                .unwrap_or(f32::NAN)
+        }).collect();
+
+        // For each track, find top-k neighbours and compute residual under
+        // both scoring sources. Same neighbour set for both → directly
+        // comparable z-scores.
+        #[derive(Clone)]
+        struct Outlier {
+            idx: usize,
+            score_active: f32,
+            score_baseline: f32, // NaN if missing
+            nb_mean_active: f32,
+            nb_mean_baseline: f32, // NaN if any neighbour missing baseline
+            residual_active: f32,
+            residual_baseline: f32, // NaN if missing
+            z_active: f32,
+            z_baseline: f32, // NaN if missing
+            top_neighbours: Vec<(usize, f32)>,
+        }
+        let mut outliers: Vec<Outlier> = Vec::with_capacity(m);
+        for i in 0..m {
+            let qi = &norms[i];
+            let mut sims: Vec<(f32, usize)> = (0..m)
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let qj = &norms[j];
+                    let dot: f32 = qi.iter().zip(qj.iter()).map(|(a, b)| a * b).sum();
+                    (dot, j)
+                })
+                .collect();
+            sims.select_nth_unstable_by(k, |a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            let neighbours = &sims[..k];
+
+            // Active scoring
+            let nb_scores_a: Vec<f32> = neighbours.iter().map(|(_, j)| scores_active[*j]).collect();
+            let mean_a = nb_scores_a.iter().sum::<f32>() / k as f32;
+            let var_a = nb_scores_a.iter().map(|s| (s - mean_a).powi(2)).sum::<f32>() / k as f32;
+            let std_a = var_a.sqrt().max(1e-3);
+            let res_a = scores_active[i] - mean_a;
+            let z_a = res_a / std_a;
+
+            // Baseline scoring (skip if track or any neighbour missing)
+            let nb_scores_b: Vec<f32> = neighbours.iter().map(|(_, j)| scores_baseline[*j]).collect();
+            let any_missing = scores_baseline[i].is_nan() || nb_scores_b.iter().any(|s| s.is_nan());
+            let (mean_b, res_b, z_b) = if any_missing {
+                (f32::NAN, f32::NAN, f32::NAN)
+            } else {
+                let mean = nb_scores_b.iter().sum::<f32>() / k as f32;
+                let var = nb_scores_b.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / k as f32;
+                let std = var.sqrt().max(1e-3);
+                let r = scores_baseline[i] - mean;
+                (mean, r, r / std)
+            };
+
+            let mut top3 = neighbours.to_vec();
+            top3.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            let top_neighbours = top3.iter().take(3).map(|(s, j)| (*j, *s)).collect();
+
+            outliers.push(Outlier {
+                idx: i,
+                score_active: scores_active[i], score_baseline: scores_baseline[i],
+                nb_mean_active: mean_a, nb_mean_baseline: mean_b,
+                residual_active: res_a, residual_baseline: res_b,
+                z_active: z_a, z_baseline: z_b,
+                top_neighbours,
+            });
+        }
+
+        let render_neighbours = |o: &Outlier| -> String {
+            o.top_neighbours.iter().map(|(j, sim)| {
+                let t = triples[*j].3;
+                let nb_score_a = scores_active[*j];
+                format!("{} — {} (sim {:.3}, {} {:+.3})",
+                    t.artist.as_deref().unwrap_or("?").replace('|', "\\|"),
+                    t.title.replace('|', "\\|"),
+                    sim, active_label, nb_score_a)
+            }).collect::<Vec<_>>().join("<br>")
+        };
+
+        let mut buf = String::new();
+        buf.push_str("---\n");
+        buf.push_str("tags: [knowledge-base, mesh, intensity-axis, outlier-detection]\n");
+        buf.push_str(&format!("created: {}\n", chrono::Utc::now().format("%Y-%m-%d")));
+        buf.push_str("status: kNN-residual outlier snapshot\n");
+        buf.push_str(&format!("axis_variant: {}\n", axis.variant_id));
+        buf.push_str(&format!("library: {}\n", collection_root.display()));
+        buf.push_str(&format!("n_tracks: {}\n", m));
+        buf.push_str(&format!("knn_k: {}\n", k));
+        buf.push_str(&format!("active_label: {}\n", active_label));
+        if baseline_scores.is_some() {
+            buf.push_str(&format!("baseline_label: {}\n", baseline_label));
+        }
+        buf.push_str("---\n\n");
+        buf.push_str(&format!("# Intensity outliers — {} vs {} (kNN-residual)\n\n",
+            active_label, baseline_label));
+
+        if baseline_scores.is_some() {
+            buf.push_str(&format!(
+                "For each track, this finds its **{} nearest sonic neighbours** by cosine \
+                similarity in the 1024-d MuQ-MuLan intensity-probe embedding (V18.X's substrate). \
+                The same neighbour set is then re-scored under both `{}` (current model, live \
+                projection) and `{}` (parsed from baseline file). This holds *what counts as a \
+                similar track* fixed and isolates how the **scoring decisions** differ.\n\n\
+                * **z = (track_score − neighbour_mean) / neighbour_std**\n\
+                * **|z| > 2σ** = noteworthy disagreement with sonic siblings\n\
+                * **|z| > 3σ** = strong outlier\n\n\
+                The summary table below is the headline answer: *which model produces more \
+                outliers, or stronger outliers?*\n\n",
+                k, active_label, baseline_label));
+        } else {
+            buf.push_str(&format!(
+                "For each track, this finds its **{} nearest sonic neighbours** by cosine \
+                similarity in the 1024-d MuQ-MuLan intensity-probe embedding. \
+                Then compares the track's own intensity score to those neighbours' mean.\n\n\
+                * **z ≫ 0** → over-ranked vs sonic siblings\n\
+                * **z ≪ 0** → under-ranked vs sonic siblings\n\n", k));
+        }
+
+        // Aggregate outlier stats per scoring source
+        let aggregate = |zs: &[f32]| -> (f32, f32, usize, usize, usize) {
+            let valid: Vec<f32> = zs.iter().copied().filter(|z| !z.is_nan()).collect();
+            if valid.is_empty() { return (f32::NAN, f32::NAN, 0, 0, 0); }
+            let mean_abs_z = valid.iter().map(|z| z.abs()).sum::<f32>() / valid.len() as f32;
+            let max_abs_z = valid.iter().map(|z| z.abs()).fold(0.0_f32, f32::max);
+            let n_2sigma = valid.iter().filter(|z| z.abs() > 2.0).count();
+            let n_3sigma = valid.iter().filter(|z| z.abs() > 3.0).count();
+            (mean_abs_z, max_abs_z, n_2sigma, n_3sigma, valid.len())
+        };
+        let zs_a: Vec<f32> = outliers.iter().map(|o| o.z_active).collect();
+        let zs_b: Vec<f32> = outliers.iter().map(|o| o.z_baseline).collect();
+        let (mean_a, max_a, n2_a, n3_a, n_valid_a) = aggregate(&zs_a);
+        let (mean_b, max_b, n2_b, n3_b, n_valid_b) = aggregate(&zs_b);
+
+        if baseline_scores.is_some() {
+            buf.push_str("## Aggregate outlier metrics\n\n");
+            buf.push_str("Lower mean |z| and lower outlier counts = better internal consistency \
+                (the model agrees with sonic neighbours more often).\n\n");
+            buf.push_str(&format!("| metric | {} | {} | winner |\n", active_label, baseline_label));
+            buf.push_str("|---|---:|---:|:---|\n");
+            let pick = |a: f32, b: f32| -> &str {
+                if a.is_nan() || b.is_nan() { "—" }
+                else if a < b { active_label.as_str() } else if b < a { baseline_label.as_str() } else { "tie" }
+            };
+            let pick_int = |a: usize, b: usize| -> &str {
+                if a < b { active_label.as_str() } else if b < a { baseline_label.as_str() } else { "tie" }
+            };
+            buf.push_str(&format!("| Tracks scored | {} | {} | — |\n", n_valid_a, n_valid_b));
+            buf.push_str(&format!("| **Mean \\|z\\|** (overall outlier intensity) | `{:.3}σ` | `{:.3}σ` | **{}** |\n",
+                mean_a, mean_b, pick(mean_a, mean_b)));
+            buf.push_str(&format!("| **Max \\|z\\|** (worst outlier) | `{:.3}σ` | `{:.3}σ` | **{}** |\n",
+                max_a, max_b, pick(max_a, max_b)));
+            buf.push_str(&format!("| Tracks with \\|z\\| > 2σ | {} ({:.1} %) | {} ({:.1} %) | **{}** |\n",
+                n2_a, 100.0 * n2_a as f32 / n_valid_a.max(1) as f32,
+                n2_b, 100.0 * n2_b as f32 / n_valid_b.max(1) as f32,
+                pick_int(n2_a, n2_b)));
+            buf.push_str(&format!("| Tracks with \\|z\\| > 3σ | {} ({:.1} %) | {} ({:.1} %) | **{}** |\n",
+                n3_a, 100.0 * n3_a as f32 / n_valid_a.max(1) as f32,
+                n3_b, 100.0 * n3_b as f32 / n_valid_b.max(1) as f32,
+                pick_int(n3_a, n3_b)));
+            buf.push_str("\n");
+        }
+
+        // Sort by max(|z_active|, |z_baseline|) to surface "biggest outlier in either model".
+        let mut over: Vec<&Outlier> = outliers.iter().collect();
+        let mut under: Vec<&Outlier> = outliers.iter().collect();
+        if baseline_scores.is_some() {
+            // Comparison mode: sort by max signed z across both models so we
+            // see tracks one model thinks are wildly out of place even if the
+            // other agrees with the cluster.
+            over.sort_by(|a, b| {
+                let za = a.z_active.max(if a.z_baseline.is_nan() { f32::NEG_INFINITY } else { a.z_baseline });
+                let zb = b.z_active.max(if b.z_baseline.is_nan() { f32::NEG_INFINITY } else { b.z_baseline });
+                zb.partial_cmp(&za).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            under.sort_by(|a, b| {
+                let za = a.z_active.min(if a.z_baseline.is_nan() { f32::INFINITY } else { a.z_baseline });
+                let zb = b.z_active.min(if b.z_baseline.is_nan() { f32::INFINITY } else { b.z_baseline });
+                za.partial_cmp(&zb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            over.sort_by(|a, b| b.z_active.partial_cmp(&a.z_active).unwrap_or(std::cmp::Ordering::Equal));
+            under.sort_by(|a, b| a.z_active.partial_cmp(&b.z_active).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        let nan_str = |v: f32, fmt_str: &str| if v.is_nan() { "—".to_string() } else {
+            // Tiny formatter to handle a few precisions inline.
+            match fmt_str {
+                "z"  => format!("{:+.2}σ", v),
+                "s"  => format!("{:+.4}", v),
+                _ => format!("{}", v),
+            }
+        };
+
+        let render_row = |o: &Outlier| -> String {
+            let t = triples[o.idx].3;
+            let id_str = t.id.map(|i| i.to_string()).unwrap_or_else(|| "—".into());
+            let artist = t.artist.as_deref().unwrap_or("?").replace('|', "\\|");
+            let title  = t.title.replace('|', "\\|");
+            if baseline_scores.is_some() {
+                format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                    nan_str(o.z_active, "z"),
+                    nan_str(o.z_baseline, "z"),
+                    nan_str(o.score_active, "s"),
+                    nan_str(o.score_baseline, "s"),
+                    nan_str(o.nb_mean_active, "s"),
+                    nan_str(o.nb_mean_baseline, "s"),
+                    nan_str(o.residual_active, "s"),
+                    nan_str(o.residual_baseline, "s"),
+                    id_str, artist, title,
+                )
+            } else {
+                format!("| {} | {} | {} | {} | {} | {} | {} | {} |",
+                    nan_str(o.z_active, "z"),
+                    nan_str(o.score_active, "s"),
+                    nan_str(o.nb_mean_active, "s"),
+                    nan_str(o.residual_active, "s"),
+                    id_str, artist, title, render_neighbours(o),
+                )
+            }
+        };
+
+        let header = if baseline_scores.is_some() {
+            format!("| z {a} | z {b} | score {a} | score {b} | nb mean {a} | nb mean {b} | residual {a} | residual {b} | track_id | artist | title |\n\
+                     |---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
+                a = active_label, b = baseline_label)
+        } else {
+            "| z-score | track score | neighbour mean | residual | track_id | artist | title | top-3 nearest neighbours |\n\
+             |---:|---:|---:|---:|---:|---|---|---|".to_string()
+        };
+
+        buf.push_str(&format!("## Top {} most over-ranked tracks\n\n", outlier_top_n));
+        buf.push_str(&format!("{}\n\n", if baseline_scores.is_some() {
+            format!("Sorted by **max(z {}, z {})** — surfaces the biggest over-rank in either model. \
+                If z is much larger in one column than the other, that model is the one mis-scoring \
+                this track. If both columns agree (both ≈ 0 or both ≈ +3σ), both models are doing \
+                the same thing.", active_label, baseline_label)
+        } else {
+            "Model rates these much *higher* than their sonic siblings.".to_string()
+        }));
+        buf.push_str(&format!("{}\n", header));
+        for o in over.iter().take(outlier_top_n) {
+            buf.push_str(&render_row(o));
+            buf.push('\n');
+        }
+        buf.push('\n');
+
+        buf.push_str(&format!("## Top {} most under-ranked tracks\n\n", outlier_top_n));
+        buf.push_str(&format!("{}\n\n", if baseline_scores.is_some() {
+            format!("Sorted by **min(z {}, z {})** — surfaces the biggest under-rank in either model.",
+                active_label, baseline_label)
+        } else {
+            "Model rates these much *lower* than their sonic siblings.".to_string()
+        }));
+        buf.push_str(&format!("{}\n", header));
+        for o in under.iter().take(outlier_top_n) {
+            buf.push_str(&render_row(o));
+            buf.push('\n');
+        }
+        buf.push('\n');
+
+        if let Some(parent) = out_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::File::create(out_path).and_then(|mut f| f.write_all(buf.as_bytes())) {
+            Ok(()) => {
+                println!();
+                println!("  ── OUTLIERS: wrote top-{} over/under-ranked to {}",
+                    outlier_top_n, out_path.display());
+                if baseline_scores.is_some() {
+                    println!("     {} mean |z|={:.3}σ  max={:.3}σ  |z|>2σ: {}  |z|>3σ: {}",
+                        active_label, mean_a, max_a, n2_a, n3_a);
+                    println!("     {} mean |z|={:.3}σ  max={:.3}σ  |z|>2σ: {}  |z|>3σ: {}",
+                        baseline_label, mean_b, max_b, n2_b, n3_b);
+                } else {
+                    println!("     {} z-range observed: [{:+.2}σ, {:+.2}σ]",
+                        active_label, under[0].z_active, over[0].z_active);
+                }
+            }
+            Err(e) => {
+                eprintln!("\n  ❌  failed to write outliers to {}: {}", out_path.display(), e);
                 std::process::exit(1);
             }
         }
