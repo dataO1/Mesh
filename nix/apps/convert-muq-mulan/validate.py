@@ -3,19 +3,28 @@
 Cosine ≥ 0.9999 per output is the gate (per the spike plan in
 documents/embedding-models-research.md).
 
-The exported ONNX takes a **normalized mel-spectrogram** as input (Rust
-will compute mel + normalize externally). PyTorch's reference still
-takes a raw waveform and computes its own mel internally. To keep the
-comparison apples-to-apples we feed the model exactly ONE 10-second
-clip (the model's `clip_secs`), so PyTorch's clip-splitting + per-clip
-averaging is a no-op.
+**Multi-output (round-7.7 Phase 1a, 2026-05-09):** the ONNX now emits
+TWO outputs from a single forward pass:
+  - `audio_embedding_1024` — pre-projection Conformer hidden states,
+    mean-pooled over time. Used by the V18 intensity probe.
+  - `audio_embedding_512`  — post-projection L2-normalized joint-space
+    embedding. Used for music-text similarity / clustering.
 
-For each test case, we:
-  1. Run PyTorch reference: `mulan(wavs=raw_waveform)` → 512-d.
-  2. Compute the same MuQ-internal mel on the raw waveform via the
-     model's own `preprocessor_melspec_2048` + `stat` dict.
-  3. Run ONNX: `session.run(mel=normalized_mel)` → 512-d.
-  4. Cosine-compare.
+This script validates BOTH outputs against the PyTorch reference path
+that produces them. The PyTorch reference for the 512-d output is the
+existing `mulan(wavs=raw_waveform)` call. For the 1024-d output we
+mirror the wrapper's path: `MuQModel.get_predictions(mel, is_features_only=True)`
+then mean-pool the returned hidden states over time.
+
+The exported ONNX takes a **normalized mel-spectrogram** as input (Rust
+will compute mel + normalize externally). PyTorch's 512-d reference
+takes a raw waveform and computes its own mel internally; the 1024-d
+reference uses the same precomputed normalized mel that ONNX consumes,
+so both paths see identical numerical inputs.
+
+To keep the comparison apples-to-apples we feed the model exactly ONE
+10-second clip (the model's `clip_secs`), so PyTorch's clip-splitting +
+per-clip averaging is a no-op.
 
 Test cases:
   1. A pure sine wave — deterministic, isolates numerical drift.
@@ -105,7 +114,8 @@ def load_pytorch(device: torch.device):
 
 
 def run_pytorch(mulan, device: torch.device, cases) -> dict[str, np.ndarray]:
-    """Run all cases through the PyTorch MuQMuLan reference (raw waveform in)."""
+    """Run all cases through the PyTorch MuQMuLan reference (raw waveform in).
+    Returns the 512-d L2-normalized joint-space embeddings."""
     results: dict[str, np.ndarray] = {}
     with torch.no_grad():
         for label, wav in cases:
@@ -114,7 +124,26 @@ def run_pytorch(mulan, device: torch.device, cases) -> dict[str, np.ndarray]:
             emb = mulan(wavs=t).cpu().numpy()
             dt = time.time() - t0
             results[label] = emb[0]
-            print(f"[validate]   pytorch {device.type:>4} {label:>32}: shape={emb.shape} dt={dt * 1000:.0f}ms")
+            print(f"[validate]   pytorch {device.type:>4} {label:>32}: shape={emb.shape} dt={dt * 1000:.0f}ms (512-d)")
+    return results
+
+
+def run_pytorch_1024(mulan, device: torch.device, mels: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Compute the 1024-d intensity-probe substrate via PyTorch on the same
+    pre-normalized mel that ONNX consumes. Mirrors the export wrapper path:
+    `MuQModel.get_predictions(mel, is_features_only=True)` → hidden states
+    mean-pooled over time → (1024,)."""
+    muq_model = mulan.mulan.audio.model.model
+    results: dict[str, np.ndarray] = {}
+    with torch.no_grad():
+        for label, mel in mels.items():
+            mel_t = torch.from_numpy(mel).to(device).float()
+            t0 = time.time()
+            _logits, hidden = muq_model.get_predictions(mel_t, is_features_only=True)
+            audio_1024 = hidden.mean(dim=1).cpu().numpy()
+            dt = time.time() - t0
+            results[label] = audio_1024[0]
+            print(f"[validate]   pytorch {device.type:>4} {label:>32}: shape={audio_1024.shape} dt={dt * 1000:.0f}ms (1024-d hidden)")
     return results
 
 
@@ -136,10 +165,12 @@ def compute_normalized_mel(mulan, device: torch.device, wav: np.ndarray) -> np.n
     return mel.cpu().numpy().astype(np.float32)
 
 
-def run_onnx(onnx_path: str, provider: str, mels: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+def run_onnx(onnx_path: str, provider: str, mels: dict[str, np.ndarray]) -> dict[str, dict[str, np.ndarray]]:
     """Run all cases through the ONNX runtime with the given execution provider.
 
     `mels` is {label: precomputed normalized mel of shape (1, n_mels, T)}.
+    Returns `{output_name: {label: array}}` so the caller can compare each
+    named output against its corresponding PyTorch reference.
     """
     import onnxruntime as ort
 
@@ -151,15 +182,20 @@ def run_onnx(onnx_path: str, provider: str, mels: dict[str, np.ndarray]) -> dict
     print(f"[validate] loading ONNX on {provider}...")
     session = ort.InferenceSession(onnx_path, providers=[provider])
     input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
+    output_meta = session.get_outputs()
+    output_names = [o.name for o in output_meta]
+    print(f"[validate]   ONNX outputs: {output_names}")
 
-    results: dict[str, np.ndarray] = {}
+    # Initialize per-output result containers
+    results: dict[str, dict[str, np.ndarray]] = {n: {} for n in output_names}
     for label, mel in mels.items():
         t0 = time.time()
-        out = session.run([output_name], {input_name: mel})[0]
+        outs = session.run(output_names, {input_name: mel})
         dt = time.time() - t0
-        results[label] = out[0]
-        print(f"[validate]   onnx    {provider:>26} {label:>32}: shape={out.shape} dt={dt * 1000:.0f}ms")
+        shapes = ", ".join(f"{n}={tuple(o.shape)}" for n, o in zip(output_names, outs))
+        print(f"[validate]   onnx    {provider:>26} {label:>32}: dt={dt * 1000:.0f}ms  [{shapes}]")
+        for n, o in zip(output_names, outs):
+            results[n][label] = o[0]
     return results
 
 
@@ -197,22 +233,41 @@ def main() -> int:
 
     mulan = load_pytorch(device)
 
-    pt = run_pytorch(mulan, device, cases)
-
-    # Pre-compute normalized mels once; both CPU and CUDA EPs share them.
+    # Pre-compute normalized mels once; PyTorch 1024-d ref + ONNX share them.
     print("[validate] computing normalized mels for ONNX input...")
     mels = {label: compute_normalized_mel(mulan, device, wav) for label, wav in cases}
     for label, mel in mels.items():
         print(f"[validate]   mel {label:>32}: shape={mel.shape}")
 
-    cpu_results = run_onnx(onnx_path, "CPUExecutionProvider", mels)
-    cpu_ok = compare(pt, cpu_results, "ONNX-CPU")
+    # PyTorch references for both heads
+    pt_512 = run_pytorch(mulan, device, cases)            # 512-d via raw-waveform
+    pt_1024 = run_pytorch_1024(mulan, device, mels)       # 1024-d via shared mel
+
+    # ONNX outputs (multi-output, per execution provider)
+    cpu_outputs = run_onnx(onnx_path, "CPUExecutionProvider", mels)
+    cpu_ok = True
+    if cpu_outputs:
+        if "audio_embedding_512" in cpu_outputs:
+            cpu_ok &= compare(pt_512, cpu_outputs["audio_embedding_512"], "ONNX-CPU 512")
+        if "audio_embedding_1024" in cpu_outputs:
+            cpu_ok &= compare(pt_1024, cpu_outputs["audio_embedding_1024"], "ONNX-CPU 1024")
+        # Back-compat: if old single-output ONNX, the only output may be unnamed
+        if "audio_embedding_512" not in cpu_outputs and "audio_embedding_1024" not in cpu_outputs:
+            # Legacy single-output ONNX path
+            only_out = next(iter(cpu_outputs.values()))
+            cpu_ok &= compare(pt_512, only_out, "ONNX-CPU (legacy single-output)")
 
     cuda_ok = True
     if device.type == "cuda":
-        cuda_results = run_onnx(onnx_path, "CUDAExecutionProvider", mels)
-        if cuda_results:
-            cuda_ok = compare(pt, cuda_results, "ONNX-CUDA")
+        cuda_outputs = run_onnx(onnx_path, "CUDAExecutionProvider", mels)
+        if cuda_outputs:
+            if "audio_embedding_512" in cuda_outputs:
+                cuda_ok &= compare(pt_512, cuda_outputs["audio_embedding_512"], "ONNX-CUDA 512")
+            if "audio_embedding_1024" in cuda_outputs:
+                cuda_ok &= compare(pt_1024, cuda_outputs["audio_embedding_1024"], "ONNX-CUDA 1024")
+            if "audio_embedding_512" not in cuda_outputs and "audio_embedding_1024" not in cuda_outputs:
+                only_out = next(iter(cuda_outputs.values()))
+                cuda_ok &= compare(pt_512, only_out, "ONNX-CUDA (legacy single-output)")
         else:
             print("[validate] (onnxruntime-gpu not installed — skipping CUDA EP check)")
 
