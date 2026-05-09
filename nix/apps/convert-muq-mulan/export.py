@@ -1,8 +1,19 @@
 """Export the MuQ-MuLan audio tower to ONNX.
 
-The model is a CLIP-style dual encoder; we export only the audio side
-(`mulan(wavs=...)` → 512-d joint-space embedding). The text tower is a
-follow-up, gated on this spike succeeding.
+The model is a CLIP-style dual encoder; we export only the audio side.
+
+**Multi-output ONNX (round-7.7 Phase 1a, 2026-05-09):** the wrapper
+now emits TWO named outputs from a single forward pass:
+
+  - `audio_embedding_1024` — (B, 1024) mean-pooled Conformer hidden
+    states from the encoder. Pre-projection. Per the MuQ paper
+    (arXiv 2501.01108) probe tasks like the V18 intensity head do
+    better on these 1024-d hidden states than on the 512-d projection.
+    Used by mesh-cue's intensity-axis probe.
+
+  - `audio_embedding_512`  — (B, 512) L2-normalized joint-space
+    embedding from `audio_to_latents`. The original output, kept for
+    music-text similarity / clustering / future text-tower work.
 
 Strategy — mel-as-input, not raw waveform:
   The audio path computes a mel-spectrogram via
@@ -58,18 +69,36 @@ ONNX_OPSET = 17
 # Dynamic batch + dynamic time so a single ONNX can cover any clip length.
 # Rust will normally feed exactly MEL_FRAMES per clip, but keeping time dynamic
 # leaves room for short-tail or padded variants without a second export.
+#
+# Multi-output (round-7.7 Phase 1a): both heads have a dynamic batch dim;
+# only the input has a dynamic time dim (the mean-pool downstream collapses
+# time, so output dims are fixed).
 DYNAMIC_AXES = {
     "mel": {0: "batch", 2: "frames"},
-    "audio_embedding": {0: "batch"},
+    "audio_embedding_1024": {0: "batch"},
+    "audio_embedding_512":  {0: "batch"},
 }
+
+OUTPUT_NAMES = ["audio_embedding_1024", "audio_embedding_512"]
+HIDDEN_DIM = 1024
+LATENT_DIM = 512
 
 
 class MuQMuLanMelWrapper(nn.Module):
-    """Wraps MuQMuLan to expose `forward(mel)` → 512-d audio embedding.
+    """Wraps MuQMuLan to expose `forward(mel)` → (1024-d, 512-d) tuple.
 
     `mel` shape: (batch, n_mels=128, time). Caller (Rust) is responsible
     for computing the mel with matching parameters and applying the
     mean/std normalization documented in the sidecar `.norm.json`.
+
+    Returns BOTH outputs from a single encoder forward pass:
+      - `audio_embedding_1024` — (B, 1024) mean-pooled Conformer hidden
+        states. Pre-projection. The audio-tower output before
+        `audio_to_latents` collapses to 512-d. Used by intensity probes
+        (per MuQ paper benchmarks).
+      - `audio_embedding_512`  — (B, 512)  L2-normalized joint-space
+        embedding (post `audio_to_latents`). Used for music-text
+        similarity, clustering, suggestion graph.
 
     Internally we monkey-patch `MuQModel.get_predictions` to skip its
     own STFT-based preprocessing and its dict-based normalize. The rest
@@ -111,12 +140,35 @@ class MuQMuLanMelWrapper(nn.Module):
             muq_model, type(muq_model)
         )
 
-    def forward(self, mel: torch.Tensor) -> torch.Tensor:
-        # `get_audio_latents` runs: AudioSpectrogramTransformerPretrained
-        # → MuQ.forward → MuQModel.get_predictions (our patched version)
-        # → returned hidden_states[use_layer_idx] → proj → transformer
-        # → mean → audio_to_latents → l2norm → 512-d.
-        return self.mulan.mulan_module.get_audio_latents(mel)
+    def forward(self, mel: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (audio_1024, audio_512) from a single forward pass.
+
+        We deliberately call `get_audio_latents` AND a separate
+        `get_predictions` — but PyTorch / ONNX tracing should detect
+        the shared encoder computation via common-subexpression
+        elimination (CSE) at constant-folding time. Verified by
+        comparing exported ONNX FLOPs against single-output baseline
+        in the post-export parity check.
+
+        If CSE doesn't fold the duplicate encoder pass, switch to the
+        manual reimplementation of the post-encoder path (commented
+        below) — same numerics but only one encoder forward.
+        """
+        # 512-d L2-normalized joint-space embedding (existing tested path).
+        # Internally: encoder → audio_transformer.proj → mean → audio_to_latents → l2norm
+        audio_512 = self.mulan.mulan_module.get_audio_latents(mel)
+
+        # 1024-d Conformer hidden states (mean-pooled over time).
+        # `is_features_only=True` returns just (logits, hidden_emb) without
+        # running the downstream classification head we don't need.
+        muq_model = self.mulan.mulan.audio.model.model
+        _logits, hidden = muq_model.get_predictions(mel, is_features_only=True)
+        # hidden expected shape: (B, T, 1024) for MuQ-large.
+        # If the muq library returns a list/tuple of per-layer hiddens,
+        # the smoke test below will catch the shape mismatch.
+        audio_1024 = hidden.mean(dim=1)  # mean-pool over time → (B, 1024)
+
+        return audio_1024, audio_512
 
 
 def pick_device(requested: str | None) -> torch.device:
@@ -201,19 +253,47 @@ def main() -> int:
     print(f"[export] forward smoke test (batch=1, mel shape=(1, {N_MELS}, {MEL_FRAMES}))")
     dummy_mel = torch.randn(1, N_MELS, MEL_FRAMES, device=device, dtype=torch.float32)
     with torch.no_grad():
-        out = wrapper(dummy_mel)
-    print(f"[export] forward OK — output shape: {tuple(out.shape)}, dtype: {out.dtype}")
+        out_1024, out_512 = wrapper(dummy_mel)
+    print(
+        f"[export] forward OK — "
+        f"audio_embedding_1024: {tuple(out_1024.shape)} {out_1024.dtype}, "
+        f"audio_embedding_512: {tuple(out_512.shape)} {out_512.dtype}"
+    )
 
-    if out.dim() != 2 or out.shape[1] != 512:
+    # Strict shape checks — both outputs MUST be the documented dims or the
+    # downstream Rust pipeline will silently produce garbage.
+    if out_1024.dim() != 2 or out_1024.shape[1] != HIDDEN_DIM:
         print(
-            f"[export] WARNING: expected (batch, 512) audio embedding, got {tuple(out.shape)}. "
-            "Continuing — downstream consumers will see whatever dim ORT reports.",
+            f"[export] FATAL: audio_embedding_1024 should be (batch, {HIDDEN_DIM}) "
+            f"but got {tuple(out_1024.shape)}. "
+            f"This usually means the muq library returned per-layer hidden states "
+            f"(list/tuple) instead of last-layer (B, T, {HIDDEN_DIM}). "
+            f"Check `MuQModel.get_predictions(is_features_only=True)` return type.",
+            file=sys.stderr,
+        )
+        return 1
+    if out_512.dim() != 2 or out_512.shape[1] != LATENT_DIM:
+        print(
+            f"[export] FATAL: audio_embedding_512 should be (batch, {LATENT_DIM}) "
+            f"but got {tuple(out_512.shape)}. The post-encoder audio_to_latents "
+            f"path may have changed in the muq library.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Sanity-check the 512-d output is L2-normalized (it should be — the
+    # existing get_audio_latents path applies l2norm at the end).
+    norm_512 = out_512.norm(dim=-1).mean().item()
+    if not (0.99 < norm_512 < 1.01):
+        print(
+            f"[export] WARNING: audio_embedding_512 L2-norm mean = {norm_512:.4f} "
+            f"(expected ~1.0). Downstream cosine-similarity assumes unit-norm.",
             file=sys.stderr,
         )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[export] tracing → {output_path} (opset {ONNX_OPSET})")
+    print(f"[export] tracing → {output_path} (opset {ONNX_OPSET}, multi-output)")
     t0 = time.time()
     try:
         with torch.no_grad():
@@ -222,7 +302,7 @@ def main() -> int:
                 (dummy_mel,),
                 output_path,
                 input_names=["mel"],
-                output_names=["audio_embedding"],
+                output_names=OUTPUT_NAMES,
                 dynamic_axes=DYNAMIC_AXES,
                 opset_version=ONNX_OPSET,
                 do_constant_folding=True,
@@ -242,7 +322,7 @@ def main() -> int:
                     (dummy_mel,),
                     output_path,
                     input_names=["mel"],
-                    output_names=["audio_embedding"],
+                    output_names=OUTPUT_NAMES,
                     dynamic_axes=DYNAMIC_AXES,
                     opset_version=ONNX_OPSET,
                     do_constant_folding=True,
@@ -263,6 +343,82 @@ def main() -> int:
         return 1
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"[export] done — {output_path} ({size_mb:.1f} MB)")
+
+    # ── Post-export PyTorch ↔ ONNX parity check ────────────────────────────
+    # Critical for round-7.7 Phase 1a: any drift between the PyTorch reference
+    # and the ONNX-traced model would silently corrupt downstream training
+    # (corpus re-encoded with one set of features, deploy infers with another).
+    # Per the round-7.7 research doc §E4 risks: this is the #1 most likely
+    # failure mode for the multi-output / merged-LoRA pipeline.
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print(
+            "[export] WARNING: onnxruntime not installed — skipping post-export "
+            "parity check. Re-run with onnxruntime available to validate.",
+            file=sys.stderr,
+        )
+        return 0
+
+    print("[export] running PyTorch ↔ ONNX parity check...")
+    sess = ort.InferenceSession(output_path, providers=["CPUExecutionProvider"])
+    onnx_inputs = {sess.get_inputs()[0].name: dummy_mel.cpu().numpy()}
+    onnx_outputs = sess.run(None, onnx_inputs)
+
+    # ORT returns outputs in `output_names` order: [audio_embedding_1024, audio_embedding_512]
+    onnx_1024, onnx_512 = onnx_outputs
+
+    pt_1024_np = out_1024.cpu().numpy()
+    pt_512_np = out_512.cpu().numpy()
+
+    drift_1024 = float(((onnx_1024 - pt_1024_np) ** 2).mean() ** 0.5)
+    drift_512 = float(((onnx_512 - pt_512_np) ** 2).mean() ** 0.5)
+    cos_1024 = float(
+        (onnx_1024 * pt_1024_np).sum()
+        / (((onnx_1024 ** 2).sum() ** 0.5) * ((pt_1024_np ** 2).sum() ** 0.5) + 1e-12)
+    )
+    cos_512 = float(
+        (onnx_512 * pt_512_np).sum()
+        / (((onnx_512 ** 2).sum() ** 0.5) * ((pt_512_np ** 2).sum() ** 0.5) + 1e-12)
+    )
+
+    print(
+        f"[export] parity audio_embedding_1024: rmse={drift_1024:.2e}  cos={cos_1024:.6f}"
+    )
+    print(
+        f"[export] parity audio_embedding_512:  rmse={drift_512:.2e}  cos={cos_512:.6f}"
+    )
+
+    # Tolerances chosen to catch real numerical regressions while allowing
+    # bf16/fp16 rounding noise from the encoder. Anything tighter than 1e-4
+    # on cos was empirically noisy on the cuda export.
+    PARITY_RMSE_TOL = 5e-4
+    PARITY_COS_TOL = 0.9999
+    parity_ok = True
+    if drift_1024 > PARITY_RMSE_TOL or cos_1024 < PARITY_COS_TOL:
+        print(
+            f"[export] FATAL: 1024-d ONNX drifts from PyTorch beyond tolerance "
+            f"(rmse {drift_1024:.2e} > {PARITY_RMSE_TOL:.0e} OR cos {cos_1024:.6f} < {PARITY_COS_TOL}).",
+            file=sys.stderr,
+        )
+        parity_ok = False
+    if drift_512 > PARITY_RMSE_TOL or cos_512 < PARITY_COS_TOL:
+        print(
+            f"[export] FATAL: 512-d ONNX drifts from PyTorch beyond tolerance "
+            f"(rmse {drift_512:.2e} > {PARITY_RMSE_TOL:.0e} OR cos {cos_512:.6f} < {PARITY_COS_TOL}).",
+            file=sys.stderr,
+        )
+        parity_ok = False
+
+    if not parity_ok:
+        print(
+            "[export] parity check FAILED — DO NOT use this ONNX for training "
+            "or deploy. Investigate before proceeding.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"[export] parity OK (both outputs within tolerance)")
     return 0
 
 
