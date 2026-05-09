@@ -296,7 +296,7 @@ impl MeshCueApp {
             return Task::none();
         }
         self.delete_state.show(super::super::delete_modal::DeleteTarget::Custom {
-            title: "░▒▓ MESH JUST DROPPED A NEW INTENSITY MODEL ▓▒░".to_string(),
+            title: "░▒▓ NEW INTENSITY MODEL ▓▒░".to_string(),
             description: format!(
                 "V18.X is on the decks — sharper ear, deeper substrate. \
                  To make the new sound system work for {} of your tracks, give them \
