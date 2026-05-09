@@ -278,6 +278,54 @@ impl MeshCueApp {
         Task::none()
     }
 
+    // ── Round-7.7 migration prompt ──────────────────────────────────────────
+
+    /// Show the V18.X intensity-probe migration modal at startup.
+    /// Reuses the DeleteTarget::Custom confirmation scaffolding so we don't
+    /// have to build a separate Iced widget. On confirm: dispatch
+    /// AcceptMigrationReanalysis. On cancel ("Later"): the modal closes via
+    /// the existing CancelDelete handler, no further action.
+    pub fn handle_show_migration_prompt(&mut self, n_tracks: usize) -> Task<Message> {
+        if n_tracks == 0 {
+            return Task::none();
+        }
+        // Skip the popup if a metadata reanalysis is already running — the user
+        // is already on it (manually started before this prompt landed).
+        if self.reanalysis_state.is_running {
+            log::debug!("[migration] popup suppressed — re-analysis already in progress");
+            return Task::none();
+        }
+        self.delete_state.show(super::super::delete_modal::DeleteTarget::Custom {
+            title: "░▒▓ MESH JUST DROPPED A NEW INTENSITY MODEL ▓▒░".to_string(),
+            description: format!(
+                "V18.X is on the decks — sharper ear, deeper substrate. \
+                 To make the new sound system work for {} of your tracks, give them \
+                 a fresh re-analyse. Anything not re-analysed stays on the old ranking until you do.\n\n\
+                 About a second per track on a hot CPU.",
+                n_tracks,
+            ),
+            warning: String::new(),
+            confirm_label: "Drop the beat".to_string(),
+            confirm_message: Box::new(Message::AcceptMigrationReanalysis),
+        });
+        Task::none()
+    }
+
+    /// User clicked "Drop the beat" — kick off the existing batch metadata
+    /// reanalysis flow with `tags: true` over the entire library.
+    pub fn handle_accept_migration_reanalysis(&mut self) -> Task<Message> {
+        // Configure the reanalysis state as if the user had ticked the
+        // "ML Tags" checkbox in the existing config modal.
+        self.reanalysis_state.config_scope = Some(crate::analysis::ReanalysisScope::EntireCollection);
+        self.reanalysis_state.config_name_artist = false;
+        self.reanalysis_state.config_loudness = false;
+        self.reanalysis_state.config_key = false;
+        self.reanalysis_state.config_tags = true;
+        // Dispatch ConfirmMetadataReanalysis to reuse the existing path
+        // (logging, worker pool sizing, progress handling all stay the same).
+        Task::done(Message::ConfirmMetadataReanalysis)
+    }
+
     /// Handle StartRenamePlaylist message
     pub fn handle_start_rename_playlist(&mut self, playlist_id: NodeId) -> Task<Message> {
         self.context_menu_state.close();

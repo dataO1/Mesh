@@ -256,11 +256,16 @@ impl MeshCueApp {
         // so the UI doesn't freeze on first launch. Without this the axis only
         // ever lands in the DB through "Build Similarity Index", which is the
         // bug we hit when calibration weights overwrote V11.
+        // Round-7.7: surface the V18.X intensity-probe migration prompt at
+        // startup if any track is missing 1024-d intensity data. The handler
+        // is a no-op when count == 0 so we always dispatch.
+        let migration_count = app.domain.needs_intensity_migration_count().unwrap_or(0);
         let cmd = Task::batch([
             Task::perform(async {}, |_| Message::RefreshCollection),
             Task::perform(async {}, |_| Message::RefreshPlaylists),
             Task::perform(async {}, |_| Message::BuildGraphEdges),
             Task::perform(async {}, |_| Message::EnsureIntensityAxisLoaded),
+            Task::perform(async {}, move |_| Message::ShowMigrationPrompt(migration_count)),
         ]);
 
         (app, cmd)
@@ -523,6 +528,10 @@ impl MeshCueApp {
             Message::RequestDelete(browser_side) => return self.handle_request_delete(browser_side),
             Message::CancelDelete => return self.handle_cancel_delete(),
             Message::ConfirmDelete => return self.handle_confirm_delete(),
+
+            // Round-7.7 migration prompt
+            Message::ShowMigrationPrompt(n) => return self.handle_show_migration_prompt(n),
+            Message::AcceptMigrationReanalysis => return self.handle_accept_migration_reanalysis(),
 
             // Context menu (delegated to handlers/delete.rs)
             Message::RequestDeleteById(track_id) => return self.handle_request_delete_by_id(track_id),

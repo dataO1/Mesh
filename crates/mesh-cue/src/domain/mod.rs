@@ -147,39 +147,13 @@ impl MeshCueDomain {
         let db_service = DatabaseService::new(&collection_root)
             .map_err(|e| anyhow!("Failed to initialize database: {}", e))?;
 
-        // Round-7.7 migration check: surface a friendly nudge if the user has
-        // tracks with the old 512-d ml_embeddings but missing 1024-d
-        // ml_intensity_embeddings (the new V18.X intensity-probe substrate).
-        // The intensity probe will dim-mismatch on those tracks until they
-        // re-analyse, so we point them at the analyse menu.
-        match (
-            db_service.get_tracks_with_ml_embeddings(),
-            db_service.get_tracks_with_intensity_embeddings(),
-        ) {
-            (Ok(with_512), Ok(with_1024)) => {
-                let n_512 = with_512.len();
-                let n_1024 = with_1024.len();
-                let needs_reanalysis = n_512.saturating_sub(n_1024);
-                if needs_reanalysis > 0 {
-                    log::warn!("");
-                    log::warn!("┌─────────────────────────────────────────────────────────────────────┐");
-                    log::warn!("│  ░▒▓ MESH JUST DROPPED A NEW INTENSITY MODEL ▓▒░                    │");
-                    log::warn!("│                                                                     │");
-                    log::warn!("│  V18.X is on the decks — sharper ear, deeper substrate. To make    │");
-                    log::warn!("│  the new sound system work for {:>4} of your tracks, give them      │", needs_reanalysis);
-                    log::warn!("│  a fresh re-analyse. Anything not re-analysed stays on the old     │");
-                    log::warn!("│  ranking until you do.                                              │");
-                    log::warn!("│                                                                     │");
-                    log::warn!("│  Hit  Library  →  Re-analyse → ML Tags  when the dance floor's    │");
-                    log::warn!("│  empty. About a second per track on a hot CPU, no stress.          │");
-                    log::warn!("└─────────────────────────────────────────────────────────────────────┘");
-                    log::warn!("");
-                    log::warn!("[migration] {} tracks need ML re-analysis ({}/{} have V18.X intensity embeddings)",
-                               needs_reanalysis, n_1024, n_512);
-                }
-            }
-            (Err(e), _) | (_, Err(e)) => {
-                log::debug!("[migration] ML-embedding gap check skipped: {}", e);
+        // Round-7.7 migration: log a one-line nudge here. The UI layer
+        // surfaces a proper modal at startup via needs_intensity_migration_count()
+        // — see crate::ui::app startup task. Logging both is fine; the log
+        // line is useful for headless / CLI invocations that have no UI.
+        if let Some(n) = needs_intensity_migration_count_inner(&db_service) {
+            if n > 0 {
+                log::warn!("[migration] {} tracks need ML re-analysis for V18.X intensity probe (1024-d substrate)", n);
             }
         }
 
@@ -262,6 +236,16 @@ impl MeshCueDomain {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Get the collection root path
+    /// Round-7.7 migration probe: how many tracks in the library have the
+    /// legacy 512-d ml_embeddings populated but are missing the new 1024-d
+    /// ml_intensity_embeddings? > 0 means the user should re-analyse to
+    /// give those tracks a V18.X intensity score. Returns None if either
+    /// query errors (the migration prompt then doesn't fire — no false
+    /// positives).
+    pub fn needs_intensity_migration_count(&self) -> Option<usize> {
+        needs_intensity_migration_count_inner(&self.db_service)
+    }
+
     pub fn collection_root(&self) -> &Path {
         &self.collection_root
     }
@@ -1535,5 +1519,24 @@ impl std::fmt::Debug for MeshCueDomain {
             .field("is_importing", &self.is_importing())
             .field("is_reanalyzing", &self.is_reanalyzing())
             .finish_non_exhaustive()
+    }
+}
+
+/// Compute the number of tracks needing V18.X intensity-probe re-analysis.
+/// Free function so it can be called from `Domain::new` (during construction,
+/// before `&self` exists) AND from the public `needs_intensity_migration_count()`
+/// method.
+fn needs_intensity_migration_count_inner(db: &DatabaseService) -> Option<usize> {
+    match (
+        db.get_tracks_with_ml_embeddings(),
+        db.get_tracks_with_intensity_embeddings(),
+    ) {
+        (Ok(with_512), Ok(with_1024)) => {
+            Some(with_512.len().saturating_sub(with_1024.len()))
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            log::debug!("[migration] ML-embedding gap check skipped: {}", e);
+            None
+        }
     }
 }

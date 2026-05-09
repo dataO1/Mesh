@@ -252,6 +252,15 @@ pub enum Message {
     /// Confirm and execute the delete
     ConfirmDelete,
 
+    // Round-7.7 migration prompt
+    /// Show the V18.X intensity-probe migration prompt at startup. Argument
+    /// is the count of tracks needing re-analysis. Reuses the
+    /// `DeleteTarget::Custom` confirmation modal scaffolding.
+    ShowMigrationPrompt(usize),
+    /// User clicked "Drop the beat" on the migration modal — kick off batch
+    /// reanalysis with `tags: true` over the entire library.
+    AcceptMigrationReanalysis,
+
     // Context menu
     /// Show context menu at position
     ShowContextMenu(ContextMenuKind, Point),
