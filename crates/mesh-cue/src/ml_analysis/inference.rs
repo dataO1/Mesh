@@ -72,8 +72,20 @@ const MUQ_MULAN_MAX_CLIPS: usize = 6;
 /// ONNX input tensor name (set by `export.py`).
 const MUQ_MULAN_INPUT_NAME: &str = "mel";
 
-/// ONNX output tensor name (set by `export.py`). Single output.
-const MUQ_MULAN_OUTPUT_INDEX: usize = 0;
+/// ONNX output tensor names (set by `export.py`).
+///
+/// Round-7.7: the export now emits two named outputs from a single
+/// forward pass — `audio_embedding_1024` (Conformer hidden, intensity
+/// probe) and `audio_embedding_512` (joint-space, similarity). This
+/// crate currently consumes the 512-d only (similarity / clustering /
+/// suggestion graph); the 1024-d wiring lands when the V18.X retrain
+/// completes.
+///
+/// Pre-round-7.7 ONNX exports had a single output named just
+/// `audio_embedding`; the by-name lookup falls back to that for back-
+/// compat with the v18.1-shipped ONNX.
+const MUQ_MULAN_OUTPUT_NAME_512: &str = "audio_embedding_512";
+const MUQ_MULAN_OUTPUT_NAME_LEGACY_512: &str = "audio_embedding";
 
 /// Mel-normalization stats loaded from the `*.norm.json` sidecar. Mirrors
 /// the structure `convert-muq-mulan/export.py::extract_norm_stats` writes.
@@ -379,13 +391,22 @@ impl MlAnalyzer {
             ort::inputs![MUQ_MULAN_INPUT_NAME => input_tensor]
         ).map_err(|e| format!("MuQ-MuLan inference error: {}", e))?;
 
+        // Look up the 512-d output by name. Round-7.7 multi-output ONNX
+        // names it `audio_embedding_512`; pre-round-7.7 single-output ONNX
+        // named it just `audio_embedding`. Fall back to the legacy name so
+        // a fresh checkout against an older locally-cached ONNX still works.
         let collected: Vec<_> = outputs.iter().collect();
-        let (_, emb_value) = collected.get(MUQ_MULAN_OUTPUT_INDEX).ok_or_else(|| {
-            format!(
-                "MuQ-MuLan output index {} missing (got {} outputs)",
-                MUQ_MULAN_OUTPUT_INDEX, collected.len()
-            )
-        })?;
+        let emb_value = collected.iter()
+            .find(|(name, _)| *name == MUQ_MULAN_OUTPUT_NAME_512)
+            .or_else(|| collected.iter().find(|(name, _)| *name == MUQ_MULAN_OUTPUT_NAME_LEGACY_512))
+            .map(|(_, v)| v)
+            .ok_or_else(|| {
+                let names: Vec<&str> = collected.iter().map(|(n, _)| *n).collect();
+                format!(
+                    "MuQ-MuLan ONNX has no `{}` or `{}` output (got: {:?})",
+                    MUQ_MULAN_OUTPUT_NAME_512, MUQ_MULAN_OUTPUT_NAME_LEGACY_512, names,
+                )
+            })?;
         let (shape, data) = emb_value.try_extract_tensor::<f32>()
             .map_err(|e| format!("MuQ-MuLan output extraction error: {}", e))?;
 
