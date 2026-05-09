@@ -35,6 +35,10 @@ def parse_args():
     p.add_argument("--eval", type=Path, required=True)
     p.add_argument("--consensus", type=Path, required=True)
     p.add_argument("--audio-emb", type=Path, required=True)
+    p.add_argument("--audio-emb-key", default="embeddings_1024",
+                   choices=["embeddings_1024", "embeddings"],
+                   help="must match the audio head used during teacher + student "
+                        "training. Defaults to round-7.7's 1024-d Conformer hidden.")
     p.add_argument("--split", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--no-deploy", action="store_true",
@@ -63,24 +67,24 @@ def main(args) -> int:
     if arch == "linear":
         W = state["intensity.weight"].numpy().squeeze().astype(np.float32)
         b = float(state["intensity.bias"].numpy().squeeze())
-        if W.shape != (512,):
-            sys.exit(f"unexpected student vec shape: {W.shape}, expected (512,)")
-        print(f"[export] student vec: 512d, bias={b:+.4f}")
+        if W.ndim != 1:
+            sys.exit(f"unexpected student vec shape: {W.shape}, expected 1-d")
+        in_dim = int(W.shape[0])
+        print(f"[export] student vec: {in_dim}d, bias={b:+.4f}")
 
         def score_fn(audio_arr: np.ndarray) -> np.ndarray:
             return audio_arr @ W + b
 
     else:  # mlp
-        W1 = state["intensity.0.weight"].numpy().astype(np.float32)   # (hidden, 512)
+        W1 = state["intensity.0.weight"].numpy().astype(np.float32)   # (hidden, in_dim)
         b1 = state["intensity.0.bias"].numpy().astype(np.float32)     # (hidden,)
         W2 = state["intensity.3.weight"].numpy().astype(np.float32)   # (1, hidden)
         b2 = float(state["intensity.3.bias"].numpy().squeeze())       # scalar
-        if W1.shape[1] != 512:
-            sys.exit(f"unexpected mlp W1 shape: {W1.shape}, expected (?, 512)")
         if W2.shape[0] != 1:
             sys.exit(f"unexpected mlp W2 shape: {W2.shape}, expected (1, ?)")
-        hidden = W1.shape[0]
-        print(f"[export] student mlp: 512 → {hidden} (GELU) → 1, bias={b2:+.4f}")
+        in_dim = int(W1.shape[1])
+        hidden = int(W1.shape[0])
+        print(f"[export] student mlp: {in_dim} → {hidden} (GELU) → 1, bias={b2:+.4f}")
         # GELU approximation matching torch.nn.GELU default ('none', not 'tanh'):
         # gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
         from math import sqrt
@@ -108,8 +112,18 @@ def main(args) -> int:
 
     e = np.load(args.audio_emb, allow_pickle=True)
     audio_tids = e["track_ids"].astype(np.int64)
-    audio_arr  = e["embeddings"].astype(np.float32)
+    if args.audio_emb_key not in e.files:
+        sys.exit(f"[export] audio_emb NPZ at {args.audio_emb} has no "
+                 f"'{args.audio_emb_key}' field (available: {list(e.files)}). "
+                 f"Re-run embed_corpus_mulan.py with the round-7.7 dual-head "
+                 f"version, or pass --audio-emb-key embeddings to use the "
+                 f"v18.1-era 512-d substrate.")
+    audio_arr  = e[args.audio_emb_key].astype(np.float32)
     audio_tid_to_i = {int(t): i for i, t in enumerate(audio_tids)}
+    if audio_arr.shape[1] != in_dim:
+        sys.exit(f"[export] audio_emb dim {audio_arr.shape[1]} doesn't match "
+                 f"student weight in_dim {in_dim}. Pick the matching "
+                 f"--audio-emb-key.")
 
     cs = np.load(args.consensus, allow_pickle=True)
     cs_tids = cs["track_ids"].astype(np.int64)
@@ -148,7 +162,8 @@ def main(args) -> int:
     payload = {
         "version": "V18_round7_6_consensus_distilled",
         "embedding": "muq-mulan",
-        "embedding_dim": 512,
+        "embedding_dim": in_dim,
+        "embedding_head": args.audio_emb_key,
         "model_type": arch,            # "linear" or "mlp"
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "trained_on_corpus": "deezer-everynoise-expanded-2026-05-07",

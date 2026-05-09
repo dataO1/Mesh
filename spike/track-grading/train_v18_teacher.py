@@ -1,11 +1,15 @@
 """Stage S10 — Train the privileged-information teacher.
 
 Per spec § 16. 2-layer MLP over [audio_emb, caption_emb, struct_tags,
-r7.5_tags] (≈1343d). Outputs: 16 axis heads (predicting r7.5 BT priors)
-+ 1 intensity head (predicting consensus). Multi-task MSE loss.
+r7.5_tags]. Outputs: 16 axis heads (predicting r7.5 BT priors) + 1
+intensity head (predicting consensus). Multi-task MSE loss.
 
 NOTE per G7: NO genre_OH / source_category flows in. Only
-  (a) audio_emb (MuQ-MuLan, 512d)  — also the student's only input
+  (a) audio_emb (MuQ-MuLan, dim depends on --audio-emb-key:
+                 embeddings_1024 = 1024-d Conformer hidden, the
+                   round-7.7 default; also the student's only input
+                 embeddings      = 512-d L2-normalized joint-space, the
+                   v18.1-era substrate, kept selectable for ablation)
   (b) caption_emb (bge-base, 768d) — privileged at training, distilled away
   (c) struct_tags (~50d boolean → float32) — derived from caption text
   (d) r7.5_tags (13d) — mined evidence
@@ -32,6 +36,13 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--audio-emb", type=Path, required=True)        # corpus_muq_mulan.npz
+    p.add_argument("--audio-emb-key", default="embeddings_1024",
+                   choices=["embeddings_1024", "embeddings"],
+                   help="which audio head to use as teacher input. "
+                        "embeddings_1024 = 1024-d Conformer hidden "
+                        "(round-7.7 default per the MuQ paper's probe "
+                        "recipe). embeddings = 512-d joint-space latent "
+                        "(v18.1-era substrate, kept for ablation).")
     p.add_argument("--caption-emb", type=Path, required=True)
     p.add_argument("--struct-tags", type=Path, required=True)
     # Round-7.5 inputs are now optional. When omitted, the teacher trains
@@ -76,8 +87,15 @@ def main(args) -> int:
     # ── Load all features & labels, align by track_id ─────────────────
     e = np.load(args.audio_emb, allow_pickle=True)
     audio_tids = e["track_ids"].astype(np.int64)
-    audio_arr  = e["embeddings"].astype(np.float32)
+    if args.audio_emb_key not in e.files:
+        sys.exit(f"[teacher] audio_emb NPZ at {args.audio_emb} has no "
+                 f"'{args.audio_emb_key}' field (available: {list(e.files)}). "
+                 f"Re-run embed_corpus_mulan.py with the round-7.7 dual-head "
+                 f"version, or pass --audio-emb-key embeddings to use the "
+                 f"v18.1-era 512-d substrate.")
+    audio_arr  = e[args.audio_emb_key].astype(np.float32)
     audio_tid_to_i = {int(t): i for i, t in enumerate(audio_tids)}
+    print(f"[teacher] audio head: {args.audio_emb_key} (dim={audio_arr.shape[1]})")
 
     c = np.load(args.caption_emb, allow_pickle=True)
     cap_tids = c["track_ids"].astype(np.int64)

@@ -1,16 +1,19 @@
-"""Stage S11 — Distill the linear-probe student from the teacher.
+"""Stage S11 — Distill the linear-probe / MLP student from the teacher.
 
-Per spec § 17. Student input: MuQ-MuLan(512) only. Output: 1-d intensity.
-This is V18's deployed shape.
+Per spec § 17 + V18.1 escalation. Student input: MuQ-MuLan only. Output:
+1-d intensity. The audio-head dim is selectable via --audio-emb-key:
+  - embeddings_1024 (round-7.7 default, 1024-d Conformer hidden)
+  - embeddings      (v18.1-era 512-d joint-space latent)
 
 Loss = λ_out · MSE(student_out, teacher_intensity)
      + λ_fit · MSE(penult_proj(audio), teacher_penultimate)        [FitNets]
      + λ_kd  · KL(softmax(student/T) || softmax(teacher/T)) · T²    [Hinton]
      + λ_ls  · LabelSmoothing(student_out, consensus)                [direct]
 
-The penultimate-projection layer (Linear 512 → 128) is a training-time
+The penultimate-projection layer (Linear in_dim → 128) is a training-time
 adapter that maps audio_emb into the teacher's penultimate space; it is
-DISCARDED at export. The deployed student is the single 512→1 linear map.
+DISCARDED at export. The deployed student is the in_dim → (hidden →) 1
+linear/MLP head only.
 
 Outputs:
   - <out-dir>/round7_6_student.pt
@@ -30,6 +33,13 @@ import numpy as np
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--audio-emb", type=Path, required=True)
+    p.add_argument("--audio-emb-key", default="embeddings_1024",
+                   choices=["embeddings_1024", "embeddings"],
+                   help="which audio head to use as student input. "
+                        "embeddings_1024 = 1024-d Conformer hidden "
+                        "(round-7.7 default per the MuQ paper's probe "
+                        "recipe). embeddings = 512-d joint-space latent "
+                        "(v18.1-era substrate, kept for ablation).")
     p.add_argument("--teacher-preds", type=Path, required=True,
                    help="from train_v18_teacher.py")
     p.add_argument("--consensus", type=Path, required=True)
@@ -81,8 +91,15 @@ def main(args) -> int:
     # ── Load aligned arrays ────────────────────────────────────────────
     e = np.load(args.audio_emb, allow_pickle=True)
     audio_tids = e["track_ids"].astype(np.int64)
-    audio_arr = e["embeddings"].astype(np.float32)
+    if args.audio_emb_key not in e.files:
+        sys.exit(f"[student] audio_emb NPZ at {args.audio_emb} has no "
+                 f"'{args.audio_emb_key}' field (available: {list(e.files)}). "
+                 f"Re-run embed_corpus_mulan.py with the round-7.7 dual-head "
+                 f"version, or pass --audio-emb-key embeddings to use the "
+                 f"v18.1-era 512-d substrate.")
+    audio_arr = e[args.audio_emb_key].astype(np.float32)
     audio_tid_to_i = {int(t): i for i, t in enumerate(audio_tids)}
+    print(f"[student] audio head: {args.audio_emb_key} (dim={audio_arr.shape[1]})")
 
     tp = np.load(args.teacher_preds, allow_pickle=True)
     teacher_tids = tp["track_ids"].astype(np.int64)

@@ -420,7 +420,10 @@ case "$STAGE" in
     echo
     echo "=== S10: train teacher (privileged: audio + caption + struct, full 40k) ==="
     # No --r75-priors / --r75-tags — the teacher trains on
-    # [audio_emb 512 + caption_emb 768 + struct_tags 52] = 1332d input
+    # [audio_emb 1024 + caption_emb 768 + struct_tags 52] = 1844d input
+    # (round-7.7: audio_emb defaults to embeddings_1024 — Conformer hidden;
+    # pass --audio-emb-key embeddings here to ablate against the v18.1-era
+    # 512-d joint-space substrate, yielding 1332d input as before.)
     # over the full ~40k aligned tracks. Privileged-info asymmetry vs
     # the audio-only student (G6) still holds via caption_emb + struct.
     $RUN train_v18_teacher.py \
