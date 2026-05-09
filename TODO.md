@@ -235,6 +235,14 @@ These features would make clusters queryable and actionable:
 
 # Bugs
 
+- [ ] **`database is locked (code 5)` during reanalysis.** Tracks intermittently
+  fail to write during the dual-store (`ml_embeddings` 512-d + `ml_intensity_embeddings`
+  1024-d) reanalysis pass — SQLite write contention from parallel mesh-cue
+  workers, each now doing two embedding writes per track. Affected tracks
+  silently skip the write and need a manual re-run (visible as
+  `missing_embed` in `db-inspect`). Fix options: serialize the dual-write
+  through a single tx, batch writes per worker, or back off + retry on lock.
+
 # Stubbed / Deferred
 
 # Performance
