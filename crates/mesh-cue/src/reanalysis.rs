@@ -429,6 +429,29 @@ fn reanalyze_metadata_track(
                 return Err(anyhow::anyhow!("store_ml_embedding failed: {}", e));
             }
 
+            // Round-7.7: persist 1024-d intensity embedding alongside the 512-d.
+            // Empty when the loaded ONNX is the legacy single-output (pre-round-7.7);
+            // skip silently in that case (the v18.1 fallback path keeps working).
+            const EXPECTED_INT_DIM: usize = crate::ml_analysis::MUQ_MULAN_HIDDEN_DIM;
+            if ml_result.embedding_1024.len() == EXPECTED_INT_DIM {
+                if let Err(e) = db.store_ml_intensity_embedding(track_id, &ml_result.embedding_1024) {
+                    log::error!(
+                        "reanalyze_metadata_track: Failed to store ML intensity embedding for {:?}: {:?}",
+                        path, e,
+                    );
+                    return Err(anyhow::anyhow!("store_ml_intensity_embedding failed: {}", e));
+                }
+            } else if !ml_result.embedding_1024.is_empty() {
+                log::error!(
+                    "reanalyze_metadata_track: MuQ-MuLan intensity head returned wrong dim {} (expected {}) for {:?} — track marked failed",
+                    ml_result.embedding_1024.len(), EXPECTED_INT_DIM, path,
+                );
+                return Err(anyhow::anyhow!(
+                    "MuQ-MuLan intensity embedding wrong dim: got {}, expected {}",
+                    ml_result.embedding_1024.len(), EXPECTED_INT_DIM,
+                ));
+            }
+
             // Stem energy densities — reuse already-loaded stems (no extra file open)
             let (vocal, drums, bass, other) = crate::batch_import::compute_stem_energy_ratios(&stems);
             if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {

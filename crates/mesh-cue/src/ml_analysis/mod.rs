@@ -23,7 +23,7 @@ pub mod inference;
 pub mod aggression_axis;
 
 // Re-export key types
-pub use inference::{MlAnalyzer, MlAnalysisResult, MUQ_MULAN_EMBEDDING_DIM};
+pub use inference::{MlAnalyzer, MlAnalysisResult, MUQ_MULAN_EMBEDDING_DIM, MUQ_MULAN_HIDDEN_DIM};
 pub use models::{MlModelManager, MlModelType};
 pub use aggression_axis::IntensityAxis;
 

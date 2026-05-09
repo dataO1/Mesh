@@ -806,6 +806,7 @@ fn process_single_track(
                 genre_scores: Vec::new(),
             },
             embedding: Vec::new(),
+            embedding_1024: Vec::new(),
         };
 
         match mel {
@@ -884,6 +885,20 @@ fn process_single_track(
                     log::error!(
                         "process_single_track: '{}' MuQ-MuLan returned wrong embedding dim {} (expected {}); skipping store",
                         base_name, ml.embedding.len(), ml_analysis::MUQ_MULAN_EMBEDDING_DIM,
+                    );
+                }
+
+                // Round-7.7: persist MuQ-MuLan 1024-d Conformer hidden for the
+                // V18.X+ intensity probe. Empty on legacy single-output ONNX
+                // (pre-round-7.7 models still work via the 512-d store above).
+                if ml.embedding_1024.len() == ml_analysis::MUQ_MULAN_HIDDEN_DIM {
+                    if let Err(e) = config.db_service.store_ml_intensity_embedding(track_id, &ml.embedding_1024) {
+                        log::warn!("process_single_track: Failed to store ML intensity embedding for '{}': {}", base_name, e);
+                    }
+                } else if !ml.embedding_1024.is_empty() {
+                    log::error!(
+                        "process_single_track: '{}' MuQ-MuLan intensity head returned wrong dim {} (expected {}); skipping store",
+                        base_name, ml.embedding_1024.len(), ml_analysis::MUQ_MULAN_HIDDEN_DIM,
                     );
                 }
 

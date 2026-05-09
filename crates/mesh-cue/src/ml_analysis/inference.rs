@@ -41,13 +41,21 @@ use super::preprocessing::{MelSpectrogramResult, MUQ_HOP, MUQ_N_MELS, MUQ_TARGET
 /// per-clip outputs. Empty if inference failed.
 pub struct MlAnalysisResult {
     pub data: MlAnalysisData,
-    /// 512-dim MuQ-MuLan audio embedding (l2-normalized output of the
-    /// audio tower, averaged across the per-clip outputs). Empty on failure.
+    /// 512-dim MuQ-MuLan joint-space audio embedding. L2-normalized.
+    /// Used by mesh-cue similarity / suggestion graph / future text-tower.
+    /// Empty on failure.
     pub embedding: Vec<f32>,
+    /// Round-7.7: 1024-dim MuQ-MuLan Conformer hidden state. Pre-projection.
+    /// Used by the V18.X+ intensity probe per the MuQ paper recipe.
+    /// Empty on pre-round-7.7 (single-output) ONNX or on failure.
+    pub embedding_1024: Vec<f32>,
 }
 
 /// MuQ-MuLan joint-space embedding dim — fixed by the model.
 pub const MUQ_MULAN_EMBEDDING_DIM: usize = 512;
+
+/// MuQ-MuLan Conformer hidden state dim (pre-projection, round-7.7+).
+pub const MUQ_MULAN_HIDDEN_DIM: usize = 1024;
 
 /// One clip = 10 s of mel @ 24 kHz / hop 240 (post `[..., :-1]` trim).
 const MUQ_MULAN_CLIP_FRAMES: usize = (MUQ_TARGET_SR as usize) * 10 / MUQ_HOP;
@@ -86,6 +94,7 @@ const MUQ_MULAN_INPUT_NAME: &str = "mel";
 /// compat with the v18.1-shipped ONNX.
 const MUQ_MULAN_OUTPUT_NAME_512: &str = "audio_embedding_512";
 const MUQ_MULAN_OUTPUT_NAME_LEGACY_512: &str = "audio_embedding";
+const MUQ_MULAN_OUTPUT_NAME_1024: &str = "audio_embedding_1024";
 
 /// Mel-normalization stats loaded from the `*.norm.json` sidecar. Mirrors
 /// the structure `convert-muq-mulan/export.py::extract_norm_stats` writes.
@@ -313,39 +322,70 @@ impl MlAnalyzer {
             mel.frames.len()
         );
 
-        let mut clip_embeddings: Vec<Vec<f32>> = Vec::with_capacity(clips.len());
+        // Each clip yields (1024-d Conformer hidden, 512-d joint-space).
+        // The 1024-d slot is empty when running against a legacy single-output
+        // ONNX (pre-round-7.7); the intensity-axis fallback below handles that.
+        let mut clip_pairs: Vec<(Vec<f32>, Vec<f32>)> = Vec::with_capacity(clips.len());
         for clip in &clips {
-            clip_embeddings.push(self.run_clip(clip)?);
+            clip_pairs.push(self.run_clip(clip)?);
         }
 
-        let embedding = match self.intensity_axis.as_ref() {
-            Some(axis) if clip_embeddings.len() > 1 => {
-                // Score every clip, pick the peak.
+        // Round-7.7: project the 1024-d Conformer hidden through V18.X for
+        // peak-clip selection. Pre-round-7.7 axes (V15 / V18 / V18.1) are
+        // 512-d and won't load against the bumped EMBEDDING_DIM = 1024;
+        // those builds fall back to mean-pool of 512-d for embedding.
+        //
+        // Picked clip: store both heads. ml_intensity_embeddings (1024) →
+        // intensity probe; ml_embeddings (512) → similarity / suggestion graph.
+        let n_clips = clip_pairs.len();
+        let any_1024 = clip_pairs.iter().any(|(h, _)| !h.is_empty());
+
+        let (embedding_1024, embedding) = match (self.intensity_axis.as_ref(), n_clips, any_1024) {
+            (Some(axis), n, true) if n > 1 => {
+                // Multi-clip + 1024-d available + axis loaded → peak-clip on 1024-d.
                 let mut peak_idx = 0usize;
                 let mut peak_score = f32::NEG_INFINITY;
-                for (i, emb) in clip_embeddings.iter().enumerate() {
-                    let s = axis.project(emb);
+                for (i, (h_1024, _)) in clip_pairs.iter().enumerate() {
+                    if h_1024.is_empty() { continue; }
+                    let s = axis.project(h_1024);
                     if s > peak_score {
                         peak_score = s;
                         peak_idx = i;
                     }
                 }
                 log::debug!(
-                    "ML: peak-clip {} of {} (score={:.4}) selected as track embedding",
-                    peak_idx + 1, clip_embeddings.len(), peak_score,
+                    "ML: peak-clip {} of {} (score={:.4}, 1024-d substrate) selected as track embedding",
+                    peak_idx + 1, n_clips, peak_score,
                 );
-                clip_embeddings.into_iter().nth(peak_idx).unwrap()
+                let (h_1024, e_512) = clip_pairs.into_iter().nth(peak_idx).unwrap();
+                (h_1024, e_512)
             }
-            // Single-clip track or no axis — nothing to pick. Use it as-is.
-            _ if clip_embeddings.len() == 1 => clip_embeddings.into_iter().next().unwrap(),
-            // Multi-clip but no axis available (shouldn't happen with the
-            // embedded default in place). Fall back to mean.
-            _ => {
+            (_, 1, _) => {
+                // Single clip — nothing to pick.
+                let (h_1024, e_512) = clip_pairs.into_iter().next().unwrap();
+                (h_1024, e_512)
+            }
+            (_, _, false) => {
+                // Legacy ONNX (no 1024-d output). Mean-pool the 512-d heads;
+                // intensity slot stays empty (downstream falls back to v18.1
+                // path or surfaces the migration prompt).
                 log::debug!(
-                    "ML: no intensity axis loaded — falling back to mean of {} clips",
-                    clip_embeddings.len(),
+                    "ML: no 1024-d output (legacy ONNX) — mean-pool {} clips on 512-d only",
+                    n_clips,
                 );
-                average_embeddings(&clip_embeddings)
+                let mean_512 = average_embeddings(&clip_pairs.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>());
+                (Vec::new(), mean_512)
+            }
+            _ => {
+                // Multi-clip + 1024-d available BUT no axis loaded (shouldn't
+                // happen with the embedded default in place). Mean-pool both.
+                log::debug!(
+                    "ML: no intensity axis loaded — falling back to mean of {} clips (both heads)",
+                    n_clips,
+                );
+                let mean_1024 = average_embeddings(&clip_pairs.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>());
+                let mean_512 = average_embeddings(&clip_pairs.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>());
+                (mean_1024, mean_512)
             }
         };
 
@@ -357,11 +397,17 @@ impl MlAnalyzer {
                 genre_scores: Vec::new(),
             },
             embedding,
+            embedding_1024,
         })
     }
 
-    /// Run one clip: normalize mel → ONNX → 512-d.
-    fn run_clip(&mut self, clip: &[Vec<f32>]) -> Result<Vec<f32>, String> {
+    /// Run one clip: normalize mel → ONNX → (1024-d Conformer hidden, 512-d joint-space).
+    ///
+    /// Round-7.7: multi-output ONNX returns BOTH heads from a single forward
+    /// pass. Pre-round-7.7 (legacy) ONNX returns only the 512-d, in which
+    /// case the 1024-d slot is empty and the intensity probe falls back to
+    /// the deprecated 512-d path.
+    fn run_clip(&mut self, clip: &[Vec<f32>]) -> Result<(Vec<f32>, Vec<f32>), String> {
         let n_frames = clip.len();
         if n_frames == 0 {
             return Err("Empty clip".to_string());
@@ -391,15 +437,31 @@ impl MlAnalyzer {
             ort::inputs![MUQ_MULAN_INPUT_NAME => input_tensor]
         ).map_err(|e| format!("MuQ-MuLan inference error: {}", e))?;
 
-        // Look up the 512-d output by name. Round-7.7 multi-output ONNX
-        // names it `audio_embedding_512`; pre-round-7.7 single-output ONNX
-        // named it just `audio_embedding`. Fall back to the legacy name so
-        // a fresh checkout against an older locally-cached ONNX still works.
+        // Helper: extract a named output as Vec<f32> with dim check.
         let collected: Vec<_> = outputs.iter().collect();
-        let emb_value = collected.iter()
-            .find(|(name, _)| *name == MUQ_MULAN_OUTPUT_NAME_512)
-            .or_else(|| collected.iter().find(|(name, _)| *name == MUQ_MULAN_OUTPUT_NAME_LEGACY_512))
-            .map(|(_, v)| v)
+        let extract_by_name = |target_name: &str, expected_dim: usize| -> Result<Option<Vec<f32>>, String> {
+            let entry = collected.iter().find(|(name, _)| *name == target_name);
+            let Some((_, v)) = entry else { return Ok(None); };
+            let (shape, data) = v.try_extract_tensor::<f32>()
+                .map_err(|e| format!("MuQ-MuLan {} extraction error: {}", target_name, e))?;
+            let dims: &[i64] = shape.as_ref();
+            let dim = match dims {
+                [_, d] => *d as usize,
+                [d] => *d as usize,
+                other => return Err(format!("Unexpected MuQ-MuLan {} shape {:?}", target_name, other)),
+            };
+            if dim != expected_dim {
+                return Err(format!(
+                    "MuQ-MuLan {} output dim {} ≠ expected {}",
+                    target_name, dim, expected_dim,
+                ));
+            }
+            Ok(Some(data.iter().copied().take(expected_dim).collect()))
+        };
+
+        // 512-d: round-7.7 named `audio_embedding_512`; legacy named `audio_embedding`.
+        let emb_512 = extract_by_name(MUQ_MULAN_OUTPUT_NAME_512, MUQ_MULAN_EMBEDDING_DIM)?
+            .or(extract_by_name(MUQ_MULAN_OUTPUT_NAME_LEGACY_512, MUQ_MULAN_EMBEDDING_DIM)?)
             .ok_or_else(|| {
                 let names: Vec<&str> = collected.iter().map(|(n, _)| *n).collect();
                 format!(
@@ -407,24 +469,12 @@ impl MlAnalyzer {
                     MUQ_MULAN_OUTPUT_NAME_512, MUQ_MULAN_OUTPUT_NAME_LEGACY_512, names,
                 )
             })?;
-        let (shape, data) = emb_value.try_extract_tensor::<f32>()
-            .map_err(|e| format!("MuQ-MuLan output extraction error: {}", e))?;
 
-        // ort 2.x's `Shape` derefs to `[i64]`. Pin it through a slice to
-        // pattern-match. Expect either [1, 512] or [512].
-        let dims: &[i64] = shape.as_ref();
-        let dim = match dims {
-            [_, d] => *d as usize,
-            [d] => *d as usize,
-            other => return Err(format!("Unexpected MuQ-MuLan output shape {:?}", other)),
-        };
-        if dim != MUQ_MULAN_EMBEDDING_DIM {
-            return Err(format!(
-                "MuQ-MuLan output dim {} ≠ expected {}",
-                dim, MUQ_MULAN_EMBEDDING_DIM,
-            ));
-        }
-        Ok(data.iter().copied().take(MUQ_MULAN_EMBEDDING_DIM).collect())
+        // 1024-d: round-7.7 only — empty Vec on legacy single-output ONNX.
+        let emb_1024 = extract_by_name(MUQ_MULAN_OUTPUT_NAME_1024, MUQ_MULAN_HIDDEN_DIM)?
+            .unwrap_or_default();
+
+        Ok((emb_1024, emb_512))
     }
 }
 

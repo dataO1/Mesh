@@ -84,10 +84,13 @@ fn main() {
     println!();
     println!("  total tracks in DB: {}", n_total);
 
+    // Round-7.7: read the 1024-d intensity-probe column. Falls back to None
+    // for tracks analysed before round-7.7 (those need re-analysis to land in
+    // ml_intensity_embeddings — surfaces as the migration prompt at startup).
     let mut scored: Vec<(f32, &mesh_core::db::Track)> = all_tracks.iter()
         .filter_map(|t| {
             let tid = t.id?;
-            let emb = db.get_ml_embedding_raw(tid).ok().flatten()?;
+            let emb = db.get_ml_intensity_embedding_raw(tid).ok().flatten()?;
             if emb.len() != mesh_core::intensity_axis::EMBEDDING_DIM { return None; }
             Some((provider.project(&emb), t))
         })

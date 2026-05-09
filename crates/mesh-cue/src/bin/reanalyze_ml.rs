@@ -137,6 +137,12 @@ fn main() -> anyhow::Result<()> {
             }
             db.store_ml_embedding(*track_id, &ml.embedding)
                 .map_err(|e| anyhow::anyhow!("store: {}", e))?;
+            // Round-7.7: also persist 1024-d intensity-probe embedding (or skip
+            // silently for legacy single-output ONNX where the slot is empty).
+            if ml.embedding_1024.len() == ml_analysis::MUQ_MULAN_HIDDEN_DIM {
+                db.store_ml_intensity_embedding(*track_id, &ml.embedding_1024)
+                    .map_err(|e| anyhow::anyhow!("store_intensity: {}", e))?;
+            }
             Ok(())
         })();
         let n = done.fetch_add(1, Ordering::Relaxed) + 1;

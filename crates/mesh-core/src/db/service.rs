@@ -945,6 +945,41 @@ impl DatabaseService {
         SimilarityQuery::get_ml_embedding_raw(&self.db, track_id)
     }
 
+    // ── ML intensity embedding (MuQ-MuLan 1024-d Conformer hidden, round-7.7) ──
+
+    /// Store the 1024-dim MuQ-MuLan Conformer hidden state for the V18.X+
+    /// intensity probe. Sister of `store_ml_embedding` — same key (track_id),
+    /// different table (`ml_intensity_embeddings`), no HNSW.
+    pub fn store_ml_intensity_embedding(&self, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        SimilarityQuery::upsert_ml_intensity_embedding(&self.db, track_id, embedding)
+    }
+
+    /// Retrieve the raw 1024-d intensity-probe embedding for a track.
+    /// Returns None for tracks analysed before round-7.7 (surfaces the
+    /// re-analysis migration prompt at startup).
+    pub fn get_ml_intensity_embedding_raw(&self, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        SimilarityQuery::get_ml_intensity_embedding_raw(&self.db, track_id)
+    }
+
+    /// All (track_id, 1024-d intensity vec) pairs. Used by aggression_inspect
+    /// + any batch projection over the library.
+    pub fn get_all_ml_intensity_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        SimilarityQuery::get_all_ml_intensity_embeddings(&self.db)
+    }
+
+    /// Track IDs that have a 1024-d intensity embedding populated.
+    /// Drives the migration prompt at mesh-cue startup (gap = needs re-analysis).
+    pub fn get_tracks_with_intensity_embeddings(&self) -> Result<Vec<i64>, DbError> {
+        SimilarityQuery::get_tracks_with_intensity_embeddings(&self.db)
+    }
+
+    /// Track IDs that have the legacy 512-d ml_embeddings populated.
+    /// Counterpart to `get_tracks_with_intensity_embeddings`; the gap between
+    /// the two drives the round-7.7 migration prompt.
+    pub fn get_tracks_with_ml_embeddings(&self) -> Result<Vec<i64>, DbError> {
+        SimilarityQuery::get_tracks_with_ml_embeddings(&self.db)
+    }
+
     /// Find similar tracks via MuQ-MuLan HNSW (same DB, by track ID).
     pub fn find_similar_tracks_ml(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar_by_ml_id(&self.db, track_id, limit)?;

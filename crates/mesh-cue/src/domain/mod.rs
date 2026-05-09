@@ -147,6 +147,42 @@ impl MeshCueDomain {
         let db_service = DatabaseService::new(&collection_root)
             .map_err(|e| anyhow!("Failed to initialize database: {}", e))?;
 
+        // Round-7.7 migration check: surface a friendly nudge if the user has
+        // tracks with the old 512-d ml_embeddings but missing 1024-d
+        // ml_intensity_embeddings (the new V18.X intensity-probe substrate).
+        // The intensity probe will dim-mismatch on those tracks until they
+        // re-analyse, so we point them at the analyse menu.
+        match (
+            db_service.get_tracks_with_ml_embeddings(),
+            db_service.get_tracks_with_intensity_embeddings(),
+        ) {
+            (Ok(with_512), Ok(with_1024)) => {
+                let n_512 = with_512.len();
+                let n_1024 = with_1024.len();
+                let needs_reanalysis = n_512.saturating_sub(n_1024);
+                if needs_reanalysis > 0 {
+                    log::warn!("");
+                    log::warn!("┌─────────────────────────────────────────────────────────────────────┐");
+                    log::warn!("│  ░▒▓ MESH JUST DROPPED A NEW INTENSITY MODEL ▓▒░                    │");
+                    log::warn!("│                                                                     │");
+                    log::warn!("│  V18.X is on the decks — sharper ear, deeper substrate. To make    │");
+                    log::warn!("│  the new sound system work for {:>4} of your tracks, give them      │", needs_reanalysis);
+                    log::warn!("│  a fresh re-analyse. Anything not re-analysed stays on the old     │");
+                    log::warn!("│  ranking until you do.                                              │");
+                    log::warn!("│                                                                     │");
+                    log::warn!("│  Hit  Library  →  Re-analyse → ML Tags  when the dance floor's    │");
+                    log::warn!("│  empty. About a second per track on a hot CPU, no stress.          │");
+                    log::warn!("└─────────────────────────────────────────────────────────────────────┘");
+                    log::warn!("");
+                    log::warn!("[migration] {} tracks need ML re-analysis ({}/{} have V18.X intensity embeddings)",
+                               needs_reanalysis, n_1024, n_512);
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                log::debug!("[migration] ML-embedding gap check skipped: {}", e);
+            }
+        }
+
         // Create playlist storage backed by database
         let storage = DatabaseStorage::new(db_service.clone())
             .map_err(|e| anyhow!("Failed to create playlist storage: {}", e))?;
