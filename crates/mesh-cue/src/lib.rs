@@ -21,17 +21,28 @@ pub mod batch_import;
 
 /// Estimated peak resident-memory cost of one analysis worker, in bytes.
 ///
-/// Each worker holds, concurrently, for a typical ~5-minute stereo FLAC at
-/// 48 kHz:
-///   * full-file decode buffer            ≈ 150 MB transient
-///   * 4× stereo f32 stem buffers @ 48 k  ≈ 460 MB (5 min × 60 × 48 000 × 8 B × 4)
-///   * mono mix for mel                   ≈  60 MB
-///   * mel spectrogram + MAEST activations ≈ 100 MB (per-thread ORT session)
+/// Mesh's converted library files are **8-channel multi-stem FLACs** (vocals,
+/// drums, bass, other — each as a stereo pair) at native 48 kHz, not the
+/// 2-channel stereo files an earlier estimate assumed. For a typical
+/// ~5-minute multi-stem track each worker holds, concurrently:
 ///
-/// Sum ≈ 770 MB peak. Round to **1 GiB** for headroom against longer tracks
-/// and allocator overhead. Used by `analysis_workers()` to cap concurrency
-/// so we don't OOM on smaller boxes.
-const PER_WORKER_PEAK_BYTES: u64 = 1024 * 1024 * 1024;
+///   * full-file decode buffer             ≈  300 MB transient
+///   * 4× stereo f32 stem buffers @ 48 kHz ≈  460 MB
+///     (5 min × 60 s × 48 000 × 4 B × 2 ch × 4 stems)
+///   * mono mix for mel                    ≈   60 MB
+///   * mel spectrogram + ML activations    ≈  100 MB
+///   * per-thread MuQ-MuLan ONNX session   ≈  700 MB (weights + arena)
+///
+/// Naïve sum ≈ 1.6 GB, but on long tracks (8–10 min) the stem buffers
+/// roughly double and we observed ~2.5–3 GB peaks before the eager-drop
+/// fix in `reanalysis::reanalyze_metadata_track` (stems are now consumed
+/// for energy ratios and dropped *before* the mel + ONNX peak so the audio
+/// buffers and the ONNX session never coexist at full size).
+///
+/// With eager drop, **2 GiB** is a realistic upper bound that still lets a
+/// 70 GB workstation run all 24 cores without paging while leaving plenty
+/// of headroom for the OS, page cache, and the rest of the app.
+const PER_WORKER_PEAK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Fraction of currently-available RAM the analysis pool is allowed to plan
 /// against. The rest is left for the OS, the rest of the app's heap, page

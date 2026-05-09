@@ -382,12 +382,24 @@ fn reanalyze_metadata_track(
             let stems = reader
                 .read_all_stems()
                 .with_context(|| format!("Failed to read stems from: {:?}", path))?;
+
+            // Eagerly compute stem energy ratios so we can drop the 4 stem
+            // buffers (~460 MB on a 5-min multi-stem FLAC, more on longer
+            // tracks) BEFORE the mel + ONNX inference peak. Without this,
+            // the stems remain alive through mel computation and ML inference
+            // alongside the per-thread ONNX session, pushing per-worker RSS
+            // to ~2.5–3 GB on long 8-channel files.
+            let (vocal, drums, bass, other) =
+                crate::batch_import::compute_stem_energy_ratios(&stems);
+
             let mono_mix = create_mono_mix(&stems);
+            drop(stems);
 
             // ML analysis on native-rate mono mix
             let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
                 &mono_mix, SAMPLE_RATE as f32,
             ).map_err(|e| anyhow::anyhow!("Mel spectrogram failed: {}", e))?;
+            drop(mono_mix);
 
             let ml_result = crate::ml_analysis::with_thread_local_analyzer(model_dir, |analyzer| {
                 analyzer.analyze(&mel)
@@ -452,8 +464,8 @@ fn reanalyze_metadata_track(
                 ));
             }
 
-            // Stem energy densities — reuse already-loaded stems (no extra file open)
-            let (vocal, drums, bass, other) = crate::batch_import::compute_stem_energy_ratios(&stems);
+            // Stem energy densities — computed eagerly above (before mel/ONNX peak)
+            // so the stem buffers could be dropped. Reuse the captured locals here.
             if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {
                 log::warn!("reanalyze_metadata_track: Failed to store stem energy: {:?}", e);
             }
