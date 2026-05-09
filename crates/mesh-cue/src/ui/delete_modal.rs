@@ -202,9 +202,17 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
+    // Custom destructive actions (e.g. round-7.7 migration prompt) often
+    // have longer titles + descriptions; give them a wider modal so the
+    // title doesn't wrap mid-decoration. Standard delete modals stay
+    // compact at 450px.
+    let body_width = match target {
+        DeleteTarget::Custom { .. } => Length::Fixed(720.0),
+        _ => Length::Fixed(450.0),
+    };
     let body = column![header, description, items_list, warning, actions]
         .spacing(15)
-        .width(Length::Fixed(450.0));
+        .width(body_width);
 
     container(body)
         .padding(30)

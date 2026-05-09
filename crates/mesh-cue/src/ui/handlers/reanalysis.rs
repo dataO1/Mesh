@@ -312,15 +312,42 @@ impl MeshCueApp {
     }
 
     /// User clicked "Drop the beat" — kick off the existing batch metadata
-    /// reanalysis flow with `tags: true` over the entire library.
+    /// reanalysis flow with `tags: true` ONLY (everything else explicitly
+    /// false), scope = EntireCollection.
+    ///
+    /// **Critical invariant:** this path must only re-write ML-related data
+    /// (ml_analysis, ml_embeddings, ml_intensity_embeddings, ML-derived
+    /// track tags, stem_energy). It must NOT touch title, artist, LUFS,
+    /// key, BPM, beat grid, cue points, saved loops, or the audio file on
+    /// disk. Audited 2026-05-09 against `reanalyze_metadata_track` in
+    /// `crate::reanalysis` — `name_artist`/`loudness`/`key` branches all
+    /// gated by their respective flags. The defensive assertion below
+    /// guards against future accidental flag-flipping in this path.
     pub fn handle_accept_migration_reanalysis(&mut self) -> Task<Message> {
         // Configure the reanalysis state as if the user had ticked the
-        // "ML Tags" checkbox in the existing config modal.
+        // "ML Tags" checkbox in the existing config modal — and ONLY that.
         self.reanalysis_state.config_scope = Some(crate::analysis::ReanalysisScope::EntireCollection);
         self.reanalysis_state.config_name_artist = false;
         self.reanalysis_state.config_loudness = false;
         self.reanalysis_state.config_key = false;
         self.reanalysis_state.config_tags = true;
+
+        // Defensive: hard-fail before dispatch if any non-tags flag is set.
+        // Catches future bugs where another code path leaves stale state on
+        // self.reanalysis_state that this handler would inadvertently inherit.
+        assert!(
+            !self.reanalysis_state.config_name_artist
+                && !self.reanalysis_state.config_loudness
+                && !self.reanalysis_state.config_key
+                && self.reanalysis_state.config_tags,
+            "migration popup must dispatch tags-only reanalysis (name={}, loudness={}, key={}, tags={})",
+            self.reanalysis_state.config_name_artist,
+            self.reanalysis_state.config_loudness,
+            self.reanalysis_state.config_key,
+            self.reanalysis_state.config_tags,
+        );
+        log::info!("[migration] AcceptMigrationReanalysis → tags-only reanalysis on EntireCollection");
+
         // Dispatch ConfirmMetadataReanalysis to reuse the existing path
         // (logging, worker pool sizing, progress handling all stay the same).
         Task::done(Message::ConfirmMetadataReanalysis)

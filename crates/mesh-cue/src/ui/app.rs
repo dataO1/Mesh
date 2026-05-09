@@ -1334,16 +1334,26 @@ impl MeshCueApp {
             .on_press(Message::OpenSettings)
             .style(button::secondary);
 
-        let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
-            .height(28);
+        // PNG logo commented out per user — replaced with the unicode block
+        // decoration "░▒▓"/"▓▒░" from the round-7.7 migration popup.
+        // Restore the PNG by uncommenting these two lines (and re-adding
+        // `logo,` to the row! invocation below) if the decorations don't age
+        // well across themes / fonts.
+        // let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
+        //     .height(28);
+
+        // Mesh-Bold display font for the header. Reused for the ▓▒░ decorations
+        // so they pick up the same weight + theme color as the wordmark.
+        let header_font = {
+            let f = self.settings.draft_font.to_iced_font();
+            iced::Font { weight: iced::font::Weight::Bold, ..f }
+        };
 
         container(
             row![
-                logo,
-                text("mesh").size(sz(30.0)).font({
-                    let f = self.settings.draft_font.to_iced_font();
-                    iced::Font { weight: iced::font::Weight::Bold, ..f }
-                }),
+                text("░▒▓").size(sz(30.0)).font(header_font),
+                text("mesh").size(sz(30.0)).font(header_font),
+                text("▓▒░").size(sz(30.0)).font(header_font),
                 Space::new().width(Length::Fill),
                 slicer_btn,
                 fx_btn,
