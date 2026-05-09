@@ -88,9 +88,14 @@ pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), Stri
     let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
         .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
         .collect();
+    // Round-7.7: V18.X axis is 1024-d (Conformer hidden); read from
+    // ml_intensity_embeddings, not the legacy 512-d ml_embeddings. Tracks
+    // not yet re-analysed have no row in the new table — they fall out of
+    // the agreement calculation, which is the right behaviour (no fake
+    // 11.1% noise from dim-mismatched 0.0 projections).
     let agreement = mesh_core::suggestions::aggression::compute_pair_agreement_with(
         |emb| axis.project(emb),
-        |id| db.get_ml_embedding_raw(id).ok().flatten(),
+        |id| db.get_ml_intensity_embedding_raw(id).ok().flatten(),
         &pair_triplets,
         0.02,
     );
