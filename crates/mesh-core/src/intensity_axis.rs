@@ -8,16 +8,19 @@
 //!
 //! - **V15-class schema** (`variant_id`, `intensity_axis_vec`, `sub_axes`,
 //!   `intensity_formula`, …). L2-unit-norm 512-d projection vector. Was
-//!   the deployed shape for round-6/round-7.5. Sub-axes were forward-
-//!   looking for a "more dark / less distorted" UI that never shipped.
-//!   `project()` is a single dot product.
+//!   the deployed shape for round-6/round-7.5. **No longer loadable** as
+//!   of round-7.7 — the V15-rollback file is preserved on disk for
+//!   archival but won't pass the dim check (round-7.7 moved the
+//!   intensity probe to 1024-d Conformer hidden states per the MuQ
+//!   paper's probe recipe; V15's 512-d joint-space vec doesn't apply).
 //!
 //! - **V18-class schema** (`version`, `model_type ∈ {linear, mlp}`,
 //!   `intensity_axis_vec` + `bias` for linear, or
 //!   `mlp.{W1, b1, W2, b2}` + `mlp.activation` for MLP).
-//!   Round-7.6 V18 onwards. The MLP variant is V18.1, which closed
-//!   ~0.6 pp on V18 by escalating the student to a 2-layer MLP per
-//!   spec §765-768.
+//!   Round-7.6 V18 onwards. Round-7.7 retrained on the 1024-d Conformer
+//!   hidden states (was 512-d joint-space). The schema is unchanged;
+//!   `embedding_dim` in the JSON declares the input width and must
+//!   match `INTENSITY_EMBEDDING_DIM`.
 //!
 //! V18+ files don't carry sub-axes; round-7.6 didn't produce them, and
 //! they were never used at runtime anyway. The Rust struct keeps the
@@ -30,8 +33,20 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-/// Required dimensionality of every audio embedding. Matches MuQ-MuLan's
-/// joint space; loud-fail if a variant disagrees on input dim.
+/// Required dimensionality of audio embeddings fed to the intensity probe.
+///
+/// **Round-7.7 transition** (in flight): bumping from 512 (MuQ-MuLan
+/// joint-space) to 1024 (MuQ-MuLan pre-projection Conformer hidden
+/// states) per the MuQ paper's probe recipe. The constant stays at 512
+/// until the new 1024-d V18.X is trained and the embedded blob at
+/// `models/muq-mulan-aggression-axis.json` is replaced — bumping it
+/// before that would break `embedded_default()` (the existing blob is
+/// V18.1 / 512-d). The bump happens in the same commit that ships the
+/// new blob.
+///
+/// The 512-d joint-space output is still produced by the encoder and used
+/// elsewhere for similarity (see `mesh-cue::ml_analysis`); the intensity-
+/// axis probe is what's moving to 1024-d.
 pub const EMBEDDING_DIM: usize = 512;
 
 /// Canonical filename used in both the shipped models dir and the per-

@@ -775,6 +775,18 @@ impl SimilarityQuery {
             .collect())
     }
 
+    /// Round-7.7: track IDs that have a 1024-d intensity-probe embedding.
+    /// Used by mesh-cue startup to detect the "needs re-analysis" gap and
+    /// surface the user-facing prompt.
+    pub fn get_tracks_with_intensity_embeddings(db: &MeshDb) -> Result<Vec<i64>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id] := *ml_intensity_embeddings{track_id}
+        "#, BTreeMap::new())?;
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_int()))
+            .collect())
+    }
+
     pub fn get_tracks_with_stem_energy(db: &MeshDb) -> Result<Vec<i64>, DbError> {
         let result = db.run_query(r#"
             ?[track_id] := *stem_energy{track_id}
@@ -793,7 +805,7 @@ impl SimilarityQuery {
             .collect())
     }
 
-    // ── ML embedding (MuQ-MuLan 512-d) ──────────────────────────────────────
+    // ── ML embedding (MuQ-MuLan 512-d joint-space, similarity) ─────────────
 
     /// Insert or update the 512-dim MuQ-MuLan audio embedding for a track.
     pub fn upsert_ml_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
@@ -809,6 +821,61 @@ impl SimilarityQuery {
         "#, params)?;
 
         Ok(())
+    }
+
+    // ── ML intensity embedding (MuQ-MuLan 1024-d hidden, intensity probe) ──
+
+    /// Round-7.7: insert or update the 1024-dim MuQ-MuLan Conformer hidden
+    /// state for a track. Stored alongside `ml_embeddings` (512-d, similarity).
+    /// The intensity-axis probe (V18.X+) reads from this table.
+    pub fn upsert_ml_intensity_embedding(db: &MeshDb, track_id: i64, embedding: &[f32]) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("vec".to_string(), DataValue::List(
+            embedding.iter().map(|&v| DataValue::from(v as f64)).collect(),
+        ));
+
+        db.run_script(r#"
+            ?[track_id, vec] <- [[$track_id, $vec]]
+            :put ml_intensity_embeddings {track_id => vec}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Round-7.7: retrieve the raw 1024-dim Conformer hidden state for a
+    /// track (returns None if absent — typical for tracks analysed before
+    /// round-7.7 ships, surfaces as the re-analysis prompt).
+    pub fn get_ml_intensity_embedding_raw(db: &MeshDb, track_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[vec] := *ml_intensity_embeddings{track_id: $track_id, vec}
+        "#, params)?;
+
+        let row = match result.rows.first() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        extract_f32_vec(row.first())
+    }
+
+    /// Round-7.7: retrieve all (track_id, 1024-d intensity vec) pairs.
+    /// Used by `aggression_inspect` and any batch projection over the library.
+    pub fn get_all_ml_intensity_embeddings(db: &MeshDb) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, vec] := *ml_intensity_embeddings{track_id, vec}
+        "#, BTreeMap::new())?;
+        let mut out = Vec::with_capacity(result.rows.len());
+        for row in &result.rows {
+            let tid = row.first().and_then(|v| v.get_int());
+            let vec = extract_f32_vec(row.get(1))?;
+            if let (Some(t), Some(v)) = (tid, vec) {
+                out.push((t, v));
+            }
+        }
+        Ok(out)
     }
 
     /// Find similar tracks via EffNet HNSW using the seed track's stored embedding.

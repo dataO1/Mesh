@@ -355,6 +355,16 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         create_ml_embeddings_index(db)?;
     }
 
+    // Round-7.7: 1024-d MuQ-MuLan Conformer hidden state, populated alongside
+    // the 512-d ml_embeddings. Used as the input substrate for the intensity
+    // probe (V18.X+) per the MuQ paper's recipe. No HNSW index — this table
+    // is read sequentially by `intensity_axis.project()`, not by similarity
+    // search. Relation is created additively; existing rows in `ml_embeddings`
+    // simply have no corresponding row here until re-analysis populates them
+    // (mesh-cue surfaces a re-analysis prompt to the user when this gap is
+    // detected).
+    create_ml_intensity_embeddings_relation(db)?;
+
     // Stem energy density relation (vocal + other)
     create_stem_energy_relation(db)?;
 
@@ -861,6 +871,26 @@ fn create_ml_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
         {:create ml_embeddings {
             track_id: Int =>
             vec: <F32; 512>
+        }}
+    "#)
+}
+
+fn create_ml_intensity_embeddings_relation(db: &DbInstance) -> Result<(), DbError> {
+    // Round-7.7: MuQ-MuLan-large 1024-dim Conformer hidden state, populated
+    // alongside ml_embeddings. The intensity-axis probe (V18.X+) reads from
+    // this table; the 512-d ml_embeddings table is reserved for similarity
+    // (HNSW index) and future text-tower work.
+    //
+    // Per the MuQ paper (arXiv 2501.01108): probe tasks like the V18
+    // intensity head do better on the 1024-d pre-projection hidden states
+    // than on the 512-d post-projection joint-space output.
+    //
+    // No HNSW index here — intensity is a per-track scalar projection, not a
+    // similarity space. Sequential reads via `intensity_axis.project()`.
+    run_schema(db, r#"
+        {:create ml_intensity_embeddings {
+            track_id: Int =>
+            vec: <F32; 1024>
         }}
     "#)
 }
