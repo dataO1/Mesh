@@ -59,6 +59,9 @@ def spearman(a, b):
 def pa(s, y):
     s, y = np.asarray(s), np.asarray(y); n = len(s)
     if n < 2: return float("nan")
+    # Skip if either side is all-NaN (e.g. legacy V15/V17b on round-7.7 1024-d).
+    if np.all(np.isnan(s)) or np.all(np.isnan(y)):
+        return float("nan")
     ds = s[:, None] - s[None, :]; dy = y[:, None] - y[None, :]
     tri = np.triu(np.ones((n, n), dtype=bool), k=1)
     valid = tri & (ds != 0) & (dy != 0)
@@ -170,8 +173,19 @@ def main(args) -> int:
 
     # ── Score with each model ─────────────────────────────────────────
     student_score = student_score_fn(aud)
-    v15_score = aud @ v15_vec
-    v17b_score = aud @ v17b_vec
+    # V15 / V17b legacy axes are 512-d (joint-space). When the student is on
+    # the round-7.7 1024-d substrate (Conformer hidden), we can't directly
+    # compare them on the same audio array — they need 512-d input. Skip
+    # the legacy comparison gracefully in that case rather than crashing.
+    legacy_dim = v15_vec.shape[0]
+    if aud.shape[1] == legacy_dim:
+        v15_score = aud @ v15_vec
+        v17b_score = aud @ v17b_vec
+    else:
+        print(f"[eval] student dim {aud.shape[1]} ≠ legacy V15/V17b dim {legacy_dim}; "
+              f"skipping legacy axis comparison")
+        v15_score = np.full(N, np.nan, dtype=np.float32)
+        v17b_score = np.full(N, np.nan, dtype=np.float32)
 
     # ── G9 CPU-latency microbench (1000 random tracks) ────────────────
     import time as _time

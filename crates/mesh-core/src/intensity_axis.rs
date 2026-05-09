@@ -35,19 +35,16 @@ use serde::Deserialize;
 
 /// Required dimensionality of audio embeddings fed to the intensity probe.
 ///
-/// **Round-7.7 transition** (in flight): bumping from 512 (MuQ-MuLan
-/// joint-space) to 1024 (MuQ-MuLan pre-projection Conformer hidden
-/// states) per the MuQ paper's probe recipe. The constant stays at 512
-/// until the new 1024-d V18.X is trained and the embedded blob at
-/// `models/muq-mulan-aggression-axis.json` is replaced — bumping it
-/// before that would break `embedded_default()` (the existing blob is
-/// V18.1 / 512-d). The bump happens in the same commit that ships the
-/// new blob.
+/// **Round-7.7**: bumped from 512 (MuQ-MuLan joint-space) to 1024
+/// (MuQ-MuLan pre-projection Conformer hidden states) per the MuQ
+/// paper's probe recipe. The 512-d joint-space output is still produced
+/// by the encoder and used elsewhere for similarity (see
+/// `mesh-cue::ml_analysis`); the intensity-axis probe consumes 1024-d.
 ///
-/// The 512-d joint-space output is still produced by the encoder and used
-/// elsewhere for similarity (see `mesh-cue::ml_analysis`); the intensity-
-/// axis probe is what's moving to 1024-d.
-pub const EMBEDDING_DIM: usize = 512;
+/// V15-era and v18.1-era axis JSONs (which declare `embedding_dim: 512`)
+/// will fail to load against this constant — by design. The shipped
+/// `models/muq-mulan-aggression-axis.json` is V18.X (1024-d MLP).
+pub const EMBEDDING_DIM: usize = 1024;
 
 /// Canonical filename used in both the shipped models dir and the per-
 /// collection override location.
@@ -548,7 +545,7 @@ mod tests {
     use super::*;
 
     fn unit_axis() -> Vec<f32> {
-        let mut v = vec![0.0; 512];
+        let mut v = vec![0.0; EMBEDDING_DIM];
         v[0] = 1.0;
         v
     }
@@ -560,14 +557,14 @@ mod tests {
             name: "T".into(),
             rationale: "T".into(),
             model: "T".into(),
-            embedding_dim: 512,
+            embedding_dim: EMBEDDING_DIM,
             method: "T".into(),
             intensity_formula: "T".into(),
             sub_axes: vec![],
             generated_at: "T".into(),
             model_kind: ModelKind::Linear { vec: unit_axis(), bias: 0.0 },
         };
-        let mut emb = vec![0.0; 512];
+        let mut emb = vec![0.0; EMBEDDING_DIM];
         emb[0] = 0.5;
         assert!((axis.project(&emb) - 0.5).abs() < 1e-6);
     }
@@ -579,32 +576,32 @@ mod tests {
             name: "V18".into(),
             rationale: "T".into(),
             model: "muq-mulan".into(),
-            embedding_dim: 512,
+            embedding_dim: EMBEDDING_DIM,
             method: "v18_linear".into(),
             intensity_formula: "audio_emb @ vec + bias".into(),
             sub_axes: vec![],
             generated_at: "T".into(),
             model_kind: ModelKind::Linear { vec: unit_axis(), bias: 0.25 },
         };
-        let mut emb = vec![0.0; 512];
+        let mut emb = vec![0.0; EMBEDDING_DIM];
         emb[0] = 0.5;
         assert!((axis.project(&emb) - 0.75).abs() < 1e-6);
     }
 
     #[test]
     fn project_v18_mlp() {
-        // tiny MLP: hidden=2, in_dim=512, all-zero except first column.
+        // tiny MLP: hidden=2, in_dim=EMBEDDING_DIM, all-zero except first column.
         // x = [1, 0, ...] → W1 x = [1, -1] → +b1 = [2, 0]
         // gelu([2, 0]) = [≈1.954, 0]
         // W2 [1, 1] · [1.954, 0] = 1.954, +b2=0.05 ≈ 2.004
-        let mut w1_row0 = vec![0.0; 512]; w1_row0[0] = 1.0;
-        let mut w1_row1 = vec![0.0; 512]; w1_row1[0] = -1.0;
+        let mut w1_row0 = vec![0.0; EMBEDDING_DIM]; w1_row0[0] = 1.0;
+        let mut w1_row1 = vec![0.0; EMBEDDING_DIM]; w1_row1[0] = -1.0;
         let axis = IntensityAxis {
             variant_id: "V18.1".into(),
             name: "V18.1".into(),
             rationale: "T".into(),
             model: "muq-mulan".into(),
-            embedding_dim: 512,
+            embedding_dim: EMBEDDING_DIM,
             method: "v18_mlp".into(),
             intensity_formula: "T".into(),
             sub_axes: vec![],
@@ -616,7 +613,7 @@ mod tests {
                 b2: 0.05,
             },
         };
-        let mut emb = vec![0.0; 512];
+        let mut emb = vec![0.0; EMBEDDING_DIM];
         emb[0] = 1.0;
         let y = axis.project(&emb);
         // gelu(2) ≈ 1.9545, gelu(0) = 0.
@@ -633,7 +630,7 @@ mod tests {
                 name: "T".into(),
                 rationale: "T".into(),
                 model: "T".into(),
-                embedding_dim: 512,
+                embedding_dim: EMBEDDING_DIM,
                 method: "T".into(),
                 intensity_formula: "T".into(),
                 sub_axes: vec![],
@@ -641,7 +638,7 @@ mod tests {
                 model_kind: ModelKind::Linear { vec: unit_axis(), bias: 0.0 },
             }),
         };
-        let mut emb = vec![0.0; 512];
+        let mut emb = vec![0.0; EMBEDDING_DIM];
         emb[0] = 1.0;
         assert!((provider.project_normalised(&emb) - 1.0).abs() < 1e-6);
         emb[0] = -1.0;

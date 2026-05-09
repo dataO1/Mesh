@@ -435,12 +435,19 @@ case "$STAGE" in
       --out-dir       "$BASE"
 
     echo
-    echo "=== S11: distill student (linear probe over MuQ-MuLan only) ==="
+    echo "=== S11: distill student (MLP h=128 over MuQ-MuLan only) ==="
+    # Round-7.7: --student-arch mlp matches V18.1's deployed MLP shape so
+    # the new V18.X is a direct V18.1 successor (fair before/after compare).
+    # Default audio-emb-key is embeddings_1024 (Conformer hidden, round-7.7
+    # substrate); pass --audio-emb-key embeddings to ablate against the
+    # v18.1-era 512-d joint-space substrate.
     $RUN distill_v18_student.py \
       --audio-emb      "$BASE/embeddings/corpus_muq_mulan.npz" \
       --teacher-preds  "$BASE/round7_6_teacher_preds.npz" \
       --consensus      "$BASE/round7_6_consensus.npz" \
-      --out-dir        "$BASE"
+      --out-dir        "$BASE" \
+      --student-arch   mlp \
+      --hidden-dim     128
 
     echo
     echo "=== S12: held-out eval + caption-emb K-means cluster diagnostic ==="
