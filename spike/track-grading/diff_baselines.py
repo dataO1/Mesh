@@ -318,6 +318,36 @@ def main(args) -> int:
             body.append("_(no tracks crossed the threshold — substrate change is uniformly small.)_")
         body.append("")
 
+    # Directional spot-check companion lists — split big shifts by sign so the
+    # reader can ear-test "did promotions actually deserve to go up?" and
+    # "did demotions actually deserve to go down?" independently.
+    promotions = sorted([d for d in deltas if d["pct_delta"] > 0],
+                        key=lambda d: -d["pct_delta"])[: args.top_n]
+    demotions = sorted([d for d in deltas if d["pct_delta"] < 0],
+                       key=lambda d: d["pct_delta"])[: args.top_n]
+
+    body.append(f"## Top {len(promotions)} promotions ({args.label_new} ranks higher than {args.label_old})\n")
+    body.append(f"Tracks {args.label_new} pushed *up* the most. Spot-check: do these deserve the higher position?\n")
+    if promotions:
+        body.append("| rank Δ | pct old → new (Δ) | score old → new (Δ) | track_id | artist | title | genre_seed |")
+        body.append("|---:|:---|:---|---:|---|---|---|")
+        for d in promotions:
+            body.append(render_row(d))
+    else:
+        body.append(f"_(no upward shifts — {args.label_new} is uniformly equal-or-lower than {args.label_old}.)_")
+    body.append("")
+
+    body.append(f"## Top {len(demotions)} demotions ({args.label_new} ranks lower than {args.label_old})\n")
+    body.append(f"Tracks {args.label_new} pushed *down* the most. Spot-check: do these deserve the lower position?\n")
+    if demotions:
+        body.append("| rank Δ | pct old → new (Δ) | score old → new (Δ) | track_id | artist | title | genre_seed |")
+        body.append("|---:|:---|:---|---:|---|---|---|")
+        for d in demotions:
+            body.append(render_row(d))
+    else:
+        body.append(f"_(no downward shifts — {args.label_new} is uniformly equal-or-higher than {args.label_old}.)_")
+    body.append("")
+
     args.out.write_text("\n".join(body) + "\n")
     print(f"[diff] wrote {args.out}")
     print(f"[diff] summary: {n} tracks, {n_up} up, {n_down} down, {n_tie} unchanged, "
