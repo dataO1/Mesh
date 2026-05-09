@@ -15,7 +15,33 @@
 //! cache so subsequent runs find it via path 5 even if the binary moves.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Round-7.7: cache invalidation predicate. Returns true if `src` is
+/// materially different from `cache` and the cache should be refreshed.
+///
+/// Two cheap signals (no content hash — would defeat the point of a
+/// long-term cache for a 1.2 GB ONNX):
+///
+/// 1. **Size mismatch.** A ONNX export change (new output tensor, layer
+///    swap, opset bump) almost always changes the byte count.
+/// 2. **`src` mtime newer than cache mtime.** Catches in-place
+///    re-exports that happen to land on the same byte size.
+///
+/// On any I/O error reading metadata, treats the cache as stale (safer
+/// to over-copy than serve a stale model that produces wrong outputs).
+fn is_stale(src: &Path, cache: &Path) -> bool {
+    let (Ok(src_meta), Ok(cache_meta)) = (src.metadata(), cache.metadata()) else {
+        return true;
+    };
+    if src_meta.len() != cache_meta.len() {
+        return true;
+    }
+    match (src_meta.modified(), cache_meta.modified()) {
+        (Ok(s), Ok(c)) => s > c,
+        _ => true,
+    }
+}
 
 /// Filename of the audio-tower ONNX produced by `convert-muq-mulan-model`.
 pub const MUQ_MULAN_ONNX_FILENAME: &str = "muq-mulan-audio-tower.onnx";
@@ -141,25 +167,40 @@ impl MlModelManager {
         MlModelType::base_models().iter().all(|m| self.is_available(*m))
     }
 
-    /// One-time installer: if the ONNX/sidecar exists somewhere on disk
-    /// outside the cache (e.g. `models/` from a fresh `convert-muq-mulan-model`
-    /// run), copy them into the long-term cache so the user doesn't need to
-    /// keep the build dir around. No-op if the cache copy already exists or
-    /// the source is already the cache.
+    /// One-time (or refresh) installer: if the ONNX/sidecar exists somewhere
+    /// on disk outside the cache (e.g. `models/` from a fresh
+    /// `convert-muq-mulan-model` run), copy them into the long-term cache so
+    /// the user doesn't need to keep the build dir around.
+    ///
+    /// **Re-copies on staleness** (round-7.7 fix): a non-cache source that is
+    /// newer or differently-sized than the cached copy invalidates the
+    /// cache. Without this, a project-side ONNX update (e.g. switching from
+    /// single-output to multi-output) wouldn't propagate — mesh-cue would
+    /// keep loading the stale cached model and silently miss the new outputs.
+    ///
+    /// No-op if the source is already the cache, or if the cache is already
+    /// fresh against the source.
     ///
     /// Returns the cache-resident ONNX path on success.
     pub fn install_to_cache(&self, model: MlModelType) -> Result<PathBuf, String> {
         let cache_onnx = self.cache_path(model);
-        if cache_onnx.exists() {
-            return Ok(cache_onnx);
-        }
         let Some(src_onnx) = self.model_path(model) else {
+            // No source found anywhere — fall back to whatever's in the cache
+            // (will be reported as missing by `is_available` if also absent).
+            if cache_onnx.exists() {
+                return Ok(cache_onnx);
+            }
             return Err(format!(
                 "{} not found in any search dir; run `nix run .#convert-muq-mulan-model` to produce it",
                 model.filename(),
             ));
         };
         if src_onnx == cache_onnx {
+            return Ok(cache_onnx);
+        }
+        // Decide whether the cache needs refreshing.
+        let cache_stale = !cache_onnx.exists() || is_stale(&src_onnx, &cache_onnx);
+        if !cache_stale {
             return Ok(cache_onnx);
         }
         let src_sidecar = src_onnx.with_file_name(model.norm_filename());
@@ -173,6 +214,16 @@ impl MlModelManager {
         fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("Failed to create cache dir: {}", e))?;
         let cache_sidecar = cache_onnx.with_file_name(model.norm_filename());
+        if cache_onnx.exists() {
+            log::warn!(
+                "Cached {} is stale (src len={}, mtime={:?}; cache len={}, mtime={:?}) — refreshing",
+                model.filename(),
+                src_onnx.metadata().ok().and_then(|m| Some(m.len())).unwrap_or(0),
+                src_onnx.metadata().ok().and_then(|m| m.modified().ok()),
+                cache_onnx.metadata().ok().and_then(|m| Some(m.len())).unwrap_or(0),
+                cache_onnx.metadata().ok().and_then(|m| m.modified().ok()),
+            );
+        }
         fs::copy(&src_onnx, &cache_onnx)
             .map_err(|e| format!("Failed to copy ONNX to cache: {}", e))?;
         fs::copy(&src_sidecar, &cache_sidecar)
@@ -181,20 +232,34 @@ impl MlModelManager {
         // Best-effort: also copy the aggression axis if the source dir has
         // one. Missing axis is non-fatal — intensity scoring degrades but
         // ML inference still works.
+        //
+        // Same staleness rule as the ONNX above — the project axis JSON is
+        // the source of truth; if it's newer / different size from the cache,
+        // refresh. Otherwise leave the user's per-collection override alone.
         let src_axis = src_onnx.with_file_name(model.aggression_axis_filename());
         if src_axis.exists() {
             let cache_axis = cache_onnx.with_file_name(model.aggression_axis_filename());
-            if let Err(e) = fs::copy(&src_axis, &cache_axis) {
-                log::warn!(
-                    "Failed to copy aggression axis to cache (non-fatal): {}",
-                    e,
-                );
-            } else {
-                log::info!(
-                    "Installed aggression axis {} → {}",
-                    src_axis.display(),
-                    cache_axis.display(),
-                );
+            let axis_stale = !cache_axis.exists() || is_stale(&src_axis, &cache_axis);
+            if axis_stale {
+                if cache_axis.exists() {
+                    log::warn!(
+                        "Cached {} is stale — refreshing from {}",
+                        model.aggression_axis_filename(),
+                        src_axis.display(),
+                    );
+                }
+                if let Err(e) = fs::copy(&src_axis, &cache_axis) {
+                    log::warn!(
+                        "Failed to copy aggression axis to cache (non-fatal): {}",
+                        e,
+                    );
+                } else {
+                    log::info!(
+                        "Installed aggression axis {} → {}",
+                        src_axis.display(),
+                        cache_axis.display(),
+                    );
+                }
             }
         } else {
             log::info!(
