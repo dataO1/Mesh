@@ -131,15 +131,25 @@ def run_pytorch(mulan, device: torch.device, cases) -> dict[str, np.ndarray]:
 def run_pytorch_1024(mulan, device: torch.device, mels: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """Compute the 1024-d intensity-probe substrate via PyTorch on the same
     pre-normalized mel that ONNX consumes. Mirrors the export wrapper path:
-    `MuQModel.get_predictions(mel, is_features_only=True)` → hidden states
-    mean-pooled over time → (1024,)."""
+    `encoder(mel, is_features_only=True)` → hidden states (last layer if tuple)
+    mean-pooled over time → (1024,).
+
+    We call the encoder DIRECTLY (`muq_model.encoder`) rather than going
+    through `get_predictions`, because the standard `get_predictions` runs
+    its own STFT preprocessing on a raw-waveform input — the export wrapper
+    monkey-patches that away, but validate.py runs against an unpatched
+    model. The encoder itself takes mel directly."""
     muq_model = mulan.mulan.audio.model.model
+    encoder = muq_model.encoder
     results: dict[str, np.ndarray] = {}
     with torch.no_grad():
         for label, mel in mels.items():
             mel_t = torch.from_numpy(mel).to(device).float()
             t0 = time.time()
-            _logits, hidden = muq_model.get_predictions(mel_t, is_features_only=True)
+            _logits, hidden, _new_mask = encoder(mel_t, is_features_only=True)
+            # Same tuple/tensor handling as the export wrapper.
+            if isinstance(hidden, (tuple, list)):
+                hidden = hidden[-1]
             audio_1024 = hidden.mean(dim=1).cpu().numpy()
             dt = time.time() - t0
             results[label] = audio_1024[0]

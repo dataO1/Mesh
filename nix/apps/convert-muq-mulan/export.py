@@ -163,9 +163,13 @@ class MuQMuLanMelWrapper(nn.Module):
         # running the downstream classification head we don't need.
         muq_model = self.mulan.mulan.audio.model.model
         _logits, hidden = muq_model.get_predictions(mel, is_features_only=True)
-        # hidden expected shape: (B, T, 1024) for MuQ-large.
-        # If the muq library returns a list/tuple of per-layer hiddens,
-        # the smoke test below will catch the shape mismatch.
+        # MuQ returns per-layer hidden states as a tuple (HF convention).
+        # Per the model config `use_layer_idx: -1`, the last layer is the
+        # one MuQ-MuLan reads for downstream features. Tensor input is also
+        # tolerated (some library versions may return a single tensor).
+        if isinstance(hidden, (tuple, list)):
+            hidden = hidden[-1]
+        # hidden shape: (B, T, 1024) for MuQ-large
         audio_1024 = hidden.mean(dim=1)  # mean-pool over time → (B, 1024)
 
         return audio_1024, audio_512
