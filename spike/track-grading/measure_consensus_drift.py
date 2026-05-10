@@ -35,12 +35,14 @@ DRIFT_THRESHOLD = 0.05  # mean per-track |Δ| above which consensus is fragile
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--baseline", type=Path, required=True,
-                   help="3-juror consensus NPZ (the pre-Gemini snapshot)")
+                   help="baseline consensus NPZ (the pre-new-juror snapshot)")
     p.add_argument("--updated", type=Path, required=True,
-                   help="4-juror consensus NPZ (re-aggregated with Gemini)")
-    p.add_argument("--new-juror", type=str,
-                   default="caption_text_llm_gemini_flash",
-                   help="source-name of the new juror (for σ²/reliability lookup)")
+                   help="updated consensus NPZ re-aggregated with N new jurors")
+    p.add_argument("--new-juror", type=str, action="append", default=None,
+                   help="source-name of a new juror (for σ²/reliability lookup "
+                        "+ covered-subset stats). May be repeated for multiple "
+                        "new jurors; covered-subset = union of their coverage. "
+                        "Default: caption_text_llm_gemini_flash if unset.")
     p.add_argument("--captions-root", type=Path,
                    default=Path("/home/data01/Music/mesh-track-grading/"
                                 "round7_6_captions/music_flamingo"))
@@ -125,27 +127,33 @@ def main() -> int:
     pct_stayed = 100.0 * diag_mass / max(int(mig.sum()), 1)
 
     # New-juror reliability lookup + covered-subset detection
-    new_juror_sigma2 = None
-    new_juror_reliab = None
-    new_juror_idx = None
-    for i, name in enumerate(upd["source_names"]):
-        if name == args.new_juror:
-            new_juror_idx = i
-            if i < len(upd["source_sigma2"]):
-                new_juror_sigma2 = upd["source_sigma2"][i]
-            if i < len(upd["source_reliabilities"]):
-                new_juror_reliab = upd["source_reliabilities"][i]
-            break
+    # Default to single-juror (gemini_flash) if --new-juror not provided.
+    new_jurors = args.new_juror or ["caption_text_llm_gemini_flash"]
+    new_juror_records = []  # list of {name, idx, sigma2, reliab}
+    for nj in new_jurors:
+        for i, name in enumerate(upd["source_names"]):
+            if name == nj:
+                rec = {
+                    "name": name,
+                    "idx": i,
+                    "sigma2": (upd["source_sigma2"][i]
+                               if i < len(upd["source_sigma2"]) else None),
+                    "reliab": (upd["source_reliabilities"][i]
+                               if i < len(upd["source_reliabilities"]) else None),
+                }
+                new_juror_records.append(rec)
+                break
 
-    # Covered-subset stats (tracks where the new juror actually contributed).
-    # When the juror has full coverage, this matches the all-corpus stats.
-    # When coverage is partial (e.g. quota-capped run), the all-corpus mean
-    # gets diluted by tracks where Δ=0 by construction. Separate stats let
-    # us make the FRAGILE/ROBUST decision on the covered subset.
+    # Covered-subset stats: tracks where AT LEAST ONE new juror contributed.
+    # For multiple new jurors, the union expresses "tracks that *could* have
+    # shifted because at least one new perspective was injected." Tracks
+    # outside the union have Δ=0 by construction.
     covered_mask = None
-    if upd["coverage"] is not None and new_juror_idx is not None:
-        cov_col = upd["coverage"][:, new_juror_idx]
-        upd_tid_to_covered = {int(t): bool(cov_col[i])
+    if upd["coverage"] is not None and new_juror_records:
+        union_cov = np.zeros(len(upd["track_ids"]), dtype=bool)
+        for rec in new_juror_records:
+            union_cov |= upd["coverage"][:, rec["idx"]]
+        upd_tid_to_covered = {int(t): bool(union_cov[i])
                               for i, t in enumerate(upd["track_ids"])}
         covered_mask = np.array([upd_tid_to_covered.get(t, False)
                                  for t in common], dtype=bool)
@@ -197,7 +205,7 @@ def main() -> int:
                      "drift-test, phase-1b]")
     out_lines.append(f"baseline: {args.baseline.name}")
     out_lines.append(f"updated: {args.updated.name}")
-    out_lines.append(f"new_juror: {args.new_juror}")
+    out_lines.append(f"new_jurors: {[r['name'] for r in new_juror_records]}")
     out_lines.append(f"n_common: {len(common)}")
     out_lines.append(f"mean_abs_drift: {mean_abs:.4f}")
     out_lines.append(f"decision_threshold: {DRIFT_THRESHOLD}")
@@ -210,15 +218,16 @@ def main() -> int:
     out_lines.append("# 3-juror vs 4-juror consensus drift report")
     out_lines.append("")
     if has_partial:
-        out_lines.append(f"**⚠️ Partial new-juror coverage**: the new juror "
-                         f"`{args.new_juror}` covered **{n_covered} of "
+        nj_names = ", ".join(f"`{r['name']}`" for r in new_juror_records) or "(none)"
+        out_lines.append(f"**⚠️ Partial new-juror coverage**: the new juror(s) "
+                         f"{nj_names} together covered **{n_covered} of "
                          f"{len(common)} ({100.0*n_covered/len(common):.1f} %)** "
-                         f"tracks. The remaining {len(common)-n_covered} tracks "
-                         f"have Δ=0 by construction (only 3 jurors contribute, "
-                         f"identically to the baseline). The decision below is "
-                         f"based on the **covered subset only** — the all-corpus "
-                         f"stats are reported for completeness but mechanically "
-                         f"diluted by ~{100.0*(len(common)-n_covered)/len(common):.0f} %.")
+                         f"tracks (union). The remaining {len(common)-n_covered} "
+                         f"tracks have Δ=0 by construction (only baseline jurors "
+                         f"contribute). The decision below is based on the "
+                         f"**covered subset only** — the all-corpus stats are "
+                         f"reported for completeness but mechanically diluted by "
+                         f"~{100.0*(len(common)-n_covered)/len(common):.0f} %.")
         out_lines.append("")
     out_lines.append(f"**Decision: {decision_cov}**")
     out_lines.append(f"  *(based on {'covered-subset' if has_partial else 'all-corpus'} "
@@ -229,10 +238,11 @@ def main() -> int:
                      f"re-aggregated consensus.")
     out_lines.append("")
     if has_partial:
+        nj_names = ", ".join(f"`{r['name']}`" for r in new_juror_records) or "(none)"
         out_lines.append("## Drift on covered subset (load-bearing)")
         out_lines.append("")
-        out_lines.append(f"Tracks where `{args.new_juror}` actually contributed "
-                         f"to the 4-juror EM (n = **{n_covered}**).")
+        out_lines.append(f"Tracks where at least one of {{{nj_names}}} contributed "
+                         f"to the EM (n = **{n_covered}**).")
         out_lines.append("")
         out_lines.append("| metric | value | interpretation |")
         out_lines.append("|---|---:|---|")
@@ -262,28 +272,35 @@ def main() -> int:
                      "Gemini pulled consensus down |")
     out_lines.append(f"| unchanged | {n_flat} | identical to within 1e-6 |")
     out_lines.append("")
-    out_lines.append("## New juror reliability (from 4-juror EM)")
+    out_lines.append("## Source reliability (from EM)")
     out_lines.append("")
-    if new_juror_idx is None:
-        out_lines.append(f"⚠️ Source name `{args.new_juror}` not found in updated NPZ. "
-                         f"Available sources: {upd['source_names']}")
+    new_juror_idx_set = {r["idx"] for r in new_juror_records}
+    if not new_juror_records:
+        out_lines.append(f"⚠️ No new juror source names matched. Requested: "
+                         f"{new_jurors}. Available: {upd['source_names']}")
     else:
         rels = upd["source_reliabilities"]
         sig2 = upd["source_sigma2"]
-        out_lines.append("| source | σ² | reliability (1/σ², normalised) |")
-        out_lines.append("|---|---:|---:|")
+        cov = upd["coverage"]
+        out_lines.append("| source | σ² | reliability | coverage |")
+        out_lines.append("|---|---:|---:|---:|")
         for i, name in enumerate(upd["source_names"]):
-            tag = " ← **new juror**" if i == new_juror_idx else ""
+            tag = " ← **new**" if i in new_juror_idx_set else ""
             s2 = f"{sig2[i]:.5f}" if i < len(sig2) else "—"
             r = f"{rels[i]:.4f}" if i < len(rels) else "—"
-            out_lines.append(f"| {name}{tag} | {s2} | {r} |")
+            cv = (f"{int(cov[:,i].sum())}/{cov.shape[0]} "
+                  f"({100.0*cov[:,i].sum()/cov.shape[0]:.1f} %)"
+                  if cov is not None else "—")
+            out_lines.append(f"| {name}{tag} | {s2} | {r} | {cv} |")
         out_lines.append("")
-        if new_juror_sigma2 is not None and new_juror_sigma2 <= 0.011:
-            out_lines.append(f"⚠️ New juror σ² = **{new_juror_sigma2:.5f}** — at or "
-                             f"near the σ²-floor (0.01). EM treats it as equal-weight "
-                             f"with the others. Consider this when interpreting drift "
-                             f"magnitude — mechanical attenuation is `|Gemini − old| / 4` "
-                             f"in the floor regime.")
+        floored = [r for r in new_juror_records
+                   if r["sigma2"] is not None and r["sigma2"] <= 0.011]
+        if floored:
+            names = ", ".join(f"`{r['name']}`" for r in floored)
+            out_lines.append(f"⚠️ New juror σ² hit floor for: {names}. EM treats "
+                             f"them as equal-weight with the existing panel. The "
+                             f"σ²-floor degeneracy from research doc §0.1 persists "
+                             f"until enough cross-correlated jurors land to break it.")
             out_lines.append("")
     out_lines.append("## Bucket migration (20-bucket, percent of total)")
     out_lines.append("")
@@ -355,9 +372,10 @@ def main() -> int:
         print(f"mean |Δ|:       {mean_abs:.4f}  ({'FRAGILE' if fragile else 'ROBUST'})")
         print(f"median |Δ|:     {median_abs:.4f}")
         print(f"p90 / p99 / max: {p90:.4f} / {p99:.4f} / {mx:.4f}")
-    if new_juror_sigma2 is not None:
-        print(f"new juror σ²:   {new_juror_sigma2:.5f}  "
-              f"reliability: {new_juror_reliab:.4f}")
+    for rec in new_juror_records:
+        if rec["sigma2"] is not None:
+            print(f"  {rec['name']}: σ²={rec['sigma2']:.5f}  "
+                  f"reliability={rec['reliab']:.4f}")
     print(f"verdict: {decision_cov}")
     print(f"wrote {args.out}")
     return 0
