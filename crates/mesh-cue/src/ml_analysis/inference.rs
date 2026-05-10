@@ -11,13 +11,23 @@
 //! produces a 512-dim joint-space embedding (l2-normalized). The text
 //! tower is deferred to a follow-up.
 //!
-//! Per-track flow (`analyze`):
+//! Per-track flow (`analyze`, round-7.7 A5):
 //!
-//!   1. Slice the precomputed mel into evenly-spaced 10 s clips
-//!      (1000 frames each at 24 kHz / hop 240).
-//!   2. For each clip: apply `(mel - mean) / std` from the sidecar stats,
-//!      run ONNX, collect the 512-d output.
-//!   3. Average clip embeddings → one 512-d vector per track.
+//!   1. Compute a per-mel-frame energy envelope from the precomputed mel
+//!      (sum of shifted-positive dB across bands, with optional bass-band
+//!      boost). Pick the top `ENERGY_PEAK_WINDOWS` non-overlapping 30 s
+//!      windows by rolling-sum energy. Fall back to evenly-spaced clips
+//!      for tracks too short to host two non-overlapping windows.
+//!   2. Slice each window into `ENERGY_PEAK_CLIPS_PER_WINDOW` contiguous
+//!      10 s clips (1000 frames each at 24 kHz / hop 240).
+//!   3. For each clip: apply `(mel - mean) / std` from the sidecar stats,
+//!      run ONNX, collect the (1024-d Conformer hidden, 512-d joint-space)
+//!      pair.
+//!   4. Mean-pool clips within each window → one (1024, 512) candidate per
+//!      window. Project each 1024-d candidate through V18.X → pick the
+//!      higher-scoring candidate as the track-level embedding.
+//!   5. Same per-track ONNX cost as the prior 6 evenly-spaced clips
+//!      (`ENERGY_PEAK_WINDOWS × ENERGY_PEAK_CLIPS_PER_WINDOW = 6`).
 //!
 //! Genre / classification heads from the prior MAEST integration have
 //! been removed — MuQ-MuLan emits embeddings only.
@@ -60,13 +70,17 @@ pub const MUQ_MULAN_HIDDEN_DIM: usize = 1024;
 /// One clip = 10 s of mel @ 24 kHz / hop 240 (post `[..., :-1]` trim).
 const MUQ_MULAN_CLIP_FRAMES: usize = (MUQ_TARGET_SR as usize) * 10 / MUQ_HOP;
 
-/// Maximum number of 10 s clips to evaluate per track.
+/// Maximum number of 10 s clips to evaluate per track in the *fallback*
+/// (evenly-spaced) path. Steady-state A5 inference uses
+/// `ENERGY_PEAK_WINDOWS × ENERGY_PEAK_CLIPS_PER_WINDOW` clips, which equals
+/// this number by construction (2 × 3 = 6) so per-track ONNX cost is
+/// unchanged across both paths.
 ///
 /// PyTorch's `extract_audio_latents` averages every non-overlapping 10 s
 /// window. For DJ-typical 3–6 minute tracks that's 18–36 clips per track,
-/// dominating per-track cost. We cap at 6 evenly-spaced clips so a
-/// 4-minute track samples roughly intro / verse / break / build / chorus /
-/// outro — the same spirit MAEST uses with its 4-window cap.
+/// dominating per-track cost. We cap at 6 so a 4-minute track samples
+/// roughly intro / verse / break / build / chorus / outro — the same
+/// spirit MAEST uses with its 4-window cap.
 ///
 /// **History.** Briefly tried 12 clips. A full-library 12-clip reanalysis
 /// produced an identical Spearman score on the 47-anchor eval set
@@ -76,6 +90,41 @@ const MUQ_MULAN_CLIP_FRAMES: usize = (MUQ_TARGET_SR as usize) * 10 / MUQ_HOP;
 /// energy. Reverted to 6: same metric, half the per-track cost
 /// (~1.7 s vs ~3.5 s on CPU).
 const MUQ_MULAN_MAX_CLIPS: usize = 6;
+
+/// Round-7.7 A5: number of non-overlapping energy-peak windows to evaluate
+/// per track. 2 mirrors the training distribution shape (Deezer's preview
+/// picker grabs roughly one 30 s window per track; we pick two candidates
+/// and let V18.X choose the more-intense one), at the cost of one extra
+/// V18.X projection call per track (~µs, negligible).
+pub const ENERGY_PEAK_WINDOWS: usize = 2;
+
+/// Round-7.7 A5: number of contiguous 10 s clips per energy-peak window.
+/// 3 matches MuQ-MuLan's training preview length (30 s = 3 × 10 s clips,
+/// mean-pooled inside `MuQMuLan.from_pretrained()`).
+pub const ENERGY_PEAK_CLIPS_PER_WINDOW: usize = 3;
+
+/// Round-7.7 A5: width in mel frames of one energy-peak candidate window.
+/// 30 s @ 24 kHz / hop 240 = 3000 frames.
+pub const ENERGY_PEAK_WINDOW_FRAMES: usize = ENERGY_PEAK_CLIPS_PER_WINDOW * MUQ_MULAN_CLIP_FRAMES;
+
+/// Round-7.7 A5: lowest mel bands counted as "bass" for the energy
+/// envelope's bass-band boost. 16 / 128 ≈ 0–500 Hz at 24 kHz with the
+/// MuQ-MuLan filterbank — kick + sub-bass region for DJ genres.
+pub const ENERGY_BASS_BANDS: usize = 16;
+
+/// Round-7.7 A5: per-band weight applied to bass bands when summing the
+/// energy envelope. Modest (1.5×) so kick-driven drops don't lose to
+/// vocal-prominent breakdowns when the eval target is bass-heavy genres
+/// (DnB, dubstep, techno) — but small enough that the 7×-more numerous
+/// non-bass bands still dominate the sum on truly silent-bass loud-treble
+/// frames.
+pub const ENERGY_BASS_BOOST: f32 = 1.5;
+
+/// Round-7.7 A5: floor of the dB-scale mel for the energy envelope
+/// (see `preprocessing::compute_mel_spectrogram`, `top_db = 80`). Shifting
+/// by this floor keeps envelope values non-negative so the rolling-sum
+/// peak picker never has to reason about sign flips during masking.
+pub const ENERGY_DB_FLOOR: f32 = -80.0;
 
 /// ONNX input tensor name (set by `export.py`).
 const MUQ_MULAN_INPUT_NAME: &str = "mel";
@@ -270,34 +319,47 @@ impl MlAnalyzer {
 
     /// Run inference on a precomputed dB-scale mel spectrogram.
     ///
-    /// Slices the mel into up to `MUQ_MULAN_MAX_CLIPS` evenly-spaced 1000-frame
-    /// clips (10 s @ 24 kHz/hop 240), normalizes each with the sidecar stats,
-    /// runs MuQ-MuLan ONNX per clip, then picks ONE clip's 512-d embedding to
-    /// store as the track-level vector.
-    ///
-    /// **Aggregation strategy: peak-clip-by-intensity** (added 2026-05-08
-    /// after deploying V18.1).
+    /// **Round-7.7 A5 — energy-pruned candidate-window selection.**
     ///
     /// Round-7.6 V18.1 was trained on 30 s Deezer previews — Deezer's preview
-    /// heuristic picks roughly the catchiest 30 s of each track, usually the
+    /// picker grabs roughly the catchiest 30 s of each track, usually the
     /// drop. So the teacher and the 3 jurors learned to score peak-energy
-    /// windows. Mesh-cue's deployment used to mean-average the 6 per-clip
-    /// embeddings, which smeared intro / breakdown / outro into the drop
-    /// signal and pulled core-neurofunk drops down from p80+ to p51-p72 on
-    /// the user's library (see `documents/round-7-6-training-log.md`
-    /// § "Post-deploy hand verification").
+    /// windows. Pre-A5 deploys mean-pooled 6 evenly-spaced 10 s clips, then
+    /// (round-7.6, 2026-05-08) used the V18.X-projected single highest clip
+    /// — better, but still picking from clip starts that mostly miss the
+    /// drop on long tracks with quiet intros.
     ///
-    /// Project each clip embedding through V18.1, take the clip with the
-    /// highest projected intensity, and use that single clip's 512-d vec as
-    /// the track-level embedding. This matches the "DJ intensity" semantic
-    /// (how hard does the track hit at its peak) and aligns the deployment
-    /// distribution with the training distribution.
+    /// A5 pre-selects clip *starts* using a per-frame energy envelope:
+    ///   1. Sum shifted-positive dB across mel bands, with bass bands 0..16
+    ///      weighted `ENERGY_BASS_BOOST` so kick drops outrank vocal breaks.
+    ///   2. Pick `ENERGY_PEAK_WINDOWS` non-overlapping 30 s windows by
+    ///      rolling-sum energy (greedy argmax with window-wide masking).
+    ///   3. Slice each window into `ENERGY_PEAK_CLIPS_PER_WINDOW` contiguous
+    ///      10 s clips. Run ONNX on each (6 inferences total — same per-track
+    ///      cost as the prior 6 evenly-spaced clips).
+    ///   4. Mean-pool clips within each window → one (1024-d, 512-d)
+    ///      candidate per window. Project each 1024-d candidate through
+    ///      V18.X → pick the higher-scoring candidate as the track-level
+    ///      embedding.
     ///
-    /// If the intensity axis isn't loaded for some reason (build / cache
-    /// edge case), fall back to the previous mean-average behaviour so
-    /// embedding extraction still works for similarity / clustering uses
-    /// that don't care about peak-vs-mean. This branch never fires in
-    /// practice because the embedded default is always available.
+    /// This matches the training pipeline exactly within each window
+    /// (`MuQMuLan.from_pretrained()` mean-pools 3 × 10 s clips of each 30 s
+    /// preview) and adds the "two candidates, V18.X picks" step on top.
+    ///
+    /// **Fallback paths.**
+    ///
+    /// - Tracks shorter than `ENERGY_PEAK_WINDOWS × ENERGY_PEAK_WINDOW_FRAMES`
+    ///   (~60 s) can't host two non-overlapping 30 s windows → fall back to
+    ///   `extract_clips` (evenly-spaced) with `n_per_window = 1`. The
+    ///   per-window mean degenerates to identity, and the V18.X-pick step
+    ///   degenerates to peak-clip-by-intensity over the evenly-spaced clips
+    ///   — exactly the round-7.6 behaviour.
+    /// - Legacy single-output ONNX (pre-round-7.7, no 1024-d head) → mean-
+    ///   pool 512-d across all candidates; intensity slot stays empty so the
+    ///   downstream path surfaces the migration prompt.
+    /// - Intensity axis not loaded (build / cache edge case) → mean-pool
+    ///   both heads across candidates. Never fires in practice because the
+    ///   embedded default is always available.
     pub fn analyze(
         &mut self,
         mel: &MelSpectrogramResult,
@@ -312,40 +374,86 @@ impl MlAnalyzer {
             return Err("Mel spectrogram is empty".to_string());
         }
 
-        let clips = extract_clips(&mel.frames, MUQ_MULAN_CLIP_FRAMES, MUQ_MULAN_MAX_CLIPS);
+        // Energy-pruned window selection (A5). Falls back to evenly-spaced
+        // clips when the track is too short to host `ENERGY_PEAK_WINDOWS`
+        // non-overlapping `ENERGY_PEAK_WINDOW_FRAMES`-wide windows.
+        let want_n = ENERGY_PEAK_WINDOWS;
+        let want_w = ENERGY_PEAK_WINDOW_FRAMES;
+        let clips_per_window = ENERGY_PEAK_CLIPS_PER_WINDOW;
+
+        let window_starts = if mel.frames.len() >= want_n * want_w {
+            let energy = compute_energy_envelope(&mel.frames, true);
+            select_energy_peak_windows(&energy, want_w, want_n)
+        } else {
+            Vec::new()
+        };
+
+        let (clips, n_per_window) = if window_starts.len() == want_n {
+            log::debug!(
+                "ML: A5 energy-pruned — picked {} windows at frames {:?}, {} clips/window",
+                want_n, window_starts, clips_per_window,
+            );
+            (
+                extract_clips_at_windows(
+                    &mel.frames, &window_starts, want_w,
+                    MUQ_MULAN_CLIP_FRAMES, clips_per_window,
+                ),
+                clips_per_window,
+            )
+        } else {
+            log::debug!(
+                "ML: track too short for A5 ({} frames < {}) — fallback to evenly-spaced clips",
+                mel.frames.len(), want_n * want_w,
+            );
+            (
+                extract_clips(&mel.frames, MUQ_MULAN_CLIP_FRAMES, MUQ_MULAN_MAX_CLIPS),
+                1,
+            )
+        };
+
         if clips.is_empty() {
             return Err("Audio too short for MuQ-MuLan analysis".to_string());
         }
-        log::debug!(
-            "ML: running MuQ-MuLan on {} clips ({} mel frames total)",
-            clips.len(),
-            mel.frames.len()
-        );
 
         // Each clip yields (1024-d Conformer hidden, 512-d joint-space).
-        // The 1024-d slot is empty when running against a legacy single-output
-        // ONNX (pre-round-7.7); the intensity-axis fallback below handles that.
+        // The 1024-d slot is empty under a legacy single-output ONNX
+        // (pre-round-7.7); the intensity-axis fallback below handles that.
         let mut clip_pairs: Vec<(Vec<f32>, Vec<f32>)> = Vec::with_capacity(clips.len());
         for clip in &clips {
             clip_pairs.push(self.run_clip(clip)?);
         }
 
-        // Round-7.7: project the 1024-d Conformer hidden through V18.X for
-        // peak-clip selection. Pre-round-7.7 axes (V15 / V18 / V18.1) are
-        // 512-d and won't load against the bumped EMBEDDING_DIM = 1024;
-        // those builds fall back to mean-pool of 512-d for embedding.
-        //
-        // Picked clip: store both heads. ml_intensity_embeddings (1024) →
-        // intensity probe; ml_embeddings (512) → similarity / suggestion graph.
-        let n_clips = clip_pairs.len();
+        // Group clips into per-window candidates by mean-pooling. With
+        // `n_per_window = 1` (short-track fallback) every clip is its own
+        // candidate and the V18.X-pick step below degenerates to round-7.6
+        // peak-clip-by-intensity.
         let any_1024 = clip_pairs.iter().any(|(h, _)| !h.is_empty());
+        let candidates: Vec<(Vec<f32>, Vec<f32>)> = clip_pairs
+            .chunks(n_per_window)
+            .map(|chunk| {
+                let mean_1024 = if any_1024 {
+                    let h: Vec<Vec<f32>> = chunk
+                        .iter()
+                        .filter_map(|(h, _)| (!h.is_empty()).then(|| h.clone()))
+                        .collect();
+                    if h.is_empty() { Vec::new() } else { average_embeddings(&h) }
+                } else {
+                    Vec::new()
+                };
+                let mean_512 = average_embeddings(
+                    &chunk.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
+                );
+                (mean_1024, mean_512)
+            })
+            .collect();
 
-        let (embedding_1024, embedding) = match (self.intensity_axis.as_ref(), n_clips, any_1024) {
+        let n_cand = candidates.len();
+        let (embedding_1024, embedding) = match (self.intensity_axis.as_ref(), n_cand, any_1024) {
             (Some(axis), n, true) if n > 1 => {
-                // Multi-clip + 1024-d available + axis loaded → peak-clip on 1024-d.
+                // Multi-candidate + 1024-d available + axis loaded → V18.X picks.
                 let mut peak_idx = 0usize;
                 let mut peak_score = f32::NEG_INFINITY;
-                for (i, (h_1024, _)) in clip_pairs.iter().enumerate() {
+                for (i, (h_1024, _)) in candidates.iter().enumerate() {
                     if h_1024.is_empty() { continue; }
                     let s = axis.project(h_1024);
                     if s > peak_score {
@@ -354,44 +462,49 @@ impl MlAnalyzer {
                     }
                 }
                 log::debug!(
-                    "ML: peak-clip {} of {} (score={:.4}, 1024-d substrate) selected as track embedding",
-                    peak_idx + 1, n_clips, peak_score,
+                    "ML: A5 picked candidate {}/{} (V18.X score={:.4}, {} clips/candidate)",
+                    peak_idx + 1, n_cand, peak_score, n_per_window,
                 );
-                let (h_1024, e_512) = clip_pairs.into_iter().nth(peak_idx).unwrap();
-                (h_1024, e_512)
+                candidates.into_iter().nth(peak_idx).unwrap()
             }
             (_, 1, _) => {
-                // Single clip — nothing to pick.
-                let (h_1024, e_512) = clip_pairs.into_iter().next().unwrap();
-                (h_1024, e_512)
+                // Single candidate — nothing to pick.
+                candidates.into_iter().next().unwrap()
             }
             (_, _, false) => {
-                // Legacy ONNX (no 1024-d output). Mean-pool the 512-d heads;
-                // intensity slot stays empty (downstream falls back to v18.1
-                // path or surfaces the migration prompt).
+                // Legacy ONNX (no 1024-d). Mean-pool 512-d across candidates;
+                // intensity slot stays empty so downstream surfaces the
+                // migration prompt.
                 log::debug!(
-                    "ML: no 1024-d output (legacy ONNX) — mean-pool {} clips on 512-d only",
-                    n_clips,
+                    "ML: no 1024-d output (legacy ONNX) — mean-pool {} candidates on 512-d only",
+                    n_cand,
                 );
-                let mean_512 = average_embeddings(&clip_pairs.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>());
+                let mean_512 = average_embeddings(
+                    &candidates.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
+                );
                 (Vec::new(), mean_512)
             }
             _ => {
-                // Multi-clip + 1024-d available BUT no axis loaded (shouldn't
-                // happen with the embedded default in place). Mean-pool both.
+                // Multi-candidate + 1024-d available BUT no axis loaded.
+                // Mean-pool both heads. Shouldn't fire with embedded default.
                 log::debug!(
-                    "ML: no intensity axis loaded — falling back to mean of {} clips (both heads)",
-                    n_clips,
+                    "ML: no intensity axis loaded — mean-pool {} candidates on both heads",
+                    n_cand,
                 );
-                let mean_1024 = average_embeddings(&clip_pairs.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>());
-                let mean_512 = average_embeddings(&clip_pairs.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>());
+                let mean_1024 = average_embeddings(
+                    &candidates
+                        .iter()
+                        .filter_map(|(h, _)| (!h.is_empty()).then(|| h.clone()))
+                        .collect::<Vec<_>>(),
+                );
+                let mean_512 = average_embeddings(
+                    &candidates.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
+                );
                 (mean_1024, mean_512)
             }
         };
 
         Ok(MlAnalysisResult {
-            // Genre / classification fields stay empty — MuQ-MuLan has no
-            // genre head. Downstream code already tolerates None / empty here.
             data: MlAnalysisData {
                 top_genre: None,
                 genre_scores: Vec::new(),
@@ -485,9 +598,9 @@ impl MlAnalyzer {
 /// Extract up to `max_clips` evenly-spaced `clip_frames`-frame clips from the
 /// mel spectrogram. Pads short inputs with zeros to one full clip.
 ///
-/// Even spacing (vs sliding) covers the full track structure with far fewer
-/// inference passes — we keep MAEST's pattern here for direct parity in the
-/// per-track ML cost profile.
+/// Used by the round-7.7 A5 fallback path for tracks too short to host
+/// `ENERGY_PEAK_WINDOWS` non-overlapping windows. Steady-state A5 uses
+/// `extract_clips_at_windows` against energy-peak window starts instead.
 fn extract_clips(
     frames: &[Vec<f32>],
     clip_frames: usize,
@@ -545,6 +658,138 @@ fn average_embeddings(embeddings: &[Vec<f32>]) -> Vec<f32> {
     avg
 }
 
+// ============================================================================
+// Round-7.7 A5: energy-pruned clip selection
+// ============================================================================
+
+/// Sum mel-band magnitudes per frame to produce a per-frame energy envelope
+/// for the A5 peak picker.
+///
+/// The mel input is dB-scale (`preprocessing::compute_mel_spectrogram` runs
+/// `10·log10(power)` with a `top_db = 80` floor). We shift by `ENERGY_DB_FLOOR`
+/// to make per-band contributions non-negative (so the rolling-sum picker
+/// never has to reason about sign flips during masking) and then sum across
+/// bands. With `bass_boost`, bands `0..ENERGY_BASS_BANDS` are weighted by
+/// `ENERGY_BASS_BOOST` so kick / sub-bass-driven drops outrank vocal-
+/// prominent breakdowns on bass-heavy DJ genres.
+///
+/// Mel-band-sum is monotone in spectral energy — what the peak picker needs
+/// to RANK loud regions, not measure absolute loudness — so it sidesteps
+/// the cross-crate plumbing of `features::extraction::compute_energy_statistics`
+/// (sample-domain RMS) without losing usable signal for window selection.
+pub fn compute_energy_envelope(frames: &[Vec<f32>], bass_boost: bool) -> Vec<f32> {
+    frames
+        .iter()
+        .map(|frame| {
+            let mut sum = 0.0f32;
+            for (band_idx, &v) in frame.iter().enumerate() {
+                let shifted = (v - ENERGY_DB_FLOOR).max(0.0);
+                let weight = if bass_boost && band_idx < ENERGY_BASS_BANDS {
+                    ENERGY_BASS_BOOST
+                } else {
+                    1.0
+                };
+                sum += shifted * weight;
+            }
+            sum
+        })
+        .collect()
+}
+
+/// Pick `n_windows` non-overlapping window-start positions that maximise the
+/// rolling sum of `energy` over `window_frames`-wide windows.
+///
+/// Returned starts are sorted ascending. Returns an empty vec if `energy` is
+/// shorter than `window_frames` — the caller should fall back to the
+/// evenly-spaced clip path.
+///
+/// Algorithm: O(n) sliding-window rolling-sum precompute, then `n_windows`
+/// rounds of greedy argmax with window-wide masking around each pick. Total
+/// cost is O(n + n_windows · n_starts) — for a 5-minute track at 24 kHz /
+/// hop 240 (~30 k frames) and `n_windows = 2`, that's ~60 k comparisons,
+/// dwarfed by the ONNX inferences they gate.
+pub fn select_energy_peak_windows(
+    energy: &[f32],
+    window_frames: usize,
+    n_windows: usize,
+) -> Vec<usize> {
+    if window_frames == 0 || n_windows == 0 || energy.len() < window_frames {
+        return Vec::new();
+    }
+
+    let n_starts = energy.len() - window_frames + 1;
+    let mut rolling = vec![0.0f32; n_starts];
+    let mut current: f32 = energy[..window_frames].iter().sum();
+    rolling[0] = current;
+    for i in 1..n_starts {
+        current += energy[i + window_frames - 1] - energy[i - 1];
+        rolling[i] = current;
+    }
+
+    let mut starts: Vec<usize> = Vec::with_capacity(n_windows);
+    let mut taken = vec![false; n_starts];
+    for _ in 0..n_windows {
+        let mut best_idx: Option<usize> = None;
+        let mut best_score = f32::NEG_INFINITY;
+        for (i, (&score, &gone)) in rolling.iter().zip(taken.iter()).enumerate() {
+            if !gone && score > best_score {
+                best_score = score;
+                best_idx = Some(i);
+            }
+        }
+        let Some(picked) = best_idx else { break };
+        starts.push(picked);
+        // Mask a window-wide neighbourhood so the next pick can't overlap:
+        // any start in `[picked - (window-1), picked + window)` would share
+        // at least one frame with the picked window.
+        let lo = picked.saturating_sub(window_frames - 1);
+        let hi = (picked + window_frames).min(n_starts);
+        for slot in &mut taken[lo..hi] {
+            *slot = true;
+        }
+    }
+
+    starts.sort_unstable();
+    starts
+}
+
+/// Slice the mel into `clips_per_window` contiguous `clip_frames`-frame clips
+/// inside each window in `window_starts`. Output is flat — `clips_per_window`
+/// successive entries belong to the same window — so callers can re-group via
+/// `chunks(clips_per_window)`.
+///
+/// Caller must ensure each `start + window_frames <= frames.len()` and that
+/// `clips_per_window * clip_frames <= window_frames`. `select_energy_peak_windows`
+/// upholds the first invariant by construction; the second is a constants-
+/// only check enforced at module-load time by `static_assertions` in tests.
+fn extract_clips_at_windows(
+    frames: &[Vec<f32>],
+    window_starts: &[usize],
+    window_frames: usize,
+    clip_frames: usize,
+    clips_per_window: usize,
+) -> Vec<Vec<Vec<f32>>> {
+    debug_assert!(
+        clips_per_window * clip_frames <= window_frames,
+        "clips_per_window * clip_frames ({} * {}) > window_frames ({})",
+        clips_per_window, clip_frames, window_frames,
+    );
+    let mut out = Vec::with_capacity(window_starts.len() * clips_per_window);
+    for &ws in window_starts {
+        debug_assert!(
+            ws + window_frames <= frames.len(),
+            "window {}..{} out of bounds for {} frames",
+            ws, ws + window_frames, frames.len(),
+        );
+        for c in 0..clips_per_window {
+            let clip_start = ws + c * clip_frames;
+            let clip_end = clip_start + clip_frames;
+            out.push(frames[clip_start..clip_end].to_vec());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,6 +827,117 @@ mod tests {
         let emb2 = vec![3.0, 4.0, 5.0];
         let avg = average_embeddings(&[emb1, emb2]);
         assert_eq!(avg, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_energy_envelope_shifted_positive_and_bass_boost() {
+        // Frame with band 0 at 0 dB (loud), all other bands at the floor.
+        // Shifted-positive: band 0 contributes 80, the rest contribute 0.
+        // No bass boost: sum = 80. With bass boost: sum = 80 * 1.5 = 120.
+        let frame: Vec<f32> = (0..MUQ_N_MELS)
+            .map(|b| if b == 0 { 0.0 } else { ENERGY_DB_FLOOR })
+            .collect();
+        let frames = vec![frame; 3];
+
+        let env_no_boost = compute_energy_envelope(&frames, false);
+        assert_eq!(env_no_boost.len(), 3);
+        for v in &env_no_boost {
+            assert!((v - 80.0).abs() < 1e-3, "no-boost energy = {}", v);
+        }
+
+        let env_boost = compute_energy_envelope(&frames, true);
+        for v in &env_boost {
+            assert!((v - 120.0).abs() < 1e-3, "boost energy = {}", v);
+        }
+    }
+
+    #[test]
+    fn test_energy_envelope_below_floor_clamped() {
+        // Mel values below the documented floor (shouldn't happen in practice
+        // but guard against -inf-style stats from a buggy upstream): the
+        // shifted-positive `.max(0.0)` keeps them from pulling the sum
+        // negative.
+        let frame = vec![ENERGY_DB_FLOOR - 50.0; MUQ_N_MELS];
+        let env = compute_energy_envelope(&[frame], false);
+        assert_eq!(env, vec![0.0]);
+    }
+
+    #[test]
+    fn test_select_energy_peak_windows_two_distinct_peaks() {
+        // 100 frames with two clear plateaus; window = 20 frames.
+        let mut energy = vec![0.0f32; 100];
+        for v in &mut energy[5..15] { *v = 1.0; }   // plateau A around frame 10
+        for v in &mut energy[55..65] { *v = 1.0; }  // plateau B around frame 60
+        let starts = select_energy_peak_windows(&energy, 20, 2);
+        assert_eq!(starts.len(), 2, "starts = {:?}", starts);
+        // First window covers plateau A → start in [0, 15] (so [start, start+20) covers 5..15).
+        assert!(starts[0] <= 15, "starts[0] = {}", starts[0]);
+        // Second window covers plateau B → start in [45, 65].
+        assert!(starts[1] >= 45 && starts[1] <= 65, "starts[1] = {}", starts[1]);
+    }
+
+    #[test]
+    fn test_select_energy_peak_windows_non_overlap_constraint() {
+        // Two adjacent strong peaks closer than window width — second pick
+        // must skip past the masked neighbourhood.
+        let mut energy = vec![0.1f32; 100];
+        energy[20] = 10.0;  // strongest
+        energy[25] = 9.0;   // second-best, but overlaps the 20..40 window
+        let starts = select_energy_peak_windows(&energy, 20, 2);
+        assert_eq!(starts.len(), 2);
+        let gap = starts[1].abs_diff(starts[0]);
+        assert!(gap >= 20, "non-overlap violated: starts = {:?}, gap = {}", starts, gap);
+    }
+
+    #[test]
+    fn test_select_energy_peak_windows_short_input_returns_empty() {
+        let energy = vec![1.0f32; 10];
+        assert!(select_energy_peak_windows(&energy, 20, 2).is_empty());
+    }
+
+    #[test]
+    fn test_select_energy_peak_windows_n_zero_returns_empty() {
+        let energy = vec![1.0f32; 100];
+        assert!(select_energy_peak_windows(&energy, 20, 0).is_empty());
+    }
+
+    #[test]
+    fn test_extract_clips_at_windows_layout_matches_spec() {
+        // 6000 frames, 2 windows × 3 clips × 1000 frames/clip. Tag each frame
+        // with its index so we can verify the slicing boundaries.
+        let frames: Vec<Vec<f32>> = (0..6000)
+            .map(|i| vec![i as f32; MUQ_N_MELS])
+            .collect();
+        let starts = vec![0usize, 3000];
+        let clips = extract_clips_at_windows(&frames, &starts, 3000, 1000, 3);
+        assert_eq!(clips.len(), 6, "2 windows × 3 clips");
+        for clip in &clips {
+            assert_eq!(clip.len(), 1000);
+        }
+        // First clip in window 0 starts at frame 0.
+        assert_eq!(clips[0][0][0], 0.0);
+        // Third clip in window 0 starts at frame 2000.
+        assert_eq!(clips[2][0][0], 2000.0);
+        // First clip in window 1 starts at frame 3000.
+        assert_eq!(clips[3][0][0], 3000.0);
+        // Last clip ends just before frame 6000.
+        assert_eq!(clips[5][999][0], 5999.0);
+    }
+
+    #[test]
+    fn test_a5_constants_consistent() {
+        // The A5 cap (n_windows × clips/window) MUST equal the fallback cap
+        // so per-track ONNX cost is invariant across both paths.
+        assert_eq!(
+            ENERGY_PEAK_WINDOWS * ENERGY_PEAK_CLIPS_PER_WINDOW,
+            MUQ_MULAN_MAX_CLIPS,
+            "A5 windows × clips/window must equal fallback MUQ_MULAN_MAX_CLIPS",
+        );
+        // Window must be wide enough to host its clips.
+        assert!(
+            ENERGY_PEAK_CLIPS_PER_WINDOW * MUQ_MULAN_CLIP_FRAMES <= ENERGY_PEAK_WINDOW_FRAMES,
+            "ENERGY_PEAK_WINDOW_FRAMES too small for the clips it must contain",
+        );
     }
 
     #[test]

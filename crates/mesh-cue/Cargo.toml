@@ -33,6 +33,13 @@ path = "src/bin/reanalyze_ml.rs"
 name = "dump_track_list"
 path = "src/bin/dump_track_list.rs"
 
+# Round-7.7 A5 spike: per-track energy-peak window CENTRES across the whole
+# library — diagnostic for whether mel-band-sum + bass-boost windowing picks
+# musically meaningful drop/peak locations. No DB writes, vault-pinned MD out.
+[[bin]]
+name = "drop_inspect"
+path = "src/bin/drop_inspect.rs"
+
 # === Debian/Ubuntu packaging ===
 [package.metadata.deb]
 maintainer = "Mesh Team"
