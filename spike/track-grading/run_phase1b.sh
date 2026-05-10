@@ -149,15 +149,17 @@ if [[ $RUN_DEEPSEEK -eq 1 ]]; then
   # DeepSeek exposes a chat-completions endpoint with the same wire format
   # as the existing vLLM jurors. --no-health-check skips the /health probe
   # the existing script does for local vLLM (DeepSeek doesn't expose one).
-  TEXT_LLM_API_KEY="$DEEPSEEK_API_KEY" \
-  bash spike/track-grading/run_r7_step.sh \
-    caption_intensity_rating.py \
+  # Bypass run_r7_step.sh shim — its zlib auto-detect is non-deterministic
+  # and breaks numpy import on some invocations. Pin LD_LIBRARY_PATH directly.
+  TEXT_LLM_API_KEY="$DEEPSEEK_API_KEY" LD_LIBRARY_PATH="$POST_LD" \
+    "$VENV_PY" spike/track-grading/caption_intensity_rating.py \
     --captions-root "$CAPTIONS_ROOT" \
     --out "$JUROR_DEEPSEEK" \
     --url "$DEEPSEEK_URL" \
     --model "$DEEPSEEK_MODEL" \
     --workers "$DEEPSEEK_WORKERS" \
     --no-health-check \
+    --disable-thinking \
     > "$DEEPSEEK_LOG" 2>&1 &
   DEEPSEEK_PID=$!
   log "  DeepSeek PID=$DEEPSEEK_PID"

@@ -89,6 +89,13 @@ def parse_args():
     p.add_argument("--top-logprobs", type=int, default=12)
     p.add_argument("--max-tokens", type=int, default=6)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--limit", type=int, default=None,
+                   help="cap pending captions for smoke test (default: all)")
+    p.add_argument("--disable-thinking", action="store_true",
+                   help="send `thinking: {type: \"disabled\"}` in the request "
+                        "payload — required for DeepSeek V4 reasoning models so "
+                        "they don't burn the max_tokens budget on internal "
+                        "reasoning_content before producing the answer")
     return p.parse_args()
 
 
@@ -267,6 +274,9 @@ def main(args) -> int:
     print(f"[rate] {len(all_files)} captions on disk, "
           f"{len(prior_track_ids)} already rated, "
           f"{len(files)} pending")
+    if args.limit is not None:
+        files = files[: args.limit]
+        print(f"[rate] --limit {args.limit} → capping pending to {len(files)}")
     if not files:
         print("[rate] nothing to do — all captions already rated")
         return 0
@@ -308,6 +318,11 @@ def main(args) -> int:
             # vLLM Qwen3 chat template honours this to suppress the
             # reasoning/<think> prefix and emit the answer directly.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if args.disable_thinking:
+            # DeepSeek V4 reasoning models honour this to skip the reasoning
+            # phase entirely (otherwise reasoning_content eats the entire
+            # max_tokens budget and content comes back empty).
+            payload["thinking"] = {"type": "disabled"}
         try:
             r = sess.post(args.url, json=payload, headers=headers, timeout=120)
             r.raise_for_status()
