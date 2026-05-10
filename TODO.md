@@ -237,11 +237,18 @@ These features would make clusters queryable and actionable:
 
 - [ ] **`database is locked (code 5)` during reanalysis.** Tracks intermittently
   fail to write during the dual-store (`ml_embeddings` 512-d + `ml_intensity_embeddings`
-  1024-d) reanalysis pass — SQLite write contention from parallel mesh-cue
-  workers, each now doing two embedding writes per track. Affected tracks
-  silently skip the write and need a manual re-run (visible as
-  `missing_embed` in `db-inspect`). Fix options: serialize the dual-write
-  through a single tx, batch writes per worker, or back off + retry on lock.
+  1024-d) reanalysis pass. Affected tracks silently skip the write and need a
+  manual re-run (visible as `missing_embed` in `db-inspect`); ~1.8% drop rate
+  on the V18.X migration pass. Initial agent diagnosis (UI-thread reader vs
+  rayon-worker writer + Cozo's lock-free `run_query` + no `busy_timeout`/WAL
+  PRAGMAs) is **not confirmed** and deliberately deferred — see vault doc
+  `Mesh — DB Lock Race During Reanalysis (Research).md` for the full set of
+  ruled-out hypotheses, the speculative hypothesis with caveats, the
+  cheap falsifiable test (debounce per-track `RefreshCollection` and re-
+  measure), and the speculated remedy menu. Operational impact is tolerable
+  (failed write = NULL embedding column, surfaces in `db-inspect`, fixed
+  by re-run). Revisit only after a future re-analysis pass shows the same
+  failure rate AND the falsifiable test points clearly one way.
 
 # Stubbed / Deferred
 
