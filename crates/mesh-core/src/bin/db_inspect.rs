@@ -43,6 +43,12 @@ fn main() {
         "", false,
     );
     println!("  raw_count:        {}", short_json(&raw_count));
+    // Round-7.7: also report 1024-d intensity-probe table population.
+    let int_count = cozo.run_script_str(
+        "?[count(track_id)] := *ml_intensity_embeddings{track_id}",
+        "", false,
+    );
+    println!("  intensity_count:  {}", short_json(&int_count));
     let dim_hist = cozo.run_script_str(
         "?[dim, count(track_id)] := *ml_embeddings{track_id, vec}, dim = length(vec)",
         "", false,
