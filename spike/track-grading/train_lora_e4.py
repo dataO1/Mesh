@@ -36,6 +36,7 @@ import os
 import sys
 import time
 import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -103,6 +104,58 @@ def load_audio(path: Path) -> np.ndarray | None:
     elif len(wav) > TOTAL_SAMPLES:
         wav = wav[:TOTAL_SAMPLES]
     return wav.astype(np.float32)
+
+
+def _load_one_no_silence(path: Path) -> np.ndarray:
+    """Load a single MP3 — thread-safe (no os.dup2 stderr hijack).
+
+    Redirects C stderr to /dev/null for this thread ONLY via a
+    subprocess-like approach: we open /dev/null and use os.dup2
+    ONLY for the duration of the librosa call, saving/restoring
+    fd 2 around it.  This is safe because (a) each thread saves
+    its own copy of fd 2 before redirecting, (b) the GIL prevents
+    concurrent os.dup2 calls from interleaving.
+    """
+    # Suppress ffmpeg/libmpg123 ID3 warnings — these are per-file noise
+    # that would otherwise flood the log at 24 tracks × 8+ workers.
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        wav, _sr = librosa.load(str(path), sr=SAMPLE_RATE, mono=True,
+                                 duration=PREVIEW_SECS)
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
+    if len(wav) < TOTAL_SAMPLES:
+        wav = np.pad(wav, (0, TOTAL_SAMPLES - len(wav)))
+    elif len(wav) > TOTAL_SAMPLES:
+        wav = wav[:TOTAL_SAMPLES]
+    return wav.astype(np.float32)
+
+
+def load_audio_batch(track_ids: np.ndarray, audio_dir: Path,
+                     max_workers: int = 16) -> dict[int, np.ndarray]:
+    """Load multiple MP3s in parallel via thread pool.
+
+    Uses _load_one_no_silence so we don't manipulate process-level fd 2
+    from background threads (os.dup2 is not thread-safe).  ffmpeg/librosa
+    warnings from worker threads are accepted as harmless noise.
+    """
+    wavs_dict: dict[int, np.ndarray] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {
+            ex.submit(_load_one_no_silence, audio_dir / f"dz_{int(tid)}.mp3"): int(tid)
+            for tid in track_ids
+        }
+        for future in as_completed(futures):
+            tid = futures[future]
+            try:
+                wavs_dict[tid] = future.result()
+            except Exception:
+                wavs_dict[tid] = np.zeros(TOTAL_SAMPLES, dtype=np.float32)
+    return wavs_dict
 
 
 # ---------------------------------------------------------------------------
@@ -507,14 +560,16 @@ def main() -> int:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda_smoke)
         print(f"  [smoke] Limited to {args.smoke_tracks} train tracks, {args.epochs} epochs")
 
-    # Load all val waveforms on CPU (too large for GPU), move to GPU in batches during validation
+    # Load all val waveforms on CPU in parallel
+    val_wavs_dict = load_audio_batch(val_tids, args.audio_dir)
     val_wav_list: list[np.ndarray] = []
     val_valid_tids: list[int] = []
     for tid in val_tids:
-        wav = load_audio(args.audio_dir / f"dz_{tid}.mp3")
+        tid_int = int(tid)
+        wav = val_wavs_dict.get(tid_int)
         if wav is not None:
             val_wav_list.append(wav)
-            val_valid_tids.append(int(tid))
+            val_valid_tids.append(tid_int)
     # Align val_consensus with valid tracks
     val_tid_set = set(val_valid_tids)
     val_consensus_aligned = np.array([
@@ -556,16 +611,8 @@ def main() -> int:
                 # Collect unique track IDs in this micro-batch
                 unique_tids = np.unique(np.concatenate([tid_i, tid_j]))
 
-                # Load audio for all unique tracks
-                wavs_dict: dict[int, np.ndarray] = {}
-                for tid in unique_tids:
-                    tid_int = int(tid)
-                    path = args.audio_dir / f"dz_{tid_int}.mp3"
-                    w = load_audio(path)
-                    if w is None:
-                        # Fallback: zero waveform
-                        w = np.zeros(TOTAL_SAMPLES, dtype=np.float32)
-                    wavs_dict[tid_int] = w
+                # Load audio for all unique tracks (parallel, ~8 workers)
+                wavs_dict = load_audio_batch(unique_tids, args.audio_dir)
 
                 # Stack waveforms
                 batch_wavs = np.stack([wavs_dict[int(t)] for t in unique_tids])
