@@ -385,9 +385,9 @@ jobs:
       # NOTE: MuQ-MuLan ONNX (the active ML embedding model) is NOT built in CI.
       # It needs PyTorch + 2.65 GB of HF weights and produces a 1.2 GB ONNX —
       # too heavy for the GitHub-hosted runners. Until a self-hosted GPU runner
-      # is available, end users run `nix run .#convert-muq-mulan-model` once
-      # locally; mesh-cue auto-installs the ONNX into ~/.cache/mesh-cue/ml-models/
-      # on first launch (see crates/mesh-cue/src/ml_analysis/models.rs).
+      # is available, end users run `nix run .#convert-muq-mulan-model -- --lora`
+      # once locally to produce the LoRA-v2 tuned encoder; mesh-cue auto-installs
+      # the ONNX into ~/.cache/mesh-cue/ml-models/ on first launch.
 
       - name: Upload models to permanent release
         env:
