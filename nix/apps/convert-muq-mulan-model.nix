@@ -35,7 +35,7 @@ let
   # we can `cp` them into the temp_dir at runtime.
   downloadPy = ./convert-muq-mulan/download.py;
   exportPy = ./convert-muq-mulan/export.py;
-  mergeLoRaPy = ../spike/track-grading/merge_and_export_lora.py;
+  mergeLoRaPy = ../../spike/track-grading/merge_and_export_lora.py;
   validatePy = ./convert-muq-mulan/validate.py;
   benchPy = ./convert-muq-mulan/bench.py;
 
