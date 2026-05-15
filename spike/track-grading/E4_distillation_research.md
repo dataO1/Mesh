@@ -63,17 +63,14 @@ the cross-modal capacity gap.
 
 ## Proposed Next Steps (ordered by expected impact/effort ratio)
 
-### A. Add FitNets Projection Layer (low effort, high potential)
-Add a learnable Linear(128→128) projection on the student side before
-computing the FitNets hint loss. This lets the student transform its
-features to match the teacher's shifted geometry. ~1 line change in
-`distill_v18_student.py`.
+### A. Add FitNets Projection Layer (low effort) — **NEGATIVE**
+Linear 128→128 and non-linear 128→256→128 projectors, λ_fit 0.5 and 2.0:
+all yield identical PA=0.8129. The hint-matching path is not the bottleneck.
 
-### B. Distill from LoRA Scoring Head Instead of Consensus Teacher (medium effort)
-Train a new student using the LoRA model's Linear(1024→1) scoring head
-as the teacher. Same modality (audio-only), no cross-modal gap, smaller
-capacity gap. The LoRA head scored val ρ=0.8074 — already close to the
-current student's 0.8223 despite having no caption features.
+### B. Distill from LoRA Scoring Head (medium effort) — **NEGATIVE**
+Same-modality teacher achieves gap≈0 but LoRA head ceiling (ρ=0.81) limits
+student to PA=0.8092. Warmup variant (LoRA head 3-10ep → consensus) collapses
+PA to 0.766-0.768 — student trapped in compressed distribution, can't recover.
 
 ### C. Multi-Level Hint Distillation (medium effort)
 Add hints from the teacher's first hidden layer (256-d, post-ReLU) in

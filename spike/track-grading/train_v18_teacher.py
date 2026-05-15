@@ -199,11 +199,12 @@ def main(args) -> int:
 
         def forward(self, x, return_penultimate=False):
             h = self.act(self.fc1(x))
+            h1 = h  # first hidden layer (256-d)
             h = self.dropout(h)
             penult = self.act(self.fc2(h))
             ax = self.head_axes(penult) if self.has_axes else None
             if return_penultimate:
-                return self.head_int(penult).squeeze(-1), ax, penult
+                return self.head_int(penult).squeeze(-1), ax, penult, h1
             return self.head_int(penult).squeeze(-1), ax
 
     in_dim = X.shape[1]
@@ -284,10 +285,11 @@ def main(args) -> int:
         return float((valid & ((ds > 0) == (dy > 0))).sum() / max(valid.sum(), 1))
 
     with torch.no_grad():
-        pred_int_all, pred_ax_all, penult_all = model(Xt, return_penultimate=True)
+        pred_int_all, pred_ax_all, penult_all, h1_all = model(Xt, return_penultimate=True)
     pred_int_np = pred_int_all.cpu().numpy()
     pred_ax_np  = pred_ax_all.cpu().numpy() if pred_ax_all is not None else np.zeros((Xt.shape[0], 0), dtype=np.float32)
     penult_np   = penult_all.cpu().numpy()
+    h1_np       = h1_all.cpu().numpy()
 
     test_int_pred = pred_int_np[test_idx]
     test_int_true = y_int[test_idx]
@@ -316,6 +318,7 @@ def main(args) -> int:
         teacher_intensity=pred_int_np,
         teacher_axes=pred_ax_np,
         teacher_penultimate=penult_np,
+        teacher_hidden1=h1_np,
         split=splits,
         consensus_intensity=y_int,
     )

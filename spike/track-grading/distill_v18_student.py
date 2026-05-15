@@ -105,6 +105,12 @@ def main(args) -> int:
     teacher_tids = tp["track_ids"].astype(np.int64)
     teacher_int = tp["teacher_intensity"].astype(np.float32)
     teacher_pen = tp["teacher_penultimate"].astype(np.float32)
+    teacher_h1  = tp.get("teacher_hidden1")
+    if teacher_h1 is not None:
+        teacher_h1 = teacher_h1.astype(np.float32)
+        print(f"[student] dual hints: penultimate={teacher_pen.shape[1]}d + hidden1={teacher_h1.shape[1]}d")
+    else:
+        print(f"[student] single hint: penultimate={teacher_pen.shape[1]}d")
     teacher_split = tp["split"]
     teacher_tid_to_i = {int(t): i for i, t in enumerate(teacher_tids)}
 
@@ -128,6 +134,7 @@ def main(args) -> int:
     X = np.zeros((N, A), dtype=np.float32)
     t_int = np.zeros(N, dtype=np.float32)
     t_pen = np.zeros((N, pen_dim), dtype=np.float32)
+    t_h1  = np.zeros((N, teacher_h1.shape[1]), dtype=np.float32) if teacher_h1 is not None else None
     y_cons = np.zeros(N, dtype=np.float32)
     splits = np.empty(N, dtype=object)
     for i, tid in enumerate(track_ids):
@@ -135,6 +142,8 @@ def main(args) -> int:
         ti = teacher_tid_to_i[tid]
         t_int[i] = teacher_int[ti]
         t_pen[i] = teacher_pen[ti]
+        if t_h1 is not None:
+            t_h1[i] = teacher_h1[ti]
         y_cons[i] = cs_arr[cs_tid_to_i[tid]]
         splits[i] = str(teacher_split[ti])
 
@@ -180,11 +189,24 @@ def main(args) -> int:
             else:
                 raise ValueError(f"unknown arch {arch!r}")
             self.pen_proj  = nn.Linear(in_dim, pen_dim)   # training-only
+            # Non-linear projector: helps bridge geometry gap from encoder
+            # fine-tuning (KD projector literature, AAAI 2024).
+            self.fitnet_proj = nn.Sequential(
+                nn.Linear(pen_dim, pen_dim * 2),
+                nn.GELU(),
+                nn.Linear(pen_dim * 2, pen_dim),
+            )
+            # Second projector for first-hidden-layer hint (if available)
+            self.h1_proj = nn.Linear(in_dim, in_dim)      # 1024 → 1024 placeholder; will be reassigned
 
         def forward(self, x):
-            return self.intensity(x).squeeze(-1), self.pen_proj(x)
+            return self.intensity(x).squeeze(-1), self.fitnet_proj(self.pen_proj(x)), self.h1_proj(x)
 
     model = Student(A, pen_dim, args.student_arch, args.hidden_dim, args.dropout).to(device)
+    if teacher_h1 is not None:
+        h1_dim = teacher_h1.shape[1]
+        model.h1_proj = nn.Linear(A, h1_dim).to(device)
+        print(f"[student] dual hints: h1_dim={h1_dim}")
     n_params = sum(p.numel() for p in model.intensity.parameters())
     print(f"[student] arch={args.student_arch}  intensity-head params={n_params:_}")
     if args.student_arch == "mlp":
@@ -194,6 +216,7 @@ def main(args) -> int:
     Xt = torch.from_numpy(X).to(device)
     tit = torch.from_numpy(t_int).to(device)
     tpen = torch.from_numpy(t_pen).to(device)
+    th1  = torch.from_numpy(t_h1).to(device) if t_h1 is not None else None
     yt = torch.from_numpy(y_cons).to(device)
     train_t = torch.from_numpy(train_idx).to(device)
     val_t = torch.from_numpy(val_idx).to(device)
@@ -227,13 +250,16 @@ def main(args) -> int:
         train_loss = 0.0; nb = 0
         for k in range(0, len(perm), args.batch_size):
             idx = train_t[perm[k:k+args.batch_size]]
-            s_int, s_pen = model(Xt[idx])
+            s_int, s_pen, s_h1 = model(Xt[idx])
             l_out = nn.functional.mse_loss(s_int, tit[idx])
             l_fit = nn.functional.mse_loss(s_pen, tpen[idx])
+            l_fit_h1 = (nn.functional.mse_loss(s_h1, th1[idx])
+                        if th1 is not None else torch.tensor(0.0, device=device))
             l_kd  = soft_target_kl(s_int, tit[idx], T)
             l_ls  = label_smooth_mse(s_int, yt[idx], args.label_smooth)
             loss = (args.lambda_out * l_out
                     + args.lambda_fit * l_fit
+                    + args.lambda_fit * 0.5 * l_fit_h1
                     + args.lambda_kd  * l_kd
                     + args.lambda_ls  * l_ls)
             opt.zero_grad(); loss.backward(); opt.step()
@@ -242,7 +268,7 @@ def main(args) -> int:
 
         model.eval()
         with torch.no_grad():
-            s_int_v, _ = model(Xt[val_t])
+            s_int_v, _, _ = model(Xt[val_t])
             v_loss = nn.functional.mse_loss(s_int_v, tit[val_t]).item()
         history.append({"epoch": epoch, "train_loss": train_loss,
                         "val_student_vs_teacher_mse": v_loss})
@@ -274,7 +300,7 @@ def main(args) -> int:
         return float((valid & ((ds > 0) == (dy > 0))).sum() / max(valid.sum(), 1))
 
     with torch.no_grad():
-        s_int_all, _ = model(Xt)
+        s_int_all, _, _ = model(Xt)
     s_int_np = s_int_all.cpu().numpy()
     test_pa = pa(s_int_np[test_idx], y_cons[test_idx])
     test_rho = spearman(s_int_np[test_idx], y_cons[test_idx])
