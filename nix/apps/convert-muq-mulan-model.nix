@@ -35,6 +35,7 @@ let
   # we can `cp` them into the temp_dir at runtime.
   downloadPy = ./convert-muq-mulan/download.py;
   exportPy = ./convert-muq-mulan/export.py;
+  mergeLoRaPy = ../spike/track-grading/merge_and_export_lora.py;
   validatePy = ./convert-muq-mulan/validate.py;
   benchPy = ./convert-muq-mulan/bench.py;
 
@@ -62,6 +63,7 @@ let
     REAL_AUDIO=""
     SKIP_BENCH=0
     REINSTALL_DEPS_FLAG=0
+    USE_LORA=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --cpu)            DEVICE_OVERRIDE="cpu";   shift ;;
@@ -69,18 +71,21 @@ let
         --skip-bench)     SKIP_BENCH=1;            shift ;;
         --audio)          REAL_AUDIO="$2";         shift 2 ;;
         --reinstall-deps) REINSTALL_DEPS_FLAG=1;   shift ;;
+        --lora)           USE_LORA="models/lora";  shift ;;
         -h|--help)
           cat <<EOF
 Usage: convert-muq-mulan-model [OPTIONS] [OUTPUT_DIR]
 
   --cpu              Force CPU export (slow — ~10-20 min for the 630M model)
   --gpu, --cuda      Force GPU export (fails if no CUDA detected)
+  --lora             Apply LoRA-v2 adapter (epoch 1, +0.90pp PA) before export
   --audio FILE       Use this audio file as a third validation case
   --skip-bench       Don't run the wall-clock benchmark after validation
   --reinstall-deps   Wipe the cached pip install and re-download (~3 GB)
   OUTPUT_DIR         Where to write the ONNX (default: ./models)
 
-Default: auto-detect CUDA via nvidia-smi.
+Default: auto-detect CUDA via nvidia-smi. Without --lora, exports
+the frozen (baseline) encoder.
 
 Caches (persisted across runs to avoid re-downloads):
   Pip site-packages : ~/.cache/mesh-spike/site-packages-{cpu,gpu-cu124}/
@@ -254,14 +259,25 @@ PYEOF
       echo ""
 
       # ─── Stage 3: ONNX export ──────────────────────────────────────────
-      echo "[3/5] Exporting audio tower to ONNX on $DEVICE..."
-      ${pythonEnv}/bin/python ${exportPy} "$DEVICE" "$TEMP_DIR/$OUTPUT_NAME.onnx" || {
-        echo "[!] export.py failed — see error above" >&2
-        echo "    This is the spike's primary failure mode. Document the" >&2
-        echo "    op/error and consider the Python-sidecar fallback per the" >&2
-        echo "    decision gate in documents/embedding-models-research.md." >&2
-        exit 1
-      }
+      if [ -n "$USE_LORA" ]; then
+        echo "[3/5] Exporting LoRA-tuned audio tower to ONNX on $DEVICE..."
+        ${pythonEnv}/bin/python ${mergeLoRaPy} \
+          --ckpt-dir "$USE_LORA" \
+          --device "$DEVICE" \
+          --output "$TEMP_DIR/$OUTPUT_NAME.onnx" || {
+          echo "[!] merge_and_export_lora.py failed — see error above" >&2
+          exit 1
+        }
+      else
+        echo "[3/5] Exporting audio tower to ONNX on $DEVICE..."
+        ${pythonEnv}/bin/python ${exportPy} "$DEVICE" "$TEMP_DIR/$OUTPUT_NAME.onnx" || {
+          echo "[!] export.py failed — see error above" >&2
+          echo "    This is the spike's primary failure mode. Document the" >&2
+          echo "    op/error and consider the Python-sidecar fallback per the" >&2
+          echo "    decision gate in documents/embedding-models-research.md." >&2
+          exit 1
+        }
+      fi
 
       cp "$TEMP_DIR/$OUTPUT_NAME.onnx" "$OUTPUT_DIR/$OUTPUT_NAME.onnx"
       # Sidecar with mel-normalization stats + MelSTFT params; Rust reads
