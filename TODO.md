@@ -617,8 +617,28 @@ contrastive music-text similarity, not intensity discrimination, so no amount
 of student capacity reconstructs caption-derived intensity signal from the
 512d audio embedding.
 
+**✅ UPDATE (2026-05-15):** Switched to 1024-d Conformer hidden states (V18.X,
++0.18 pp). Added A5 energy-pruned clip selection (train/deploy alignment).
+LoRA r=16 fine-tuning with anchor-loss geometry preservation (E4-v2, +0.90 pp
+total: 0.8192 → 0.8282). Student PA now 0.8282, Spearman ρ 0.844, distill
+gap 0.111. See `documents/intensity-scoring-research.md` for full history.
+
+**Remaining intensity-axis roadmap (round-7.7 Phase 1c-ii):**
+- I6 ListMLE rank loss on student (~0.5-1 pp)
+- I9 BAN self-distill (~0.5 pp)
+- I8 Mixup augmentation (free trial, ~0-0.5 pp)
+- B4 Sub-genre specialists + D2 Snorkel (parallel ablations)
+- Phase 2: E5 encoder swap, I11 RINCE
+
 **Next lever: swap the audio encoder.** Phase 2 of the embedding-models work
 already underway (`documents/embedding-models-research.md`).
+
+**✅ UPDATE (2026-05-15): E4 LoRA-v2 shipped.** LoRA r=16 fine-tuning of
+MuQ-MuLan attention layers with anchor-loss geometry preservation achieved
++0.90 pp held-out PA (0.8192 → 0.8282), distill gap shrunk (0.1148 → 0.1106).
+This extracts more intensity signal from MuQ-MuLan without swapping encoders.
+Remaining encoder swap (E5 MAEST/MULE) is a higher-ceiling but multi-week
+effort — deferred.
 
 ## Plan
 
