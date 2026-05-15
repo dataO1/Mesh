@@ -1,9 +1,8 @@
 //! ML model management for audio analysis.
 //!
 //! Locates the MuQ-MuLan-large audio-tower ONNX (and its `*.norm.json`
-//! mel-normalization sidecar) on disk. Unlike the prior MAEST integration
-//! there is no public download URL — the model is produced locally by the
-//! `convert-muq-mulan-model` Nix app. We look in this order:
+//! mel-normalization sidecar) on disk. The ONNX is auto-downloaded from
+//! GitHub releases on first launch if not found locally. Search order:
 //!
 //!   1. `MESH_MUQ_MULAN_MODEL_DIR` env var (test/CI override)
 //!   2. `<exe_dir>/models/`            (release artifact layout)
@@ -11,10 +10,12 @@
 //!   4. `<cwd>/models/`                (developer "run from repo root")
 //!   5. `~/.cache/mesh-cue/ml-models/` (long-term user cache)
 //!
-//! On first successful load the file is hard-linked / copied into the
-//! cache so subsequent runs find it via path 5 even if the binary moves.
+//! If the ONNX is not found in any search dir, it is downloaded from the
+//! GitHub `models` release tag into the cache. The norm.json sidecar is
+//! downloaded alongside it.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Round-7.7: cache invalidation predicate. Returns true if `src` is
@@ -95,6 +96,25 @@ impl MlModelType {
 
     pub fn base_models() -> &'static [MlModelType] {
         &[MlModelType::MuQMulanLarge]
+    }
+
+    /// GitHub release URL for the ONNX model asset.
+    /// Hosted on the permanent `models` release tag (same as htdemucs, beat_this).
+    pub fn download_url(&self) -> &'static str {
+        match self {
+            MlModelType::MuQMulanLarge => {
+                "https://github.com/dataO1/Mesh/releases/download/models/muq-mulan-audio-tower.onnx"
+            }
+        }
+    }
+
+    /// GitHub release URL for the mel-normalization sidecar JSON.
+    pub fn norm_download_url(&self) -> &'static str {
+        match self {
+            MlModelType::MuQMulanLarge => {
+                "https://github.com/dataO1/Mesh/releases/download/models/muq-mulan-audio-tower.onnx.norm.json"
+            }
+        }
     }
 }
 
@@ -275,29 +295,85 @@ impl MlModelManager {
         Ok(cache_onnx)
     }
 
-    /// Ensure each base model is present in *some* search dir (no download —
-    /// the MuQ-MuLan ONNX is produced by a local Nix app, not fetched).
-    pub fn ensure_all_models(&self) -> Result<(), String> {
-        for &model in MlModelType::base_models() {
-            if !self.is_available(model) {
-                return Err(format!(
-                    "{} not available — run `nix run .#convert-muq-mulan-model` to generate it",
-                    model.display_name(),
-                ));
-            }
+    /// Download a single file from `url` to `dest`, with optional progress
+    /// callback `(label, bytes_so_far, total_bytes)`. Creates parent dirs.
+    fn download_file(
+        url: &str,
+        dest: &Path,
+        progress: &(impl Fn(&'static str, u64, Option<u64>) + Send + Sync + 'static),
+    ) -> Result<(), String> {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir {:?}: {}", parent, e))?;
         }
+
+        let response = ureq::get(url)
+            .call()
+            .map_err(|e| format!("HTTP GET {}: {}", url, e))?;
+
+        let total: Option<u64> = response
+            .header("Content-Length")
+            .and_then(|v| v.parse().ok());
+
+        let mut reader = response.into_reader();
+        let mut file = fs::File::create(dest)
+            .map_err(|e| format!("create {:?}: {}", dest, e))?;
+        let mut buf = [0u8; 65536];
+        let mut downloaded: u64 = 0;
+
+        progress("downloading model", 0, total);
+
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("read error: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])
+                .map_err(|e| format!("write error: {}", e))?;
+            downloaded += n as u64;
+            progress("downloading model", downloaded, total);
+        }
+
+        file.flush().map_err(|e| format!("flush: {}", e))?;
         Ok(())
     }
 
-    /// Same as `ensure_all_models` but with the byte-progress callback shape
-    /// the previous MAEST flow used. There is no download step on the
-    /// MuQ-MuLan path so the callback is never invoked — we keep the
-    /// signature so the caller in `mod.rs` can stay generic.
+    /// Ensure each base model is present, downloading from GitHub releases
+    /// if not found in any search directory.
+    pub fn ensure_all_models(&self) -> Result<(), String> {
+        self.ensure_all_models_with_progress(|_, _, _| {})
+    }
+
+    /// Same as `ensure_all_models` but with a progress callback for UI.
+    /// Downloads missing models from the GitHub `models` release tag.
     pub fn ensure_all_models_with_progress(
         &self,
-        _progress: impl Fn(&'static str, u64, Option<u64>) + Send + Sync + 'static,
+        progress: impl Fn(&'static str, u64, Option<u64>) + Send + Sync + 'static,
     ) -> Result<(), String> {
-        self.ensure_all_models()
+        for &model in MlModelType::base_models() {
+            if self.is_available(model) {
+                continue;
+            }
+
+            // Try download into cache
+            let cache_onnx = self.cache_path(model);
+            let cache_norm = cache_onnx.with_file_name(model.norm_filename());
+
+            log::info!(
+                "{} not found locally — downloading from {}",
+                model.display_name(),
+                model.download_url(),
+            );
+
+            Self::download_file(model.download_url(), &cache_onnx, &progress)?;
+            // Download norm sidecar (non-fatal if it fails — the ONNX is the
+            // critical asset; missing norm degrades to identity normalization).
+            let _ = Self::download_file(model.norm_download_url(), &cache_norm, &|_, _, _| {});
+
+            progress("model downloaded", 0, None);
+        }
+        Ok(())
     }
 
     /// Directories to search in priority order. See module docstring.
