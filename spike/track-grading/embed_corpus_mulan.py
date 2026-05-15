@@ -164,6 +164,9 @@ def parse_args():
                    help="MuQ inference dtype on GPU")
     p.add_argument("--no-resume", action="store_true",
                    help="re-encode every track even if already present in --out")
+    p.add_argument("--lora", type=Path, default=None,
+                   help="Path to LoRA adapter dir (e.g. round7_7_lora/epoch_002_lora/) "
+                        "to merge before encoding")
     return p.parse_args()
 
 
@@ -280,6 +283,18 @@ def main() -> int:
     print(f"[embed] loading MuQ-MuLan on {args.device} ...")
     model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large")
     model = model.to(args.device).eval()
+
+    # Apply LoRA adapters if requested (merge into base weights for inference)
+    if args.lora is not None:
+        from peft import PeftModel
+        print(f"[embed] Loading LoRA adapters from {args.lora} ...", flush=True)
+        model = PeftModel.from_pretrained(model, args.lora)
+        model = model.to(args.device)
+        print("[embed] Merging LoRA into base weights ...", flush=True)
+        model = model.merge_and_unload()
+        model = model.to(args.device).eval()
+        print("[embed] LoRA merged.", flush=True)
+
     if args.device == "cuda" and args.dtype == "float16":
         model = model.half()
     print(f"[embed] model ready ({sum(p.numel() for p in model.parameters())/1e6:.0f}M params)")
