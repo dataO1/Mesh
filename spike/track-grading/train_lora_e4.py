@@ -372,8 +372,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="number of pairs per batch")
     p.add_argument("--grad-accum", type=int, default=4,
                    help="gradient accumulation steps")
-    p.add_argument("--lr", type=float, default=1e-4,
-                   help="peak AdamW learning rate")
+    p.add_argument("--lr", type=float, default=3e-5,
+                   help="peak AdamW learning rate (lower than typical 1e-4 — "
+                        "LoRA on pretrained models needs conservative LR to "
+                        "avoid destroying pretrained geometry)")
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--warmup-epochs", type=float, default=2.0,
                    help="linear warmup for this many epochs")
@@ -387,6 +389,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Early stopping
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--min-delta", type=float, default=1e-4)
+
+    # Feature preservation (anchors LoRA output to frozen baseline geometry)
+    p.add_argument("--anchor-emb", type=Path, default=None,
+                   help="Path to frozen baseline NPZ (corpus_muq_mulan.npz) for "
+                        "feature-preservation loss. Prevents LoRA from destroying "
+                        "the pretrained geometry while learning ranking.")
+    p.add_argument("--lambda-anchor", type=float, default=0.1,
+                   help="Weight for anchor MSE loss (LoRA_1024 vs frozen_baseline_1024)")
+    p.add_argument("--min-cos", type=float, default=0.7,
+                   help="Minimum cosine similarity vs baseline to accept a checkpoint. "
+                        "Checkpoints with cos < min_cos are rejected (keeps prior best).")
 
     # Resume
     p.add_argument("--resume", action="store_true",
@@ -454,6 +467,17 @@ def main() -> int:
     model.train()
     print(f"  LoRA params: {sum(p.numel() for n, p in model.named_parameters() if 'lora' in n)}")
     print(f"  Trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+    #  2.5. Load frozen baseline embeddings for feature-preservation anchor
+    # ------------------------------------------------------------------
+    _anchor_tid_to_emb: dict[int, np.ndarray] = {}
+    if args.anchor_emb is not None:
+        print(f"[E4.4] Loading frozen baseline embeddings from {args.anchor_emb} ...", flush=True)
+        anc = np.load(args.anchor_emb, allow_pickle=True)
+        anc_embs = anc["embeddings_1024"].astype(np.float32)
+        anc_tids = anc["track_ids"].astype(np.int64)
+        _anchor_tid_to_emb = {int(t): anc_embs[i] for i, t in enumerate(anc_tids)}
+        print(f"  Baseline embeddings: {len(_anchor_tid_to_emb)} tracks (dim={anc_embs.shape[1]})")
 
     # ------------------------------------------------------------------
     #  3. Scoring head
@@ -637,9 +661,30 @@ def main() -> int:
                 score_i = head(emb_i)
                 score_j = head(emb_j)
 
-                # Loss
+                # Loss: BT logistic + optional feature-preservation anchor
                 labels_t = torch.from_numpy(labels).to(device)
                 loss_val = loss_fn(score_i, score_j, labels_t)
+
+                # Anchor loss: penalize drift from frozen baseline 1024-d geometry.
+                # Prevents LoRA from finding degenerate solutions that rank correctly
+                # but destroy the pretrained representation.
+                if _anchor_tid_to_emb:
+                    anc_embs = np.stack([_anchor_tid_to_emb[int(t)]
+                                         for t in unique_tids
+                                         if int(t) in _anchor_tid_to_emb])
+                    if len(anc_embs) > 0:
+                        anc_t = torch.from_numpy(anc_embs).to(device)
+                        # Only compare tracks that are in the anchor set
+                        anc_mask = torch.tensor(
+                            [int(t) in _anchor_tid_to_emb for t in unique_tids],
+                            device=device
+                        )
+                        if anc_mask.any():
+                            loss_anchor = nn.functional.mse_loss(
+                                embs[anc_mask].float(), anc_t.float()
+                            )
+                            loss_val = loss_val + args.lambda_anchor * loss_anchor
+
                 loss_val = loss_val / args.grad_accum  # scale for accumulation
                 loss_val.backward()
 
@@ -670,18 +715,57 @@ def main() -> int:
         # ---- Validation ----
         val_rho = validate(model, head, val_wavs_cpu, val_consensus_aligned, device)
 
+        # Cosine drift check: compare LoRA 1024-d output vs frozen baseline
+        # on a sample of val tracks.  Rejects checkpoints where the LoRA
+        # geometry has diverged too far from the pretrained representation.
+        val_cos = 1.0  # default if no anchor
+        if _anchor_tid_to_emb and len(val_valid_tids) > 0:
+            sample_n = min(200, len(val_valid_tids))
+            sample_tids = [val_valid_tids[i] for i in
+                           np.random.default_rng(epoch).choice(
+                               len(val_valid_tids), sample_n, replace=False)]
+            lora_vecs = []
+            anchor_vecs = []
+            for tid in sample_tids:
+                if tid in _anchor_tid_to_emb and tid in {int(t) for t in val_tids}:
+                    # Encode through LoRA model
+                    wav = load_audio(args.audio_dir / f"dz_{tid}.mp3")
+                    if wav is not None:
+                        wav_t = torch.from_numpy(wav).unsqueeze(0).to(device)
+                        with torch.no_grad():
+                            emb = encode_track(model, wav_t)
+                        lora_vecs.append(emb.cpu().numpy().squeeze())
+                        anchor_vecs.append(_anchor_tid_to_emb[tid])
+            if len(lora_vecs) > 20:
+                lora_mat = np.stack(lora_vecs)
+                anc_mat = np.stack(anchor_vecs)
+                # Mean cosine across tracks
+                norms_l = np.linalg.norm(lora_mat, axis=1)
+                norms_a = np.linalg.norm(anc_mat, axis=1)
+                dots = np.sum(lora_mat * anc_mat, axis=1)
+                cosines = dots / (norms_l * norms_a + 1e-12)
+                val_cos = float(np.mean(cosines))
+            else:
+                val_cos = 1.0
+
         elapsed = time.time() - epoch_start
         print(f"  >>> Epoch {epoch} | loss={avg_loss:.4f} | lr={lr_epoch:.2e} | "
-              f"val ρ={val_rho:+.4f} | time={elapsed:.0f}s")
+              f"val ρ={val_rho:+.4f} | cos={val_cos:.4f} | time={elapsed:.0f}s")
 
         # ---- Early stopping ----
-        if val_rho > best_val_rho + args.min_delta:
+        quality_ok = val_rho > best_val_rho + args.min_delta
+        cos_ok = (not _anchor_tid_to_emb) or (val_cos >= args.min_cos)
+
+        if quality_ok and cos_ok:
             best_val_rho = val_rho
             epochs_without_improvement = 0
-            # Save best checkpoint
             save_checkpoint(
                 args.ckpt_dir, epoch, model, head, optimizer, scheduler, best_val_rho
             )
+        elif quality_ok and not cos_ok:
+            print(f"  [cos guard] val ρ improved ({val_rho:+.4f} > {best_val_rho:+.4f}) "
+                  f"but cos={val_cos:.4f} < min_cos={args.min_cos} — REJECTING checkpoint")
+            epochs_without_improvement += 1
         else:
             epochs_without_improvement += 1
             print(f"  [early stop] {epochs_without_improvement}/{args.patience} "
