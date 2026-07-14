@@ -509,7 +509,7 @@ TOOLCHAIN
           echo "    Creating patched libpd-sys (32-bit floats)..."
           mkdir -p patches
           cd /tmp
-          curl -sL https://crates.io/api/v1/crates/libpd-sys/0.3.4/download -o libpd-sys.tar.gz
+          curl -sfL --retry 5 --retry-all-errors https://static.crates.io/crates/libpd-sys/libpd-sys-0.3.4.crate -o libpd-sys.tar.gz
           tar xzf libpd-sys.tar.gz -C $SRC_DIR/patches
           mv $SRC_DIR/patches/libpd-sys-* $SRC_DIR/patches/libpd-sys
           sed -i "s/const PD_FLOATSIZE: &str = \"64\"/const PD_FLOATSIZE: \&str = \"32\"/" $SRC_DIR/patches/libpd-sys/build.rs
@@ -518,7 +518,7 @@ TOOLCHAIN
         if [ ! -d "patches/libpd-rs" ]; then
           echo "    Creating patched libpd-rs (c_char portability)..."
           cd /tmp
-          curl -sL https://crates.io/api/v1/crates/libpd-rs/0.2.0/download -o libpd-rs.tar.gz
+          curl -sfL --retry 5 --retry-all-errors https://static.crates.io/crates/libpd-rs/libpd-rs-0.2.0.crate -o libpd-rs.tar.gz
           tar xzf libpd-rs.tar.gz -C $SRC_DIR/patches
           mv $SRC_DIR/patches/libpd-rs-* $SRC_DIR/patches/libpd-rs
           sed -i "s/\*const i8/\*const os::raw::c_char/g" $SRC_DIR/patches/libpd-rs/src/functions/receive.rs
