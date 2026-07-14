@@ -796,15 +796,6 @@ impl SimilarityQuery {
             .collect())
     }
 
-    pub fn get_tracks_with_intensity(db: &MeshDb) -> Result<Vec<i64>, DbError> {
-        let result = db.run_query(r#"
-            ?[track_id] := *track_intensity{track_id}
-        "#, BTreeMap::new())?;
-        Ok(result.rows.iter()
-            .filter_map(|row| row.first().and_then(|v| v.get_int()))
-            .collect())
-    }
-
     // ── ML embedding (MuQ-MuLan 512-d joint-space, similarity) ─────────────
 
     /// Insert or update the 512-dim MuQ-MuLan audio embedding for a track.
@@ -873,6 +864,92 @@ impl SimilarityQuery {
             let vec = extract_f32_vec(row.get(1))?;
             if let (Some(t), Some(v)) = (tid, vec) {
                 out.push((t, v));
+            }
+        }
+        Ok(out)
+    }
+
+    // ── Intensity scalar (V18.X projection, computed at analysis time) ──
+
+    /// Insert or update a track's projected intensity scalar + the axis
+    /// version it was projected with.
+    pub fn upsert_intensity_score(
+        db: &MeshDb,
+        track_id: i64,
+        intensity: f32,
+        axis_version: &str,
+    ) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("intensity".to_string(), DataValue::from(intensity as f64));
+        params.insert("axis_version".to_string(), DataValue::from(axis_version));
+
+        db.run_script(r#"
+            ?[track_id, intensity, axis_version] <- [[$track_id, $intensity, $axis_version]]
+            :put intensity_score {track_id => intensity, axis_version}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Intensity scalars for a set of tracks. Tracks without a row are
+    /// simply absent from the map (callers default them to neutral 0.5).
+    pub fn batch_get_intensity_scores(
+        db: &MeshDb,
+        track_ids: &[i64],
+    ) -> Result<HashMap<i64, f32>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let ids_list: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(ids_list));
+
+        let result = db.run_query(r#"
+            ?[track_id, intensity] :=
+                *intensity_score{track_id, intensity},
+                is_in(track_id, $ids)
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if row.len() < 2 { continue; }
+            let id = match row[0].get_int() { Some(v) => v, None => continue };
+            let i  = match row[1].get_float() { Some(f) => f as f32, None => continue };
+            map.insert(id, i);
+        }
+        Ok(map)
+    }
+
+    /// Single track's intensity scalar + axis version. Used by USB sync.
+    pub fn get_intensity_score(db: &MeshDb, track_id: i64) -> Result<Option<(f32, String)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        let result = db.run_query(r#"
+            ?[intensity, axis_version] := *intensity_score{track_id: $track_id, intensity, axis_version}
+        "#, params)?;
+        Ok(result.rows.first().and_then(|row| {
+            let intensity = row.first().and_then(|v| v.get_float()).map(|f| f as f32)?;
+            let version = row.get(1).and_then(|v| v.get_str()).map(str::to_owned)?;
+            Some((intensity, version))
+        }))
+    }
+
+    /// All (track_id, intensity, axis_version) rows. Used by suggestion
+    /// scoring (pooled percentile rank) and the startup backfill's
+    /// staleness check.
+    pub fn get_all_intensity_scores(db: &MeshDb) -> Result<Vec<(i64, f32, String)>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, intensity, axis_version] := *intensity_score{track_id, intensity, axis_version}
+        "#, BTreeMap::new())?;
+        let mut out = Vec::with_capacity(result.rows.len());
+        for row in &result.rows {
+            let tid = row.first().and_then(|v| v.get_int());
+            let intensity = row.get(1).and_then(|v| v.get_float()).map(|f| f as f32);
+            let version = row.get(2).and_then(|v| v.get_str()).map(str::to_owned);
+            if let (Some(t), Some(i), Some(v)) = (tid, intensity, version) {
+                out.push((t, i, v));
             }
         }
         Ok(out)
@@ -1909,6 +1986,44 @@ fn rows_to_playlists(result: &NamedRows) -> Vec<Playlist> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_intensity_score_roundtrip() {
+        let db = MeshDb::in_memory().unwrap();
+
+        // Missing → None / absent from maps
+        assert!(SimilarityQuery::get_intensity_score(&db, 1).unwrap().is_none());
+        assert!(SimilarityQuery::batch_get_intensity_scores(&db, &[1, 2]).unwrap().is_empty());
+
+        SimilarityQuery::upsert_intensity_score(&db, 1, 0.73, "V18_round7_7_lora_v2").unwrap();
+        SimilarityQuery::upsert_intensity_score(&db, 2, 0.21, "V18_round7_7_lora_v2").unwrap();
+
+        let (score, version) = SimilarityQuery::get_intensity_score(&db, 1).unwrap().unwrap();
+        assert!((score - 0.73).abs() < 1e-6);
+        assert_eq!(version, "V18_round7_7_lora_v2");
+
+        let batch = SimilarityQuery::batch_get_intensity_scores(&db, &[1, 2, 3]).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!((batch[&2] - 0.21).abs() < 1e-6);
+
+        // Upsert overwrites (axis upgrade re-projection)
+        SimilarityQuery::upsert_intensity_score(&db, 1, 0.55, "V19_future").unwrap();
+        let all = SimilarityQuery::get_all_intensity_scores(&db).unwrap();
+        assert_eq!(all.len(), 2);
+        let row1 = all.iter().find(|(id, _, _)| *id == 1).unwrap();
+        assert!((row1.1 - 0.55).abs() < 1e-6);
+        assert_eq!(row1.2, "V19_future");
+    }
+
+    #[test]
+    fn test_intensity_score_deleted_with_track_metadata() {
+        let db = MeshDb::in_memory().unwrap();
+        SimilarityQuery::upsert_intensity_score(&db, 7, 0.9, "V18_round7_7_lora_v2").unwrap();
+        assert!(SimilarityQuery::get_intensity_score(&db, 7).unwrap().is_some());
+
+        super::super::batch::BatchQuery::batch_delete_track_metadata(&db, 7).unwrap();
+        assert!(SimilarityQuery::get_intensity_score(&db, 7).unwrap().is_none());
+    }
 
     #[test]
     fn test_track_crud() {

@@ -1311,10 +1311,9 @@ impl CollectionBrowserState {
             .collect();
 
         if !row_ids.is_empty() {
-            // V15+ MuQ-MuLan axis projection. db.batch_project_intensity
-            // loads the per-collection axis JSON at startup; per-track
-            // projection is one dot product against the cached embedding.
-            let intensity_map = db.batch_project_intensity(&row_ids);
+            // V18.X intensity scalars, projected at analysis time and
+            // synced per-track (see `intensity_score` relation).
+            let intensity_map = db.batch_get_intensity_scores(&row_ids).unwrap_or_default();
 
             for row in &mut self.tracks {
                 if let Some(path) = &row.track_path {

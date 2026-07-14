@@ -399,8 +399,8 @@ pub fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
 
 // ─── Intensity Reward + Penalty Functions ───────────────────────────────
 //
-// Intensity inputs are now scalars projected from MuQ-MuLan embeddings
-// via the V15 axis (see DatabaseService::batch_project_intensity and
+// Intensity inputs are per-track V18.X scalars projected at analysis time
+// and stored in the `intensity_score` relation (see
 // `documents/intensity-axis-pipeline-runbook.md`). The pre-V15 DSP-component
 // composite (composite_intensity_v2) and the never-called per-component
 // reward functions were removed in the V15 migration.

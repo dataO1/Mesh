@@ -28,8 +28,9 @@ pub enum DeleteTarget {
         playlist_name: String,
         playlist_id: NodeId,
     },
-    /// Generic destructive action (e.g., reset calibration). On confirm,
-    /// dispatches `confirm_message` for the actual work.
+    /// Generic destructive/confirmation action (e.g., the intensity-model
+    /// migration prompt). On confirm, dispatches `confirm_message` for the
+    /// actual work.
     Custom {
         title: String,
         description: String,

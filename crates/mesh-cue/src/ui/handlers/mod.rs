@@ -4,7 +4,6 @@
 //! Each sub-module provides handler methods on MeshCueApp.
 
 pub mod browser;
-pub mod calibration;
 pub mod delete;
 pub mod graph;
 pub mod editing;

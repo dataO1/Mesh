@@ -173,5 +173,13 @@ fn main() -> anyhow::Result<()> {
         elapsed,
         total as f32 / elapsed.max(0.001),
     );
+
+    // Backfill/re-project intensity scalars for any track whose row is
+    // missing or was projected with a different axis version (covers tracks
+    // outside this run's set and axis upgrades without re-analysis).
+    match mesh_cue::ui::handlers::similarity::backfill_intensity_scores(&db) {
+        Ok(n) => eprintln!("[reanalyze_ml] intensity scalar backfill: {n} tracks (re-)projected"),
+        Err(e) => eprintln!("[reanalyze_ml] intensity scalar backfill failed: {e}"),
+    }
     Ok(())
 }

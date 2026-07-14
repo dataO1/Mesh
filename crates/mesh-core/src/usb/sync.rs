@@ -45,8 +45,10 @@ pub struct TrackInfo {
     pub has_ml_embedding: bool,
     /// Whether stem energy densities are stored for this track
     pub has_stem_energy: bool,
-    /// Whether intensity components are stored for this track
-    pub has_intensity: bool,
+    /// Axis version of the stored V18.X intensity scalar (None = no scalar).
+    /// Compared local-vs-USB so a stick with missing OR stale-axis scalars
+    /// gets a metadata-only refresh on the next export.
+    pub intensity_version: Option<String>,
 }
 
 /// A track membership in a playlist (database record)
@@ -291,18 +293,18 @@ pub fn scan_local_collection_from_db(
     let stem_links_map = StemLinkQuery::get_all(db).unwrap_or_default();
 
     let (ml_analysis_map, tags_map,
-         ml_embedding_set, stem_energy_set, intensity_set) = if let Some(svc) = db_service {
+         ml_embedding_set, stem_energy_set, intensity_version_map) = if let Some(svc) = db_service {
         let ml = svc.get_all_ml_analysis().unwrap_or_default();
         let tags = svc.get_all_track_tags().unwrap_or_default();
         let embeddings: HashSet<i64> = SimilarityQuery::get_tracks_with_ml_embeddings(db)
             .unwrap_or_default().into_iter().collect();
         let stem_energy: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db)
             .unwrap_or_default().into_iter().collect();
-        let intensity: HashSet<i64> = SimilarityQuery::get_tracks_with_intensity(db)
-            .unwrap_or_default().into_iter().collect();
+        let intensity: HashMap<i64, String> = SimilarityQuery::get_all_intensity_scores(db)
+            .unwrap_or_default().into_iter().map(|(id, _, v)| (id, v)).collect();
         (ml, tags, embeddings, stem_energy, intensity)
     } else {
-        (HashMap::new(), HashMap::new(), HashSet::new(), HashSet::new(), HashSet::new())
+        (HashMap::new(), HashMap::new(), HashSet::new(), HashSet::new(), HashMap::new())
     };
 
     // Get file metadata for all unique tracks (sequential — local disk I/O
@@ -334,7 +336,7 @@ pub fn scan_local_collection_from_db(
             let tags = tags_map.get(&db_track.id).cloned().unwrap_or_default();
             let has_ml_embedding   = ml_embedding_set.contains(&db_track.id);
             let has_stem_energy    = stem_energy_set.contains(&db_track.id);
-            let has_intensity      = intensity_set.contains(&db_track.id);
+            let intensity_version  = intensity_version_map.get(&db_track.id).cloned();
 
             Ok(TrackInfo {
                 path,
@@ -349,7 +351,7 @@ pub fn scan_local_collection_from_db(
                 tags,
                 has_ml_embedding,
                 has_stem_energy,
-                has_intensity,
+                intensity_version,
             })
         })
         .collect();
@@ -397,7 +399,7 @@ pub fn scan_usb_collection(
     // Build map of filename -> metadata from USB database (bulk queries)
     #[allow(clippy::type_complexity)]
     let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>,
-        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool, bool, bool)> = HashMap::new();
+        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool, bool, Option<String>)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
             let cue_map = CuePointQuery::get_all(db_service.db()).unwrap_or_default();
@@ -409,8 +411,8 @@ pub fn scan_usb_collection(
                 .unwrap_or_default().into_iter().collect();
             let stem_energy_set: HashSet<i64> = SimilarityQuery::get_tracks_with_stem_energy(db_service.db())
                 .unwrap_or_default().into_iter().collect();
-            let intensity_set: HashSet<i64> = SimilarityQuery::get_tracks_with_intensity(db_service.db())
-                .unwrap_or_default().into_iter().collect();
+            let intensity_version_map: HashMap<i64, String> = SimilarityQuery::get_all_intensity_scores(db_service.db())
+                .unwrap_or_default().into_iter().map(|(id, _, v)| (id, v)).collect();
 
             for track in all_tracks {
                 let filename = PathBuf::from(&track.path)
@@ -426,10 +428,10 @@ pub fn scan_usb_collection(
                 let tags = tag_map.get(&track.id).cloned().unwrap_or_default();
                 let has_ml_embedding   = embedding_set.contains(&track.id);
                 let has_stem_energy    = stem_energy_set.contains(&track.id);
-                let has_intensity      = intensity_set.contains(&track.id);
+                let intensity_version  = intensity_version_map.get(&track.id).cloned();
 
                 db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links,
-                    ml_analysis, tags, has_ml_embedding, has_stem_energy, has_intensity));
+                    ml_analysis, tags, has_ml_embedding, has_stem_energy, intensity_version));
             }
         }
 
@@ -502,13 +504,13 @@ pub fn scan_usb_collection(
 
             // Get database metadata if available
             let (db_track, cue_points, saved_loops, stem_links, ml_analysis, tags,
-                 has_ml_embedding, has_stem_energy, has_intensity) =
+                 has_ml_embedding, has_stem_energy, intensity_version) =
                 db_metadata
                     .get(&filename)
-                    .map(|(t, c, l, s, ml, tg, me, se, hi)| {
-                        (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *me, *se, *hi)
+                    .map(|(t, c, l, s, ml, tg, me, se, iv)| {
+                        (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *me, *se, iv.clone())
                     })
-                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, false, false));
+                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, false, None));
 
             Ok(TrackInfo {
                 path,
@@ -523,7 +525,7 @@ pub fn scan_usb_collection(
                 tags,
                 has_ml_embedding,
                 has_stem_energy,
-                has_intensity,
+                intensity_version,
             })
         })
         .collect();
@@ -643,8 +645,11 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
         log::debug!("metadata_differs: stem_energy presence differs for {}", local.filename);
         return true;
     }
-    if local.has_intensity != usb.has_intensity {
-        log::debug!("metadata_differs: intensity presence differs for {}", local.filename);
+    if local.intensity_version != usb.intensity_version {
+        log::debug!(
+            "metadata_differs: intensity scalar differs for {} ({:?} vs {:?})",
+            local.filename, local.intensity_version, usb.intensity_version,
+        );
         return true;
     }
     false
@@ -997,8 +1002,30 @@ mod tests {
             tags: Vec::new(),
             has_ml_embedding: false,
             has_stem_energy: false,
-            has_intensity: false,
+            intensity_version: None,
         }
+    }
+
+    #[test]
+    fn test_metadata_differs_on_intensity_version() {
+        let mtime = SystemTime::UNIX_EPOCH;
+        let mut local = test_track_info("/m/a.flac", "a.flac", 100, mtime);
+        let mut usb = test_track_info("/u/a.flac", "a.flac", 100, mtime);
+
+        // Both without scalar → no diff
+        assert!(!metadata_differs(&local, &usb));
+
+        // Local gained a scalar, USB stick predates it → metadata-only sync
+        local.intensity_version = Some("V18_round7_7_lora_v2".to_string());
+        assert!(metadata_differs(&local, &usb));
+
+        // Stick synced on the same axis → no diff
+        usb.intensity_version = Some("V18_round7_7_lora_v2".to_string());
+        assert!(!metadata_differs(&local, &usb));
+
+        // Axis upgraded locally, stick stale → metadata-only sync again
+        local.intensity_version = Some("V19_future".to_string());
+        assert!(metadata_differs(&local, &usb));
     }
 
     #[test]

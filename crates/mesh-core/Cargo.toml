@@ -86,4 +86,9 @@ name = "history-stats"
 path = "src/bin/history_stats.rs"
 required-features = []
 
+[[bin]]
+name = "suggestions-smoke"
+path = "src/bin/suggestions_smoke.rs"
+required-features = []
+
 [dev-dependencies]

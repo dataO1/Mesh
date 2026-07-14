@@ -1,7 +1,6 @@
 //! User interface modules for mesh-cue
 
 pub mod app;
-pub mod calibration_modal;
 pub mod collection_browser;
 pub mod context_menu;
 pub mod cue_editor;

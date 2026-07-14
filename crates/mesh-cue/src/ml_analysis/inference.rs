@@ -59,6 +59,12 @@ pub struct MlAnalysisResult {
     /// Used by the V18.X+ intensity probe per the MuQ paper recipe.
     /// Empty on pre-round-7.7 (single-output) ONNX or on failure.
     pub embedding_1024: Vec<f32>,
+    /// V18.X intensity scalar + the axis version it was projected with:
+    /// `project_normalised(embedding_1024)` through the same axis instance
+    /// that did the A5 window pick. `None` when the 1024-d head or the
+    /// axis is unavailable (legacy ONNX) — callers then skip the
+    /// `intensity_score` store and the track scores as neutral.
+    pub intensity: Option<(f32, String)>,
 }
 
 /// MuQ-MuLan joint-space embedding dim — fixed by the model.
@@ -504,6 +510,17 @@ impl MlAnalyzer {
             }
         };
 
+        // V18.X scalar: project the final 1024-d hidden through the same
+        // axis that did the A5 window pick, so the stored scalar is exactly
+        // consistent with the embedding it summarises.
+        let intensity = match (self.intensity_axis.as_ref(), embedding_1024.is_empty()) {
+            (Some(axis), false) => Some((
+                axis.project_normalised(&embedding_1024),
+                axis.variant_id.clone(),
+            )),
+            _ => None,
+        };
+
         Ok(MlAnalysisResult {
             data: MlAnalysisData {
                 top_genre: None,
@@ -511,6 +528,7 @@ impl MlAnalyzer {
             },
             embedding,
             embedding_1024,
+            intensity,
         })
     }
 

@@ -11,24 +11,21 @@ use crate::pca;
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
 
-/// Load the active text-tower intensity axis JSON and store it into
-/// `pca_aggression_axis` if absent or wrong dim. Idempotent. Logs (but does
-/// not return) errors. Called at app startup AND at the end of "Build
-/// Similarity Index" — two independent paths to keep the axis fresh in the DB.
+/// Backfill / re-project the per-track `intensity_score` scalars.
 ///
-/// **Why not gate on calibration weights?** The calibration UI is currently
-/// disabled (it could overwrite the axis with Pearson-fit weights, which is
-/// the bug we hit on V11 rollout). When re-enabled in eval-only mode it will
-/// no longer write weights, so this loader can stay simple: if the existing
-/// row has the right dim AND the same first 8 floats as the on-disk axis,
-/// skip; otherwise overwrite.
-pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), String> {
-    // Resolve the active axis with the same precedence the runtime uses:
-    //   1. Per-collection user override at <model_dir>/muq-mulan-aggression-axis.json
-    //   2. Binary-embedded default (V18.1 MLP at the time of writing).
-    // Only a malformed override JSON is fatal here — a missing file just
-    // means the user hasn't dropped a custom one, which is the normal case
-    // post-V18.1 (the embedded default carries the deployed model).
+/// For every track that has a 1024-d intensity embedding but whose
+/// `intensity_score` row is missing OR was projected with a different axis
+/// version than the active one, project through the active axis and upsert.
+///
+/// This is what makes an axis upgrade land without re-analysis: ship a new
+/// embedded axis in the binary, and the first mesh-cue start re-projects
+/// the whole library from the stored hidden states (µs per track). USB
+/// sticks pick the fresh scalars up on their next export.
+///
+/// Axis resolution matches the ANALYSIS path (model-dir override →
+/// embedded default), so backfilled scalars and analysis-time scalars are
+/// always produced by the same axis instance.
+pub fn backfill_intensity_scores(db: &Arc<DatabaseService>) -> Result<usize, String> {
     let axis = match crate::ml_analysis::ensure_ml_model_dir(|_, _, _| {}) {
         Some(model_dir) => {
             let axis_path = model_dir.join(
@@ -37,96 +34,82 @@ pub fn ensure_intensity_axis_in_db(db: &Arc<DatabaseService>) -> Result<(), Stri
             if axis_path.exists() {
                 let a = crate::ml_analysis::IntensityAxis::load(&axis_path)
                     .map_err(|e| format!("load axis from {:?}: {}", axis_path, e))?;
-                log::info!("[AXIS] Loaded user override from {:?}", axis_path);
+                log::info!("[INTENSITY] Loaded user override from {:?}", axis_path);
                 a
             } else {
-                log::info!("[AXIS] No user override at {:?} — using embedded default", axis_path);
                 mesh_core::intensity_axis::IntensityAxis::embedded_default()
                     .expect("embedded axis JSON must parse")
             }
         }
-        None => {
-            log::info!("[AXIS] No MuQ-MuLan model dir — using embedded default");
-            mesh_core::intensity_axis::IntensityAxis::embedded_default()
-                .expect("embedded axis JSON must parse")
-        }
+        None => mesh_core::intensity_axis::IntensityAxis::embedded_default()
+            .expect("embedded axis JSON must parse"),
     };
+    let active_version = axis.variant_id.clone();
+    log::info!("[INTENSITY] Active intensity axis: {}", active_version);
+
+    let existing: std::collections::HashMap<i64, String> = db
+        .get_all_intensity_scores()
+        .map_err(|e| format!("get_all_intensity_scores: {e}"))?
+        .into_iter()
+        .map(|(id, _, version)| (id, version))
+        .collect();
+
+    let with_vecs = db
+        .get_tracks_with_intensity_embeddings()
+        .map_err(|e| format!("get_tracks_with_intensity_embeddings: {e}"))?;
+
+    let total_vecs = with_vecs.len();
+    let todo: Vec<i64> = with_vecs
+        .into_iter()
+        .filter(|id| existing.get(id).map_or(true, |v| *v != active_version))
+        .collect();
+
+    if todo.is_empty() {
+        log::info!(
+            "[INTENSITY] Scalars up to date: {} tracks on axis '{}'",
+            total_vecs, active_version,
+        );
+        return Ok(0);
+    }
+
     log::info!(
-        "[AXIS] Active intensity axis: {} ({}) — formula: {}",
-        axis.variant_id, axis.name, axis.intensity_formula,
+        "[INTENSITY] Backfilling {} of {} tracks onto axis '{}'",
+        todo.len(), total_vecs, active_version,
     );
 
-    // Linear vs MLP: the DB cache `pca_aggression_axis` was a V11/V15-era
-    // table that stored the linear projection vector directly. V18.1
-    // ships an MLP, so there's no single vector to cache. For MLP we
-    // skip the DB write entirely; the runtime always reads V18.1 from
-    // the JSON on disk via `IntensityProvider`, so the cache is a pure
-    // optimisation that we don't need for the new model.
-    let linear_vec = axis.as_linear_vec();
-
-    if let Some(vec) = linear_vec {
-        // Skip the write if the on-disk axis already matches what's stored —
-        // checked via length + first 8 floats. Saves a write on every launch.
-        if let Ok(Some((stored_weights, stored_corr))) = db.get_aggression_weights() {
-            let same_len = stored_weights.len() == vec.len();
-            let same_head = stored_weights.iter().take(8)
-                .zip(vec.iter().take(8))
-                .all(|(a, b)| (a - b).abs() < 1e-6);
-            if same_len && same_head {
-                log::info!(
-                    "[AXIS] DB already has matching axis ({} dims, correlation={:.4}) — skip write",
-                    stored_weights.len(), stored_corr,
-                );
-                return Ok(());
+    let mut written = 0usize;
+    let mut failed = 0usize;
+    for id in todo {
+        let emb = match db.get_ml_intensity_embedding_raw(id) {
+            Ok(Some(e)) => e,
+            Ok(None) => continue,
+            Err(e) => {
+                log::debug!("[INTENSITY] read embedding for {id}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        if emb.len() != mesh_core::intensity_axis::EMBEDDING_DIM {
+            log::debug!(
+                "[INTENSITY] track {id}: embedding dim {} ≠ {} — skipped",
+                emb.len(), mesh_core::intensity_axis::EMBEDDING_DIM,
+            );
+            failed += 1;
+            continue;
+        }
+        let score = axis.project_normalised(&emb);
+        match db.store_intensity_score(id, score, &active_version) {
+            Ok(()) => written += 1,
+            Err(e) => {
+                log::warn!("[INTENSITY] store score for {id}: {e}");
+                failed += 1;
             }
         }
     }
-
-    // Agreement rate against any stored calibration pairs (eval-only
-    // signal). Closure-based so it works for linear OR MLP models.
-    let pairs = db.get_all_calibration_pairs().unwrap_or_default();
-    let pair_triplets: Vec<(i64, i64, i32)> = pairs.iter()
-        .map(|(_id, a, b, choice, _ts)| (*a, *b, *choice))
-        .collect();
-    // Round-7.7: V18.X axis is 1024-d (Conformer hidden); read from
-    // ml_intensity_embeddings, not the legacy 512-d ml_embeddings. Tracks
-    // not yet re-analysed have no row in the new table — they fall out of
-    // the agreement calculation, which is the right behaviour (no fake
-    // 11.1% noise from dim-mismatched 0.0 projections).
-    let agreement = mesh_core::suggestions::aggression::compute_pair_agreement_with(
-        |emb| axis.project(emb),
-        |id| db.get_ml_intensity_embedding_raw(id).ok().flatten(),
-        &pair_triplets,
-        0.02,
+    log::info!(
+        "[INTENSITY] Backfill done: {written} written, {failed} failed (axis '{active_version}')",
     );
-    let correlation_field = agreement.unwrap_or(1.0);
-    if let Some(rate) = agreement {
-        log::info!(
-            "[AXIS] vs {} stored calibration pairs: {:.1}% agreement",
-            pair_triplets.len(), rate * 100.0,
-        );
-    } else {
-        log::info!(
-            "[AXIS] No usable calibration pairs ({} stored) — storing axis with correlation=1.0",
-            pair_triplets.len(),
-        );
-    }
-
-    if let Some(vec) = linear_vec {
-        db.store_aggression_weights(vec, correlation_field)
-            .map_err(|e| format!("store_aggression_weights: {e}"))?;
-        log::info!(
-            "[AXIS] Stored ({} dims, agreement/correlation={:.4})",
-            vec.len(), correlation_field,
-        );
-    } else {
-        log::info!(
-            "[AXIS] MLP axis ({}, agreement={:.4}) — DB cache skipped \
-             (live projection reads V18.1 JSON directly)",
-            axis.variant_id, correlation_field,
-        );
-    }
-    Ok(())
+    Ok(written)
 }
 
 impl MeshCueApp {
@@ -194,14 +177,14 @@ impl MeshCueApp {
 
                     log::info!("[PCA] Build complete: {} PCA embeddings stored (of {} total)", stored, total);
 
-                    // Refresh the intensity axis too. Identical work to the
-                    // startup-time loader (which is the canonical path); kept
-                    // here as a belt-and-suspenders so users who hit "Build
-                    // Similarity Index" after swapping variant files via
-                    // scripts/select-active-axis.sh get an immediate refresh
-                    // without restarting mesh-cue.
-                    if let Err(e) = ensure_intensity_axis_in_db(&db) {
-                        log::warn!("[PCA] ensure_intensity_axis_in_db failed: {e}");
+                    // Refresh the intensity scalars too. Identical work to
+                    // the startup-time backfill (which is the canonical
+                    // path); kept here as a belt-and-suspenders so users who
+                    // hit "Build Similarity Index" after swapping axis files
+                    // via scripts/select-active-axis.sh get an immediate
+                    // re-projection without restarting mesh-cue.
+                    if let Err(e) = backfill_intensity_scores(&db) {
+                        log::warn!("[PCA] backfill_intensity_scores failed: {e}");
                     }
 
                     Ok(())

@@ -852,7 +852,7 @@ impl MeshCueDomain {
             .collect();
         if row_ids.is_empty() { return; }
 
-        let intensity_map = self.db_service.batch_project_intensity(&row_ids);
+        let intensity_map = self.db_service.batch_get_intensity_scores(&row_ids).unwrap_or_default();
 
         for row in rows.iter_mut() {
             if let Some(path) = &row.track_path {

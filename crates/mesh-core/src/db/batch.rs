@@ -274,6 +274,24 @@ impl BatchQuery {
             ?[track_id] := *ml_pca_embeddings{track_id}, track_id = $track_id
             :rm ml_pca_embeddings {track_id}
         "#,
+            params.clone(),
+        )?;
+
+        // Delete 1024-d intensity embedding (round-7.7 probe substrate)
+        db.run_script(
+            r#"
+            ?[track_id] := *ml_intensity_embeddings{track_id}, track_id = $track_id
+            :rm ml_intensity_embeddings {track_id}
+        "#,
+            params.clone(),
+        )?;
+
+        // Delete projected intensity scalar
+        db.run_script(
+            r#"
+            ?[track_id] := *intensity_score{track_id}, track_id = $track_id
+            :rm intensity_score {track_id}
+        "#,
             params,
         )?;
 
@@ -292,10 +310,10 @@ mod tests {
         // First we need a track to reference
         db.run_script(
             r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
                 1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
-            :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,
             BTreeMap::new(),
         )
@@ -331,10 +349,10 @@ mod tests {
         // Create track
         db.run_script(
             r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
                 1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
-            :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,
             BTreeMap::new(),
         )
@@ -366,10 +384,10 @@ mod tests {
         // Create track
         db.run_script(
             r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
                 1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
-            :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,
             BTreeMap::new(),
         )

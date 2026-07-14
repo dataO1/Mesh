@@ -516,9 +516,8 @@ impl DatabaseService {
         BatchQuery::batch_insert_saved_loops(&self.db, track_id, &track.saved_loops)?;
         BatchQuery::batch_insert_stem_links(&self.db, track_id, &remapped_links)?;
 
-        // 5. Sync ML analysis data. Intensity is no longer stored as
-        // DSP components — it's projected at query time from the
-        // MuQ-MuLan embedding via the V15 axis.
+        // 5. Sync ML analysis data. (Intensity travels separately as the
+        // per-track V18.X scalar — step 8 below.)
         if let Ok(Some(ml_data)) = source_db.get_ml_analysis(source_track_id) {
             let _ = self.store_ml_analysis(track_id, &ml_data);
         }
@@ -533,6 +532,13 @@ impl DatabaseService {
         // 7. Sync EffNet ML embedding
         if let Ok(Some(emb)) = source_db.get_ml_embedding_raw(source_track_id) {
             let _ = self.store_ml_embedding(track_id, &emb);
+        }
+
+        // 8. Sync V18.X intensity scalar (projected at analysis time; the
+        // 1024-d hidden states deliberately do NOT cross — devices only
+        // need the scalar).
+        if let Ok(Some((intensity, axis_version))) = source_db.get_intensity_score(source_track_id) {
+            let _ = self.store_intensity_score(track_id, intensity, &axis_version);
         }
 
         // 9. Sync stem energy densities
@@ -980,6 +986,32 @@ impl DatabaseService {
         SimilarityQuery::get_tracks_with_ml_embeddings(&self.db)
     }
 
+    // ── Intensity scalar (V18.X projection, computed at analysis time) ──
+
+    /// Store a track's projected intensity scalar + the axis version it was
+    /// projected with. Written at analysis time (import/reanalysis) and by
+    /// the startup backfill; synced to USB per-track.
+    pub fn store_intensity_score(&self, track_id: i64, intensity: f32, axis_version: &str) -> Result<(), DbError> {
+        SimilarityQuery::upsert_intensity_score(&self.db, track_id, intensity, axis_version)
+    }
+
+    /// Intensity scalars for a set of tracks. Tracks without a stored scalar
+    /// are absent from the map — callers treat them as neutral (0.5).
+    pub fn batch_get_intensity_scores(&self, track_ids: &[i64]) -> Result<HashMap<i64, f32>, DbError> {
+        SimilarityQuery::batch_get_intensity_scores(&self.db, track_ids)
+    }
+
+    /// Single track's intensity scalar + the axis version it was projected
+    /// with. Used by USB per-track sync.
+    pub fn get_intensity_score(&self, track_id: i64) -> Result<Option<(f32, String)>, DbError> {
+        SimilarityQuery::get_intensity_score(&self.db, track_id)
+    }
+
+    /// All (track_id, intensity, axis_version) rows in this collection.
+    pub fn get_all_intensity_scores(&self) -> Result<Vec<(i64, f32, String)>, DbError> {
+        SimilarityQuery::get_all_intensity_scores(&self.db)
+    }
+
     /// Find similar tracks via MuQ-MuLan HNSW (same DB, by track ID).
     pub fn find_similar_tracks_ml(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar_by_ml_id(&self.db, track_id, limit)?;
@@ -1174,79 +1206,11 @@ impl DatabaseService {
         Ok(rows.into_iter().map(Track::from_row_only).collect())
     }
 
-    /// Project per-track intensity through the loaded V15+ MuQ-MuLan
-    /// axis. Returns `intensity ∈ [0, 1]` (project_normalised) per
-    /// requested track that has both an embedding and a loaded axis.
-    /// Tracks missing either are absent from the result map.
-    pub fn batch_project_intensity(&self, track_ids: &[i64]) -> HashMap<i64, f32> {
-        let Some(provider) = &self.intensity_provider else {
-            return HashMap::new();
-        };
-        let mut out = HashMap::with_capacity(track_ids.len());
-        for &tid in track_ids {
-            if let Ok(Some(emb)) = self.get_ml_embedding_raw(tid) {
-                if emb.len() == crate::intensity_axis::EMBEDDING_DIM {
-                    out.insert(tid, provider.project_normalised(&emb));
-                }
-            }
-        }
-        out
-    }
-
     /// Reference to the loaded intensity axis (or None if absent).
     pub fn intensity_provider(&self) -> Option<&crate::intensity_axis::IntensityProvider> {
         self.intensity_provider.as_ref()
     }
 
-
-    // ========================================================================
-    // PCA Aggression Axis
-    // ========================================================================
-
-    /// Store the PCA aggression weight vector (one weight per PCA dimension).
-    pub fn store_aggression_weights(&self, weights: &[f32], correlation: f32) -> Result<(), DbError> {
-        let mut params = BTreeMap::new();
-        params.insert("id".to_string(), DataValue::from(0i64));
-        params.insert("weights".to_string(), DataValue::List(
-            weights.iter().map(|&w| DataValue::from(w as f64)).collect(),
-        ));
-        params.insert("correlation".to_string(), DataValue::from(correlation as f64));
-        self.db.run_script(r#"
-            ?[id, weights, correlation] <- [[$id, $weights, $correlation]]
-            :put pca_aggression_axis {id => weights, correlation}
-        "#, params)?;
-        Ok(())
-    }
-
-    /// Delete the stored PCA aggression weight vector. Used when restarting
-    /// calibration from scratch — next calibration session will start from
-    /// zero weights instead of the previously-learned ones.
-    pub fn clear_aggression_weights(&self) -> Result<(), DbError> {
-        self.db.run_script(r#"
-            ?[id] := *pca_aggression_axis{id}
-            :rm pca_aggression_axis {id}
-        "#, BTreeMap::new())?;
-        Ok(())
-    }
-
-    /// Get the PCA aggression weight vector and combined correlation.
-    /// Returns None if no weights have been computed yet.
-    pub fn get_aggression_weights(&self) -> Result<Option<(Vec<f32>, f32)>, DbError> {
-        let result = self.db.run_query(r#"
-            ?[weights, correlation] := *pca_aggression_axis{id: 0, weights, correlation}
-        "#, BTreeMap::new())?;
-        Ok(result.rows.first().and_then(|row| {
-            let weights = match &row[0] {
-                DataValue::List(items) => {
-                    items.iter().filter_map(|v| v.get_float().map(|f| f as f32)).collect::<Vec<_>>()
-                }
-                _ => return None,
-            };
-            if weights.is_empty() { return None; }
-            let corr = row[1].get_float()? as f32;
-            Some((weights, corr))
-        }))
-    }
 
     /// Store a "calibration complete" snapshot — the library state at the
     /// moment the user finished (auto-stop or manual). Used on next launch

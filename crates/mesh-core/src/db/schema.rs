@@ -365,27 +365,17 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     // detected).
     create_ml_intensity_embeddings_relation(db)?;
 
+    // V18.X intensity scalar: projected once at analysis time from the
+    // 1024-d Conformer hidden through the active intensity axis, stamped
+    // with the axis version so a future axis can re-project from the stored
+    // hidden states without re-analysis. Read by suggestion scoring (pooled
+    // percentile rank), opener mode, and the browser intensity columns.
+    // Synced to USB (the 1024-d hidden states are NOT — devices only need
+    // the scalar).
+    create_intensity_score_relation(db)?;
+
     // Stem energy density relation (vocal + other)
     create_stem_energy_relation(db)?;
-
-    // Intensity components for composite scoring (v2 — full-track multi-frame)
-    // Migration: add centroid_variance + flux_variance. CozoDB has no ALTER TABLE,
-    // so drop and recreate. Data repopulated on next reanalysis with tags ticked.
-    if existing.contains("track_intensity") {
-        let cols = db.run_script(
-            "::columns track_intensity",
-            Default::default(),
-            cozo::ScriptMutability::Immutable,
-        ).map_err(|e| DbError::Schema(e.to_string()))?;
-        let has_new = cols.rows.iter().any(|row| {
-            row.first().and_then(|v| v.get_str()) == Some("centroid_variance")
-        });
-        if !has_new {
-            log::info!("Migrating track_intensity: adding centroid_variance + flux_variance (drop + recreate)");
-            let _ = db.run_script("::remove track_intensity", Default::default(), cozo::ScriptMutability::Mutable);
-        }
-    }
-    create_intensity_components_relation(db)?;
 
     // Transition graph: tracks played together → time-decayed co-play edges
     // Built explicitly via build_played_after_graph(); not auto-populated on import.
@@ -418,23 +408,12 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     }
     create_ml_pca_embeddings_relation(db)?;
 
-    // PCA aggression axis (weight vector, rebuilt each PCA build).
-    // Migration: drop old schema if it has 'dimension' column (single-dim format)
-    if existing.contains("pca_aggression_axis") {
-        let cols = db.run_script(
-            "::columns pca_aggression_axis",
-            Default::default(),
-            cozo::ScriptMutability::Immutable,
-        ).map_err(|e| DbError::Schema(e.to_string()))?;
-        let has_old = cols.rows.iter().any(|row| {
-            row.first().and_then(|v| v.get_str()) == Some("dimension")
-        });
-        if has_old {
-            log::info!("Migrating pca_aggression_axis from single-dim to weight vector");
-            let _ = db.run_script("::remove pca_aggression_axis", Default::default(), cozo::ScriptMutability::Mutable);
-        }
-    }
-    create_pca_aggression_axis_relation(db)?;
+    // NOTE (round-7.7 intensity rewire): the V15-era `pca_aggression_axis`
+    // and legacy 10-component `track_intensity` relations are soft-retired —
+    // no longer created for new DBs, never read or written. Existing DBs
+    // keep their orphan rows untouched; a future DB-versioning pass can
+    // drop them. Intensity now lives in `intensity_score` (scalar per
+    // track, projected at analysis time).
 
     // Aggression calibration: user pairwise comparison data
     create_aggression_calibration_pairs_relation(db)?;
@@ -937,6 +916,23 @@ fn create_ml_embeddings_index(db: &DbInstance) -> Result<(), DbError> {
     }
 }
 
+fn create_intensity_score_relation(db: &DbInstance) -> Result<(), DbError> {
+    // One scalar per track: `project_normalised` output of the active
+    // intensity axis over the track's 1024-d Conformer hidden state,
+    // computed at analysis time (batch import / reanalysis) or by the
+    // startup backfill. `axis_version` is the axis JSON's `version` field;
+    // rows whose version differs from the active axis are re-projected at
+    // mesh-cue startup (where the hidden states exist) or refreshed on the
+    // next USB export.
+    run_schema(db, r#"
+        {:create intensity_score {
+            track_id: Int =>
+            intensity: Float,
+            axis_version: String
+        }}
+    "#)
+}
+
 fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
     // Per-stem RMS energy density as fraction of total (vocals + drums + bass + other).
     // Point-lookup only — no HNSW needed.
@@ -947,27 +943,6 @@ fn create_stem_energy_relation(db: &DbInstance) -> Result<(), DbError> {
             drums_density: Float,
             bass_density: Float,
             other_density: Float
-        }}
-    "#)
-}
-
-fn create_intensity_components_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Per-track intensity component values for composite scoring.
-    // All values are raw [0, 1] scalars, full-track multi-frame averaged.
-    // The composite intensity is computed at query time from these components.
-    run_schema(db, r#"
-        {:create track_intensity {
-            track_id: Int =>
-            spectral_flux: Float,
-            flatness: Float,
-            spectral_centroid: Float,
-            dissonance: Float,
-            crest_factor: Float,
-            energy_variance: Float,
-            harmonic_complexity: Float,
-            spectral_rolloff: Float,
-            centroid_variance: Float default 0.0,
-            flux_variance: Float default 0.0
         }}
     "#)
 }
@@ -987,18 +962,6 @@ fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
     "#)
 }
 
-fn create_pca_aggression_axis_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Aggression weight vector: one weight per PCA dimension (correlation with proxy).
-    // Rebuilt each time "Build Similarity Index" runs.
-    // id=0 (constant key), weights = [Float] list, correlation = combined r.
-    run_schema(db, r#"
-        {:create pca_aggression_axis {
-            id: Int =>
-            weights: [Float],
-            correlation: Float
-        }}
-    "#)
-}
 
 fn create_calibration_completion_relation(db: &DbInstance) -> Result<(), DbError> {
     // Snapshot of the library state at the moment the user finished

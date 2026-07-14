@@ -252,6 +252,23 @@ These features would make clusters queryable and actionable:
 
 # Stubbed / Deferred
 
+- [ ] **Orphaned calibration DB methods** (post intensity-rewire): the
+  `aggression_calibration_pairs` / `calibration_completion` relations and their
+  service methods (`store_calibration_pair`, `get_all_calibration_pairs`, …)
+  have zero callers since the calibration UI was deleted. Kept dormant as the
+  substrate for the round-7.7 per-user fine-tune tool; delete if that ships
+  with its own storage.
+- [ ] **Seed-averaging consistency in suggestion scoring**: `avg_seed_aggression`
+  averages only seeds that HAVE an intensity scalar (falls back to 0.5 only when
+  all are missing), while candidates default to 0.5 individually. Pre-existing
+  nuance flagged by the rewire verifier; align in a future scoring pass.
+
+- [ ] **Optional: BPM term in suggestion scoring.** Deliberately absent today —
+  auto-sync handles tempo matching and track fit is the DJ's call. If ever
+  wanted: soft bell on BPM delta (halving/doubling aware, 87 ≈ 174) as a
+  fourth component in the geometric mean, or a hard ±X% pre-filter. BPM is
+  already on every `tracks` row; cheap to add.
+
 # Performance
 
 # Open Questions

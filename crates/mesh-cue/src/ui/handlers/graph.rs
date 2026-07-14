@@ -187,8 +187,7 @@ impl MeshCueApp {
             data.positions.len(),
             data.cluster_result.colors.len());
 
-        // Trigger calibration coverage check now that we have community assignments
-        self.trigger_calibration_coverage_check()
+        Task::none()
     }
 
     /// Change transition reach and re-query suggestions.

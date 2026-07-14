@@ -9,10 +9,8 @@
 //! - `scoring`: Pure scoring functions (transition classification, harmonic, intensity)
 //! - `query`: Query orchestration (HNSW search + scoring pipeline)
 
-pub mod aggression;
 pub mod config;
 pub mod scoring;
 pub mod query;
 
 pub use query::GraphEdge;
-pub use aggression::UncoveredCommunity;

@@ -16,8 +16,7 @@ use crate::config::{BackendType, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, BrowserTab, CalibrationSide, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PreloadedPair, PresetLoadedMsg, StemsLoadResult, View};
-use mesh_core::suggestions::UncoveredCommunity;
+use super::state::{BrowserSide, BrowserTab, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -28,12 +27,13 @@ pub enum Message {
     // Collection: Browser
     RefreshCollection,
 
-    // Startup: load text-tower intensity axis JSON and store its weights into
-    // pca_aggression_axis if the row is missing or stale. Non-blocking — runs
-    // in the background after launch.
+    // Startup: backfill/re-project per-track intensity scalars from stored
+    // 1024-d hidden states through the active axis (missing rows + stale
+    // axis versions). Non-blocking — runs in the background after launch.
     EnsureIntensityAxisLoaded,
-    /// Result of EnsureIntensityAxisLoaded — error string on failure (logged only).
-    IntensityAxisLoaded(Result<(), String>),
+    /// Result of EnsureIntensityAxisLoaded — number of tracks (re-)projected,
+    /// or error string on failure (logged only).
+    IntensityAxisLoaded(Result<usize, String>),
     /// Phase 1: Metadata loaded (fast), now show UI
     TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
     /// Phase 2: Audio stems loaded (slow), now enable playback (Shared for RT-safe drop)
@@ -444,39 +444,4 @@ pub enum Message {
         /// Energy direction at query time (for debounce detection)
         queried_energy: f32,
     },
-
-    // Aggression Calibration
-    /// Coverage check completed — uncovered communities detected
-    CalibrationCoverageCheck(Vec<UncoveredCommunity>),
-    /// Open the calibration modal (auto-triggered or manual)
-    OpenCalibration,
-    /// Close the calibration modal
-    CloseCalibration,
-    /// User dismisses the explanation screen and starts comparisons
-    CalibrationStart,
-    /// User chose a track as more intense (Left or Right)
-    CalibrationChoice(CalibrationSide),
-    /// User pressed "About the same"
-    CalibrationEqual,
-    /// User pressed "Skip"
-    CalibrationSkip,
-    /// Toggle audio preview for a side (click to play/stop)
-    CalibrationPreviewToggle(CalibrationSide),
-    /// A pre-loaded pair is ready from the background thread
-    CalibrationPairPreloaded(Box<PreloadedPair>),
-    /// A pair failed to pre-load (decrement counter, drop from in-flight, try next).
-    /// Carries the (track_a_id, track_b_id) so we can remove from the in-flight set.
-    CalibrationPairPreloadFailed(i64, i64),
-    /// User pressed "Finish Early"
-    CalibrationFinish,
-    /// User pressed "Reset All" (clear calibration data)
-    CalibrationReset,
-    /// User pressed "Back" (undo last comparison)
-    CalibrationBack,
-    /// Open confirmation modal for restarting calibration. Triggered from
-    /// the Collection right-click context menu.
-    RestartCalibration,
-    /// Confirmed: clear stored pairs AND learned weights, then trigger a
-    /// fresh coverage check. Dispatched after the user confirms in the modal.
-    ConfirmRestartCalibration,
 }

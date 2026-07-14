@@ -103,8 +103,6 @@ pub struct MeshCueApp {
     pub(crate) pca_build_progress: Option<(usize, usize)>,
     /// Channel to receive PCA build progress ticks from worker
     pub(crate) pca_progress_rx: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
-    /// Aggression calibration modal state
-    pub(crate) calibration: super::state::CalibrationState,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -246,16 +244,13 @@ impl MeshCueApp {
             tap_tempo_times: Vec::new(),
             pca_build_progress: None,
             pca_progress_rx: None,
-            calibration: Default::default(),
         };
 
         // Initial collection scan, playlist refresh, and background graph build.
-        // EnsureIntensityAxisLoaded runs in background — loads V11 (or whichever
-        // variant is active) from models/muq-mulan-aggression-axis.json and
-        // writes it into pca_aggression_axis if absent / wrong dim. Non-blocking
-        // so the UI doesn't freeze on first launch. Without this the axis only
-        // ever lands in the DB through "Build Similarity Index", which is the
-        // bug we hit when calibration weights overwrote V11.
+        // EnsureIntensityAxisLoaded runs in background — backfills/re-projects
+        // the per-track `intensity_score` scalars from stored 1024-d hidden
+        // states through the active axis (missing rows + stale axis versions).
+        // Non-blocking so the UI doesn't freeze on first launch.
         // Round-7.7: surface the V18.X intensity-probe migration prompt at
         // startup if any track is missing 1024-d intensity data. The handler
         // is a no-op when count == 0 so we always dispatch.
@@ -660,22 +655,26 @@ impl MeshCueApp {
                 return self.handle_similarity_index_complete(result);
             }
 
-            // Startup: load text-tower intensity axis JSON and persist to DB.
+            // Startup: backfill/re-project per-track intensity scalars from
+            // the stored 1024-d hidden states through the active axis. This
+            // is how an axis shipped in a new binary reaches the whole
+            // library without re-analysis.
             Message::EnsureIntensityAxisLoaded => {
                 let db = self.domain.db_arc();
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            crate::ui::handlers::similarity::ensure_intensity_axis_in_db(&db)
-                        }).await.map_err(|e| format!("axis-load task panicked: {e}"))?
+                            crate::ui::handlers::similarity::backfill_intensity_scores(&db)
+                        }).await.map_err(|e| format!("intensity backfill task panicked: {e}"))?
                     },
                     Message::IntensityAxisLoaded,
                 );
             }
             Message::IntensityAxisLoaded(result) => {
                 match result {
-                    Ok(()) => log::info!("[STARTUP] Intensity axis ensured in DB"),
-                    Err(e) => log::warn!("[STARTUP] Intensity axis ensure failed: {e}"),
+                    Ok(0) => log::info!("[STARTUP] Intensity scalars up to date"),
+                    Ok(n) => log::info!("[STARTUP] Intensity scalars backfilled: {n} tracks"),
+                    Err(e) => log::warn!("[STARTUP] Intensity backfill failed: {e}"),
                 }
             }
 
@@ -760,88 +759,6 @@ impl MeshCueApp {
             }
             Message::GraphSuggestionsReady { seed_id, suggestions, queried_energy } => {
                 return self.handle_graph_suggestions_ready(seed_id, suggestions, queried_energy);
-            }
-
-            // Calibration
-            Message::CalibrationCoverageCheck(uncovered) => {
-                return self.handle_calibration_coverage_check(uncovered);
-            }
-            Message::OpenCalibration => {
-                // Disabled: the aggression axis is now derived from MuQ-MuLan's
-                // text tower (see documents/aggression-axis-text-tower-plan.md).
-                // Re-enabling the modal would let it overwrite the polar axis
-                // with calibration-fitted Pearson weights — exactly the bug we
-                // hit on V11 rollout. Restore once rescoped to eval-only or
-                // wired as an additive fine-tune layer.
-                log::info!("[CALIBRATION] OpenCalibration ignored — calibration UI disabled");
-            }
-            Message::CloseCalibration => {
-                if self.calibration.playing_side.is_some() {
-                    self.audio.pause();
-                }
-                // Calibration UI disabled — preserve the close path for when
-                // it's re-enabled, but do NOT overwrite the text-tower axis.
-                // (When re-enabled in eval-only mode, this branch should also
-                // not write weights; the axis stays canonical.)
-                if false && !self.calibration.weights.is_empty() {
-                    let db = self.domain.db_arc();
-                    self.batch_retrain_weights(); // final retrain for fresh weights
-                    if let Err(e) = db.store_aggression_weights(
-                        &self.calibration.weights,
-                        self.calibration.model_accuracy,
-                    ) {
-                        log::warn!("[CALIBRATION] Failed to persist weights on close: {}", e);
-                    } else {
-                        log::info!(
-                            "[CALIBRATION] Persisted weights on close: {} dims, accuracy={:.1}%",
-                            self.calibration.weights.len(),
-                            self.calibration.model_accuracy * 100.0,
-                        );
-                    }
-                    // Record completion snapshot so next launch doesn't re-prompt
-                    self.store_calibration_completion_snapshot();
-                }
-                self.calibration.close();
-            }
-            Message::CalibrationStart => {
-                return self.handle_calibration_start();
-            }
-            Message::CalibrationChoice(side) => {
-                return self.handle_calibration_choice(side);
-            }
-            Message::CalibrationEqual => {
-                return self.handle_calibration_equal();
-            }
-            Message::CalibrationSkip => {
-                return self.handle_calibration_skip();
-            }
-            Message::CalibrationPreviewToggle(side) => {
-                return self.handle_calibration_preview_toggle(side);
-            }
-            Message::CalibrationPairPreloaded(pair) => {
-                return self.handle_calibration_pair_preloaded(pair);
-            }
-            Message::CalibrationPairPreloadFailed(a, b) => {
-                // Decrement counter, drop from in-flight, try the next pair
-                self.calibration.preloading_count = self.calibration.preloading_count.saturating_sub(1);
-                self.calibration.in_flight_pair_ids.remove(&(a, b));
-                self.calibration.in_flight_pair_ids.remove(&(b, a));
-                return self.preload_next_calibration_pair().unwrap_or(Task::none());
-            }
-            Message::CalibrationFinish => {
-                return self.handle_calibration_finish();
-            }
-            Message::CalibrationReset => {
-                return self.handle_calibration_reset();
-            }
-            Message::CalibrationBack => {
-                return self.handle_calibration_back();
-            }
-            Message::RestartCalibration => {
-                return self.handle_restart_calibration();
-            }
-            Message::ConfirmRestartCalibration => {
-                return self.handle_confirm_restart_calibration();
             }
         }
 
@@ -977,12 +894,6 @@ impl MeshCueApp {
                 base,
                 self.view_reanalysis_config_modal(),
                 Message::CloseReanalysisConfig,
-            )
-        } else if self.calibration.is_open {
-            with_modal_overlay(
-                base,
-                super::calibration_modal::view(&self.calibration),
-                Message::CloseCalibration,
             )
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content

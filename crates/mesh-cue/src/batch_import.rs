@@ -677,9 +677,8 @@ fn process_single_track(
     // Select BPM audio: drums-only if available, otherwise full mix
     let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
 
-    // Intensity is now derived at query time by projecting MuQ-MuLan
-    // embeddings onto the V15 axis (see DatabaseService::batch_project_intensity).
-    // No DSP-based intensity components extracted here.
+    // Intensity is the V18.X scalar projected inside ML analysis and stored
+    // in `intensity_score`. No DSP-based intensity components extracted here.
 
     // Analyze audio in isolated subprocess (Essentia for key, LUFS, features, BPM, beat grid)
     let analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
@@ -807,6 +806,7 @@ fn process_single_track(
             },
             embedding: Vec::new(),
             embedding_1024: Vec::new(),
+            intensity: None,
         };
 
         match mel {
@@ -900,6 +900,15 @@ fn process_single_track(
                         "process_single_track: '{}' MuQ-MuLan intensity head returned wrong dim {} (expected {}); skipping store",
                         base_name, ml.embedding_1024.len(), ml_analysis::MUQ_MULAN_HIDDEN_DIM,
                     );
+                }
+
+                // V18.X intensity scalar: projected inside `analyze()` from the
+                // final 1024-d hidden through the analysis axis. None on legacy
+                // ONNX — track then scores as intensity-neutral until re-analysed.
+                if let Some((score, ref axis_version)) = ml.intensity {
+                    if let Err(e) = config.db_service.store_intensity_score(track_id, score, axis_version) {
+                        log::warn!("process_single_track: Failed to store intensity score for '{}': {}", base_name, e);
+                    }
                 }
 
                 // Persist stem energy densities for complement scoring in suggestions

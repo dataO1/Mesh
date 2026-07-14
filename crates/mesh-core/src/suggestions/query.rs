@@ -535,106 +535,74 @@ pub fn query_suggestions(
         merged
     };
 
-    // Step 4d: PCA aggression — project each track onto the aggression hyperplane.
+    // Step 4d: Intensity percentiles — V18.X scalars, pooled across sources.
     //
-    // **Per-source projection** (matters for multi-source mesh-player):
-    // Each source has its own PCA basis (computed from its own data) and may
-    // have its own learned aggression weights. Components 7 in source A's PCA
-    // is NOT the same direction as component 7 in source B's PCA. Therefore
-    // we MUST project each source's tracks via that source's own weights.
+    // Each track's intensity scalar was projected at ANALYSIS time (or by
+    // the mesh-cue startup backfill) from its 1024-d Conformer hidden
+    // through the active intensity axis, and stored in `intensity_score`.
+    // USB export syncs the scalar per-track, so every client — desktop,
+    // laptop player, standalone — reads the same precomputed values.
     //
-    // **Fallback chain** when a source has no weights:
-    //   1. Try the source's own weights → use them
-    //   2. Fall back to the local DB's weights (sources[0]) as a proxy
-    //      (acknowledged mismatch — local PCA basis ≠ this source's basis,
-    //       but produces a sane-ish projection vs no projection at all)
-    //   3. If neither has weights, that source's tracks get no aggression score
+    // Because every scalar comes from the same axis, values are directly
+    // comparable across sources. We therefore percentile-rank the POOLED
+    // set (all sources together) to get the uniform [0, 1] space the
+    // aggression ring's reach constants assume: a 90th-percentile track
+    // means the same thing regardless of which library it sits in.
     //
-    // **Cross-source comparability** is achieved by per-source percentile-rank.
-    // A 0.85 in source A means "85th percentile aggressive within A's own
-    // calibrated context"; same for B. Comparing 0.85 across sources is the
-    // honest interpretation: each track is ranked relative to its own collection.
-    let local_weights = sources.first()
-        .and_then(|s| s.db.get_aggression_weights().ok().flatten());
+    // Tracks without a scalar (pre-round-7.7 analysis, stale USB exports,
+    // dropped writes) fall back to neutral 0.5 at lookup — counted per
+    // source below so a stale stick shows up in the logs rather than
+    // silently scoring mild.
     let mut aggression_map: HashMap<(usize, i64), f32> = HashMap::new();
-    let mut sources_with_weights = 0;
-    let mut sources_using_fallback = 0;
-    let mut sources_skipped = 0;
-
-    log::info!(
-        "[AGGRESSION] Local weights from DB: {} (custom_weights={:?}, energy_bias={:.3}, n_sources={})",
-        if local_weights.is_some() { "YES" } else { "NO" },
-        suggestion_config.custom_weights,
-        energy_bias,
-        sources.len(),
-    );
-
-    for (src_idx, source) in sources.iter().enumerate() {
-        // Pick the most appropriate weights for this source's tracks
-        let source_own = source.db.get_aggression_weights().ok().flatten();
-        let (active_weights, used_fallback) = match (source_own, &local_weights) {
-            (Some(w), _) => (Some(w), false),
-            (None, Some(local)) if src_idx > 0 => {
-                // Non-local source has no weights — fall back to local's.
-                // Logs flag this as a mismatch the user should know about.
-                log::warn!(
-                    "[AGGRESSION] Source '{}' has no weights — falling back to local weights (PCA basis mismatch likely)",
-                    source.name,
-                );
-                (Some(local.clone()), true)
-            }
-            _ => (None, false),
-        };
-
-        if let Some((weights, _combined_r)) = active_weights {
-            if used_fallback { sources_using_fallback += 1; } else { sources_with_weights += 1; }
-
-            let mut source_scores: Vec<((usize, i64), f32)> = Vec::new();
-            if let Ok(all_pca) = source.db.get_all_pca_with_tracks() {
-                for (track, pca_vec) in &all_pca {
-                    if let Some(id) = track.id {
-                        if pca_vec.len() == weights.len() {
-                            let raw = crate::suggestions::aggression::project_aggression(&pca_vec, &weights);
-                            source_scores.push(((src_idx, id), raw));
-                        }
-                    }
+    {
+        let mut pooled: Vec<((usize, i64), f32)> = Vec::new();
+        for (src_idx, source) in sources.iter().enumerate() {
+            match source.db.get_all_intensity_scores() {
+                Ok(rows) => {
+                    log::info!(
+                        "[INTENSITY] Source '{}' (idx={}): {} stored intensity scalars",
+                        source.name, src_idx, rows.len(),
+                    );
+                    pooled.extend(rows.into_iter().map(|(track_id, intensity, _version)| {
+                        ((src_idx, track_id), intensity)
+                    }));
                 }
+                Err(e) => log::warn!(
+                    "[INTENSITY] Source '{}' (idx={}): failed to load intensity scalars: {}",
+                    source.name, src_idx, e,
+                ),
             }
-
-            // Percentile-rank WITHIN this source — each source's calibration
-            // is honored independently, then ranks are comparable globally.
-            if source_scores.len() >= 5 {
-                source_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                let n = source_scores.len() as f32;
-                for (rank, (key, _)) in source_scores.into_iter().enumerate() {
-                    aggression_map.insert(key, rank as f32 / (n - 1.0).max(1.0));
-                }
-            } else {
-                // Too few tracks to percentile-rank; store raw projections
-                for (key, score) in source_scores {
-                    aggression_map.insert(key, score);
-                }
+        }
+        if pooled.len() >= 2 {
+            pooled.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let n = pooled.len() as f32;
+            for (rank, (key, _)) in pooled.into_iter().enumerate() {
+                aggression_map.insert(key, rank as f32 / (n - 1.0));
             }
-
-            log::info!(
-                "[AGGRESSION] Source '{}' (idx={}): scored {} tracks via {} weights",
-                source.name, src_idx,
-                aggression_map.iter().filter(|((s, _), _)| *s == src_idx).count(),
-                if used_fallback { "FALLBACK local" } else { "own" },
-            );
         } else {
-            sources_skipped += 1;
-            log::info!(
-                "[AGGRESSION] Source '{}' (idx={}): SKIPPED (no weights available)",
-                source.name, src_idx,
-            );
+            // Degenerate pool — store raw normalised values as-is.
+            for (key, raw) in pooled {
+                aggression_map.insert(key, raw);
+            }
         }
     }
 
-    log::info!(
-        "[AGGRESSION] Summary: {} sources own-weights, {} fallback, {} skipped, {} total tracks scored",
-        sources_with_weights, sources_using_fallback, sources_skipped, aggression_map.len(),
-    );
+    // Unscored-candidate diagnostic: how many candidates will fall back to
+    // the neutral 0.5, per source.
+    {
+        let mut unscored_by_source: HashMap<usize, usize> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            if !aggression_map.contains_key(&(src_idx, track_id)) {
+                *unscored_by_source.entry(src_idx).or_default() += 1;
+            }
+        }
+        for (src_idx, count) in &unscored_by_source {
+            log::warn!(
+                "[INTENSITY] Source '{}': {} candidate(s) have no intensity scalar → neutral 0.5 (re-analyse or re-export to fix)",
+                sources.get(*src_idx).map(|s| s.name.as_str()).unwrap_or("?"), count,
+            );
+        }
+    }
 
     // Seed aggression (percentile-ranked)
     let avg_seed_aggression = {
@@ -649,15 +617,15 @@ pub fn query_suggestions(
     for (idx, t) in &seed_tracks {
         if let Some(id) = t.id {
             let aggr = aggression_map.get(&(*idx, id)).copied().unwrap_or(-1.0);
-            eprintln!("[AGGRESSION] seed '{}': percentile={:.3}", t.title, aggr);
+            eprintln!("[INTENSITY] seed '{}': percentile={:.3}", t.title, aggr);
         }
     }
     if !aggression_map.is_empty() {
         let mut vals: Vec<f32> = aggression_map.values().copied().collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = vals.len();
-        eprintln!("[AGGRESSION] distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3}",
-            vals[0], vals[n/4], vals[n/2], vals[n*3/4], vals[n-1]);
+        eprintln!("[INTENSITY] pooled percentile distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3} (n={})",
+            vals[0], vals[n/4], vals[n/2], vals[n*3/4], vals[n-1], n);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1030,7 +998,7 @@ fn query_opener_suggestions(
 
         let ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
         let stem_map     = source.db.batch_get_stem_energy(&ids).unwrap_or_default();
-        let intensity_map = source.db.batch_project_intensity(&ids);
+        let intensity_map = source.db.batch_get_intensity_scores(&ids).unwrap_or_default();
 
         for track in &tracks {
             if played_paths.contains(&*track.path.to_string_lossy()) { continue; }

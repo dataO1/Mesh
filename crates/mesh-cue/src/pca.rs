@@ -26,17 +26,14 @@
 //!   instead of the 27-ish auto-selected reduction.
 //! - HNSW index on `ml_pca_embeddings` is built at full dim. Slightly slower
 //!   queries; usually noticeably better neighbor quality on smaller libraries.
-//! - Aggression-axis fit (`compute_aggression_weights`) runs over `dim` features
-//!   instead of `n_components`. With more dims to correlate against, per-dim
-//!   Pearson seeds are typically more discriminative.
 //! - Graph view, suggestions, USB sync — all still read `ml_pca_embeddings`
 //!   transparently; no schema change required (the relation already stores a
 //!   variable-length `[Float]` list).
 //!
 //! Flip the flag and trigger "Build Similarity Index" again to rebuild the
-//! relation under the new mode. Aggression-axis weights need a re-calibration
-//! pass after the dim changes (their length is tied to whatever `ml_pca_embeddings`
-//! currently holds).
+//! relation under the new mode. (Intensity is unaffected — it lives in
+//! `intensity_score`, projected from the 1024-d hidden states, not from
+//! PCA space.)
 
 use faer::prelude::*;
 

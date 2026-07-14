@@ -464,6 +464,19 @@ fn reanalyze_metadata_track(
                 ));
             }
 
+            // V18.X intensity scalar: projected inside `analyze()` from the
+            // final 1024-d hidden through the analysis axis. None on legacy
+            // ONNX — leave any existing scalar untouched in that case.
+            if let Some((score, ref axis_version)) = ml_result.intensity {
+                if let Err(e) = db.store_intensity_score(track_id, score, axis_version) {
+                    log::error!(
+                        "reanalyze_metadata_track: Failed to store intensity score for {:?}: {:?}",
+                        path, e,
+                    );
+                    return Err(anyhow::anyhow!("store_intensity_score failed: {}", e));
+                }
+            }
+
             // Stem energy densities — computed eagerly above (before mel/ONNX peak)
             // so the stem buffers could be dropped. Reuse the captured locals here.
             if let Err(e) = db.store_stem_energy(track_id, vocal, drums, bass, other) {
@@ -473,9 +486,8 @@ fn reanalyze_metadata_track(
             log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
         }
 
-        // Intensity is now derived from MuQ-MuLan embeddings via the V15
-        // axis at query time (DatabaseService::batch_project_intensity).
-        // No DSP intensity extraction here.
+        // Intensity is the V18.X scalar stored above (`intensity_score`),
+        // projected at analysis time. No DSP intensity extraction here.
     }
 
     log::info!("reanalyze_metadata_track: Complete for {:?}", path);

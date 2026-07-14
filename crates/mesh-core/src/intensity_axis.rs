@@ -395,6 +395,19 @@ impl IntensityAxis {
         }
     }
 
+    /// Project and normalise to [0, 1]. For a bias-free unit-norm linear
+    /// axis (V15-class cosine shape), maps [-1, 1] → [0, 1]; for V18+
+    /// (regression target already roughly in [0, 1]), just clamps. This is
+    /// the value stored in `intensity_score` and shown in the UI.
+    pub fn project_normalised(&self, audio_embedding: &[f32]) -> f32 {
+        let raw = self.project(audio_embedding);
+        let mapped = match &self.model_kind {
+            ModelKind::Linear { bias, .. } if *bias == 0.0 => (raw + 1.0) * 0.5,
+            _ => raw,
+        };
+        mapped.clamp(0.0, 1.0)
+    }
+
     /// Project onto every sub-axis. Empty for V18+ (no sub-axes).
     pub fn project_sub_axes(&self, audio_embedding: &[f32]) -> Vec<(String, f32)> {
         if audio_embedding.len() != EMBEDDING_DIM {
@@ -479,16 +492,10 @@ impl IntensityProvider {
         self.axis.project(emb)
     }
 
-    /// Project a normalised intensity in [0, 1]. For V15 (cosine-shaped),
-    /// maps [-1, 1] → [0, 1] via `(x + 1) / 2`. For V18+ (already roughly
-    /// in [0, 1] from the regression target), just clamps.
+    /// Project a normalised intensity in [0, 1]. Delegates to
+    /// [`IntensityAxis::project_normalised`].
     pub fn project_normalised(&self, emb: &[f32]) -> f32 {
-        let raw = self.axis.project(emb);
-        let mapped = match &self.axis.model_kind {
-            ModelKind::Linear { bias, .. } if *bias == 0.0 => (raw + 1.0) * 0.5,
-            _ => raw,
-        };
-        mapped.clamp(0.0, 1.0)
+        self.axis.project_normalised(emb)
     }
 }
 

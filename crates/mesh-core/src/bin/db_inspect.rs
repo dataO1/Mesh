@@ -134,16 +134,26 @@ fn main() {
         "?[id, track_a, track_b, choice] := *aggression_calibration_pairs{id, track_a, track_b, choice} :limit 5", "", false,
     ));
 
-    match db.get_aggression_weights() {
-        Ok(Some((weights, correlation))) => {
-            println!("aggression_axis:     {} dims, correlation={:.4}", weights.len(), correlation);
-            let nonzero = weights.iter().filter(|w| w.abs() > 1e-6).count();
-            let max_w = weights.iter().cloned().fold(0.0f32, f32::max);
-            let min_w = weights.iter().cloned().fold(0.0f32, f32::min);
-            println!("  nonzero_weights={nonzero}  range=[{min_w:.4}, {max_w:.4}]");
+    match db.get_all_intensity_scores() {
+        Ok(rows) if !rows.is_empty() => {
+            let mut vals: Vec<f32> = rows.iter().map(|(_, i, _)| *i).collect();
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = vals.len();
+            let mut by_version: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            for (_, _, v) in &rows {
+                *by_version.entry(v.as_str()).or_default() += 1;
+            }
+            println!("intensity_score:     {} rows", n);
+            println!(
+                "  distribution: min={:.3} p25={:.3} median={:.3} p75={:.3} max={:.3}",
+                vals[0], vals[n / 4], vals[n / 2], vals[n * 3 / 4], vals[n - 1],
+            );
+            for (version, count) in &by_version {
+                println!("  axis '{}': {} tracks", version, count);
+            }
         }
-        Ok(None) => println!("aggression_axis:     NOT COMPUTED"),
-        Err(e) => println!("aggression_axis:     ERROR: {e}"),
+        Ok(_) => println!("intensity_score:     EMPTY (run mesh-cue or reanalyze_ml to backfill)"),
+        Err(e) => println!("intensity_score:     ERROR: {e}"),
     }
 
     // --- per-track embedding status ---

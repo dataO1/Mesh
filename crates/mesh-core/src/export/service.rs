@@ -185,34 +185,10 @@ impl ExportService {
 
             log::info!("[export] Phase 1 CozoDB open: {:.1}s", t_open.elapsed().as_secs_f64());
 
-            // Copy aggression weights to staging DB so the USB carries the
-            // local DJ's learned 1D intensity scale. This makes the USB
-            // self-contained for any tool reading it standalone (mesh-cue
-            // opening the USB DB, or mesh-player playing it on a fresh
-            // device with no local calibration).
-            //
-            // We deliberately do NOT export `aggression_calibration_pairs` —
-            // those are private training data and would conflict with another
-            // user's calibration if they import this USB into their library.
-            // The learned weights are the portable artifact; the pairs aren't.
-            match local_db.get_aggression_weights() {
-                Ok(Some((ref weights, correlation))) => {
-                    if let Err(e) = staging_db.store_aggression_weights(weights, correlation) {
-                        log::warn!("[export] Failed to copy aggression weights to USB: {}", e);
-                    } else {
-                        log::info!(
-                            "[export] Copied aggression weights to USB: {} dims, correlation={:.3}",
-                            weights.len(), correlation,
-                        );
-                    }
-                }
-                Ok(None) => {
-                    log::info!("[export] No aggression weights in local DB — USB will have no learned scale");
-                }
-                Err(e) => {
-                    log::warn!("[export] Failed to read local aggression weights: {}", e);
-                }
-            }
+            // Intensity travels as a per-track scalar (`intensity_score`,
+            // synced inside sync_track_atomic) — no library-wide axis
+            // artifact needs copying. The V15-era pca_aggression_axis copy
+            // was removed in the round-7.7 intensity rewire.
 
             log::info!("[export] Phase 1 (stage DB locally): {:.1}s", t_phase1.elapsed().as_secs_f64());
 
@@ -495,6 +471,41 @@ impl ExportService {
                 "[export] Phase 3 total (DB operations): {:.1}s",
                 t_phase3.elapsed().as_secs_f64(),
             );
+
+            // 3e: Intensity-scalar verification summary — makes the stick's
+            // state visible at export time. A count below the track count
+            // means those tracks will score intensity-neutral (0.5) on the
+            // device until re-analysed + re-exported.
+            {
+                let stick_tracks = staging_db.get_all_tracks().map(|t| t.len()).unwrap_or(0);
+                match staging_db.get_all_intensity_scores() {
+                    Ok(rows) => {
+                        let mut by_version: std::collections::HashMap<String, usize> =
+                            std::collections::HashMap::new();
+                        for (_, _, v) in &rows {
+                            *by_version.entry(v.clone()).or_default() += 1;
+                        }
+                        let versions = by_version
+                            .iter()
+                            .map(|(v, n)| format!("{v}: {n}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if rows.len() < stick_tracks {
+                            log::warn!(
+                                "[export] intensity scalars on stick: {}/{} tracks ({}) — missing tracks score neutral on device",
+                                rows.len(), stick_tracks,
+                                if versions.is_empty() { "none".to_string() } else { versions },
+                            );
+                        } else {
+                            log::info!(
+                                "[export] intensity scalars on stick: {}/{} tracks ({})",
+                                rows.len(), stick_tracks, versions,
+                            );
+                        }
+                    }
+                    Err(e) => log::warn!("[export] intensity scalar summary failed: {e}"),
+                }
+            }
 
             // 3f: Drop staging DB to flush CozoDB WAL and release file lock
             let t = Instant::now();
