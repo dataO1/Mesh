@@ -27,7 +27,11 @@ let
       pkgs.lib.hasSuffix ".wgsl" baseName ||
       # Assets: fonts (.ttf) and images (.png) for compile-time include_bytes!()
       pkgs.lib.hasSuffix ".ttf" baseName ||
-      pkgs.lib.hasSuffix ".png" baseName;
+      pkgs.lib.hasSuffix ".png" baseName ||
+      # models/muq-mulan-aggression-axis.json — the binary-embedded V18.X
+      # intensity axis (include_bytes! in mesh-core/src/intensity_axis.rs).
+      # Without .json here, mesh-core fails to compile in the sandbox.
+      pkgs.lib.hasSuffix ".json" baseName;
   };
 
   meshBuildInputs = common.runtimeInputs ++ [
