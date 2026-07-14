@@ -47,6 +47,19 @@ fn main() {
     // and must not be emitted when cross-compiling to Windows.
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {
+        // Dev-shell JACK override, FIRST in the RPATH: the deliberate
+        // DT_RPATH below beats LD_LIBRARY_PATH, which would permanently pin
+        // the stock libjack2 that the nix cc-wrapper puts on the link line —
+        // stock jack2 needs a real jackd and can't talk to the PipeWire
+        // desktops dev laptops run. nix/devshell.nix sets this var to the
+        // pinned nixpkgs' pipewire-jack lib dir (glibc-compatible libjack
+        // replacement); first-match-wins makes it take precedence. Unset in
+        // release/embedded builds (real jackd + libjack2 there) → no-op.
+        if let Ok(dir) = std::env::var("MESH_DEV_JACK_RPATH") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir);
+        }
+        println!("cargo:rerun-if-env-changed=MESH_DEV_JACK_RPATH");
+
         // Force DT_RPATH instead of DT_RUNPATH so the binary's RPATH applies
         // to transitive library resolution in the procspawn subprocess.
         // Without this, libopenmpt fails to find mpg123_open_handle64 because

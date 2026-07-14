@@ -67,8 +67,25 @@ pkgs.mkShell {
     # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
     export RUST_LOG="warn,wgpu_hal=error,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
 
-    # Library paths
-    export LD_LIBRARY_PATH="${common.libraryPath}:$LD_LIBRARY_PATH"
+    # Library paths.
+    #
+    # pipewire.jack FIRST: dev laptops run PipeWire (no real jackd), and the
+    # system's own pipewire libs/plugins are built against the SYSTEM nixpkgs'
+    # glibc — which drifts from this flake's pin (observed 2026-07-14:
+    # system glibc 2.42 vs pin 2.40; dlopen of the system ALSA-pipewire
+    # plugin fails inside devshell binaries, and stock libjack2 finds no
+    # jackd). PipeWire's libjack replacement from the PINNED nixpkgs is
+    # glibc-compatible with our binaries and speaks the version-stable
+    # PipeWire wire protocol to whatever daemon the system runs, so the
+    # apps' primary JACK backend just works — no pw-jack wrapper needed.
+    # Release/embedded builds are unaffected (real jackd + stock libjack2
+    # via runtimeInputs).
+    export LD_LIBRARY_PATH="${pkgs.pipewire.jack}/lib:${common.libraryPath}:$LD_LIBRARY_PATH"
+    # mesh-cue links with a deliberate DT_RPATH (--disable-new-dtags, see
+    # crates/mesh-cue/build.rs) which beats LD_LIBRARY_PATH — so for cue the
+    # pipewire-jack dir must be baked into the RPATH itself, ahead of the
+    # cc-wrapper's libjack2 entry. build.rs reads this var.
+    export MESH_DEV_JACK_RPATH="${pkgs.pipewire.jack}/lib"
 
     # Ensure GNU make is in PATH first and used everywhere (required by libffi-sys)
     # Create a temp bin dir with make symlink to ensure GNU make is used
