@@ -585,6 +585,36 @@ jobs:
           </html>
           EOF
 
+      # versions.json is the embedded updater's source of truth: it lists every
+      # version whose aarch64 closure is in this cache, independent of whether
+      # the GitHub release is published or still a draft (drafts are invisible
+      # to the player's unauthenticated releases query — see v0.9.13-rc.9/rc.11
+      # OTA incident). Field names mirror the GitHub releases API so the player
+      # can parse both with one shape.
+      - name: Update versions manifest
+        run: |
+          cd ./${{ env.CACHE_NAME }}
+          VERSION="${{ needs.create-release.outputs.version }}"
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+            *)   PRERELEASE=false ;;
+          esac
+
+          # Start from the manifest already on gh-pages so history accumulates
+          curl -fsSL "https://datao1.github.io/Mesh/versions.json" -o versions.json \
+            || echo '{"versions":[]}' > versions.json
+
+          jq --arg v "$VERSION" \
+             --arg sha "${{ github.sha }}" \
+             --argjson pre "$PRERELEASE" \
+             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             '.versions = ([{tag_name: $v, prerelease: $pre, commit: $sha, published_at: $date}]
+                           + ((.versions // []) | map(select(.tag_name != $v))))' \
+             versions.json > versions.json.tmp && mv versions.json.tmp versions.json
+
+          echo "Manifest:"
+          cat versions.json
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -644,9 +674,13 @@ jobs:
           DEB_OK="${{ needs.build-deb.result }}"
           CUDA_OK="${{ needs.build-deb-cuda.result }}"
           WIN_OK="${{ needs.build-windows.result }}"
+          AARCH64_OK="${{ needs.build-aarch64.result }}"
           MODELS_OK="${{ needs.build-models.result }}"
 
-          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ]; then
+          # All four platform builds gate publishing. Embedded devices are NOT
+          # blocked by a draft: the updater reads versions.json from the
+          # gh-pages cache, which build-aarch64 updates regardless of this gate.
+          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ] && [ "$AARCH64_OK" = "success" ]; then
             echo "All app builds succeeded — publishing release"
             gh release edit "$VERSION" --draft=false --repo "${{ github.repository }}"
           else
@@ -654,6 +688,7 @@ jobs:
             echo "  build-deb:      $DEB_OK"
             echo "  build-deb-cuda: $CUDA_OK"
             echo "  build-windows:  $WIN_OK"
+            echo "  build-aarch64:  $AARCH64_OK"
             echo "  build-models:   $MODELS_OK"
           fi
 
@@ -676,8 +711,9 @@ jobs:
           DEB_OK="${{ needs.build-deb.result }}"
           CUDA_OK="${{ needs.build-deb-cuda.result }}"
           WIN_OK="${{ needs.build-windows.result }}"
+          AARCH64_OK="${{ needs.build-aarch64.result }}"
 
-          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ]; then
+          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ] && [ "$AARCH64_OK" = "success" ]; then
             echo "**Release published.**" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Release left as draft** — some builds failed." >> $GITHUB_STEP_SUMMARY

@@ -113,30 +113,51 @@ pub fn is_nixos() -> bool {
     std::path::Path::new("/etc/NIXOS").exists()
 }
 
-/// Fetch the latest release tag from GitHub.
+/// The gh-pages binary-cache manifest. The aarch64 release CI job appends an
+/// entry for every version whose closure it pushed to the cache — including
+/// releases still sitting as drafts on GitHub. Drafts are invisible to the
+/// unauthenticated releases API, which once stranded embedded devices on old
+/// (and uncached, hence source-compiled) versions.
+const CACHE_MANIFEST_URL: &str = "https://datao1.github.io/Mesh/versions.json";
+
+/// Fetch a URL body via curl, failing on HTTP errors (-f).
+fn http_get(url: &str) -> Result<String, String> {
+    let output = std::process::Command::new("curl")
+        .args(["-sf", "--max-time", "10", url])
+        .output()
+        .map_err(|e| format!("Failed to run curl: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("curl failed for {}: {}", url, stderr));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Fetch the newest updatable version.
 ///
-/// When `prerelease` is false, uses `/releases/latest` which only returns
-/// stable releases (GitHub excludes prereleases from this endpoint).
-/// When `prerelease` is true, fetches all releases and finds the newest
-/// version including release candidates and beta versions.
+/// Primary source is the binary-cache manifest on gh-pages: it lists exactly
+/// the versions this device can substitute without compiling, independent of
+/// GitHub release visibility. Falls back to the GitHub releases API when the
+/// manifest is unreachable or unparsable (e.g. first deploy before any
+/// manifest exists).
 pub fn check_latest_version(prerelease: bool) -> Result<Option<String>, String> {
+    match check_cache_manifest(prerelease) {
+        Ok(result) => return Ok(result),
+        Err(e) => log::warn!(
+            "Cache manifest check failed ({}); falling back to GitHub releases API",
+            e
+        ),
+    }
+
     let url = if prerelease {
         "https://api.github.com/repos/dataO1/Mesh/releases?per_page=10"
     } else {
         "https://api.github.com/repos/dataO1/Mesh/releases/latest"
     };
 
-    let output = std::process::Command::new("curl")
-        .args(["-s", "--max-time", "10", url])
-        .output()
-        .map_err(|e| format!("Failed to run curl: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("curl failed: {}", stderr));
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = http_get(url)?;
     let current = env!("CARGO_PKG_VERSION");
 
     if prerelease {
@@ -162,6 +183,58 @@ pub fn check_latest_version(prerelease: bool) -> Result<Option<String>, String> 
             None => Err("Could not parse release tag from GitHub API".to_string()),
         }
     }
+}
+
+/// Check the gh-pages cache manifest for a newer version.
+///
+/// Returns the newest cached tag that is newer than the running version,
+/// honoring the `prerelease` opt-in. Errors bubble up so the caller can fall
+/// back to the GitHub releases API.
+fn check_cache_manifest(prerelease: bool) -> Result<Option<String>, String> {
+    let body = http_get(CACHE_MANIFEST_URL)?;
+    find_newest_cached(&body, env!("CARGO_PKG_VERSION"), prerelease)
+}
+
+/// Parse a cache manifest body and pick the newest eligible version.
+fn find_newest_cached(
+    body: &str,
+    current: &str,
+    prerelease: bool,
+) -> Result<Option<String>, String> {
+    let manifest: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid manifest JSON: {}", e))?;
+    let versions = manifest
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .ok_or("Manifest has no 'versions' array")?;
+
+    // Entries are newest-first by insertion order, but scan all of them and
+    // keep the semver-newest so an out-of-order backfill can't shadow a newer
+    // release.
+    let mut best: Option<String> = None;
+    for entry in versions {
+        let Some(tag) = entry.get("tag_name").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let is_pre = entry
+            .get("prerelease")
+            .and_then(|p| p.as_bool())
+            .unwrap_or(false);
+        if is_pre && !prerelease {
+            continue;
+        }
+
+        let remote = tag.strip_prefix('v').unwrap_or(tag);
+        let beats_best = match &best {
+            Some(b) => is_newer(remote, b.strip_prefix('v').unwrap_or(b)),
+            None => is_newer(remote, current),
+        };
+        if beats_best {
+            best = Some(tag.to_string());
+        }
+    }
+
+    Ok(best)
 }
 
 /// Find the newest release from a GitHub `/releases` JSON array response.
@@ -587,6 +660,9 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
                 .size(sz(9.0))
                 .color(Color::from_rgb(0.6, 0.6, 0.6))
         )
+        // Follow the newest output: stay snapped to the bottom while lines
+        // stream in (releases automatically when the user scrolls up).
+        .anchor_bottom()
         .height(Length::Fixed(140.0));
 
         let journal_container = container(journal_view)
@@ -670,5 +746,43 @@ mod tests {
         // Current is 0.9.9 — RCs are not newer than stable
         let result = find_newest_release(body, "0.9.9").unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_newest_cached() {
+        // Simulated gh-pages cache manifest (newest first by insertion)
+        let body = r#"{"versions": [
+            {"tag_name": "v0.9.13-rc.11", "prerelease": true, "commit": "2adac25", "published_at": "2026-07-14T19:13:11Z"},
+            {"tag_name": "v0.9.13-rc.10", "prerelease": true, "commit": "2055f5c", "published_at": "2026-07-14T15:00:00Z"},
+            {"tag_name": "v0.9.12", "prerelease": false, "commit": "abc1234", "published_at": "2026-05-01T12:00:00Z"}
+        ]}"#;
+
+        // Prerelease opt-in: newest RC wins
+        let result = find_newest_cached(body, "0.9.13-rc.9", true).unwrap();
+        assert_eq!(result, Some("v0.9.13-rc.11".to_string()));
+
+        // Stable-only: RCs are skipped, and 0.9.12 is not newer than current
+        let result = find_newest_cached(body, "0.9.12", false).unwrap();
+        assert_eq!(result, None);
+
+        // Stable-only from an older version: picks the stable entry
+        let result = find_newest_cached(body, "0.9.11", false).unwrap();
+        assert_eq!(result, Some("v0.9.12".to_string()));
+
+        // Already on the newest RC — nothing to do
+        let result = find_newest_cached(body, "0.9.13-rc.11", true).unwrap();
+        assert_eq!(result, None);
+
+        // Out-of-order entries: semver-newest wins regardless of position
+        let unordered = r#"{"versions": [
+            {"tag_name": "v0.9.13-rc.10", "prerelease": true},
+            {"tag_name": "v0.9.13-rc.11", "prerelease": true}
+        ]}"#;
+        let result = find_newest_cached(unordered, "0.9.13-rc.9", true).unwrap();
+        assert_eq!(result, Some("v0.9.13-rc.11".to_string()));
+
+        // Malformed manifest bubbles an error (caller falls back to GitHub)
+        assert!(find_newest_cached("not json", "0.9.12", true).is_err());
+        assert!(find_newest_cached("{}", "0.9.12", true).is_err());
     }
 }

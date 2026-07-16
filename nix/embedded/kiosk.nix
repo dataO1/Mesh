@@ -53,6 +53,12 @@ let
       >"$LOGFIFO" 2>&1 &
     PLAYER_PID=$!
 
+    # Forward termination to mesh-player: bash does not propagate SIGTERM to
+    # background children, so without this the player outlives the wrapper on
+    # `systemctl restart cage-tty1` and the stop only completes via SIGKILL
+    # after the unit's stop timeout (a long black screen on every OTA update).
+    trap 'kill $PLAYER_PID 2>/dev/null' TERM INT
+
     # Wait for mesh-player's JACK ports to appear (up to 10s)
     for i in $(seq 1 50); do
       $PW_LINK -o 2>/dev/null | grep -q "mesh-player:master_left" && break
@@ -63,8 +69,11 @@ let
     $PW_LINK "mesh-player:master_left"  "$ES8388:playback_FL" 2>/dev/null
     $PW_LINK "mesh-player:master_right" "$ES8388:playback_FR" 2>/dev/null
 
-    # Wait for mesh-player to exit (cage restarts on crash)
+    # Wait for mesh-player to exit (cage restarts on crash). A trapped signal
+    # interrupts the first wait; the second wait reaps the player after the
+    # forwarded SIGTERM so we don't tear down logging while it's still up.
     wait $PLAYER_PID
+    wait $PLAYER_PID 2>/dev/null
     kill $LOGCAT_PID 2>/dev/null
     rm -f "$LOGFIFO"
   '';
@@ -137,6 +146,11 @@ in
       serviceConfig = {
         Restart = "always";
         RestartSec = 2;
+        # Backstop for the SIGTERM forwarding in the wrapper: if anything in
+        # the cgroup still lingers, SIGKILL after 10s instead of the 90s
+        # default — bounds the black-screen window during OTA updates.
+        # A hard kill is safe: track history lives in SQLite (WAL).
+        TimeoutStopSec = 10;
         CPUAffinity = "0-7";
         # RT scheduling: allow SCHED_FIFO up to priority 95
         # (rayon audio workers use 70, PipeWire data thread uses 88)
