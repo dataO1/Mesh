@@ -103,13 +103,19 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
         app.domain.switch_to_local();
     }
 
-    // If it was a scroll, create a Task to auto-scroll the track list
+    // If it was a scroll, create a Task to auto-scroll the track list —
+    // or the playlist tree when no track list is active (folder navigation).
+    // Without this the encoder walks the selection out of the visible range,
+    // and embedded devices have no mouse to bring it back.
     if is_scroll {
         if let Some(selected_idx) = app.collection_browser.get_selected_index() {
             let total_tracks = app.collection_browser.track_count();
             // Assumes ~280px visible height (10 rows at 28px each)
             let visible_height = 280.0;
             return scroll_to_centered_selection(selected_idx, total_tracks, visible_height);
+        } else if let Some((node_idx, total_nodes)) = app.collection_browser.get_tree_scroll_info() {
+            let visible_height = 280.0;
+            return mesh_widgets::scroll_to_centered_tree_selection(node_idx, total_nodes, visible_height);
         }
     }
 

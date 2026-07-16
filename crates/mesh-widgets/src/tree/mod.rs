@@ -13,11 +13,46 @@
 //! );
 //! ```
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Id, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use crate::font::sz;
 use std::hash::Hash;
+
+/// Scrollable ID for the tree view (used for programmatic auto-scroll when
+/// navigating with an encoder). Note: like `TRACK_TABLE_SCROLLABLE_ID`, this
+/// is shared by every tree_view instance — snap operations are only meaningful
+/// in single-browser layouts (mesh-player).
+pub static TREE_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh_tree_scrollable"));
+
+/// Estimated rendered height of one tree row in pixels, scale-aware.
+///
+/// Rows are label buttons: icon text sz(14) at default 1.3 line height plus
+/// vertical padding 3+3 and 1px column spacing. An estimate is fine — the
+/// centered-scroll math degrades gracefully on small errors.
+pub fn tree_row_height() -> f32 {
+    sz(14.0) * 1.3 + 7.0
+}
+
+/// Create a Task that keeps the selected tree row centered in the viewport.
+///
+/// Counterpart of `scroll_to_centered_selection` for the playlist tree —
+/// used by encoder navigation, where the selection must never walk out of
+/// the visible range (embedded devices have no mouse to scroll manually).
+pub fn scroll_to_centered_tree_selection<Message: 'static>(
+    selected_index: usize,
+    total_items: usize,
+    visible_height: f32,
+) -> iced::Task<Message> {
+    crate::track_table::scroll_to_centered_row(
+        TREE_SCROLLABLE_ID.clone(),
+        selected_index,
+        total_items,
+        visible_height,
+        tree_row_height(),
+    )
+}
 
 /// Icon type for tree nodes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +311,7 @@ where
     let content = build_tree_rows(nodes, state, &on_message, 0);
 
     scrollable(column(content).spacing(1).padding(Padding::from([4, 8])))
+        .id(TREE_SCROLLABLE_ID.clone())
         .height(Length::Fill)
         .into()
 }

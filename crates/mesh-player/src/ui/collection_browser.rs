@@ -986,6 +986,20 @@ impl CollectionBrowserState {
         }
     }
 
+    /// Get the selected tree node's index among visible (expanded) nodes plus
+    /// the total visible count — for encoder auto-scroll of the tree pane.
+    /// Returns None when nothing is selected in the tree.
+    pub fn get_tree_scroll_info(&self) -> Option<(usize, usize)> {
+        let visible = self.get_visible_tree_nodes();
+        let idx = self
+            .browser
+            .tree_state
+            .selected
+            .as_ref()
+            .and_then(|sel| visible.iter().position(|id| id == sel))?;
+        Some((idx, visible.len()))
+    }
+
     /// Get flat list of visible tree node IDs (respecting expansion state)
     fn get_visible_tree_nodes(&self) -> Vec<NodeId> {
         let mut visible = Vec::new();

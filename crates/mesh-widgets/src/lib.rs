@@ -84,7 +84,11 @@ pub use waveform::{
 };
 
 // Tree widget for hierarchical navigation
-pub use tree::{tree_view, TreeIcon, TreeMessage, TreeNode, TreeState};
+pub use tree::{
+    tree_view, TreeIcon, TreeMessage, TreeNode, TreeState,
+    // Programmatic scrolling (encoder navigation)
+    TREE_SCROLLABLE_ID, scroll_to_centered_tree_selection, tree_row_height,
+};
 
 // Track table widget for displaying tracks
 pub use track_table::{
@@ -93,6 +97,7 @@ pub use track_table::{
     // Constants and functions for programmatic scrolling
     TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID,
     calculate_scroll_offset_for_centered_selection, scroll_to_centered_selection,
+    calculate_centered_row_offset, scroll_to_centered_row,
 };
 
 // Combined playlist browser (tree + table)

@@ -134,18 +134,30 @@ pub fn calculate_scroll_offset_for_centered_selection(
     total_items: usize,
     visible_height: f32,
 ) -> f32 {
+    calculate_centered_row_offset(selected_index, total_items, visible_height, TRACK_ROW_HEIGHT)
+}
+
+/// Row-height-parameterized version of
+/// [`calculate_scroll_offset_for_centered_selection`], for lists whose rows
+/// aren't track-table rows (e.g. the playlist tree).
+pub fn calculate_centered_row_offset(
+    selected_index: usize,
+    total_items: usize,
+    visible_height: f32,
+    row_height: f32,
+) -> f32 {
     if total_items == 0 {
         return 0.0;
     }
 
-    let visible_rows = (visible_height / TRACK_ROW_HEIGHT).floor();
-    let total_content_height = total_items as f32 * TRACK_ROW_HEIGHT;
+    let visible_rows = (visible_height / row_height).floor();
+    let total_content_height = total_items as f32 * row_height;
     let max_scroll = (total_content_height - visible_height).max(0.0);
 
     // Calculate offset to center the selection
-    let selected_y = selected_index as f32 * TRACK_ROW_HEIGHT;
-    let center_offset = (visible_rows / 2.0).floor() * TRACK_ROW_HEIGHT;
-    let target_scroll = selected_y - center_offset + TRACK_ROW_HEIGHT / 2.0;
+    let selected_y = selected_index as f32 * row_height;
+    let center_offset = (visible_rows / 2.0).floor() * row_height;
+    let target_scroll = selected_y - center_offset + row_height / 2.0;
 
     // Clamp to valid scroll range [0, max_scroll]
     target_scroll.clamp(0.0, max_scroll)
@@ -168,14 +180,30 @@ pub fn scroll_to_centered_selection<Message: 'static>(
     total_items: usize,
     visible_height: f32,
 ) -> iced::Task<Message> {
-    let target_y = calculate_scroll_offset_for_centered_selection(
+    scroll_to_centered_row(
+        TRACK_TABLE_SCROLLABLE_ID.clone(),
         selected_index,
         total_items,
         visible_height,
-    );
+        TRACK_ROW_HEIGHT,
+    )
+}
+
+/// Scrollable-id- and row-height-parameterized version of
+/// [`scroll_to_centered_selection`], for centering the selection in any
+/// uniform-row scrollable (e.g. the playlist tree).
+pub fn scroll_to_centered_row<Message: 'static>(
+    id: Id,
+    selected_index: usize,
+    total_items: usize,
+    visible_height: f32,
+    row_height: f32,
+) -> iced::Task<Message> {
+    let target_y =
+        calculate_centered_row_offset(selected_index, total_items, visible_height, row_height);
 
     // Convert absolute offset to relative offset (0.0 = top, 1.0 = bottom)
-    let max_scroll = (total_items as f32 * TRACK_ROW_HEIGHT - visible_height).max(0.0);
+    let max_scroll = (total_items as f32 * row_height - visible_height).max(0.0);
     let relative_y = if max_scroll > 0.0 {
         (target_y / max_scroll).clamp(0.0, 1.0)
     } else {
@@ -183,7 +211,7 @@ pub fn scroll_to_centered_selection<Message: 'static>(
     };
 
     let offset = iced::widget::operation::RelativeOffset { x: 0.0, y: relative_y };
-    iced::widget::operation::snap_to(TRACK_TABLE_SCROLLABLE_ID.clone(), offset)
+    iced::widget::operation::snap_to(id, offset)
 }
 
 /// Modifier keys held during a selection click
