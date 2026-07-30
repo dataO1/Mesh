@@ -133,13 +133,16 @@ impl TrackQuery {
         params.insert("query".to_string(), DataValue::Str(query_lower.into()));
         params.insert("limit".to_string(), DataValue::from(limit as i64));
 
+        // Substring match on title or artist. `coalesce(artist, "")` guards the
+        // nullable artist column so lowercase()/str_includes() never evaluate
+        // against null (Cozo's `||` does not short-circuit).
         let result = db.run_query(r#"
             ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
-                (lowercase(title) ~ $query or
-                 (is_not_null(artist) and lowercase(artist) ~ $query))
+                (str_includes(lowercase(title), $query) ||
+                 str_includes(lowercase(coalesce(artist, "")), $query))
             :limit $limit
             :order title
         "#, params)?;
@@ -391,7 +394,7 @@ impl TrackQuery {
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
-                is_not_null(drop_marker)
+                !is_null(drop_marker)
             :order id
         "#, BTreeMap::new())?;
 
@@ -1873,7 +1876,7 @@ impl HistoryQuery {
         let result = db.run_query(r#"
             ?[track_path] :=
                 *track_plays{session_id: $session_id, track_path, play_started_at},
-                is_not_null(play_started_at)
+                !is_null(play_started_at)
         "#, params)?;
 
         Ok(result.rows.iter()

@@ -673,7 +673,7 @@ impl DatabaseService {
     /// for known-artist disambiguation during filename parsing.
     pub fn get_distinct_artists(&self) -> Result<Vec<String>, DbError> {
         let result = self.db.run_query(r#"
-            ?[artist] := *tracks{artist}, is_not_null(artist)
+            ?[artist] := *tracks{artist}, !is_null(artist)
         "#, BTreeMap::new())?;
 
         Ok(result.rows.into_iter()
@@ -1937,5 +1937,122 @@ mod tests {
         // Cue points should also be deleted
         let cues = service.get_cue_points(track_id).unwrap();
         assert!(cues.is_empty());
+    }
+
+    // ── Cozo not-null query regression tests ────────────────────────────────
+    // These exercise every query that used to reference the non-existent Cozo
+    // operator `is_not_null(x)` (now `!is_null(x)`). Before the fix each failed
+    // at runtime with "No implementation found for op `is_not_null`". They run
+    // against a throwaway TempDir DB — never the live collection.
+
+    /// Save a track with a real dummy file under the collection root.
+    fn save_mock(
+        service: &DatabaseService,
+        dir: &std::path::Path,
+        name: &str,
+        artist: Option<&str>,
+        drop_marker: Option<i64>,
+    ) -> i64 {
+        let path = dir.join(name);
+        std::fs::write(&path, b"dummy").unwrap();
+        let mut t = Track::new(path, name);
+        t.artist = artist.map(|s| s.to_string());
+        t.drop_marker = drop_marker;
+        t.duration_seconds = 180.0;
+        service.save_track(&t).unwrap()
+    }
+
+    #[test]
+    fn test_search_tracks_null_artist_does_not_crash() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("tracks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = DatabaseService::new(temp.path()).unwrap();
+
+        save_mock(&service, &dir, "daft.flac", Some("Daft Punk"), None);
+        save_mock(&service, &dir, "orphan.flac", None, None); // null artist must not fail the query
+
+        // Match on artist substring (exercises the `!is_null(artist)` branch).
+        let by_artist = service.search_tracks("daft", 10).unwrap();
+        assert_eq!(by_artist.len(), 1);
+        assert_eq!(by_artist[0].artist.as_deref(), Some("Daft Punk"));
+
+        // Match on title of the null-artist row — query must not error on the null.
+        let by_title = service.search_tracks("orphan", 10).unwrap();
+        assert_eq!(by_title.len(), 1);
+    }
+
+    #[test]
+    fn test_get_distinct_artists_excludes_null() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("tracks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = DatabaseService::new(temp.path()).unwrap();
+
+        save_mock(&service, &dir, "a1.flac", Some("Artist A"), None);
+        save_mock(&service, &dir, "a2.flac", Some("Artist A"), None);
+        save_mock(&service, &dir, "b.flac", Some("Artist B"), None);
+        save_mock(&service, &dir, "none.flac", None, None);
+
+        let mut artists = service.get_distinct_artists().unwrap();
+        artists.sort();
+        assert_eq!(artists, vec!["Artist A".to_string(), "Artist B".to_string()]);
+    }
+
+    #[test]
+    fn test_get_tracks_with_drop_marker_excludes_null() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("tracks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = DatabaseService::new(temp.path()).unwrap();
+
+        save_mock(&service, &dir, "hasdrop.flac", Some("X"), Some(44_100));
+        save_mock(&service, &dir, "nodrop.flac", Some("Y"), None);
+
+        let with_drop = service.get_tracks_with_drop_marker().unwrap();
+        assert_eq!(with_drop.len(), 1);
+        assert_eq!(with_drop[0].drop_marker, Some(44_100));
+    }
+
+    #[test]
+    fn test_get_session_played_paths_excludes_unplayed() {
+        let temp = TempDir::new().unwrap();
+        let service = DatabaseService::new(temp.path()).unwrap();
+
+        service.create_session(1).unwrap();
+
+        // Two loads; only one is actually play-started (gets play_started_at).
+        let played = TrackPlayRecord {
+            session_id: 1,
+            loaded_at: 1000,
+            track_path: "/music/played.flac".to_string(),
+            track_name: "A - Played".to_string(),
+            track_id: None,
+            deck_index: 0,
+            load_source: "browser".to_string(),
+            suggestion_score: None,
+            suggestion_tags_json: None,
+            suggestion_energy_dir: None,
+        };
+        let loaded_only = TrackPlayRecord {
+            session_id: 1,
+            loaded_at: 2000,
+            track_path: "/music/loaded.flac".to_string(),
+            track_name: "B - Loaded".to_string(),
+            track_id: None,
+            deck_index: 1,
+            load_source: "browser".to_string(),
+            suggestion_score: None,
+            suggestion_tags_json: None,
+            suggestion_energy_dir: None,
+        };
+        service.insert_track_play(&played).unwrap();
+        service.insert_track_play(&loaded_only).unwrap();
+        service.update_play_started(1, 1000, 5000, 0, None).unwrap();
+
+        let paths = service.get_session_played_paths(1).unwrap();
+        assert!(paths.contains("/music/played.flac"));
+        assert!(!paths.contains("/music/loaded.flac")); // null play_started_at excluded
+        assert_eq!(paths.len(), 1);
     }
 }
