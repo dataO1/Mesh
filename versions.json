@@ -1,6 +1,12 @@
 {
   "versions": [
     {
+      "tag_name": "v0.9.13-rc.14",
+      "prerelease": true,
+      "commit": "ca4fda5a81dc8e8c9cffe59956d90a4e2967c883",
+      "published_at": "2026-07-30T20:37:33Z"
+    },
+    {
       "tag_name": "v0.9.13-rc.12",
       "prerelease": true,
       "commit": "af5509fecc33578d83dac7abf8bfe205da2289dd",
