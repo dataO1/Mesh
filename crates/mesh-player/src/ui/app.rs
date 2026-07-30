@@ -126,6 +126,10 @@ pub struct MeshApp {
     pub(crate) settings: SettingsState,
     /// Controller manager (MIDI + HID, optional - works without controllers)
     pub(crate) controller: Option<ControllerManager>,
+    /// Direct MIDI→engine dispatch, retained so it can be re-applied whenever the
+    /// controller is rebuilt (e.g. after saving a MIDI learn config). Without this
+    /// the timing-critical path silently degrades to the ~16ms tick until restart.
+    pub(crate) direct_dispatch: Option<std::sync::Arc<dyn mesh_midi::DirectDispatch>>,
     /// MIDI learn mode state
     pub(crate) midi_learn: MidiLearnState,
     /// UI display mode (performance vs mapping)
@@ -376,6 +380,7 @@ impl MeshApp {
             config_path,
             settings,
             controller,
+            direct_dispatch: None,
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,

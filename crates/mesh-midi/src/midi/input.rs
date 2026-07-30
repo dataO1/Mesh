@@ -12,6 +12,7 @@ use crate::types::{ControlAddress, MidiAddress};
 use super::connection::MidiConnectionError;
 use flume::Sender;
 use midir::MidiInputConnection;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Raw MIDI input event (before action mapping)
@@ -165,6 +166,10 @@ struct CallbackData {
     shared_state: Arc<SharedState>,
     /// Optional direct dispatch to audio engine (bypasses UI tick for timing-critical actions)
     direct_dispatch: Option<Arc<dyn DirectDispatch>>,
+    /// When set, the MIDI learn UI owns the controller: emit raw events only and
+    /// skip shift/layer tracking, action mapping, and direct dispatch. Prevents
+    /// mapped actions from firing while the user is remapping them.
+    learn_mode: Arc<AtomicBool>,
 }
 
 /// MIDI input handler
@@ -180,23 +185,6 @@ pub struct MidiInputHandler {
 }
 
 impl MidiInputHandler {
-    /// Connect to a MIDI port with our callback
-    ///
-    /// This is the preferred way to create a MidiInputHandler.
-    pub fn connect(
-        port_match: &str,
-        message_tx: Sender<MidiEvent>,
-        mapping_engine: Arc<MappingEngine>,
-        shared_state: Arc<SharedState>,
-        shift_buttons: Vec<(ControlAddress, usize)>,
-        toggle_controls: Vec<(ControlAddress, usize)>,
-    ) -> Result<Self, MidiConnectionError> {
-        Self::connect_with_raw_events(
-            port_match, message_tx, mapping_engine, shared_state,
-            shift_buttons, toggle_controls, false, None,
-        )
-    }
-
     /// Connect to a MIDI port with optional raw event capture
     ///
     /// When `capture_raw` is true, raw MIDI events are also sent to a separate channel
@@ -210,6 +198,7 @@ impl MidiInputHandler {
         toggle_controls: Vec<(ControlAddress, usize)>,
         capture_raw: bool,
         direct_dispatch: Option<Arc<dyn DirectDispatch>>,
+        learn_mode: Arc<AtomicBool>,
     ) -> Result<Self, MidiConnectionError> {
         let (midi_in, port) = super::connection::MidiConnection::find_input_port(port_match)?;
 
@@ -229,6 +218,7 @@ impl MidiInputHandler {
             toggle_controls,
             shared_state: shared_state.clone(),
             direct_dispatch,
+            learn_mode,
         };
 
         let connection = midi_in
@@ -266,6 +256,14 @@ impl MidiInputHandler {
         // Send raw event for learn mode (if channel is set up)
         if let Some(ref raw_tx) = callback_data.raw_event_tx {
             let _ = raw_tx.try_send(event);
+        }
+
+        // While the learn UI is open it is the sole consumer of input: the raw event
+        // above is all it needs. Stop here so mapped actions don't fire — including
+        // direct dispatch, which would otherwise reach the audio engine straight from
+        // this callback thread, where no UI-level guard can intercept it.
+        if callback_data.learn_mode.load(Ordering::Relaxed) {
+            return;
         }
 
         // Build the ControlAddress for this MIDI event (for matching shift/toggle)

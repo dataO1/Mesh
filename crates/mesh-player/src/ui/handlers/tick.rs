@@ -459,14 +459,14 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
                     app.midi_learn.mode = LearnMode::TreeNavigation;
                     app.midi_learn.update_highlight();
                 } else {
-                    // Confirm reset — clear all mappings
-                    if let Some(ref mut tree) = app.midi_learn.tree {
-                        tree.clear_all_mappings();
-                    }
-                    app.midi_learn.rebuild_active_mappings();
-                    app.midi_learn.mode = LearnMode::TreeNavigation;
-                    app.midi_learn.update_highlight();
-                    app.status = "All mappings cleared. Ready to remap.".to_string();
+                    // Confirm reset — restart the whole workflow via the same path the
+                    // on-screen button uses. Clearing mappings in place would empty
+                    // `browse_encoder_addresses` while staying in TreeNavigation, leaving
+                    // the encoder unable to scroll and self-mapping onto the cursor row —
+                    // unrecoverable on a device with no keyboard. NavCapture re-captures
+                    // the browse encoder first, so navigation is always restored.
+                    sync_highlights(app);
+                    return vec![Task::done(Message::MidiLearn(MidiLearnMessage::ConfirmReset))];
                 }
                 break;
             }

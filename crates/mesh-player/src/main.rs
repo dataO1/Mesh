@@ -348,8 +348,12 @@ fn main() -> iced::Result {
 
             let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, level_atomics, audio_sample_rate, audio_client_name.clone(), show_mapping_ui, start_learn, output_latency, internal_latency, buffer_pool.clone());
 
-            // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands
-            if let (Some(ref mut controller), Some(dispatch)) = (&mut app.controller, direct_dispatch) {
+            // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands.
+            // Retained on the app so a later controller rebuild (MIDI learn save) can re-apply it.
+            app.direct_dispatch = direct_dispatch;
+            if let (Some(ref mut controller), Some(dispatch)) =
+                (&mut app.controller, app.direct_dispatch.clone())
+            {
                 controller.set_direct_dispatch(dispatch);
                 log::info!("Direct MIDI→engine dispatch enabled");
             }

@@ -28,6 +28,13 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
             // Close settings modal if open
             app.settings.is_open = false;
 
+            // Route controller input to learn instead of the live mapping — otherwise
+            // the browse encoder keeps scrolling the browser / turning loop length,
+            // and HID events never reach the learn poller at all.
+            if let Some(ref controller) = app.controller {
+                controller.set_learn_mode(true);
+            }
+
             // If existing config exists, load it into the tree
             let config_path = mesh_midi::default_midi_config_path();
             if config_path.exists() {
@@ -46,6 +53,9 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
         Cancel => {
             app.midi_learn.cancel();
             clear_highlights(app);
+            if let Some(ref controller) = app.controller {
+                controller.set_learn_mode(false);
+            }
             app.status = "MIDI Learn cancelled".to_string();
         }
 
@@ -190,7 +200,13 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                     // Reload MIDI controller with new config
                     app.controller = None;
                     match ControllerManager::new_with_options(None, true) {
-                        Ok(controller) => {
+                        Ok(mut controller) => {
+                            // Re-apply direct dispatch — the rebuilt controller starts
+                            // without it, which would silently drop hot cue / play /
+                            // beat jump back to the ~16ms tick until the next restart.
+                            if let Some(dispatch) = app.direct_dispatch.clone() {
+                                controller.set_direct_dispatch(dispatch);
+                            }
                             if controller.is_connected() {
                                 log::info!("MIDI: Reloaded controller with new config");
                                 app.status = "MIDI config saved and loaded!".to_string();

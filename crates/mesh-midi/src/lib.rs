@@ -69,6 +69,7 @@ pub use feedback::{
 
 use flume::{Receiver, Sender};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -168,6 +169,10 @@ pub struct ControllerManager {
     capture_raw: bool,
     /// Optional direct dispatch to audio engine (shared with MIDI callbacks)
     direct_dispatch: Option<Arc<dyn DirectDispatch>>,
+    /// Set while the MIDI learn UI is open. Shared with the MIDI input callbacks
+    /// so both the callback thread and `drain()` route input to learn instead of
+    /// the performance app. See `set_learn_mode`.
+    learn_mode: Arc<AtomicBool>,
 }
 
 /// Backwards-compatible type alias
@@ -258,6 +263,7 @@ impl ControllerManager {
             last_device_check: Instant::now(),
             capture_raw,
             direct_dispatch: None,
+            learn_mode: Arc::new(AtomicBool::new(false)),
         };
 
         // Try to connect to all matching devices
@@ -292,6 +298,9 @@ impl ControllerManager {
             last_device_check: Instant::now(),
             capture_raw: true,
             direct_dispatch: None,
+            // Profiles are empty in this mode, so nothing can map anyway — the flag
+            // stays false and `drain()` behaves normally.
+            learn_mode: Arc::new(AtomicBool::new(false)),
         };
 
         // Connect to ALL available MIDI ports
@@ -362,6 +371,7 @@ impl ControllerManager {
                 vec![], // No toggle controls in learn mode
                 true,   // Always capture raw in learn mode
                 None,   // No direct dispatch in learn mode
+                self.learn_mode.clone(),
             ) {
                 Ok(input_handler) => {
                     log::info!("MIDI Learn: Connected to '{}'", port_name);
@@ -465,6 +475,7 @@ impl ControllerManager {
                     toggle_controls,
                     capture_raw,
                     self.direct_dispatch.clone(),
+                    self.learn_mode.clone(),
                 ) {
                     Ok(input_handler) => {
                         log::info!("MIDI: Connected '{}' to port '{}'", profile.name, port_name);
@@ -695,6 +706,31 @@ impl ControllerManager {
         self.direct_dispatch = Some(dispatch);
     }
 
+    /// Hand input over to the MIDI learn UI (or hand it back).
+    ///
+    /// While set, mapped actions stop reaching the performance app: the MIDI
+    /// callback emits raw events only, and `drain()` leaves the HID event channel
+    /// untouched so `drain_hid_events()` can read it. Without this, a learn
+    /// session started from a running app fights the live mapping — HID input is
+    /// consumed by `drain()` before learn ever sees it, and MIDI input fires twice.
+    ///
+    /// Releasing learn mode also clears shift state, so a shift button pressed
+    /// during learn (where the engine never saw the release) doesn't stay latched.
+    pub fn set_learn_mode(&self, active: bool) {
+        self.learn_mode.store(active, Ordering::Relaxed);
+
+        if !active {
+            for device in self.midi_devices.values() {
+                device.shared_state.set_shift_for_deck(0, false);
+                device.shared_state.set_shift_for_deck(1, false);
+            }
+            for state in self.hid_devices.values().filter_map(|d| d.shared_state.as_ref()) {
+                state.set_shift_for_deck(0, false);
+                state.set_shift_for_deck(1, false);
+            }
+        }
+    }
+
     /// Drain all pending messages (MIDI + HID mapped events)
     ///
     /// MIDI messages arrive pre-processed from the input callback.
@@ -706,6 +742,15 @@ impl ControllerManager {
             self.last_device_check = Instant::now();
             self.check_hid_health();
             self.check_new_devices();
+        }
+
+        // Learn mode owns the input. Discard anything the MIDI callbacks already
+        // queued (in-flight when the flag flipped) so the bounded channel doesn't
+        // back up, and leave `hid_event_rx` alone — `drain_hid_events()` is the
+        // consumer while learn is open.
+        if self.learn_mode.load(Ordering::Relaxed) {
+            while self.message_rx.try_recv().is_ok() {}
+            return Vec::new();
         }
 
         let mut messages = Vec::new();
@@ -1158,7 +1203,9 @@ impl ControllerManager {
             Some(rx) => {
                 let mut events = Vec::new();
                 while let Ok(event) = rx.try_recv() {
-                    log::info!("[HID Learn] Event: {:?} = {:?}", event.address, event.value);
+                    // trace, not info: this drains the full encoder/fader stream on the
+                    // per-frame tick path once learn mode is active.
+                    log::trace!("[HID Learn] Event: {:?} = {:?}", event.address, event.value);
                     events.push(event);
                 }
                 events
