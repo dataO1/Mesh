@@ -66,14 +66,6 @@ pub enum QueryCommand {
         reply: tokio::sync::oneshot::Sender<Result<Vec<Track>, String>>,
     },
 
-    /// Get mix suggestions based on current track and energy direction
-    GetMixSuggestions {
-        current_track_id: i64,
-        energy_direction: EnergyDirection,
-        limit: usize,
-        reply: tokio::sync::oneshot::Sender<Result<Vec<MixSuggestion>, String>>,
-    },
-
     /// Get all playlists
     GetPlaylists {
         reply: tokio::sync::oneshot::Sender<Result<Vec<Playlist>, String>>,
@@ -99,43 +91,6 @@ pub enum QueryCommand {
 
     /// Shutdown the service
     Shutdown,
-}
-
-/// Energy direction for mix suggestions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnergyDirection {
-    /// Maintain current energy level
-    Maintain,
-    /// Build up energy (higher LUFS, faster BPM)
-    BuildUp,
-    /// Cool down energy (lower LUFS, slower BPM)
-    CoolDown,
-}
-
-/// A mix suggestion with reasoning
-#[derive(Debug, Clone)]
-pub struct MixSuggestion {
-    /// The suggested track
-    pub track: Track,
-    /// Why this track was suggested
-    pub reason: MixReason,
-    /// Overall compatibility score (0.0 - 1.0)
-    pub score: f32,
-}
-
-/// Reason why a track was suggested as a mix candidate
-#[derive(Debug, Clone)]
-pub enum MixReason {
-    /// Similar audio characteristics
-    SimilarEnergy { similarity_score: f32 },
-    /// Harmonically compatible (Camelot wheel)
-    HarmonicMatch { match_type: String },
-    /// Frequently played after current track
-    FrequentTransition { play_count: u32 },
-    /// BPM is within mixing range
-    BpmCompatible { bpm_diff: f32 },
-    /// Multiple reasons combined
-    Combined { reasons: Vec<MixReason> },
 }
 
 // ============================================================================

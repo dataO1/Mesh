@@ -72,7 +72,7 @@ pub use messages::{
     // Events
     AppEvent, AnalysisPhase,
     // Types
-    EnergyDirection, MixSuggestion, MixReason, MigrationResult,
+    MigrationResult,
     // Infrastructure
     ServiceHandle, EventBus,
 };

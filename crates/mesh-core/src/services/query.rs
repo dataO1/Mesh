@@ -4,10 +4,9 @@
 //! keeping the UI thread responsive. Commands are received via channels and
 //! results are sent back through oneshot reply channels.
 
-use super::messages::{QueryCommand, AppEvent, ServiceHandle, EnergyDirection, MixSuggestion, MixReason};
-use crate::db::{DatabaseService, Track, TrackQuery, PlaylistQuery, SimilarityQuery};
+use super::messages::{QueryCommand, AppEvent, ServiceHandle};
+use crate::db::{DatabaseService, Track, PlaylistQuery, SimilarityQuery};
 use crossbeam::channel::{Receiver, Sender};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
@@ -131,11 +130,6 @@ impl QueryService {
                 let _ = reply.send(result);
             }
 
-            QueryCommand::GetMixSuggestions { current_track_id, energy_direction, limit, reply } => {
-                let result = self.get_mix_suggestions(current_track_id, energy_direction, limit);
-                let _ = reply.send(result);
-            }
-
             QueryCommand::GetPlaylists { reply } => {
                 let result = PlaylistQuery::get_all(self.service.db())
                     .map_err(|e| e.to_string());
@@ -183,99 +177,6 @@ impl QueryService {
         }
     }
 
-    /// Get mix suggestions based on energy direction
-    fn get_mix_suggestions(
-        &self,
-        current_track_id: i64,
-        energy_direction: EnergyDirection,
-        limit: usize,
-    ) -> Result<Vec<MixSuggestion>, String> {
-        // Get current track info
-        let current_track = TrackQuery::get_by_id(self.service.db(), current_track_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Current track not found".to_string())?;
-
-        let current_bpm = current_track.bpm.unwrap_or(120.0);
-        let current_lufs = current_track.lufs.unwrap_or(-8.0);
-
-        // Build query based on energy direction
-        let (bpm_min, bpm_max, _lufs_condition) = match energy_direction {
-            EnergyDirection::Maintain => {
-                (current_bpm - 4.0, current_bpm + 4.0, "abs(lufs - $current_lufs) < 3")
-            }
-            EnergyDirection::BuildUp => {
-                (current_bpm - 2.0, current_bpm + 8.0, "lufs > $current_lufs")
-            }
-            EnergyDirection::CoolDown => {
-                (current_bpm - 8.0, current_bpm + 2.0, "lufs < $current_lufs")
-            }
-        };
-
-        // Query for BPM-compatible tracks
-        let query = format!(r#"
-            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}},
-                id != $current_id,
-                is_not_null(bpm),
-                bpm >= $bpm_min,
-                bpm <= $bpm_max
-            :limit $limit
-            :order abs(bpm - $current_bpm)
-        "#);
-
-        let mut params = std::collections::BTreeMap::new();
-        params.insert("current_id".to_string(), cozo::DataValue::from(current_track_id));
-        params.insert("current_bpm".to_string(), cozo::DataValue::from(current_bpm));
-        params.insert("current_lufs".to_string(), cozo::DataValue::from(current_lufs as f64));
-        params.insert("bpm_min".to_string(), cozo::DataValue::from(bpm_min));
-        params.insert("bpm_max".to_string(), cozo::DataValue::from(bpm_max));
-        params.insert("limit".to_string(), cozo::DataValue::from(limit as i64));
-
-        let result = self.service.db().run_query(&query, params)
-            .map_err(|e| e.to_string())?;
-
-        // Convert results to MixSuggestions
-        let suggestions: Vec<MixSuggestion> = result.rows.iter()
-            .filter_map(|row| {
-                let track = Track {
-                    id: Some(row.get(0)?.get_int()?),
-                    path: PathBuf::from(row.get(1)?.get_str()?),
-                    folder_path: row.get(2)?.get_str()?.to_string(),
-                    title: row.get(3)?.get_str()?.to_string(),
-                    original_name: row.get(4)?.get_str().unwrap_or("").to_string(),
-                    artist: row.get(5)?.get_str().map(|s| s.to_string()),
-                    bpm: row.get(6)?.get_float(),
-                    original_bpm: row.get(7)?.get_float(),
-                    key: row.get(8)?.get_str().map(|s| s.to_string()),
-                    duration_seconds: row.get(9)?.get_float().unwrap_or(0.0),
-                    lufs: row.get(10)?.get_float().map(|f| f as f32),
-                    integrated_lufs: row.get(11)?.get_float().map(|f| f as f32),
-                    drop_marker: row.get(12)?.get_int(),
-                    first_beat_sample: row.get(13)?.get_int().unwrap_or(0),
-                    file_mtime: row.get(14)?.get_int().unwrap_or(0),
-                    file_size: row.get(15)?.get_int().unwrap_or(0),
-                    waveform_path: row.get(16)?.get_str().map(|s| s.to_string()),
-                    // For mix suggestions, we don't need full metadata
-                    cue_points: Vec::new(),
-                    saved_loops: Vec::new(),
-                    stem_links: Vec::new(),
-                };
-
-                let bpm_diff = (track.bpm.unwrap_or(current_bpm) - current_bpm).abs();
-                let score = 1.0 - (bpm_diff / 16.0).min(1.0); // Normalize to 0-1
-
-                Some(MixSuggestion {
-                    track,
-                    reason: MixReason::BpmCompatible { bpm_diff: bpm_diff as f32 },
-                    score: score as f32,
-                })
-            })
-            .collect();
-
-        Ok(suggestions)
-    }
 }
 
 /// Client for interacting with the QueryService
@@ -354,26 +255,6 @@ impl QueryClient {
         rx.blocking_recv().map_err(|e| e.to_string())?
     }
 
-    /// Get mix suggestions (blocking)
-    pub fn get_mix_suggestions(
-        &self,
-        current_track_id: i64,
-        energy_direction: EnergyDirection,
-        limit: usize,
-    ) -> Result<Vec<MixSuggestion>, String> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.command_tx
-            .send(QueryCommand::GetMixSuggestions {
-                current_track_id,
-                energy_direction,
-                limit,
-                reply: tx,
-            })
-            .map_err(|e| e.to_string())?;
-
-        rx.blocking_recv().map_err(|e| e.to_string())?
-    }
-
     /// Shutdown the service
     pub fn shutdown(&self) -> Result<(), String> {
         self.command_tx
@@ -386,6 +267,7 @@ impl QueryClient {
 mod tests {
     use super::*;
     use crate::services::messages::EventBus;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
