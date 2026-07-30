@@ -208,13 +208,18 @@ mod tests {
     fn test_gain_clamping() {
         let config = LoudnessConfig::default();
 
-        // Very quiet track: limited to max boost
+        // Very quiet track: raw gain 21 * 1.111 = 23.33, limited to max boost
         let gain_db = config.calculate_gain_db(Some(-30.0)).unwrap();
         assert_eq!(gain_db, 12.0);
 
-        // Very loud track: limited to max cut
+        // Very loud track: raw gain -24 * 1.111 = -26.67, limited to max cut
+        let gain_db = config.calculate_gain_db(Some(15.0)).unwrap();
+        assert_eq!(gain_db, -24.0);
+
+        // Loud but inside the limits: keeps the density-corrected value.
+        // delta = -9 - 10 = -19, * (1 + 1/9) = -21.11
         let gain_db = config.calculate_gain_db(Some(10.0)).unwrap();
-        assert_eq!(gain_db, -19.0); // target (-9) - track (10) = -19, within range
+        assert!((gain_db - (-21.111)).abs() < 0.01);
     }
 
     #[test]

@@ -228,7 +228,8 @@ mod tests {
 
     fn setup_test_collection(temp_dir: &TempDir) -> PathBuf {
         let collection = temp_dir.path().to_path_buf();
-        let effects = collection.join("effects");
+        // Must match EffectDiscovery::new — it scans <collection>/effects/pd/
+        let effects = collection.join("effects").join("pd");
         let externals = effects.join("externals");
 
         std::fs::create_dir_all(&externals).unwrap();
