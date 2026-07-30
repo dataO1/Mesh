@@ -981,11 +981,13 @@ impl MidiLearnState {
                 let mut params = HashMap::new();
                 let is_extra_browse = (def.action == "browser.scroll" || def.action == "browser.select")
                     && def.param_key == Some("index");
-                if !is_extra_browse {
-                    if let Some(key) = def.param_key {
-                        if let Some(val) = def.param_value {
-                            params.insert(key.to_string(), serde_yaml::Value::Number(serde_yaml::Number::from(val as u64)));
-                        }
+                // Always write the catalog's identity param — including `index` for extra
+                // browse controls, which also mirror it into physical_deck below. Without
+                // it there is nothing to match them on when the config is loaded back, and
+                // they get silently dropped. The engine ignores `index`.
+                if let Some(key) = def.param_key {
+                    if let Some(val) = def.param_value {
+                        params.insert(key.to_string(), serde_yaml::Value::Number(serde_yaml::Number::from(val as u64)));
                     }
                 }
 
@@ -1592,6 +1594,26 @@ impl MidiLearnState {
     // Existing config loading (midi.yaml → tree)
     // -------------------------------------------------------------------
 
+    /// Param keys that identify *which* catalog mapping an entry is.
+    ///
+    /// Everything else `generate_config` puts in `params` — `decks`, `side` — is
+    /// runtime routing for the mapping engine, not identity. Feeding a routing key
+    /// into the tree lookup makes it miss, which silently unmaps the control.
+    const IDENTITY_PARAM_KEYS: &'static [&'static str] = &["slot", "pad", "index", "stem", "macro"];
+
+    /// Extract the identity param of a saved mapping, ignoring routing params.
+    ///
+    /// Fixed key order, so this is deterministic — `params` is a HashMap and
+    /// iterating it would pick an arbitrary key when more than one is present.
+    fn identity_param(cm: &ControlMapping) -> (Option<String>, Option<usize>) {
+        for key in Self::IDENTITY_PARAM_KEYS {
+            if let Some(value) = cm.params.get(*key).and_then(|v| v.as_u64()) {
+                return (Some((*key).to_string()), Some(value as usize));
+            }
+        }
+        (None, None)
+    }
+
     /// Load an existing `MidiConfig` into the tree, pre-filling mapped controls.
     ///
     /// Called when entering learn mode with an existing `midi.yaml`:
@@ -1701,26 +1723,32 @@ impl MidiLearnState {
 
             // Load control mappings
             for cm in &profile.mappings {
-                let deck_idx = if cm.physical_deck.is_some() {
+                let (param_key_str, param_value) = Self::identity_param(cm);
+
+                // Extra browse encoders/presses are identified by `index`. Their tree
+                // nodes live in the non-repeating Navigation section, so deck_index is
+                // None even though `generate_config` mirrors the index into
+                // physical_deck for browse-mode gating.
+                let is_extra_browse = matches!(cm.action.as_str(), "browser.scroll" | "browser.select")
+                    && param_key_str.as_deref() == Some("index");
+
+                let deck_idx = if is_extra_browse {
+                    None
+                } else if cm.physical_deck.is_some() {
                     cm.physical_deck
                 } else {
                     cm.deck_index
                 };
 
-                let param_key_str: Option<String> = cm.params.keys().next().cloned();
-                let param_value: Option<usize> = param_key_str.as_ref().and_then(|k| {
-                    cm.params.get(k).and_then(|v| v.as_u64()).map(|n| n as usize)
-                });
-
                 let hw_type = cm.hardware_type.unwrap_or(HardwareType::Unknown);
 
-                if let Some(node) = tree.find_mapping_node_mut(
+                match tree.find_mapping_node_mut(
                     &cm.action,
                     deck_idx,
                     param_key_str.as_deref(),
                     param_value,
                 ) {
-                    if let TreeNode::Mapping { mapped, original, status, .. } = node {
+                    Some(TreeNode::Mapping { mapped, original, status, .. }) => {
                         let ctrl = MappedControl {
                             address: cm.control.clone(),
                             hardware_type: hw_type,
@@ -1730,6 +1758,17 @@ impl MidiLearnState {
                         *mapped = Some(ctrl.clone());
                         *original = Some(ctrl);
                         *status = MappingStatus::Existing;
+                    }
+                    Some(_) => {}
+                    None => {
+                        // Never fail silently: an unmatched mapping stays unmapped in the
+                        // tree, and the next save only writes mapped nodes — so it would
+                        // be erased from the config without a trace.
+                        log::warn!(
+                            "MIDI Learn: no tree node for action='{}' deck={:?} param={:?}={:?} — \
+                             this mapping will be dropped if you save",
+                            cm.action, deck_idx, param_key_str, param_value,
+                        );
                     }
                 }
 
@@ -1755,9 +1794,15 @@ impl MidiLearnState {
                 }
             }
 
-            // Load browse encoder/select mappings
+            // Load the *main* browse encoder — the one that drives tree navigation.
+            //
+            // `mode` is always Some("browse") here (the catalog sets it), so filtering on
+            // mode.is_none() matched nothing and left nav_encoder_mappings empty. Identify
+            // it structurally instead: extra encoders carry an `index` param, and
+            // auto-generated per-deck entries carry a physical_deck.
             let browse_scroll_mappings: Vec<_> = profile.mappings.iter()
-                .filter(|m| m.action == "browser.scroll" && m.mode.is_none())
+                .filter(|m| m.action == "browser.scroll")
+                .filter(|m| !m.params.contains_key("index") && m.physical_deck.is_none())
                 .collect();
             for cm in &browse_scroll_mappings {
                 let hw_type = cm.hardware_type.unwrap_or(HardwareType::Encoder);
@@ -2680,4 +2725,108 @@ fn view_verification(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     ]
     .spacing(6)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mesh_midi::{ControlBehavior, DeckTargetConfig, DeviceProfile};
+
+    fn hid(name: &str) -> ControlAddress {
+        ControlAddress::Hid { device_id: "TEST01".to_string(), name: name.to_string() }
+    }
+
+    fn mapping(action: &str, physical_deck: Option<usize>, params: &[(&str, u64)]) -> ControlMapping {
+        ControlMapping {
+            control: hid(action),
+            action: action.to_string(),
+            physical_deck,
+            deck_index: None,
+            params: params.iter()
+                .map(|(k, v)| (k.to_string(), serde_yaml::Value::Number((*v).into())))
+                .collect(),
+            behavior: ControlBehavior::Momentary,
+            shift_action: None,
+            encoder_mode: None,
+            hardware_type: Some(HardwareType::Button),
+            mode: None,
+        }
+    }
+
+    fn profile(mappings: Vec<ControlMapping>) -> MidiConfig {
+        let mut channel_to_deck = HashMap::new();
+        channel_to_deck.insert(0u8, 0usize);
+        channel_to_deck.insert(1u8, 1usize);
+        MidiConfig {
+            devices: vec![DeviceProfile {
+                name: "Test".into(),
+                port_match: "Test".into(),
+                learned_port_name: None,
+                device_type: Some("hid".into()),
+                hid_product_match: Some("Test".into()),
+                hid_device_id: Some("TEST01".into()),
+                deck_target: DeckTargetConfig::Direct { channel_to_deck },
+                pad_mode_source: Default::default(),
+                shift_buttons: vec![],
+                mappings,
+                feedback: vec![],
+                momentary_mode_buttons: false,
+                color_note_offsets: None,
+            }],
+        }
+    }
+
+    fn survives(config: &MidiConfig, action: &str) -> bool {
+        let mut state = MidiLearnState::new();
+        state.load_existing_config(config);
+        state.generate_config()
+            .devices.iter()
+            .flat_map(|d| &d.mappings)
+            .any(|m| m.action == action)
+    }
+
+    /// Routing params (`decks`, `side`) are written by `generate_config` for the
+    /// mapping engine. They are not identity — if the loader treats them as part of
+    /// the tree key the lookup misses, the node stays unmapped, and the next save
+    /// omits the mapping entirely. That silently deleted per-side mode buttons.
+    #[test]
+    fn routing_params_do_not_break_reload() {
+        for (action, param) in [
+            ("deck.hot_cue_mode", "decks"),
+            ("deck.slicer_mode", "decks"),
+            ("side.browse_mode", "side"),
+        ] {
+            let cfg = profile(vec![mapping(action, Some(0), &[(param, 0)])]);
+            assert!(survives(&cfg, action), "{action} was dropped (routing param `{param}` treated as identity)");
+        }
+    }
+
+    /// Extra browse controls are identified by `index`, which is also mirrored into
+    /// `physical_deck` for browse-mode gating. Dropping the param on write left
+    /// nothing to match them on when reloading.
+    #[test]
+    fn extra_browse_controls_survive_reload() {
+        for action in ["browser.scroll", "browser.select"] {
+            let cfg = profile(vec![mapping(action, Some(1), &[("index", 1)])]);
+            assert!(survives(&cfg, action), "extra {action} (index=1) was dropped on reload");
+        }
+    }
+
+    /// Identity params must still key the lookup — this is the case that always
+    /// worked, kept as a guard against over-filtering.
+    #[test]
+    fn identity_params_still_match() {
+        let cfg = profile(vec![mapping("deck.hot_cue_press", Some(0), &[("slot", 3)])]);
+        assert!(survives(&cfg, "deck.hot_cue_press"), "hot cue pad slot 3 was dropped");
+    }
+
+    /// `params` is a HashMap; picking `keys().next()` made the tree key depend on
+    /// iteration order. Identity extraction must be deterministic.
+    #[test]
+    fn identity_param_extraction_is_deterministic() {
+        let cm = mapping("deck.hot_cue_press", Some(0), &[("slot", 2), ("decks", 0)]);
+        for _ in 0..50 {
+            assert_eq!(MidiLearnState::identity_param(&cm), (Some("slot".to_string()), Some(2)));
+        }
+    }
 }
