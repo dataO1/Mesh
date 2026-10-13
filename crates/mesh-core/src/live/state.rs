@@ -168,7 +168,7 @@ impl LaneShared {
             seeds: std::array::from_fn(|i| self.seeds[i].load(ORD)),
             controls: std::array::from_fn(|i| f32::from_bits(self.controls[i].load(ORD))),
             option: self.option.load(ORD),
-            option_pending: (pending != NO_INDEX).then_some(pending),
+            option_pending: (pending != NO_INDEX && pending != self.option.load(ORD)).then_some(pending),
             active_step: self.active_step.load(ORD),
             fired: FiredView {
                 count: (fired >> 8) as u32,

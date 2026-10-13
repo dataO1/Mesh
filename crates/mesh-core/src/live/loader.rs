@@ -42,7 +42,7 @@ use crate::pd::PdManager;
 use crate::types::StereoBuffer;
 
 use super::command::{drive_db, GlueControl};
-use super::generator::{self, LaneGenerator, MAX_GEN_PARAMS};
+use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::{db_to_lin, GlueParams, Role};
 use super::harmony::Progression;
 use super::lane::{
@@ -132,6 +132,15 @@ pub struct ResolvedControl {
     pub route: ControlRoute,
 }
 
+/// One drum kit as the generator sees it.
+pub struct DrumKit {
+    /// Which targets exist in this kit (`generator::layout`).
+    pub layout: DrumLayout,
+    /// Generator built for this kit's layout. `None` = the lane's generator
+    /// (kit 0, or a generator override).
+    pub generator: Option<Box<dyn LaneGenerator>>,
+}
+
 /// Non-RT description of a loaded lane.
 pub struct LaneMeta {
     pub name: String,
@@ -145,6 +154,8 @@ pub struct LaneMeta {
     pub generator: Box<dyn LaneGenerator>,
     /// Generator parameters after the style's defaults.
     pub gen_params: [f32; MAX_GEN_PARAMS],
+    /// Drum lane: target layout (and generator) per kit, index = option.
+    pub drum_kits: Vec<DrumKit>,
 }
 
 /// A style loaded into RAM.
@@ -522,6 +533,8 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
 
     for (li, lane) in spec.lanes.iter().enumerate() {
         let mut options: Vec<LaneOption> = Vec::new();
+        let mut drum_kits: Vec<DrumKit> = Vec::new();
+        let overridden = generators[li].is_some();
         let mut option_names: Vec<String> = Vec::new();
         let mut claps: Vec<Arc<ClapCell>> = Vec::new();
         let mut kicks = [0u64; 4];
@@ -556,6 +569,12 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                 }
                 options.push(LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain: 1.0 });
                 option_names.push(names.join("+"));
+                // The generator follows the kit: sample and slice counts differ per kit.
+                let pick = |sv: &style::SubVoiceSpec| (sv.default_option + kit) % sv.options.len().max(1);
+                let layout = DrumLayout::from_sub_voices(&lane.sub_voices, pick);
+                let generator = (kit > 0 && !overridden)
+                    .then(|| generator::build_with(&lane.generator, lane.role, &layout, &lane.archetypes));
+                drum_kits.push(DrumKit { layout, generator });
             }
             default_option = 0;
         } else {
@@ -617,7 +636,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
 
         let fx = ctx.build_fx(&lane.name, &lane.fx);
         let fx_len = fx.len();
-        let generator = generators[li].take().unwrap_or_else(|| generator::build(&lane.generator, lane.role));
+        let generator = generators[li].take().unwrap_or_else(|| generator::build_lane(lane));
 
         let mut gen_params = generator.param_defaults();
         for (name, &value) in &lane.generator.params {
@@ -672,6 +691,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             sends: lane.sends,
             generator,
             gen_params,
+            drum_kits,
         });
     }
 
@@ -706,7 +726,7 @@ pub(crate) fn fixture_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::lane::{DRUM_TARGET_BREAK, DRUM_TARGET_HATS, DRUM_TARGET_PERC};
+    use crate::live::lane::{drum_target_range, DRUM_TARGET_BREAK, DRUM_TARGET_HATS, DRUM_TARGET_PERC};
 
     fn load() -> LoadedStyle {
         let style = Style::load(&fixture_dir()).unwrap_or_else(|e| panic!("{e}"));
@@ -840,6 +860,13 @@ mod tests {
         assert_eq!((slice.choke, slice.gain, slice.pitched), (1, 0.5, false));
         assert_eq!(slice.kind, SliceType::Hat);
         assert_eq!(bank.resolve(DRUM_TARGET_HATS, 0).unwrap().choke, 2);
+        // Same numbering as the generators' layout for this kit.
+        let layout = DrumLayout::from_lane(&style.spec.lanes[0]);
+        assert_eq!((layout.kick, layout.snare, layout.hat_closed, layout.hat_open), (Some(0), Some(1), Some(8), Some(9)));
+        assert_eq!((layout.perc_count, layout.slices().len()), (1, 4));
+        for i in 0..layout.slices().len() {
+            assert!(bank.resolve(layout.slice_target(i), 0).is_some());
+        }
         // The break's kick slice keys the duck.
         assert_ne!(kicks[0] & (1 << DRUM_TARGET_BREAK), 0);
         // The amen is decoded once although the cache is asked per option.
@@ -872,13 +899,19 @@ mod tests {
 
     #[test]
     fn missing_generator_param_and_fx_are_warnings_not_errors() {
+        let style = Style::load(&fixture_dir()).unwrap();
+        let mut opts = LoadOptions::new(48_000);
+        // A generator without parameters: its lane's generator controls cannot resolve.
+        opts.generators[1] = Some(Box::new(crate::live::generator::fixed::FixedPattern::default()));
+        let loaded = load_style(&style, opts).unwrap();
+        assert_eq!(loaded.meta[1].controls[0].route, ControlRoute::Unresolved);
+        assert!(loaded.warnings.iter().any(|w| w.contains("no parameter 'complexity'")), "{:?}", loaded.warnings);
+        assert!(loaded.warnings.iter().any(|w| w.contains("surge")), "{:?}", loaded.warnings);
+        // The real generators resolve the style's names.
         let loaded = load();
-        // The registry stub exposes no parameters yet, so generator controls are unresolved.
-        if loaded.meta[1].generator.param_names().is_empty() {
-            assert_eq!(loaded.meta[1].controls[0].route, ControlRoute::Unresolved);
-            assert!(loaded.warnings.iter().any(|w| w.contains("no parameter")), "{:?}", loaded.warnings);
-        }
-        // The CLAP option was reported.
-        assert!(loaded.warnings.iter().all(|w| !w.is_empty()));
+        assert_eq!(loaded.meta[0].controls[0].route, ControlRoute::Generator(0), "drums: style");
+        assert_eq!(loaded.meta[0].controls[1].route, ControlRoute::Generator(1), "drums: density");
+        assert!(matches!(loaded.meta[1].controls[0].route, ControlRoute::Generator(_)), "bass: complexity");
+        assert_eq!(loaded.meta[0].drum_kits.len(), 1);
     }
 }

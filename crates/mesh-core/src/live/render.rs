@@ -35,14 +35,15 @@ use crate::music::MusicalKey;
 use crate::types::StereoSample;
 
 use super::clock::BARS_PER_PHRASE;
-use super::event::{BarEvents, EventKind};
-use super::generator::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
+use super::event::BarEvents;
+use super::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::Role;
 use super::harmony::{HarmonyState, Progression};
 use super::lane::ClapCell;
 use super::player::{BarPacket, BAR_POOL_SIZE};
 use super::state::LiveShared;
-use super::{NUM_LANES, SLOTS_PER_CHAIN, STEPS_PER_BAR, TICKS_PER_STEP};
+use super::loader::DrumKit;
+use super::{NUM_LANES, SLOTS_PER_CHAIN, STEPS_PER_BAR};
 
 /// How often the renderer thread looks for work. A structural change made
 /// later than this before a bar boundary may land one bar late.
@@ -60,6 +61,8 @@ pub enum RenderMsg {
     /// Arm a progression for the next phrase.
     Progression(usize),
     HalfTime(bool),
+    /// The drum lane switched kit: use that kit's generator and layout.
+    Kit { lane: u8, kit: u16 },
 }
 
 /// One lane's render inputs.
@@ -68,6 +71,21 @@ pub struct RenderLane {
     pub generator: Box<dyn LaneGenerator>,
     pub seeds: [u32; SLOTS_PER_CHAIN],
     pub params: [f32; MAX_GEN_PARAMS],
+    /// Drum lane: layout and generator per kit. Empty on other lanes.
+    pub kits: Vec<DrumKit>,
+    /// Selected kit.
+    pub kit: usize,
+}
+
+impl RenderLane {
+    fn active_generator(&self) -> &dyn LaneGenerator {
+        self.kits.get(self.kit).and_then(|k| k.generator.as_deref()).unwrap_or(self.generator.as_ref())
+    }
+
+    /// Target layout of the selected kit, for the onset mask.
+    fn layout(&self) -> DrumLayout {
+        self.kits.get(self.kit).map(|k| k.layout).unwrap_or_else(DrumLayout::standard)
+    }
 }
 
 /// RT ends of the bar rings.
@@ -167,6 +185,11 @@ impl BarRenderer {
                 self.shared.set_pending_progression(self.want_progression);
             }
             RenderMsg::HalfTime(on) => self.half_time = on,
+            RenderMsg::Kit { lane, kit } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    l.kit = kit as usize;
+                }
+            }
         }
         self.dirty = true;
     }
@@ -271,12 +294,12 @@ impl BarRenderer {
                     harmony: ctx,
                     drum_mask: if li == 0 { &no_mask } else { &drum_mask },
                 };
-                lane.generator.render_bar(&bar_ctx, out);
+                lane.active_generator().render_bar(&bar_ctx, out);
                 // The player relies on tick order.
                 out.sort();
             }
             if li == 0 {
-                drum_mask = onset_mask(&packet.lanes[0].main);
+                drum_mask = lane.layout().onset_mask(packet.lanes[0].main.as_slice());
             }
         }
 
@@ -311,20 +334,6 @@ impl BarRenderer {
     }
 }
 
-/// Velocity of the loudest onset on each 16th step (0 = none).
-pub fn onset_mask(bar: &BarEvents) -> [u8; STEPS_PER_BAR] {
-    let mut mask = [0u8; STEPS_PER_BAR];
-    for e in bar.as_slice() {
-        if matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) {
-            let step = (e.tick / TICKS_PER_STEP) as usize;
-            if step < STEPS_PER_BAR {
-                mask[step] = mask[step].max(e.vel);
-            }
-        }
-    }
-    mask
-}
-
 /// Stops and joins the renderer thread on drop.
 pub struct RendererHandle {
     stop: Arc<AtomicBool>,
@@ -343,8 +352,8 @@ impl Drop for RendererHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::event::LiveEvent;
-    use crate::live::generator::fixed::{DegreeNote, FixedPattern};
+    use crate::live::event::{EventKind, LiveEvent};
+    use crate::live::generator::fixed::FixedPattern;
     use crate::live::player::StepPlayer;
 
     /// Records the context it was rendered with: one event whose fields
@@ -390,6 +399,14 @@ mod tests {
             generator: Box::new(drums),
             seeds: [0; SLOTS_PER_CHAIN],
             params: [0.5; MAX_GEN_PARAMS],
+            kits: vec![
+                DrumKit { layout: DrumLayout::standard(), generator: None },
+                DrumKit {
+                    layout: DrumLayout::empty(),
+                    generator: Some(Box::new(FixedPattern::new(vec![LiveEvent { tick: 96, target: 1, vel: 90, ..Default::default() }]))),
+                },
+            ],
+            kit: 0,
         }];
         for role in [Role::Bass, Role::Lead, Role::Extra] {
             lanes.push(RenderLane {
@@ -397,6 +414,8 @@ mod tests {
                 generator: Box::new(Probe),
                 seeds: [10, 11, 12, 13],
                 params: [0.5; MAX_GEN_PARAMS],
+                kits: Vec::new(),
+                kit: 0,
             });
         }
         let progressions = vec![Progression::new(&[0, 5, 3, 4], 1).unwrap(), Progression::new(&[0, 6], 2).unwrap()];
@@ -555,14 +574,16 @@ mod tests {
     }
 
     #[test]
-    fn onset_mask_takes_the_loudest_hit_per_step() {
-        let mut bar = BarEvents::default();
-        bar.push(LiveEvent { tick: 0, vel: 60, ..Default::default() });
-        bar.push(LiveEvent { tick: 5, vel: 90, ..Default::default() });
-        bar.push(LiveEvent { tick: 100, vel: 40, ..Default::default() });
-        bar.push(LiveEvent { tick: 200, kind: EventKind::NoteOff, vel: 127, ..Default::default() });
-        let mask = onset_mask(&bar);
-        assert_eq!((mask[0], mask[4], mask[8]), (90, 40, 0));
-        let _ = DegreeNote::new(0, 0, 0, 0, 0);
+    fn kit_change_switches_generator_and_mask_layout() {
+        let mut r = rig();
+        r.renderer.service();
+        r.rt_enter(0);
+        r.tx.send(RenderMsg::Kit { lane: 0, kit: 1 }).unwrap();
+        r.renderer.service();
+        let p1 = r.rt_enter(1).unwrap();
+        // Kit 1's generator plays a snare only; its layout has no kick, so
+        // the mask the bass sees is empty.
+        assert_eq!(p1.lanes[0].main.len(), 1);
+        assert_eq!(p1.lanes[1].main.as_slice()[0].note_id, 0);
     }
 }

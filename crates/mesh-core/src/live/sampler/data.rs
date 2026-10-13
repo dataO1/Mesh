@@ -8,7 +8,7 @@ use std::path::Path;
 
 use basedrop::Shared;
 
-use crate::audio_file::{resample_mono_audio, AudioFileError};
+use crate::audio_file::AudioFileError;
 use crate::types::{StereoBuffer, StereoSample};
 
 /// Zero frames stored before and after the audio so every interpolation tap
@@ -130,8 +130,8 @@ impl SampleData {
         let src = &self.frames.as_slice()[PAD..PAD + self.len];
         let left: Vec<f32> = src.iter().map(|s| s.left).collect();
         let right: Vec<f32> = src.iter().map(|s| s.right).collect();
-        let left = resample_mono_audio(&left, self.sample_rate, target_rate)?;
-        let right = resample_mono_audio(&right, self.sample_rate, target_rate)?;
+        let left = resample_aligned(&left, self.sample_rate, target_rate)?;
+        let right = resample_aligned(&right, self.sample_rate, target_rate)?;
         let ratio = target_rate as f64 / self.sample_rate as f64;
         let mut out = Self::from_channels(&left, &right, target_rate, self.root_key)
             .with_root_cents(self.root_cents);
@@ -161,6 +161,38 @@ impl SampleData {
         let (samples, channels, rate) = decode_file(path)?;
         Self::from_interleaved(&samples, channels, rate, root_key).resampled_to(target_rate)
     }
+}
+
+/// Resample one channel with the FFT resampler used for track loading, with
+/// the resampler's delay removed, so frame 0 of the input is frame 0 of the
+/// output and the tail is kept. (`audio_file::resample_mono_audio` leaves the
+/// delay in, which shifts a sample's onset late by several milliseconds.)
+fn resample_aligned(input: &[f32], source_rate: u32, target_rate: u32) -> Result<Vec<f32>, AudioFileError> {
+    use rubato::{FftFixedInOut, Resampler};
+
+    let mut resampler = FftFixedInOut::<f32>::new(source_rate as usize, target_rate as usize, 1024, 1)
+        .map_err(|e| AudioFileError::IoError(format!("sample resampler init failed: {e}")))?;
+    let chunk = resampler.input_frames_max();
+    let delay = resampler.output_delay();
+    let wanted = (input.len() as f64 * target_rate as f64 / source_rate as f64).ceil() as usize;
+
+    let mut out: Vec<f32> = Vec::with_capacity(wanted + delay + resampler.output_frames_max());
+    let mut buf = vec![vec![0.0f32; chunk]];
+    let mut pos = 0;
+    // Feed zeros past the end until the delayed tail has come out.
+    while out.len() < delay + wanted {
+        let n = input.len().saturating_sub(pos).min(chunk);
+        buf[0][..n].copy_from_slice(&input[pos..pos + n]);
+        buf[0][n..].fill(0.0);
+        let chunk_out = resampler
+            .process(&buf, None)
+            .map_err(|e| AudioFileError::IoError(format!("sample resampling failed: {e}")))?;
+        out.extend_from_slice(&chunk_out[0]);
+        pos += n;
+    }
+    out.drain(..delay);
+    out.truncate(wanted);
+    Ok(out)
 }
 
 /// Decode any WAV (hound) or other symphonia-supported file to interleaved f32.

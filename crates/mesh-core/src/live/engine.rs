@@ -636,6 +636,10 @@ impl LiveController {
         l.browse = None;
         self.shared.lane(lane).set_option_pending(Some(option as u16));
         self.rt(RtMsg::Option { lane: lane as u8, option: option as u16 });
+        if self.lanes[lane].role == Role::Drums {
+            // The drum generator follows the kit (sample and slice counts differ).
+            self.render(RenderMsg::Kit { lane: lane as u8, kit: option as u16 });
+        }
     }
 
     fn set_half_time(&mut self, on: bool) {
@@ -796,7 +800,14 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
             browse: None,
             on: true,
         });
-        render_lanes.push(RenderLane { role: m.role, generator: m.generator, seeds, params: m.gen_params });
+        render_lanes.push(RenderLane {
+            role: m.role,
+            generator: m.generator,
+            seeds,
+            params: m.gen_params,
+            kits: m.drum_kits,
+            kit: 0,
+        });
     }
 
     let n_progressions = progressions.len();

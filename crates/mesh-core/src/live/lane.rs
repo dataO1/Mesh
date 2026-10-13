@@ -27,6 +27,7 @@ use crate::types::{StereoBuffer, StereoSample};
 use super::clock::ClockSegment;
 use super::command::SamplerParam;
 use super::event::{flags, EventKind, LiveEvent};
+use super::generator::layout;
 use super::glue::{Role, SaturationParams, Saturator};
 use super::player::EventSink;
 use super::sampler::{Interpolation, LaneSamplerParams, SampleBank, Sampler};
@@ -36,25 +37,20 @@ use super::TICKS_PER_STEP;
 
 // ─── Drum-lane target layout ───────────────────────────────────────────
 
-/// First event `target` of each drum sub-voice. Samples of the sub-voice's
-/// selected option follow in style order (a sliced sample takes one target
-/// per slice). Generators address drum hits through these constants, so a
-/// kit swap never changes what a target means.
-pub const DRUM_TARGET_BACKBONE: u8 = 0;
-/// Backbone convention: target 0 is the kick, target 1 the snare.
-pub const DRUM_TARGET_BREAK: u8 = 16;
-pub const DRUM_TARGET_HATS: u8 = 80;
-pub const DRUM_TARGET_PERC: u8 = 96;
-/// One past the last drum target.
-pub const DRUM_TARGET_END: u8 = 112;
+// The numbering is the generators' convention, see `generator::layout`:
+// backbone 0..8 (0 kick, 1 snare), hats 8..16, perc 16..24, break slices 32..96.
+pub const DRUM_TARGET_BACKBONE: u8 = layout::BACKBONE_BASE;
+pub const DRUM_TARGET_HATS: u8 = layout::HATS_BASE;
+pub const DRUM_TARGET_PERC: u8 = layout::PERC_BASE;
+pub const DRUM_TARGET_BREAK: u8 = layout::BREAK_BASE;
 
 /// `(first target, target count)` of a drum sub-voice.
 pub fn drum_target_range(kind: SubVoiceKind) -> (u8, u8) {
     match kind {
-        SubVoiceKind::Backbone => (DRUM_TARGET_BACKBONE, DRUM_TARGET_BREAK - DRUM_TARGET_BACKBONE),
-        SubVoiceKind::Break => (DRUM_TARGET_BREAK, DRUM_TARGET_HATS - DRUM_TARGET_BREAK),
-        SubVoiceKind::Hats => (DRUM_TARGET_HATS, DRUM_TARGET_PERC - DRUM_TARGET_HATS),
-        SubVoiceKind::Perc => (DRUM_TARGET_PERC, DRUM_TARGET_END - DRUM_TARGET_PERC),
+        SubVoiceKind::Backbone => (DRUM_TARGET_BACKBONE, layout::BLOCK_LEN),
+        SubVoiceKind::Hats => (DRUM_TARGET_HATS, layout::BLOCK_LEN),
+        SubVoiceKind::Perc => (DRUM_TARGET_PERC, layout::BLOCK_LEN),
+        SubVoiceKind::Break => (DRUM_TARGET_BREAK, layout::MAX_BREAK_SLICES as u8),
     }
 }
 
@@ -62,10 +58,10 @@ pub fn drum_target_range(kind: SubVoiceKind) -> (u8, u8) {
 pub fn span_tag(role: Role, ev: &LiveEvent) -> SpanTag {
     if role == Role::Drums {
         match ev.target {
-            t if t < DRUM_TARGET_BREAK => SpanTag::Backbone,
-            t if t < DRUM_TARGET_HATS => SpanTag::Break,
+            t if t < DRUM_TARGET_HATS => SpanTag::Backbone,
             t if t < DRUM_TARGET_PERC => SpanTag::Hats,
-            _ => SpanTag::Perc,
+            t if t < DRUM_TARGET_BREAK => SpanTag::Perc,
+            _ => SpanTag::Break,
         }
     } else if ev.has(flags::TIE) {
         SpanTag::Tie
@@ -1012,9 +1008,9 @@ mod tests {
 
         let hit = |target| LiveEvent { target, ..Default::default() };
         assert_eq!(span_tag(Role::Drums, &hit(1)), SpanTag::Backbone);
-        assert_eq!(span_tag(Role::Drums, &hit(20)), SpanTag::Break);
-        assert_eq!(span_tag(Role::Drums, &hit(81)), SpanTag::Hats);
-        assert_eq!(span_tag(Role::Drums, &hit(100)), SpanTag::Perc);
+        assert_eq!(span_tag(Role::Drums, &hit(40)), SpanTag::Break);
+        assert_eq!(span_tag(Role::Drums, &hit(9)), SpanTag::Hats);
+        assert_eq!(span_tag(Role::Drums, &hit(17)), SpanTag::Perc);
         let mut tie = hit(0);
         tie.flags = flags::TIE;
         assert_eq!(span_tag(Role::Bass, &tie), SpanTag::Tie);
