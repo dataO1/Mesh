@@ -148,6 +148,14 @@ impl SampleData {
         Ok(out)
     }
 
+    /// Decode a WAV or FLAC file at its own sample rate. Off-RT only. Used
+    /// when slice markers (given in file frames) are attached before
+    /// [`Self::resampled_to`] scales them.
+    pub fn decode(path: &Path, root_key: u8) -> Result<Self, AudioFileError> {
+        let (samples, channels, rate) = decode_file(path)?;
+        Ok(Self::from_interleaved(&samples, channels, rate, root_key))
+    }
+
     /// Decode a WAV or FLAC file and resample it to `target_rate`. Off-RT only.
     pub fn load_file(path: &Path, root_key: u8, target_rate: u32) -> Result<Self, AudioFileError> {
         let (samples, channels, rate) = decode_file(path)?;

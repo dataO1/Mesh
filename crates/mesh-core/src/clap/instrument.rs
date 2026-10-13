@@ -546,6 +546,20 @@ fn bytes_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string()
 }
 
+/// Pending main-thread requests of one instrument (see [`ClapInstrument::idle_signal`]).
+#[derive(Clone)]
+pub struct IdleSignal {
+    restart: Arc<AtomicBool>,
+    callback: Arc<AtomicBool>,
+}
+
+impl IdleSignal {
+    /// True when the plugin asked for a restart or a main-thread callback.
+    pub fn pending(&self) -> bool {
+        self.restart.load(Ordering::Acquire) || self.callback.load(Ordering::Acquire)
+    }
+}
+
 // ============================================================================
 // ClapInstrument
 // ============================================================================
@@ -1043,6 +1057,16 @@ impl ClapInstrument {
     // ------------------------------------------------------------------------
     // Main-thread housekeeping
     // ------------------------------------------------------------------------
+
+    /// Lock-free view of the plugin's pending main-thread requests. Lets a
+    /// housekeeping thread decide whether [`idle`](Self::idle) has work to do
+    /// without touching the instrument itself.
+    pub fn idle_signal(&self) -> IdleSignal {
+        IdleSignal {
+            restart: Arc::clone(&self.restart_requested),
+            callback: Arc::clone(&self.callback_requested),
+        }
+    }
 
     /// Service plugin requests (main thread): runs `on_main_thread` when the
     /// plugin asked for a callback and performs a deactivate → reactivate

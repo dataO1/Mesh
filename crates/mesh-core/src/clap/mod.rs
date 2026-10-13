@@ -86,7 +86,7 @@ pub use discovery::{ClapDiscovery, ClapPluginCategory, DiscoveredClapPlugin};
 pub use plugin::{ClapPluginWrapper, ParamChangeEvent, ParamChangeReceiver};
 pub use effect::ClapEffect;
 pub use instrument::{
-    ClapInstrument, EndedNote, InstrumentCapabilities, InstrumentNote, InstrumentNoteDialect,
+    ClapInstrument, EndedNote, IdleSignal, InstrumentCapabilities, InstrumentNote, InstrumentNoteDialect,
     InstrumentNoteKind, InstrumentParamInfo, InstrumentProcessError, NoteExpr, NotePortSummary,
     TransportInfo, VoiceInfoSummary, INSTRUMENT_MAX_FRAMES, MAX_ENDED_NOTES, MAX_NOTES_PER_BLOCK,
     MAX_PENDING_PARAMS,

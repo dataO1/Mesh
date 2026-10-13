@@ -1,5 +1,6 @@
-# Test fixture for mesh_core::live::style. The WAV files are 4-frame silent
-# stubs; values follow the design-doc examples and are not tuned sound design.
+# Test fixture for mesh_core::live. The WAV files are short synthetic hits and
+# tones (see live::loader::tests::regenerate_fixture_wavs); values follow the
+# design-doc examples and are not tuned sound design.
 name: fixture-breaks
 version: 1
 tempo: { default: 172, min: 160, max: 178 }
@@ -53,9 +54,9 @@ lanes:
                   choke: 1
                   slices:
                     - { start: 0, type: kick }
-                    - { start: 1, type: hat }
-                    - { start: 2, type: snare }
-                    - { start: 3, type: ghost }
+                    - { start: 1800, type: hat }
+                    - { start: 3600, type: snare }
+                    - { start: 5400, type: ghost }
       - voice: hats
         choke: 2
         options:
@@ -71,11 +72,11 @@ lanes:
               samples:
                 - { file: assets/drums/shaker.wav }
     fx:
-      - { id: filter, source: native, params: { 0: 1.0 } }
+      - { id: filter, source: native, params: { 0: 0.5 } }
     controls:
       - { label: style, target: { type: generator, param: style }, default: 0.4 }
       - { label: dens, target: { type: generator, param: density }, default: 0.5 }
-      - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.2, max: 1.0, curve: exp, default: 1.0 }
+      - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.1, max: 0.5, curve: exp, default: 1.0 }
       - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.6, default: 0.0 }
     generator:
       family: procedural
@@ -120,10 +121,15 @@ lanes:
             - file: assets/lead/stab-a4.wav
               root_key: 69
               zone: { keys: [F4, G9], velocities: [0, 127] }
+      - name: stab-thin
+        lufs_trim_db: -3.0
+        sampler:
+          samples:
+            - { file: assets/lead/stab-a4.wav, root_key: A4 }
     controls:
       - { label: cx, target: { type: generator, param: complexity }, default: 0.2 }
       - { label: dens, target: { type: generator, param: density }, default: 0.3 }
-      - { label: param, target: { type: instrument, param: 0 } }
+      - { label: cutoff, target: { type: instrument, param: 0 }, default: 1.0 }
       - { label: delay, target: { type: send, bus: delay }, min: 0.0, max: 0.7, curve: s }
     generator:
       family: procedural
@@ -142,7 +148,7 @@ lanes:
     controls:
       - { label: cx, target: { type: generator, param: complexity }, default: 0.1 }
       - { label: dens, target: { type: generator, param: density }, default: 0.3 }
-      - { label: param, target: { type: instrument, param: 1 }, curve: log }
+      - { label: reso, target: { type: instrument, param: 1 }, curve: log, default: 0.0 }
       - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.8 }
     generator:
       family: idiom
