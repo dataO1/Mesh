@@ -1,0 +1,384 @@
+//! Sample data, slot definitions and the per-lane sample bank.
+//!
+//! Everything here is built off the RT thread (style loader) and handed to the
+//! RT side wrapped in `basedrop::Shared`, the same way deck stems are shared.
+//! The RT thread only reads it and clones `Shared` handles (an atomic increment).
+
+use std::path::Path;
+
+use basedrop::Shared;
+
+use crate::audio_file::{resample_mono_audio, AudioFileError};
+use crate::types::{StereoBuffer, StereoSample};
+
+/// Zero frames stored before and after the audio so every interpolation tap
+/// (at most 4 behind and 5 ahead of the read position) stays in bounds without
+/// per-tap clamping.
+pub(crate) const PAD: usize = 8;
+
+/// Musical type of a break slice (design §9: stored in the style, used by the
+/// generator to swap a slice for one of the same type).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SliceType {
+    Kick,
+    Snare,
+    Ghost,
+    Hat,
+    Perc,
+    #[default]
+    Other,
+}
+
+/// One slice of a sample, in frames at the sample's own rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slice {
+    pub start: usize,
+    /// Exclusive.
+    pub end: usize,
+    pub kind: SliceType,
+}
+
+/// Decoded stereo audio plus its tuning and optional slice table.
+///
+/// Audio is stored with [`PAD`] zero frames on both sides. All positions in the
+/// public API are frame indices into the unpadded audio.
+pub struct SampleData {
+    /// Padded audio: `PAD` zeros, `len` frames, `PAD` zeros.
+    frames: StereoBuffer,
+    len: usize,
+    sample_rate: u32,
+    /// MIDI key the sample sounds at when played at rate 1.
+    pub root_key: u8,
+    /// Tuning of the recording relative to `root_key` (+20 = 20 cents sharp).
+    pub root_cents: i16,
+    pub slices: Vec<Slice>,
+}
+
+impl SampleData {
+    /// Build from separate channel buffers. `right` may be empty for mono.
+    pub fn from_channels(left: &[f32], right: &[f32], sample_rate: u32, root_key: u8) -> Self {
+        let len = left.len();
+        let right = if right.len() == len { right } else { left };
+        let mut frames = StereoBuffer::silence(len + 2 * PAD);
+        let dst = frames.as_mut_slice();
+        for i in 0..len {
+            dst[PAD + i] = StereoSample::new(left[i], right[i]);
+        }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new() }
+    }
+
+    /// Build from interleaved samples with 1 or 2 channels (extra channels ignored).
+    pub fn from_interleaved(samples: &[f32], channels: usize, sample_rate: u32, root_key: u8) -> Self {
+        let channels = channels.max(1);
+        let len = samples.len() / channels;
+        let mut frames = StereoBuffer::silence(len + 2 * PAD);
+        let dst = frames.as_mut_slice();
+        for i in 0..len {
+            let l = samples[i * channels];
+            let r = if channels > 1 { samples[i * channels + 1] } else { l };
+            dst[PAD + i] = StereoSample::new(l, r);
+        }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new() }
+    }
+
+    pub fn with_root_cents(mut self, cents: i16) -> Self {
+        self.root_cents = cents;
+        self
+    }
+
+    /// Attach a slice table. Slices are clamped to the sample length.
+    pub fn with_slices(mut self, mut slices: Vec<Slice>) -> Self {
+        for s in &mut slices {
+            s.end = s.end.min(self.len);
+            s.start = s.start.min(s.end);
+        }
+        self.slices = slices;
+        self
+    }
+
+    /// Number of audio frames (unpadded).
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Frame `i` of the unpadded audio.
+    pub fn frame(&self, i: usize) -> StereoSample {
+        self.frames.as_slice()[PAD + i]
+    }
+
+    /// Padded frames, for the interpolators.
+    #[inline]
+    pub(crate) fn padded(&self) -> &[StereoSample] {
+        self.frames.as_slice()
+    }
+
+    /// Resample to `target_rate` (off-RT; FFT resampler shared with track
+    /// loading). Slice positions are scaled along. No-op if the rate matches.
+    pub fn resampled_to(self, target_rate: u32) -> Result<Self, AudioFileError> {
+        if self.sample_rate == target_rate || self.len == 0 {
+            return Ok(self);
+        }
+        let src = &self.frames.as_slice()[PAD..PAD + self.len];
+        let left: Vec<f32> = src.iter().map(|s| s.left).collect();
+        let right: Vec<f32> = src.iter().map(|s| s.right).collect();
+        let left = resample_mono_audio(&left, self.sample_rate, target_rate)?;
+        let right = resample_mono_audio(&right, self.sample_rate, target_rate)?;
+        let ratio = target_rate as f64 / self.sample_rate as f64;
+        let mut out = Self::from_channels(&left, &right, target_rate, self.root_key)
+            .with_root_cents(self.root_cents);
+        let slices = self
+            .slices
+            .iter()
+            .map(|s| Slice {
+                start: (s.start as f64 * ratio).round() as usize,
+                end: (s.end as f64 * ratio).round() as usize,
+                kind: s.kind,
+            })
+            .collect();
+        out = out.with_slices(slices);
+        Ok(out)
+    }
+
+    /// Decode a WAV or FLAC file and resample it to `target_rate`. Off-RT only.
+    pub fn load_file(path: &Path, root_key: u8, target_rate: u32) -> Result<Self, AudioFileError> {
+        let (samples, channels, rate) = decode_file(path)?;
+        Self::from_interleaved(&samples, channels, rate, root_key).resampled_to(target_rate)
+    }
+}
+
+/// Decode any WAV (hound) or other symphonia-supported file to interleaved f32.
+fn decode_file(path: &Path) -> Result<(Vec<f32>, usize, u32), AudioFileError> {
+    let is_wav = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if is_wav {
+        let reader = hound::WavReader::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        let spec = reader.spec();
+        let samples: Result<Vec<f32>, _> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.into_samples::<f32>().collect(),
+            hound::SampleFormat::Int => {
+                let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader.into_samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect()
+            }
+        };
+        let samples = samples.map_err(|e| AudioFileError::Corrupted(e.to_string()))?;
+        return Ok((samples, spec.channels as usize, spec.sample_rate));
+    }
+
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| AudioFileError::InvalidFormat(e.to_string()))?;
+    let mut format = probed.format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| AudioFileError::InvalidFormat("no audio track".into()))?;
+    let track_id = track.id;
+    let rate = track.codec_params.sample_rate.unwrap_or(crate::types::SAMPLE_RATE);
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| AudioFileError::InvalidFormat(e.to_string()))?;
+
+    let mut out = Vec::new();
+    let mut buf: Option<SampleBuffer<f32>> = None;
+    while let Ok(packet) = format.next_packet() {
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+            Err(e) => return Err(AudioFileError::Corrupted(e.to_string())),
+        };
+        let b = buf.get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, *decoded.spec()));
+        if (b.capacity()) < decoded.capacity() * channels {
+            *b = SampleBuffer::new(decoded.capacity() as u64, *decoded.spec());
+        }
+        b.copy_interleaved_ref(decoded);
+        out.extend_from_slice(b.samples());
+    }
+    Ok((out, channels, rate))
+}
+
+/// One playable region of a sample, addressed by an event `target`.
+#[derive(Clone)]
+pub struct SlotDef {
+    pub sample: Shared<SampleData>,
+    /// Frame range within the sample (`end` exclusive).
+    pub start: usize,
+    pub end: usize,
+    pub kind: SliceType,
+    /// Root key / tuning for this slot (defaults to the sample's).
+    pub root_key: u8,
+    pub root_cents: i16,
+    /// Lowest and highest event key this zone answers (multisample key split).
+    pub key_lo: u8,
+    pub key_hi: u8,
+    /// Default lane-local choke group (0 = none). An event's non-zero
+    /// `choke` overrides it.
+    pub choke: u8,
+    /// Static gain (style LUFS trim per sub-voice).
+    pub gain: f32,
+    /// `false` ignores the event key (drum hits): only `cents` retunes.
+    pub pitched: bool,
+}
+
+impl SlotDef {
+    /// Whole-sample slot.
+    pub fn whole(sample: Shared<SampleData>) -> Self {
+        let end = sample.len();
+        Self::region(sample, 0, end, SliceType::Other)
+    }
+
+    /// Slot over the sample's `index`-th slice. `None` if out of range.
+    pub fn slice(sample: Shared<SampleData>, index: usize) -> Option<Self> {
+        let s = *sample.slices.get(index)?;
+        Some(Self::region(sample, s.start, s.end, s.kind))
+    }
+
+    fn region(sample: Shared<SampleData>, start: usize, end: usize, kind: SliceType) -> Self {
+        let (root_key, root_cents) = (sample.root_key, sample.root_cents);
+        let end = end.min(sample.len());
+        Self {
+            sample,
+            start: start.min(end),
+            end,
+            kind,
+            root_key,
+            root_cents,
+            key_lo: 0,
+            key_hi: 127,
+            choke: 0,
+            gain: 1.0,
+            pitched: true,
+        }
+    }
+
+    pub fn with_choke(mut self, group: u8) -> Self {
+        self.choke = group;
+        self
+    }
+
+    pub fn with_gain(mut self, gain: f32) -> Self {
+        self.gain = gain;
+        self
+    }
+
+    pub fn with_keys(mut self, lo: u8, hi: u8) -> Self {
+        self.key_lo = lo;
+        self.key_hi = hi;
+        self
+    }
+
+    pub fn unpitched(mut self) -> Self {
+        self.pitched = false;
+        self
+    }
+
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+}
+
+/// Maps event `target` (0..=255) to one or more key zones, plus per-group
+/// mono flags. Built off-RT, shared to the lane as `Shared<SampleBank>`.
+///
+/// A target is one of:
+/// - a one-shot or stem phrase (one whole-sample zone),
+/// - a break slice (one slice zone),
+/// - a drum sub-voice (any of the above with its own default choke group),
+/// - a multisampled instrument (several zones split by key).
+pub struct SampleBank {
+    targets: Vec<Vec<SlotDef>>,
+    mono: [bool; 256],
+}
+
+impl Default for SampleBank {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SampleBank {
+    pub fn new() -> Self {
+        Self { targets: vec![Vec::new(); 256], mono: [false; 256] }
+    }
+
+    /// Replace `target` with a single zone.
+    pub fn set(&mut self, target: u8, slot: SlotDef) {
+        self.targets[target as usize] = vec![slot];
+    }
+
+    /// Add a key zone to `target` (multisampled instrument).
+    pub fn add_zone(&mut self, target: u8, slot: SlotDef) {
+        self.targets[target as usize].push(slot);
+    }
+
+    /// Map every slice of `sample` to consecutive targets from `first`, all in
+    /// choke group `choke`. Returns the number of slices mapped.
+    pub fn map_slices(&mut self, first: u8, sample: &Shared<SampleData>, choke: u8) -> usize {
+        let mut n = 0;
+        for i in 0..sample.slices.len() {
+            let t = first as usize + i;
+            if t > 255 {
+                break;
+            }
+            if let Some(slot) = SlotDef::slice(sample.clone(), i) {
+                self.set(t as u8, slot.with_choke(choke));
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Mark a choke group as mono (see [`super::Sampler`] docs).
+    pub fn set_mono(&mut self, group: u8, mono: bool) {
+        self.mono[group as usize] = mono;
+    }
+
+    #[inline]
+    pub fn is_mono(&self, group: u8) -> bool {
+        group != 0 && self.mono[group as usize]
+    }
+
+    /// Zone for `target` at `key`. Key 0 (no pitch) or a key outside every
+    /// zone falls back to the zone whose root is nearest the key.
+    #[inline]
+    pub fn resolve(&self, target: u8, key: u8) -> Option<&SlotDef> {
+        let zones = &self.targets[target as usize];
+        if zones.len() <= 1 || key == 0 {
+            return zones.first();
+        }
+        zones
+            .iter()
+            .find(|z| (z.key_lo..=z.key_hi).contains(&key))
+            .or_else(|| zones.iter().min_by_key(|z| (z.root_key as i16 - key as i16).abs()))
+    }
+}
