@@ -1,0 +1,363 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Mesh live mode — style.yaml reference
+#
+# A style is one folder:
+#
+#   <collection>/styles/<name>/
+#   ├── style.yaml      (this file)
+#   └── assets/         samples, breaks, stem phrases, CLAP presets
+#
+# A style holds prepared sound design only: instruments, FX chains, control
+# mappings, ranges, archetype order, progressions, glue parameters, LUFS trims.
+# It never holds an arrangement. Patterns are generated live from seeds.
+#
+# Rules that apply to the whole file:
+#   - Unknown fields are an error (typos are caught at load).
+#   - Every asset path is relative to the style folder and must stay inside it
+#     (no absolute paths, no ".."), so the folder can be copied to USB as is.
+#   - Every referenced file must exist.
+#   - Schema source: crates/mesh-core/src/live/style.rs.
+#   - All numbers below are placeholders showing the format. Musical values are
+#     tuned by ear on the hardware.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Display name. Must be usable as a folder name (no "/", "\", "." or "..").
+name: reference
+
+# Schema version. This build reads version 1.
+version: 1
+
+# Tempo in BPM. Must satisfy 40 <= min <= default <= max <= 300.
+# `default` is the tempo at load. `min`/`max` bound the tempo control.
+tempo:
+  default: 172
+  min: 160
+  max: 178
+
+# Optional. Key at load, as a key name ("Am", "C#m", "Bb") or a Camelot label
+# ("8A", "3B"). Minor keys use the natural minor scale, major keys the major
+# scale.
+default_key: Am
+
+# Chord progressions (at least one). Selected on the Shift layer and applied at
+# the next phrase.
+#   name            shown in the header strip
+#   degrees         chord roots as 1-based scale degrees (1..=7), 1 to 16 chords.
+#                   [1, 6, 4, 5] in A minor = Am, F, Dm, Em.
+#   bars_per_chord  bars each chord lasts (default 1, must be >= 1)
+progressions:
+  - name: i-VI-iv-v
+    degrees: [1, 6, 4, 5]
+  - name: i-VII
+    degrees: [1, 7]
+    bars_per_chord: 2
+
+# Optional. Index into `progressions` used at load (default 0).
+default_progression: 0
+
+# Optional. Integrated-loudness target per role in LUFS (-60..=0). The style
+# tool measures each instrument option against its role's target and writes the
+# result into that option's `lufs_trim_db`. Defaults shown.
+loudness:
+  drums: -12
+  bass: -14
+  lead: -16
+  extra: -18
+
+# Optional. Parameters of the fixed glue chain. Every field in this block is
+# optional. Unset fields keep the engine defaults.
+glue:
+  # High-pass cutoff per non-bass role, in Hz (10..=20000).
+  role_hpf:
+    drums: 30
+    lead: 500
+    extra: 300
+  # The bass lane is summed to mono below this frequency, in Hz.
+  bass_mono_hz: 120
+  # Low-band duck on bass, lead and extra, keyed by the drum lane's kick.
+  duck:
+    depth_db: -6        # gain at full duck (-60..=0)
+    low_hz: 50          # band lower edge
+    high_hz: 120        # band upper edge (>= low_hz)
+    attack_ms: 2        # 0..=1000
+    release_beats: 0.5  # release as a fraction of a beat, follows tempo (0..=16)
+  # Drum bus: compressor, then saturation.
+  drum_bus:
+    comp:
+      threshold_db: -12  # -60..=0
+      ratio: 4           # 1..=100
+      attack_ms: 10      # 0..=1000
+      release_ms: 120    # 0..=10000
+      makeup_db: 0       # -24..=24
+    drive: 0.2           # saturation amount, 0..=1
+  # One saturation stage shared by the drum and bass buses.
+  shared_drive:
+    enabled: false
+    drive: 0.3           # 0..=1
+    mix: 0.5             # 0..=1
+  # Master bus compressor (runs before the master limiter/clipper).
+  # Same fields as drum_bus.comp.
+  master:
+    threshold_db: -6
+    ratio: 2
+    attack_ms: 30
+    release_ms: 200
+    makeup_db: 0
+
+# Optional. Effects used for the two shared sends. Unset = engine default.
+# Each is an effect spec, see "FX chain" in the first lane below.
+send_fx:
+  delay:
+    id: delay
+    source: native
+    params: { 0: 0.375, 1: 0.4 }
+  reverb:
+    id: reverb
+    source: native
+
+# Exactly 4 lanes. Lane 0 must have role `drums`. No other lane may.
+lanes:
+  # ── Lane 0: drums ─────────────────────────────────────────────────────────
+  - # Name shown in the code readout.
+    name: drums
+
+    # Mix role: drums | bass | lead | extra. Selects glue treatment and the
+    # loudness target.
+    role: drums
+
+    # Drum lane only (required there, at least one). Backbone archetypes in the
+    # order the major-style control moves through them. Names are resolved by
+    # the drum generator.
+    archetypes: [half_time, two_step, rolling, jungle, hardcore]
+
+    # Drum lane only (required there). The drum lane is several sub-voices
+    # playing together. Each sub-voice has its own list of instrument options.
+    #   voice           backbone | break | hats | perc
+    #   choke           default choke group for the sub-voice (0 = none)
+    #   options         instrument options, at least one (format below)
+    #   default_option  option loaded at start (default 0)
+    sub_voices:
+      - voice: backbone
+        options:
+          # An instrument option. Exactly one of `sampler` / `clap` is set.
+          - # Name shown while browsing.
+            name: clean-kit
+            # Static gain in dB (-48..=24) written by the LUFS style tool.
+            # Default 0.
+            lufs_trim_db: -1.5
+            # Sampler instrument: a list of sample slots. Events address a slot
+            # by its index in this list.
+            sampler:
+              samples:
+                - # Audio file, relative to the style folder.
+                  file: assets/drums/kick.wav
+                  # Optional. Lane-local choke group, 0 = none (default). A new
+                  # voice in a group fades out the other voices in that group.
+                  choke: 0
+                - file: assets/drums/snare.wav
+
+      - voice: break
+        choke: 1
+        options:
+          - name: amen
+            lufs_trim_db: -3.0
+            sampler:
+              samples:
+                - file: assets/breaks/amen.wav
+                  choke: 1
+                  # Optional. Slice markers for breaks and stem phrases.
+                  #   start  slice start in frames at the file's own sample
+                  #          rate. Starts must be strictly ascending.
+                  #   type   kick | snare | ghost | hat | perc | other
+                  # A slice runs to the next slice's start (or the file end).
+                  # Generators swap slices of the same type when mutating.
+                  slices:
+                    - { start: 0, type: kick }
+                    - { start: 5512, type: hat }
+                    - { start: 11025, type: snare }
+                    - { start: 16537, type: ghost }
+
+      - voice: hats
+        choke: 2
+        options:
+          - name: closed-open
+            sampler:
+              samples:
+                - { file: assets/drums/hat-closed.wav, choke: 2 }
+                - { file: assets/drums/hat-open.wav, choke: 2 }
+
+      - voice: perc
+        options:
+          - name: shaker
+            sampler:
+              samples:
+                - { file: assets/drums/shaker.wav }
+
+    # Optional. FX chain of the lane, in processing order. Control targets of
+    # type `fx` address an effect by its index (slot) in this list.
+    #   id        effect identifier: CLAP plugin id, PD patch folder name, or
+    #             native effect id (same identifiers as Mesh's FX presets)
+    #   source    native | clap | pd
+    #   params    parameter index -> normalized value (0..=1). Unlisted
+    #             parameters keep the plugin default.
+    #   bypassed  default false
+    #   dry_wet   0..=1, default 1 (fully wet)
+    fx:
+      - id: filter
+        source: native
+        params: { 0: 1.0 }
+        bypassed: false
+        dry_wet: 1.0
+
+    # Exactly 4 performance controls, in hardware order:
+    # knob A, fader A, knob B, fader B.
+    #   label    optional short name for the code readout
+    #   target   what the control drives, one of:
+    #              { type: generator, param: <name> }    generator parameter.
+    #                                                    Takes effect on the
+    #                                                    next rendered bar.
+    #              { type: instrument, param: <index> }  instrument parameter
+    #              { type: fx, slot: <index>, param: <index> }
+    #                                                    lane FX parameter
+    #              { type: glue, param: <name> }         glue parameter
+    #              { type: send, bus: delay | reverb }   lane send level
+    #   min      target value at control position 0 (default 0)
+    #   max      target value at control position 1 (default 1). May be below
+    #            `min` to invert the control. For `send` both must be in 0..=1.
+    #   curve    linear (default) | exp (fine at the low end) |
+    #            log (fine at the high end) | s (fine at both ends)
+    #   default  control position at load, 0..=1 (default 0.5)
+    controls:
+      - label: style
+        target: { type: generator, param: style }
+        min: 0.0
+        max: 1.0
+        curve: linear
+        default: 0.4
+      - { label: dens, target: { type: generator, param: density }, default: 0.5 }
+      - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.2, max: 1.0, curve: exp, default: 1.0 }
+      - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.6, default: 0.0 }
+
+    # The lane's pattern generator.
+    #   family  procedural (generated on the fly, the default approach) |
+    #           idiom (driven by curated data in `idiom`, the fallback)
+    #   name    generator implementation name
+    #   params  default parameter values by name. Controls with a `generator`
+    #           target override them live.
+    #   idiom   required for family `idiom`, optional otherwise (see lane 3)
+    generator:
+      family: procedural
+      name: drums
+      params: { style: 0.4, density: 0.5, swing: 0.0 }
+
+    # Optional. Default send levels of the lane, 0..=1 (default 0).
+    sends: { delay: 0.0, reverb: 0.0 }
+
+  # ── Lane 1: bass ──────────────────────────────────────────────────────────
+  - name: bass
+    role: bass
+
+    # Non-drum lanes only (required there, at least one). Instrument options,
+    # browsed by holding the lane button and turning the encoder. The whole
+    # list is preloaded into RAM at style load.
+    options:
+      - name: reese-sample
+        lufs_trim_db: -2.0
+        sampler:
+          samples:
+            - file: assets/bass/reese-a1.wav
+              # Pitch the sample was recorded at: a MIDI note number (33) or a
+              # note name ("A1", "C#4", "Bb2", with C4 = 60). The sampler
+              # repitches from this root to the target key. Leave it out for
+              # unpitched material.
+              root_key: A1
+              # A choke group of its own makes the lane monophonic.
+              choke: 1
+      # A CLAP synth as the instrument.
+      - name: surge-reese
+        lufs_trim_db: -4.5
+        clap:
+          # Plugin id as reported by plugin discovery.
+          plugin_id: org.surge-synth-team.surge-xt
+          # Optional. Preset / state file, relative to the style folder.
+          preset: assets/presets/surge-reese.fxp
+
+    # Non-drum lanes only. Option loaded at start (default 0).
+    default_option: 0
+
+    fx:
+      - { id: drive, source: native, params: { 0: 0.3 }, dry_wet: 0.8 }
+
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.4 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.5 }
+      - { label: drive, target: { type: fx, slot: 0, param: 0 }, min: 0.0, max: 0.8 }
+      - { label: duck, target: { type: glue, param: duck_depth }, min: 0.0, max: 1.0 }
+
+    generator:
+      family: procedural
+      name: bass
+      params: { complexity: 0.4, density: 0.5 }
+
+  # ── Lane 2: lead ──────────────────────────────────────────────────────────
+  - name: lead
+    role: lead
+    options:
+      # A multisampled instrument: several samples, each covering a zone.
+      - name: stab
+        sampler:
+          samples:
+            - file: assets/lead/stab-a3.wav
+              root_key: A3
+              # Optional. Zone this sample covers (inclusive ranges).
+              #   keys        [low, high] as MIDI numbers or note names
+              #   velocities  [low, high], 0..=127 (default [0, 127])
+              # Without a zone the sample covers every key and velocity.
+              zone: { keys: [C-1, E4] }
+            - file: assets/lead/stab-a4.wav
+              root_key: 69
+              zone: { keys: [F4, G9], velocities: [0, 127] }
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.2 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.3 }
+      - { label: param, target: { type: instrument, param: 0 } }
+      - { label: delay, target: { type: send, bus: delay }, min: 0.0, max: 0.7, curve: s }
+    generator:
+      family: procedural
+      name: lead
+      params: { complexity: 0.2, density: 0.3 }
+    sends: { delay: 0.2, reverb: 0.1 }
+
+  # ── Lane 3: extra ─────────────────────────────────────────────────────────
+  - name: extra
+    role: extra
+    options:
+      - name: pad-dark
+        lufs_trim_db: 1.0
+        sampler:
+          samples:
+            - { file: assets/pad/pad-a3.wav, root_key: A3 }
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.1 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.3 }
+      - { label: param, target: { type: instrument, param: 1 }, curve: log }
+      - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.8 }
+    generator:
+      family: idiom
+      name: pad
+      params: { density: 0.3 }
+      # Idiom data. Required when family is `idiom`.
+      idiom:
+        # Per-step importance maps (Grids-style): a step fires when its level
+        # clears a threshold set by density, so density reveals steps from most
+        # to least important.
+        #   name       map name
+        #   archetype  optional, the drum archetype the map belongs to
+        #   voice      optional, the voice or sub-voice the map drives
+        #   levels     one level (0..=255) per 16th step. Length must be a
+        #              multiple of 16 (16 = one bar).
+        level_maps:
+          - name: long-notes
+            voice: pad
+            levels: [255, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 64, 0]
+    sends: { reverb: 0.4 }

@@ -1,0 +1,156 @@
+# Test fixture for mesh_core::live::style. The WAV files are 4-frame silent
+# stubs; values follow the design-doc examples and are not tuned sound design.
+name: fixture-breaks
+version: 1
+tempo: { default: 172, min: 160, max: 178 }
+default_key: Am
+
+progressions:
+  - name: i-VI-iv-v
+    degrees: [1, 6, 4, 5]
+  - name: i-VII
+    degrees: [1, 7]
+    bars_per_chord: 2
+default_progression: 0
+
+loudness: { drums: -12, bass: -14, lead: -16, extra: -18 }
+
+glue:
+  role_hpf: { lead: 500, extra: 300 }
+  bass_mono_hz: 120
+  duck: { depth_db: -6, low_hz: 50, high_hz: 120, release_beats: 0.5 }
+  drum_bus:
+    comp: { threshold_db: -12, ratio: 4, attack_ms: 10, release_ms: 120 }
+    drive: 0.2
+  shared_drive: { enabled: false }
+  master: { threshold_db: -6, ratio: 2 }
+
+send_fx:
+  delay: { id: delay, source: native, params: { 0: 0.375, 1: 0.4 } }
+  reverb: { id: reverb, source: native }
+
+lanes:
+  - name: drums
+    role: drums
+    archetypes: [half_time, two_step, rolling, jungle, hardcore]
+    sub_voices:
+      - voice: backbone
+        options:
+          - name: clean-kit
+            lufs_trim_db: -1.5
+            sampler:
+              samples:
+                - { file: assets/drums/kick.wav }
+                - { file: assets/drums/snare.wav }
+      - voice: break
+        choke: 1
+        options:
+          - name: amen
+            lufs_trim_db: -3.0
+            sampler:
+              samples:
+                - file: assets/breaks/amen.wav
+                  choke: 1
+                  slices:
+                    - { start: 0, type: kick }
+                    - { start: 1, type: hat }
+                    - { start: 2, type: snare }
+                    - { start: 3, type: ghost }
+      - voice: hats
+        choke: 2
+        options:
+          - name: closed-open
+            sampler:
+              samples:
+                - { file: assets/drums/hat-closed.wav, choke: 2 }
+                - { file: assets/drums/hat-open.wav, choke: 2 }
+      - voice: perc
+        options:
+          - name: shaker
+            sampler:
+              samples:
+                - { file: assets/drums/shaker.wav }
+    fx:
+      - { id: filter, source: native, params: { 0: 1.0 } }
+    controls:
+      - { label: style, target: { type: generator, param: style }, default: 0.4 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.5 }
+      - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.2, max: 1.0, curve: exp, default: 1.0 }
+      - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.6, default: 0.0 }
+    generator:
+      family: procedural
+      name: drums
+      params: { style: 0.4, density: 0.5, swing: 0.0 }
+
+  - name: bass
+    role: bass
+    default_option: 0
+    options:
+      - name: reese-sample
+        lufs_trim_db: -2.0
+        sampler:
+          samples:
+            - { file: assets/bass/reese-a1.wav, root_key: A1, choke: 1 }
+      - name: surge-reese
+        lufs_trim_db: -4.5
+        clap:
+          plugin_id: org.surge-synth-team.surge-xt
+          preset: assets/presets/surge-reese.fxp
+    fx:
+      - { id: drive, source: native, params: { 0: 0.3 }, dry_wet: 0.8 }
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.4 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.5 }
+      - { label: drive, target: { type: fx, slot: 0, param: 0 }, min: 0.0, max: 0.8 }
+      - { label: duck, target: { type: glue, param: duck_depth }, min: 0.0, max: 1.0 }
+    generator:
+      family: procedural
+      name: bass
+      params: { complexity: 0.4, density: 0.5 }
+
+  - name: lead
+    role: lead
+    options:
+      - name: stab
+        sampler:
+          samples:
+            - file: assets/lead/stab-a3.wav
+              root_key: A3
+              zone: { keys: [C-1, E4] }
+            - file: assets/lead/stab-a4.wav
+              root_key: 69
+              zone: { keys: [F4, G9], velocities: [0, 127] }
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.2 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.3 }
+      - { label: param, target: { type: instrument, param: 0 } }
+      - { label: delay, target: { type: send, bus: delay }, min: 0.0, max: 0.7, curve: s }
+    generator:
+      family: procedural
+      name: lead
+      params: { complexity: 0.2, density: 0.3 }
+    sends: { delay: 0.2, reverb: 0.1 }
+
+  - name: extra
+    role: extra
+    options:
+      - name: pad-dark
+        lufs_trim_db: 1.0
+        sampler:
+          samples:
+            - { file: assets/pad/pad-a3.wav, root_key: A3 }
+    controls:
+      - { label: cx, target: { type: generator, param: complexity }, default: 0.1 }
+      - { label: dens, target: { type: generator, param: density }, default: 0.3 }
+      - { label: param, target: { type: instrument, param: 1 }, curve: log }
+      - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.8 }
+    generator:
+      family: idiom
+      name: pad
+      params: { density: 0.3 }
+      idiom:
+        level_maps:
+          - name: long-notes
+            voice: pad
+            levels: [255, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 64, 0]
+    sends: { reverb: 0.4 }
