@@ -9,10 +9,19 @@ use super::glue::Role;
 use super::harmony::HarmonyCtx;
 use super::STEPS_PER_BAR;
 
+pub mod bass;
+pub mod blocks;
+pub mod drums;
 pub mod fixed;
+pub mod idiom;
+pub mod layout;
+pub mod lead;
 pub mod registry;
+#[cfg(test)]
+pub(crate) mod test_util;
 
-pub use registry::build;
+pub use layout::DrumLayout;
+pub use registry::{build, build_drums, build_lane, build_with};
 
 /// Maximum number of generator parameters a lane can expose to controls.
 pub const MAX_GEN_PARAMS: usize = 8;
