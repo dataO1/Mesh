@@ -124,6 +124,14 @@ impl DiscoveredClapPlugin {
         }
     }
 
+    /// Whether this plugin is an instrument (CLAP "instrument" feature, or
+    /// categorised as one). Checked on the raw features because
+    /// `category_from_features` returns the first matching category.
+    pub fn is_instrument(&self) -> bool {
+        self.category == ClapPluginCategory::Instrument
+            || self.features.iter().any(|f| f.eq_ignore_ascii_case("instrument"))
+    }
+
     /// Get category as string for UI display
     pub fn category_name(&self) -> &str {
         match self.category {
@@ -356,7 +364,7 @@ impl ClapDiscovery {
     /// Scan a single .clap bundle for plugins
     ///
     /// A bundle can contain multiple plugins, so this returns a Vec.
-    fn scan_bundle(&self, bundle_path: &Path) -> ClapResult<Vec<DiscoveredClapPlugin>> {
+    pub fn scan_bundle(&self, bundle_path: &Path) -> ClapResult<Vec<DiscoveredClapPlugin>> {
         // Use clack-host to load the bundle and enumerate plugins
         use clack_host::bundle::PluginBundle;
 
@@ -514,6 +522,14 @@ impl ClapDiscovery {
         self.plugins_list
             .iter()
             .filter(|p| p.available && p.category == category)
+            .collect()
+    }
+
+    /// Get available instrument plugins (live mode lane instruments)
+    pub fn instrument_plugins(&self) -> Vec<&DiscoveredClapPlugin> {
+        self.plugins_list
+            .iter()
+            .filter(|p| p.available && p.is_instrument())
             .collect()
     }
 

@@ -77,6 +77,7 @@ mod error;
 mod discovery;
 mod plugin;
 mod effect;
+mod instrument;
 // Note: multiband module moved to crate::effect::multiband (effect-agnostic)
 
 // Re-export public API
@@ -84,6 +85,12 @@ pub use error::{ClapError, ClapResult};
 pub use discovery::{ClapDiscovery, ClapPluginCategory, DiscoveredClapPlugin};
 pub use plugin::{ClapPluginWrapper, ParamChangeEvent, ParamChangeReceiver};
 pub use effect::ClapEffect;
+pub use instrument::{
+    ClapInstrument, EndedNote, InstrumentCapabilities, InstrumentNote, InstrumentNoteDialect,
+    InstrumentNoteKind, InstrumentParamInfo, InstrumentProcessError, NoteExpr, NotePortSummary,
+    TransportInfo, VoiceInfoSummary, INSTRUMENT_MAX_FRAMES, MAX_ENDED_NOTES, MAX_NOTES_PER_BLOCK,
+    MAX_PENDING_PARAMS,
+};
 // ClapGuiHandle is defined in this file, no need to re-export
 
 use std::sync::{Arc, Mutex};
@@ -342,6 +349,23 @@ impl ClapManager {
     /// Check if any plugins are available
     pub fn has_plugins(&self) -> bool {
         self.discovery.has_plugins()
+    }
+
+    /// Get available instrument plugins (live mode lane instruments)
+    pub fn instrument_plugins(&self) -> Vec<&DiscoveredClapPlugin> {
+        self.discovery.instrument_plugins()
+    }
+
+    /// Load and activate a CLAP instrument by plugin id
+    pub fn create_instrument(&mut self, plugin_id: &str, sample_rate: u32) -> ClapResult<ClapInstrument> {
+        let plugin_info = self.discovery.get_plugin(plugin_id).cloned().ok_or_else(|| {
+            ClapError::PluginNotFound {
+                plugin_id: plugin_id.to_string(),
+                bundle_path: PathBuf::new(),
+            }
+        })?;
+        let bundle = self.get_or_load_bundle(&plugin_info.bundle_path)?;
+        ClapInstrument::load(&plugin_info, bundle, sample_rate)
     }
 
     /// Create a CLAP effect instance

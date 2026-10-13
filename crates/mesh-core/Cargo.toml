@@ -42,7 +42,7 @@ thiserror.workspace = true
 
 # CLAP plugin hosting
 clack-host = { git = "https://github.com/prokopyl/clack.git" }
-clack-extensions = { git = "https://github.com/prokopyl/clack.git", features = ["params", "gui", "latency", "clack-host"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack.git", features = ["params", "gui", "latency", "audio-ports", "note-ports", "state", "voice-info", "clack-host"] }
 
 # Cross-platform audio backend
 cpal.workspace = true
@@ -89,6 +89,11 @@ required-features = []
 [[bin]]
 name = "suggestions-smoke"
 path = "src/bin/suggestions_smoke.rs"
+required-features = []
+
+[[bin]]
+name = "clap-scan"
+path = "src/bin/clap_scan.rs"
 required-features = []
 
 [dev-dependencies]
