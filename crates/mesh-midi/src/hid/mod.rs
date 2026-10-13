@@ -193,6 +193,17 @@ impl HidOutputHandler {
         self.feedback_tx.clone()
     }
 
+    /// Send one feedback command to the device (non-blocking)
+    ///
+    /// Returns false if the channel is full. Bypasses change tracking.
+    pub fn send_command(&self, cmd: FeedbackCommand) -> bool {
+        if self.feedback_tx.try_send(cmd).is_err() {
+            log::warn!("HID: Feedback channel full");
+            return false;
+        }
+        true
+    }
+
     /// Send a display text command directly (e.g., for layer indicator)
     /// Skips sending if the text hasn't changed since last call.
     pub fn send_display(&mut self, text: &str) {

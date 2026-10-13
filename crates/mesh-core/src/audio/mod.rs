@@ -56,8 +56,9 @@ pub use config::{
 
 // Re-export from the unified backend module
 pub use backend::{
-    connect_ports, get_available_stereo_pairs, reconnect_ports, start_audio_system, AudioHandle,
-    AudioSystemResult, CommandSender, StereoPair,
+    connect_ports, get_available_stereo_pairs, reconnect_ports, start_audio_system,
+    start_audio_system_with, AudioHandle, AudioSystemResult, CommandSender, EngineAudioSystem,
+    RtEngine, StereoPair,
 };
 
 // Re-export device types for UI

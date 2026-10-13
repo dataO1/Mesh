@@ -127,6 +127,18 @@ impl ExportService {
                         let _ = f.sync_all();
                     }
                 }
+                // Live-mode styles (large sample assets): only copy changed files.
+                // `captures/` flows USB → local and is never touched here.
+                let styles_src = local_root.join("styles");
+                if styles_src.exists() {
+                    match copy_dir_all_incremental(&styles_src, &usb_root.join("styles")) {
+                        Ok((copied, skipped)) => log::info!(
+                            "[export] styles: {} files copied, {} unchanged",
+                            copied, skipped
+                        ),
+                        Err(e) => log::warn!("Failed to copy styles: {}", e),
+                    }
+                }
                 log::info!("[export] Phase 0 (presets to USB): {:.1}s", t.elapsed().as_secs_f64());
                 let _ = progress_tx.send(ExportProgress::PresetsCopied);
             }
@@ -662,6 +674,60 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// mtime tolerance for "unchanged" (FAT stores 2 s, exFAT 10 ms resolution)
+const MTIME_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// True if `dst` exists with the same size and (within tolerance) mtime as `src`
+fn file_unchanged(src: &Path, dst: &Path) -> bool {
+    let (Ok(s), Ok(d)) = (std::fs::metadata(src), std::fs::metadata(dst)) else {
+        return false;
+    };
+    if !d.is_file() || s.len() != d.len() {
+        return false;
+    }
+    match (s.modified(), d.modified()) {
+        (Ok(sm), Ok(dm)) => {
+            let diff = sm.duration_since(dm).unwrap_or_else(|e| e.duration());
+            diff <= MTIME_TOLERANCE
+        }
+        _ => false,
+    }
+}
+
+/// Like [`copy_dir_all`], but skips files whose size and mtime already match
+/// on the destination (used for `styles/`, whose sample assets are large).
+///
+/// Copied files get the source mtime so the next export can skip them.
+/// Never deletes anything on the destination. Returns `(copied, skipped)`.
+fn copy_dir_all_incremental(src: &Path, dst: &Path) -> std::io::Result<(usize, usize)> {
+    std::fs::create_dir_all(dst)?;
+    let (mut copied, mut skipped) = (0, 0);
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dest_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            let (c, s) = copy_dir_all_incremental(&src_path, &dest_path)?;
+            copied += c;
+            skipped += s;
+        } else if file_unchanged(&src_path, &dest_path) {
+            skipped += 1;
+        } else {
+            std::fs::copy(&src_path, &dest_path)?;
+            // Stamp source mtime, then sync to physical media
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&dest_path) {
+                if let Ok(mtime) = std::fs::metadata(&src_path).and_then(|m| m.modified()) {
+                    let _ = f.set_modified(mtime);
+                }
+                let _ = f.sync_all();
+            }
+            copied += 1;
+        }
+    }
+    Ok((copied, skipped))
+}
+
 /// Remove a track from a playlist in the USB database
 fn remove_track_from_playlist(
     usb_db: &DatabaseService,
@@ -685,5 +751,59 @@ fn remove_track_from_playlist(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn incremental_copy_skips_unchanged_and_keeps_other_dirs() {
+        let local = tempfile::tempdir().unwrap();
+        let usb = tempfile::tempdir().unwrap();
+        let src = local.path().join("styles");
+        let dst = usb.path().join("styles");
+        fs::create_dir_all(src.join("jungle/assets")).unwrap();
+        fs::write(src.join("jungle/style.yaml"), "lanes: 4\n").unwrap();
+        fs::write(src.join("jungle/assets/kick.wav"), [1u8; 64]).unwrap();
+
+        // Captures written during a set live next to styles on the USB
+        let capture = usb.path().join("captures/jungle/2026-10-13.yaml");
+        fs::create_dir_all(capture.parent().unwrap()).unwrap();
+        fs::write(&capture, "seed: 1\n").unwrap();
+        // A file that only exists on the USB side of styles/ is left alone too
+        fs::create_dir_all(dst.join("old")).unwrap();
+        fs::write(dst.join("old/style.yaml"), "x").unwrap();
+
+        assert_eq!(copy_dir_all_incremental(&src, &dst).unwrap(), (2, 0));
+        assert_eq!(fs::read(dst.join("jungle/assets/kick.wav")).unwrap(), [1u8; 64]);
+
+        // Second run: nothing changed
+        assert_eq!(copy_dir_all_incremental(&src, &dst).unwrap(), (0, 2));
+
+        // Size change is copied again
+        fs::write(src.join("jungle/style.yaml"), "lanes: 4\nglue: on\n").unwrap();
+        assert_eq!(copy_dir_all_incremental(&src, &dst).unwrap(), (1, 1));
+        assert_eq!(
+            fs::read_to_string(dst.join("jungle/style.yaml")).unwrap(),
+            "lanes: 4\nglue: on\n"
+        );
+
+        // Same size, newer mtime is copied again
+        fs::write(src.join("jungle/assets/kick.wav"), [2u8; 64]).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(src.join("jungle/assets/kick.wav"))
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(copy_dir_all_incremental(&src, &dst).unwrap(), (1, 1));
+        assert_eq!(fs::read(dst.join("jungle/assets/kick.wav")).unwrap(), [2u8; 64]);
+
+        assert_eq!(fs::read_to_string(&capture).unwrap(), "seed: 1\n");
+        assert!(dst.join("old/style.yaml").exists());
     }
 }

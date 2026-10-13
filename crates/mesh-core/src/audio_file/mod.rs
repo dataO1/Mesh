@@ -741,7 +741,7 @@ impl Drop for StemBuffers {
 }
 
 /// Resample a stereo buffer using FFT-based resampling
-fn resample_stereo_buffer(
+pub(crate) fn resample_stereo_buffer(
     input: &StereoBuffer,
     output: &mut StereoBuffer,
     source_rate: u32,
@@ -875,6 +875,130 @@ pub fn resample_mono_audio(
     output.truncate(expected_output_len);
 
     Ok(output)
+}
+
+/// Decode any WAV/FLAC/OGG file into one stereo buffer at `target_rate`
+///
+/// Unlike [`AudioFileReader`], this accepts any channel count:
+/// - mono is duplicated to both sides
+/// - stereo is kept as is
+/// - more than 2 channels are downmixed: even-indexed channels average
+///   into left, odd-indexed into right (keeps L/R pairs such as quad or
+///   8-channel stem files)
+///
+/// Resamples with the same FFT resampler as track loading when the file rate
+/// differs from `target_rate`. Loads the whole file into memory (non-RT).
+pub fn decode_to_stereo<P: AsRef<Path>>(
+    path: P,
+    target_rate: u32,
+) -> Result<StereoBuffer, AudioFileError> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let path = path.as_ref();
+    let file = std::fs::File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| AudioFileError::InvalidFormat(format!("Probe failed: {}", e)))?;
+    let mut format_reader = probed.format;
+
+    let track = format_reader
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| AudioFileError::InvalidFormat("No audio track found".into()))?;
+    let track_id = track.id;
+    let source_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| AudioFileError::InvalidFormat("Unknown sample rate".into()))?;
+    let capacity = track.codec_params.n_frames.unwrap_or(0) as usize;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| AudioFileError::InvalidFormat(format!("Decoder init failed: {}", e)))?;
+
+    let mut frames: Vec<StereoSample> = Vec::with_capacity(capacity);
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+    loop {
+        let packet = match format_reader.next_packet() {
+            Ok(p) => p,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break
+            }
+            Err(e) => return Err(AudioFileError::IoError(format!("Decode error: {}", e))),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            // Corrupt packet: skip it, like most players do
+            Err(SymphoniaError::DecodeError(e)) => {
+                log::warn!("decode_to_stereo: skipping bad packet in {:?}: {}", path, e);
+                continue;
+            }
+            Err(e) => return Err(AudioFileError::IoError(format!("Packet decode error: {}", e))),
+        };
+
+        let spec = *decoded.spec();
+        let channels = spec.channels.count();
+        if channels == 0 {
+            return Err(AudioFileError::InvalidFormat("Zero channels".into()));
+        }
+        let buf = match &mut sample_buf {
+            Some(buf) if buf.capacity() >= decoded.capacity() * channels => buf,
+            _ => sample_buf.insert(SampleBuffer::new(decoded.capacity() as u64, spec)),
+        };
+        buf.copy_interleaved_ref(decoded);
+
+        for frame in buf.samples().chunks_exact(channels) {
+            frames.push(downmix_frame(frame));
+        }
+    }
+
+    let decoded = StereoBuffer::from_vec(frames);
+    if source_rate == target_rate || decoded.is_empty() {
+        return Ok(decoded);
+    }
+
+    // Integer maths: the float ratio rounds 44100 → 48000 up to one frame too many
+    let output_len =
+        (decoded.len() as u64 * target_rate as u64).div_ceil(source_rate as u64) as usize;
+    let mut output = StereoBuffer::silence(output_len);
+    resample_stereo_buffer(&decoded, &mut output, source_rate, target_rate)?;
+    Ok(output)
+}
+
+/// Fold one interleaved frame of any channel count into a stereo sample
+fn downmix_frame(frame: &[f32]) -> StereoSample {
+    match frame.len() {
+        1 => StereoSample::new(frame[0], frame[0]),
+        2 => StereoSample::new(frame[0], frame[1]),
+        n => {
+            let (mut l, mut r) = (0.0f32, 0.0f32);
+            for pair in frame.chunks(2) {
+                l += pair[0];
+                r += pair.get(1).copied().unwrap_or(pair[0]);
+            }
+            let pairs = n.div_ceil(2) as f32;
+            StereoSample::new(l / pairs, r / pairs)
+        }
+    }
 }
 
 /// FLAC audio file reader
@@ -1876,6 +2000,92 @@ mod tests {
 
         stems.get_mut(Stem::Drums).scale(0.5);
         assert_eq!(stems.drums.len(), 100);
+    }
+
+    /// Write a 16-bit WAV where channel `c` of frame `i` is `f(i, c)`
+    fn write_wav(
+        path: &Path,
+        channels: u16,
+        rate: u32,
+        frames: usize,
+        f: impl Fn(usize, u16) -> f32,
+    ) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            for c in 0..channels {
+                w.write_sample((f(i, c) * i16::MAX as f32) as i16).unwrap();
+            }
+        }
+        w.finalize().unwrap();
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn test_decode_to_stereo_mono_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mono.wav");
+        write_wav(&path, 1, 48000, 1000, |i, _| if i % 2 == 0 { 0.5 } else { -0.25 });
+
+        let buf = decode_to_stereo(&path, 48000).unwrap();
+        assert_eq!(buf.len(), 1000);
+        for (i, s) in buf.as_slice().iter().enumerate() {
+            let want = if i % 2 == 0 { 0.5 } else { -0.25 };
+            assert!(close(s.left, want) && close(s.right, want), "frame {i}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn test_decode_to_stereo_keeps_stereo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stereo.wav");
+        write_wav(&path, 2, 48000, 512, |_, c| if c == 0 { 0.5 } else { -0.5 });
+
+        let buf = decode_to_stereo(&path, 48000).unwrap();
+        assert_eq!(buf.len(), 512);
+        assert!(buf.as_slice().iter().all(|s| close(s.left, 0.5) && close(s.right, -0.5)));
+    }
+
+    #[test]
+    fn test_decode_to_stereo_downmixes_multichannel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quad.wav");
+        // FL=0.4 FR=0.2 RL=0.0 RR=-0.2 → L=(0.4+0.0)/2, R=(0.2-0.2)/2
+        let vals = [0.4, 0.2, 0.0, -0.2];
+        write_wav(&path, 4, 48000, 256, |_, c| vals[c as usize]);
+
+        let buf = decode_to_stereo(&path, 48000).unwrap();
+        assert_eq!(buf.len(), 256);
+        assert!(buf.as_slice().iter().all(|s| close(s.left, 0.2) && close(s.right, 0.0)));
+    }
+
+    #[test]
+    fn test_decode_to_stereo_resamples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cd.wav");
+        // 1 second of a quiet 440 Hz tone at 44.1 kHz
+        write_wav(&path, 2, 44100, 44100, |i, _| {
+            0.25 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44100.0).sin()
+        });
+
+        let buf = decode_to_stereo(&path, 48000).unwrap();
+        assert_eq!(buf.len(), 48000);
+        let peak = buf.as_slice().iter().map(|s| s.left.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.2 && peak < 0.3, "peak {peak}");
+    }
+
+    #[test]
+    fn test_decode_to_stereo_missing_file() {
+        let err = decode_to_stereo("/nonexistent/none.wav", 48000).unwrap_err();
+        assert!(matches!(err, AudioFileError::IoError(_)));
     }
 
 }

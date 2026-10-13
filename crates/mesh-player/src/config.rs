@@ -115,6 +115,34 @@ pub struct PlayerConfig {
     /// Path to the mesh collection folder (shared with mesh-cue)
     /// Default: ~/Music/mesh-collection
     pub collection_path: PathBuf,
+    /// Run mode chosen at startup (DJ or live); no runtime switch
+    #[serde(default)]
+    pub mode: AppRunMode,
+    /// Live mode settings (only read when `mode: live`)
+    #[serde(default)]
+    pub live: LiveConfig,
+}
+
+/// Application run mode, selected at startup
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRunMode {
+    /// DJ mode: 4 decks × 4 stems (existing engine)
+    #[default]
+    Dj,
+    /// Live mode: 4 generated lanes driven by the live engine
+    Live,
+}
+
+/// Live mode configuration
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiveConfig {
+    /// Style folder name under `<collection>/styles/` to load at startup
+    pub style: Option<String>,
+    /// USB serial of the Kontrol F1 used as the left unit.
+    /// When unset, the first unit whose Shift is pressed becomes left.
+    pub f1_left_serial: Option<String>,
 }
 
 impl Default for PlayerConfig {
@@ -131,6 +159,8 @@ impl Default for PlayerConfig {
             slicer: SlicerConfig::default(),
             updates: UpdateConfig::default(),
             collection_path,
+            mode: AppRunMode::default(),
+            live: LiveConfig::default(),
         }
     }
 }
@@ -386,6 +416,8 @@ mod tests {
             },
             updates: UpdateConfig::default(),
             collection_path: PathBuf::from("/tmp/test-collection"),
+            mode: AppRunMode::Dj,
+            live: LiveConfig::default(),
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -395,6 +427,43 @@ mod tests {
         assert!(!parsed.audio.phase_sync);
         assert_eq!(parsed.display.default_loop_length_index, 5);
         assert_eq!(parsed.display.default_zoom_bars, 4);
+    }
+
+    #[test]
+    fn test_live_mode_yaml_roundtrip() {
+        let config = PlayerConfig {
+            mode: AppRunMode::Live,
+            live: LiveConfig {
+                style: Some("jungle".to_string()),
+                f1_left_serial: Some("ABC123".to_string()),
+            },
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("mode: live"), "yaml: {yaml}");
+        let parsed: PlayerConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.mode, AppRunMode::Live);
+        assert_eq!(parsed.live, config.live);
+    }
+
+    #[test]
+    fn test_config_without_mode_fields_parses_as_dj() {
+        // Shape of a player-config.yaml written before live mode existed
+        let yaml = "audio:\n  global_bpm: 132.0\ncollection_path: /tmp/test-collection\n";
+        let parsed: PlayerConfig = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(parsed.audio.global_bpm, 132.0);
+        assert_eq!(parsed.mode, AppRunMode::Dj);
+        assert_eq!(parsed.live, LiveConfig::default());
+
+        // Partial live section keeps the other field at its default
+        let yaml = "mode: live\nlive:\n  style: amen\n";
+        let parsed: PlayerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.mode, AppRunMode::Live);
+        assert_eq!(parsed.live.style.as_deref(), Some("amen"));
+        assert_eq!(parsed.live.f1_left_serial, None);
     }
 
     #[test]

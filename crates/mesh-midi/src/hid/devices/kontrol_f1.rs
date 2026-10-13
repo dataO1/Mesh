@@ -543,6 +543,34 @@ const SEG_LETTER_F: [u8; 7] = [SEG_ON, 0,      0,      SEG_ON, SEG_ON, SEG_ON, 0
 const SEG_BLANK: [u8; 7]    = [0; 7];
 const SEG_DASH: [u8; 7]     = [SEG_ON, 0, 0, 0, 0, 0, 0]; // g only
 
+/// Number of digits on the F1's 7-segment display
+pub const DISPLAY_DIGITS: usize = 2;
+
+/// Normalise text for the F1's 2-digit 7-segment display
+///
+/// Keeps the first two characters, upper-cases hex letters and replaces
+/// anything the display cannot show (only 0-9, A-F, '-', ' ') with '-'.
+/// The encoder right-justifies, so "7" shows on the right digit.
+pub fn display_text(text: &str) -> String {
+    text.chars()
+        .take(DISPLAY_DIGITS)
+        .map(|c| match c {
+            '0'..='9' | '-' | ' ' => c,
+            'a'..='f' | 'A'..='F' => c.to_ascii_uppercase(),
+            _ => '-',
+        })
+        .collect()
+}
+
+/// Format a number for the F1's 2-digit display: -9..=99 as digits, else "--"
+pub fn display_number(n: i32) -> String {
+    if (-9..=99).contains(&n) {
+        n.to_string()
+    } else {
+        "--".to_string()
+    }
+}
+
 /// Encode a string into the F1's 7-segment display bytes (16 bytes for 2 digits).
 ///
 /// Right-justifies: "A" shows on the right digit, "1A" shows 1 on left, A on right.
@@ -926,5 +954,33 @@ mod tests {
         // (exact values depend on encoding, just verify not all zeros)
         let display = &output[1..17];
         assert!(display.iter().any(|&b| b != 0), "Display should have content for '42'");
+    }
+
+    #[test]
+    fn test_display_text_normalises() {
+        assert_eq!(display_text("42"), "42");
+        assert_eq!(display_text("7"), "7");
+        assert_eq!(display_text("abc"), "AB");
+        assert_eq!(display_text("xZ"), "--");
+        assert_eq!(display_text(" -"), " -");
+        assert_eq!(display_text(""), "");
+    }
+
+    #[test]
+    fn test_display_number() {
+        assert_eq!(display_number(0), "0");
+        assert_eq!(display_number(99), "99");
+        assert_eq!(display_number(-9), "-9");
+        assert_eq!(display_number(100), "--");
+        assert_eq!(display_number(-10), "--");
+    }
+
+    #[test]
+    fn test_display_text_encodes_glyphs() {
+        // "9F": left digit (bytes 8-15) is 9, right digit (bytes 0-7) is F
+        let mut display = [0u8; 16];
+        encode_7segment(&display_text("9f"), &mut display);
+        assert_eq!(&display[9..16], &DIGIT_SEGS[9]);
+        assert_eq!(&display[1..8], &SEG_LETTER_F);
     }
 }
