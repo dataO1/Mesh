@@ -232,6 +232,15 @@ fn main() -> iced::Result {
     let config_path = config::default_config_path();
     let config: config::PlayerConfig = config::load_config(&config_path);
 
+    // Run mode is fixed at startup. Live mode is not implemented yet: DJ mode runs.
+    log::info!("Requested run mode: {:?}", config.mode);
+    if config.mode == config::AppRunMode::Live {
+        log::warn!(
+            "Live mode requested (style: {:?}) but not available in this build — starting DJ mode",
+            config.live.style
+        );
+    }
+
     // Set global font size scale (used by sz() helper across all widget code)
     mesh_widgets::set_font_scale(config.display.font_size.scale() * config.display.font.size_scale());
 

@@ -53,11 +53,9 @@ use cpal::{BufferSize as CpalBufferSize, SampleFormat, Stream, StreamConfig};
 use super::config::{AudioConfig, BufferSize, OutputMode, DEFAULT_BUFFER_SIZE, MAX_BUFFER_SIZE};
 use super::device::{find_device_by_id, get_cpal_default_device};
 use super::error::{AudioError, AudioResult};
-use crate::db::DatabaseService;
-use crate::engine::{command_channel, AudioEngine, EngineCommand};
 use crate::types::{StereoBuffer, StereoSample};
 
-use super::backend::{AudioHandle, AudioSystemResult, CommandSender, StereoPair};
+use super::backend::{push_to_recording, AudioHandle, EngineAudioSystem, RtEngine, StereoPair};
 
 /// CPAL-specific audio handle
 ///
@@ -123,25 +121,25 @@ impl CpalAudioHandle {
 ///
 /// # Arguments
 /// * `config` - Audio configuration specifying output mode and devices
-/// * `db_service` - Database service for the audio engine
+/// * `make` - Engine factory, called with the negotiated device sample rate
 ///
 /// # Returns
-/// * `AudioSystemResult` containing handles, command sender, and atomics
-pub fn start_audio_system(
+/// * `EngineAudioSystem` containing the stream handle and the factory's handles
+pub fn start_audio_system<E: RtEngine + 'static, H>(
     config: &AudioConfig,
-    db_service: Arc<DatabaseService>,
-) -> AudioResult<AudioSystemResult> {
+    make: &mut impl FnMut(u32) -> (E, H),
+) -> AudioResult<EngineAudioSystem<H>> {
     match config.output_mode {
-        OutputMode::MasterOnly => start_master_only(config, db_service),
-        OutputMode::MasterAndCue => start_master_and_cue(config, db_service),
+        OutputMode::MasterOnly => start_master_only(config, make),
+        OutputMode::MasterAndCue => start_master_and_cue(config, make),
     }
 }
 
 /// Start audio system in master-only mode (single stereo output)
-fn start_master_only(
+fn start_master_only<E: RtEngine + 'static, H>(
     config: &AudioConfig,
-    db_service: Arc<DatabaseService>,
-) -> AudioResult<AudioSystemResult> {
+    make: &mut impl FnMut(u32) -> (E, H),
+) -> AudioResult<EngineAudioSystem<H>> {
     // Get the master device
     let device = match &config.master_device {
         Some(id) => find_device_by_id(id)?,
@@ -172,25 +170,12 @@ fn start_master_only(
         latency_ms
     );
 
-    // Create engine and extract atomics
-    let engine = AudioEngine::new_with_sample_rate(sample_rate, db_service);
-    let deck_atomics = engine.deck_atomics();
-    let slicer_atomics = engine.slicer_atomics();
-    let linked_stem_atomics = engine.linked_stem_atomics();
-    let linked_stem_receiver = engine.linked_stem_result_receiver();
-    let clip_indicator = engine.clip_indicator();
-    let level_atomics = engine.level_atomics();
+    // Create engine at the device sample rate
+    let (engine, handles) = make(sample_rate);
     let output_latency_samples = engine.output_latency_samples();
-    let internal_latency_samples = engine.internal_latency_samples();
-
-    // Create command channel
-    let (command_tx, command_rx) = command_channel();
-
-    // Create direct command channel for timing-critical MIDI commands
-    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
 
     // Create the audio callback state (lock-free triple buffer approach)
-    let callback_state = AudioCallbackState::new(engine, command_rx, direct_rx, OutputMode::MasterOnly);
+    let callback_state = AudioCallbackState::new(engine, OutputMode::MasterOnly);
     let callback_state = Arc::new(std::sync::Mutex::new(callback_state));
 
     // Build the stream (pass output latency atomic for real-time measurement)
@@ -211,22 +196,14 @@ fn start_master_only(
         buffer_size,
     };
 
-    Ok(AudioSystemResult {
+    Ok(EngineAudioSystem {
         client_name: config.client_name.clone(),
         handle: AudioHandle::Cpal(handle),
-        command_sender: CommandSender { producer: command_tx },
-        deck_atomics,
-        slicer_atomics,
-        linked_stem_atomics,
-        linked_stem_receiver,
-        clip_indicator,
-        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,
         output_latency_samples,
-        internal_latency_samples,
-        direct_command_producer: direct_tx,
+        handles,
     })
 }
 
@@ -236,10 +213,10 @@ fn start_master_only(
 /// - Master stream owns the AudioEngine and processes audio
 /// - Cue samples are sent to the cue stream via a lock-free ring buffer
 /// - Cue stream never blocks waiting for master
-fn start_master_and_cue(
+fn start_master_and_cue<E: RtEngine + 'static, H>(
     config: &AudioConfig,
-    db_service: Arc<DatabaseService>,
-) -> AudioResult<AudioSystemResult> {
+    make: &mut impl FnMut(u32) -> (E, H),
+) -> AudioResult<EngineAudioSystem<H>> {
     // Get the master device
     let master_device = match &config.master_device {
         Some(id) => find_device_by_id(id)?,
@@ -303,22 +280,9 @@ fn start_master_and_cue(
         buffer_size
     );
 
-    // Create engine and extract atomics
-    let engine = AudioEngine::new_with_sample_rate(sample_rate, db_service);
-    let deck_atomics = engine.deck_atomics();
-    let slicer_atomics = engine.slicer_atomics();
-    let linked_stem_atomics = engine.linked_stem_atomics();
-    let linked_stem_receiver = engine.linked_stem_result_receiver();
-    let clip_indicator = engine.clip_indicator();
-    let level_atomics = engine.level_atomics();
+    // Create engine at the device sample rate
+    let (engine, handles) = make(sample_rate);
     let output_latency_samples = engine.output_latency_samples();
-    let internal_latency_samples = engine.internal_latency_samples();
-
-    // Create command channel
-    let (command_tx, command_rx) = command_channel();
-
-    // Create direct command channel for timing-critical MIDI commands
-    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
 
     // Create lock-free ring buffer for cue samples
     // Capacity: 4x buffer size to handle timing jitter between streams
@@ -331,7 +295,7 @@ fn start_master_and_cue(
     );
 
     // Create callback state for master stream (owns the engine)
-    let callback_state = AudioCallbackState::new(engine, command_rx, direct_rx, OutputMode::MasterAndCue);
+    let callback_state = AudioCallbackState::new(engine, OutputMode::MasterAndCue);
     let callback_state = Arc::new(std::sync::Mutex::new(callback_state));
 
     // Build master stream with cue producer (pass output latency atomic for measurement)
@@ -364,22 +328,14 @@ fn start_master_and_cue(
         buffer_size,
     };
 
-    Ok(AudioSystemResult {
+    Ok(EngineAudioSystem {
         client_name: config.client_name.clone(),
         handle: AudioHandle::Cpal(handle),
-        command_sender: CommandSender { producer: command_tx },
-        deck_atomics,
-        slicer_atomics,
-        linked_stem_atomics,
-        linked_stem_receiver,
-        clip_indicator,
-        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,
         output_latency_samples,
-        internal_latency_samples,
-        direct_command_producer: direct_tx,
+        handles,
     })
 }
 
@@ -387,30 +343,19 @@ fn start_master_and_cue(
 ///
 /// In single-output mode: owned exclusively by the master stream callback
 /// In dual-output mode: owned by master stream, cue samples sent via ring buffer
-struct AudioCallbackState {
-    /// The audio engine (owned exclusively by audio thread)
-    engine: AudioEngine,
-    /// Command receiver from UI
-    command_rx: rtrb::Consumer<EngineCommand>,
-    /// Direct command receiver for timing-critical MIDI commands
-    direct_command_rx: rtrb::Consumer<EngineCommand>,
+struct AudioCallbackState<E: RtEngine> {
+    /// The audio engine (owned exclusively by audio thread, drains its own commands)
+    engine: E,
     /// Pre-allocated master buffer
     master_buffer: StereoBuffer,
     /// Pre-allocated cue buffer
     cue_buffer: StereoBuffer,
 }
 
-impl AudioCallbackState {
-    fn new(
-        engine: AudioEngine,
-        command_rx: rtrb::Consumer<EngineCommand>,
-        direct_command_rx: rtrb::Consumer<EngineCommand>,
-        _output_mode: OutputMode,
-    ) -> Self {
+impl<E: RtEngine> AudioCallbackState<E> {
+    fn new(engine: E, _output_mode: OutputMode) -> Self {
         Self {
             engine,
-            command_rx,
-            direct_command_rx,
             master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
             cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
         }
@@ -422,14 +367,9 @@ impl AudioCallbackState {
         self.master_buffer.set_len_from_capacity(n_frames);
         self.cue_buffer.set_len_from_capacity(n_frames);
 
-        // Process commands from UI (lock-free)
-        self.engine.process_commands(&mut self.command_rx);
-        // Process direct MIDI commands (timing-critical, bypasses iced tick)
-        self.engine.process_commands(&mut self.direct_command_rx);
-
-        // Process audio through the engine
+        // Drain engine commands and process audio
         self.engine
-            .process(&mut self.master_buffer, &mut self.cue_buffer);
+            .process_block(&mut self.master_buffer, &mut self.cue_buffer);
     }
 
     /// Get master output samples
@@ -444,17 +384,7 @@ impl AudioCallbackState {
 
     /// Push master samples to active recording producers
     fn push_to_recording(&mut self, n_frames: usize) {
-        if !self.engine.recording_producers.is_empty() {
-            let master_slice = self.master_buffer.as_slice();
-            self.engine.recording_producers.retain_mut(|producer| {
-                for &sample in &master_slice[..n_frames] {
-                    if producer.push(sample).is_err() {
-                        break;
-                    }
-                }
-                !producer.is_abandoned()
-            });
-        }
+        push_to_recording(&mut self.engine, &self.master_buffer.as_slice()[..n_frames]);
     }
 }
 
@@ -556,10 +486,10 @@ fn get_output_config(
 }
 
 /// Build the master output stream
-fn build_output_stream(
+fn build_output_stream<E: RtEngine + 'static>(
     device: &cpal::Device,
     config: &StreamConfig,
-    state: Arc<std::sync::Mutex<AudioCallbackState>>,
+    state: Arc<std::sync::Mutex<AudioCallbackState<E>>>,
     output_latency_arc: Arc<AtomicU64>,
     stream_sample_rate: u32,
 ) -> AudioResult<Stream> {
@@ -619,10 +549,10 @@ fn build_output_stream(
 /// Build the cue output stream (for dual-output mode) - LEGACY, uses shared mutex
 /// Deprecated: Use build_cue_stream_lockfree instead for better performance
 #[allow(dead_code)]
-fn build_cue_stream(
+fn build_cue_stream<E: RtEngine + 'static>(
     device: &cpal::Device,
     config: &StreamConfig,
-    state: Arc<std::sync::Mutex<AudioCallbackState>>,
+    state: Arc<std::sync::Mutex<AudioCallbackState<E>>>,
 ) -> AudioResult<Stream> {
     let channels = config.channels as usize;
 
@@ -668,10 +598,10 @@ fn build_cue_stream(
 ///
 /// This version also pushes cue samples to the lock-free ring buffer
 /// so the cue stream can read them without blocking.
-fn build_master_stream_dual(
+fn build_master_stream_dual<E: RtEngine + 'static>(
     device: &cpal::Device,
     config: &StreamConfig,
-    state: Arc<std::sync::Mutex<AudioCallbackState>>,
+    state: Arc<std::sync::Mutex<AudioCallbackState<E>>>,
     mut cue_producer: rtrb::Producer<StereoSample>,
     output_latency_arc: Arc<AtomicU64>,
     stream_sample_rate: u32,

@@ -31,11 +31,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
 
-use super::backend::{AudioHandle, AudioSystemResult, CommandSender, StereoPair};
+use super::backend::{push_to_recording, AudioHandle, EngineAudioSystem, RtEngine, StereoPair};
 use super::config::AudioConfig;
 use super::error::{AudioError, AudioResult};
-use crate::db::DatabaseService;
-use crate::engine::{command_channel, AudioEngine, EngineCommand};
 use crate::types::StereoBuffer;
 
 /// Maximum buffer size to pre-allocate (covers all JACK configurations)
@@ -51,8 +49,8 @@ const CUE_RIGHT: &str = "cue_right";
 ///
 /// Keeps the JACK client active. Drop this to disconnect from JACK.
 pub struct JackAudioHandle {
-    /// The async client (keeps JACK running)
-    _async_client: jack::AsyncClient<JackNotifications, JackProcessor>,
+    /// The async client (keeps JACK running), type-erased over the engine type
+    _async_client: Box<dyn std::any::Any + Send + Sync>,
     /// Sample rate from JACK server
     sample_rate: u32,
     /// Buffer size from JACK server
@@ -84,20 +82,16 @@ impl JackAudioHandle {
 
 /// JACK process handler
 ///
-/// Owns the AudioEngine exclusively - no mutex needed.
-/// Receives commands from UI via lock-free ringbuffer.
-struct JackProcessor {
+/// Owns the engine exclusively - no mutex needed.
+/// The engine drains its own lock-free command rings.
+struct JackProcessor<E: RtEngine> {
     /// Output ports
     master_left: Port<AudioOut>,
     master_right: Port<AudioOut>,
     cue_left: Port<AudioOut>,
     cue_right: Port<AudioOut>,
     /// The audio engine (OWNED, not shared)
-    engine: AudioEngine,
-    /// Command receiver (consumer side of lock-free queue)
-    command_rx: rtrb::Consumer<EngineCommand>,
-    /// Direct command receiver for timing-critical MIDI commands
-    direct_command_rx: rtrb::Consumer<EngineCommand>,
+    engine: E,
     /// Pre-allocated buffers for processing
     master_buffer: StereoBuffer,
     cue_buffer: StereoBuffer,
@@ -107,7 +101,7 @@ struct JackProcessor {
     latency_measured: bool,
 }
 
-impl jack::ProcessHandler for JackProcessor {
+impl<E: RtEngine> jack::ProcessHandler for JackProcessor<E> {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
         let n_frames = ps.n_frames() as usize;
 
@@ -124,14 +118,9 @@ impl jack::ProcessHandler for JackProcessor {
         self.master_buffer.set_len_from_capacity(n_frames);
         self.cue_buffer.set_len_from_capacity(n_frames);
 
-        // Process commands from UI (lock-free, ~50ns per command)
-        self.engine.process_commands(&mut self.command_rx);
-        // Process direct MIDI commands (timing-critical, bypasses iced tick)
-        self.engine.process_commands(&mut self.direct_command_rx);
-
-        // Process audio through the engine
+        // Drain engine commands and process audio
         self.engine
-            .process(&mut self.master_buffer, &mut self.cue_buffer);
+            .process_block(&mut self.master_buffer, &mut self.cue_buffer);
 
         // Copy to JACK output buffers
         let master_left_out = self.master_left.as_mut_slice(ps);
@@ -150,17 +139,7 @@ impl jack::ProcessHandler for JackProcessor {
         }
 
         // Push master samples to active recording producers
-        if !self.engine.recording_producers.is_empty() {
-            let master_slice = self.master_buffer.as_slice();
-            self.engine.recording_producers.retain_mut(|producer| {
-                for &sample in &master_slice[..n_frames] {
-                    if producer.push(sample).is_err() {
-                        break; // Buffer full — drop rather than block
-                    }
-                }
-                !producer.is_abandoned()
-            });
-        }
+        push_to_recording(&mut self.engine, &self.master_buffer.as_slice()[..n_frames]);
 
         Control::Continue
     }
@@ -183,12 +162,12 @@ impl jack::NotificationHandler for JackNotifications {
 
 /// Start the JACK audio system
 ///
-/// Creates a JACK client, registers ports, and starts processing.
-/// Returns handles for UI communication and the JACK sample rate.
-pub fn start_audio_system(
+/// Creates a JACK client, registers ports, builds the engine at the JACK
+/// sample rate via `make`, and starts processing.
+pub fn start_audio_system<E: RtEngine + 'static, H>(
     config: &AudioConfig,
-    db_service: Arc<DatabaseService>,
-) -> AudioResult<AudioSystemResult> {
+    make: &mut impl FnMut(u32) -> (E, H),
+) -> AudioResult<EngineAudioSystem<H>> {
     // Create JACK client (JACK may rename if another client has the same name)
     let (client, _status) = Client::new(&config.client_name, ClientOptions::NO_START_SERVER)
         .map_err(|e| AudioError::ConfigError(format!("Failed to create JACK client: {}", e)))?;
@@ -223,21 +202,8 @@ pub fn start_audio_system(
         .map_err(|e| AudioError::ConfigError(format!("Failed to register port: {}", e)))?;
 
     // Create engine with JACK's sample rate
-    let engine = AudioEngine::new_with_sample_rate(sample_rate, db_service);
-    let deck_atomics = engine.deck_atomics();
-    let slicer_atomics = engine.slicer_atomics();
-    let linked_stem_atomics = engine.linked_stem_atomics();
-    let linked_stem_receiver = engine.linked_stem_result_receiver();
-    let clip_indicator = engine.clip_indicator();
-    let level_atomics = engine.level_atomics();
+    let (engine, handles) = make(sample_rate);
     let output_latency_samples = engine.output_latency_samples();
-    let internal_latency_samples = engine.internal_latency_samples();
-
-    // Create lock-free command channel
-    let (command_tx, command_rx) = command_channel();
-
-    // Create direct command channel for timing-critical MIDI commands
-    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
 
     // Create processor with pre-allocated buffers
     let processor = JackProcessor {
@@ -246,8 +212,6 @@ pub fn start_audio_system(
         cue_left,
         cue_right,
         engine,
-        command_rx,
-        direct_command_rx: direct_rx,
         master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
         cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
         output_latency_samples: output_latency_samples.clone(),
@@ -281,27 +245,19 @@ pub fn start_audio_system(
     let latency_ms = (buffer_size as f32 / sample_rate as f32) * 1000.0;
 
     let handle = JackAudioHandle {
-        _async_client: async_client,
+        _async_client: Box::new(async_client),
         sample_rate,
         buffer_size,
     };
 
-    Ok(AudioSystemResult {
+    Ok(EngineAudioSystem {
         client_name: actual_client_name,
         handle: AudioHandle::Jack(handle),
-        command_sender: CommandSender { producer: command_tx },
-        deck_atomics,
-        slicer_atomics,
-        linked_stem_atomics,
-        linked_stem_receiver,
-        clip_indicator,
-        level_atomics,
         sample_rate,
         buffer_size,
         latency_ms,
         output_latency_samples,
-        internal_latency_samples,
-        direct_command_producer: direct_tx,
+        handles,
     })
 }
 

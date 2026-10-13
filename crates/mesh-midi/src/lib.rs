@@ -242,7 +242,20 @@ impl ControllerManager {
             .unwrap_or_else(default_midi_config_path);
 
         let config = load_midi_config(&config_path);
+        Self::from_config(config, capture_raw)
+    }
 
+    /// Create a controller manager from an in-memory config
+    ///
+    /// Connects MIDI and HID devices like [`Self::new`]. With an empty config
+    /// (`MidiConfig::default()`) HID devices connect without a profile, so
+    /// `drain()` leaves their input alone and [`Self::drain_hid_events`]
+    /// yields the raw `ControlEvent`s (used by live mode).
+    pub fn new_with_config(config: MidiConfig) -> Result<Self, MidiError> {
+        Self::from_config(config, false)
+    }
+
+    fn from_config(config: MidiConfig, capture_raw: bool) -> Result<Self, MidiError> {
         // Create shared channel for MIDI messages (all MIDI devices feed into this)
         let (message_tx, message_rx) = flume::bounded(256);
 
@@ -1241,10 +1254,77 @@ impl ControllerManager {
         self.hid_devices.values().next().map(|d| d.info.product_name.as_str())
     }
 
+    /// Device ids (USB serial, else VID/PID) of all connected HID devices, sorted
+    pub fn hid_device_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .hid_devices
+            .values()
+            .map(|d| d.output_handler.device_id().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Send a raw feedback command to one HID device, bypassing profiles
+    ///
+    /// Returns false if no connected device has `device_id` or its feedback
+    /// channel is full. `SetDisplay` goes through the display dedup path.
+    pub fn send_hid_feedback(&mut self, device_id: &str, cmd: FeedbackCommand) -> bool {
+        let Some(device) = self
+            .hid_devices
+            .values_mut()
+            .find(|d| d.output_handler.device_id() == device_id)
+        else {
+            return false;
+        };
+        match cmd {
+            FeedbackCommand::SetDisplay { text } => {
+                device.output_handler.send_display(&text);
+                true
+            }
+            cmd => device.output_handler.send_command(cmd),
+        }
+    }
+
+    /// Show text on a Kontrol F1's 2-digit 7-segment display
+    ///
+    /// Text is normalised with [`hid::devices::kontrol_f1::display_text`].
+    pub fn send_hid_display(&mut self, device_id: &str, text: &str) -> bool {
+        let text = hid::devices::kontrol_f1::display_text(text);
+        self.send_hid_feedback(device_id, FeedbackCommand::SetDisplay { text })
+    }
+
     /// Get HID device product name by device_id (from ControlAddress::Hid)
     pub fn hid_device_name_for_id(&self, device_id: &str) -> Option<&str> {
         self.hid_devices.values()
             .find(|d| d.output_handler.device_id() == device_id)
             .map(|d| d.info.product_name.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_config_manager_connects_without_profiles() {
+        // Hardware-independent: whatever is plugged in connects without a profile,
+        // so drain() never consumes HID input and raw events stay available.
+        let mut manager = ControllerManager::new_with_config(MidiConfig::default())
+            .expect("empty config never fails");
+        assert!(manager.midi_devices.is_empty());
+        assert!(manager.hid_devices.values().all(|d| d.profile.is_none()));
+        assert!(manager.feedback_worker.is_none());
+        assert!(manager.drain().is_empty());
+
+        let ids = manager.hid_device_ids();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        assert_eq!(ids.len(), manager.hid_devices.len());
+
+        let cmd = FeedbackCommand::SetLed { control: "play_1".to_string(), brightness: 127 };
+        assert!(!manager.send_hid_feedback("no-such-device", cmd));
+        assert!(!manager.send_hid_display("no-such-device", "42"));
     }
 }

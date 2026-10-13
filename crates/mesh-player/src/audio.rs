@@ -110,6 +110,27 @@ pub fn start_audio_system_with_devices(
     ))
 }
 
+/// Start the audio system with a custom RT engine and specific devices
+///
+/// Same master+cue setup as [`start_audio_system_with_devices`], but the
+/// engine comes from `make`, which receives the device's real sample rate.
+#[allow(dead_code)] // seam for live mode, not called yet
+pub fn start_engine_with_devices<E, H, F>(
+    master_device: Option<DeviceId>,
+    cue_device: Option<DeviceId>,
+    make: F,
+) -> AudioResult<audio::EngineAudioSystem<H>>
+where
+    E: audio::RtEngine + 'static,
+    F: FnMut(u32) -> (E, H),
+{
+    let mut config = AudioConfig::master_and_cue();
+    config.master_device = master_device;
+    config.cue_device = cue_device;
+
+    audio::start_audio_system_with(&config, make)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
