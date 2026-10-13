@@ -97,3 +97,4 @@ path = "src/bin/clap_scan.rs"
 required-features = []
 
 [dev-dependencies]
+assert_no_alloc = "1.1"  # RT-safety checks in live-mode tests
