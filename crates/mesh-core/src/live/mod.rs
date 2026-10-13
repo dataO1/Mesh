@@ -35,3 +35,27 @@ pub const TICKS_PER_STEP: u16 = TICKS_PER_BAR / STEPS_PER_BAR as u16;
 pub const SLOTS_PER_CHAIN: usize = 4;
 /// Fixed event capacity per lane per bar (covers 32nd rolls across sub-voices).
 pub const MAX_EVENTS_PER_BAR: usize = 256;
+
+/// Shared RT-safety test support. A crate may have only one global allocator,
+/// and `assert_no_alloc`'s violation counter is global, so every live-mode
+/// allocation test goes through [`test_support::count_allocs`].
+#[cfg(all(test, debug_assertions))]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    #[global_allocator]
+    static ALLOC_CHECK: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with allocation checking on and return how many allocator
+    /// calls it made. Serialized, because the violation counter is global.
+    pub(crate) fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, u32) {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        assert_no_alloc::reset_violation_count();
+        let r = assert_no_alloc::assert_no_alloc(f);
+        let n = assert_no_alloc::violation_count();
+        assert_no_alloc::reset_violation_count();
+        (r, n)
+    }
+}

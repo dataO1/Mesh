@@ -40,7 +40,7 @@ mod params;
 mod saturation;
 mod sends;
 
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 mod rt_tests;
 
 pub use chain::{GlueChain, GlueKey, LaneSetup};

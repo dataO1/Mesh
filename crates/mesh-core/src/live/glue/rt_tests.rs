@@ -1,18 +1,11 @@
 //! RT-safety: the glue chain's per-block calls must not allocate.
 //!
-//! `assert_no_alloc` needs its allocator installed as the test binary's
-//! global allocator. Only one `#[global_allocator]` may exist per binary; if
-//! another live-mode module installs `AllocDisabler` too, keep one of them.
-
-use assert_no_alloc::{assert_no_alloc, AllocDisabler};
+//! Uses the shared allocation checker in `live::test_support`.
 
 use crate::live::NUM_LANES;
 use crate::types::{StereoBuffer, StereoSample};
 
 use super::{GlueChain, GlueKey, GlueParams, LaneSetup, Role};
-
-#[global_allocator]
-static ALLOCATOR: AllocDisabler = AllocDisabler;
 
 #[test]
 fn glue_chain_process_does_not_allocate() {
@@ -45,7 +38,7 @@ fn glue_chain_process_does_not_allocate() {
     let mut params = GlueParams::default();
     params.drum_bus.saturation.asymmetry = 0.3;
 
-    assert_no_alloc(|| {
+    let (_, allocs) = crate::live::test_support::count_allocs(|| {
         for b in 0..20 {
             // Parameter and tempo changes on the audio thread are allocation-free too.
             if b == 10 {
@@ -57,5 +50,6 @@ fn glue_chain_process_does_not_allocate() {
         }
         chain.process(&mut long_lanes, GlueKey { sidechain: None, triggers: &[5, 700, 1300] }, 174.0, &mut long_out);
     });
+    assert_eq!(allocs, 0, "glue chain allocated on the RT path");
     assert!(out.iter().all(|s| s.left.is_finite() && s.right.is_finite()));
 }
