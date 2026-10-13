@@ -104,15 +104,7 @@ pub struct TempoSpec {
     pub max: f64,
 }
 
-/// A lane's mix role. Selects glue treatment and LUFS target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Drums,
-    Bass,
-    Lead,
-    Extra,
-}
+pub use super::glue::Role;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
