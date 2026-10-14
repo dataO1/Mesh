@@ -115,6 +115,8 @@ pub struct LiveEngine {
     output_latency: Arc<AtomicU64>,
     profiling: bool,
     times: StageTimes,
+    /// The audio thread pins itself to `rt::live_cores::AUDIO` on its first block.
+    pinned: bool,
 }
 
 impl LiveEngine {
@@ -243,6 +245,13 @@ impl LiveEngine {
     /// post-glue signal for the block (stems for offline renders and tests);
     /// its buffers must be at least as long as `master`.
     pub fn process(&mut self, master: &mut StereoBuffer, mut lane_tap: Option<&mut [StereoBuffer; NUM_LANES]>) {
+        crate::rt::flush_denormals();
+        if !self.pinned {
+            // One syscall on the first block: the backend creates the audio
+            // thread, so this is the earliest point we run on it.
+            crate::rt::pin_to_cores(crate::rt::live_cores::AUDIO);
+            self.pinned = true;
+        }
         let started = self.profiling.then(Instant::now);
         self.drain_msgs();
         self.player.poll();
@@ -856,6 +865,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         max_block,
         output_latency: Arc::new(AtomicU64::new(0)),
         profiling: false,
+        pinned: false,
         times: StageTimes::default(),
     };
 

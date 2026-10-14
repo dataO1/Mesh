@@ -40,3 +40,61 @@ pub fn pin_to_big_cores() {
 #[cfg(not(feature = "embedded-rt"))]
 #[inline]
 pub fn pin_to_big_cores() {}
+
+/// Make the current thread flush denormal floats to zero.
+///
+/// Decaying filter, reverb and envelope tails drift into the denormal range,
+/// where x86 and ARM FPUs slow down by orders of magnitude. Audio threads call
+/// this once per block; it is a single control-register write. Applies to
+/// every build, not only `embedded-rt`.
+#[inline]
+pub fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    #[allow(deprecated)]
+    unsafe {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        // FTZ (bit 15) + DAZ (bit 6).
+        _mm_setcsr(_mm_getcsr() | 0x8040);
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // FPCR.FZ (bit 24).
+        let mut fpcr: u64;
+        std::arch::asm!("mrs {}, fpcr", out(reg) fpcr);
+        fpcr |= 1 << 24;
+        std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
+    }
+}
+
+/// Core assignment for live mode (design §4.2).
+///
+/// Live mode inverts the DJ layout: the audio thread does the heavy work
+/// (voices, CLAP synths, FX, glue), so it runs on A76 big cores, while the
+/// light background work (bar renderer, HID, loaders) moves to A55 cores.
+/// Core 4 stays with the UI render thread.
+pub mod live_cores {
+    /// A76 cores for the live audio thread.
+    pub const AUDIO: &[usize] = &[5, 6, 7];
+    /// A55 cores for live background threads.
+    pub const BACKGROUND: &[usize] = &[1, 2, 3];
+}
+
+/// Pin the current thread to the given CPU cores. No-op unless `embedded-rt`.
+#[cfg(feature = "embedded-rt")]
+pub fn pin_to_cores(cores: &[usize]) {
+    unsafe {
+        let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut cpuset);
+        for &c in cores {
+            libc::CPU_SET(c, &mut cpuset);
+        }
+        if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpuset) != 0 {
+            log::warn!("[RT] pin_to_cores {:?} failed: {}", cores, std::io::Error::last_os_error());
+        }
+    }
+}
+
+/// No-op on non-embedded builds.
+#[cfg(not(feature = "embedded-rt"))]
+#[inline]
+pub fn pin_to_cores(_cores: &[usize]) {}

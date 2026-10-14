@@ -485,3 +485,5 @@ These have no answer yet and are expected to be settled during the phases:
 ## Change log
 
 - 2026-10-13: initial design from grilling rounds 1–5 (D1–D42).
+- 2026-10-14: §4.2 core pinning confirmed (user). Live mode inverts the DJ layout: the live audio thread pins itself to A76 cores 5–7 on its first block, the bar renderer runs on A55 cores 1–3, and core 4 stays with UI rendering (`rt::live_cores`). **Open (P1 board test):** the NixOS image tunes the A55 cluster for audio at boot (`nohz_full=0-3`, `rcu_nocbs=0-3`, `irqaffinity=4-7`, audio IRQs on CPU 0, deep idle disabled on 0–3; `nix/embedded/hardware.nix`, `audio.nix`). In live mode that tuning protects the wrong cluster. Measure `live-bench` on the board first, then decide whether the irq-affinity/cpu-idle services become mode-aware (boot parameters can't change per mode).
+- 2026-10-14: the live audio thread flushes denormals (FTZ/DAZ on x86, FPCR.FZ on aarch64). On x86 this took the fixture style's glue stage from 0.80 to 0.04 ms per block.
