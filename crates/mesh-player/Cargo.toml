@@ -90,3 +90,6 @@ libc = { version = "0.2", optional = true }
 # Linux-only: NetworkManager D-Bus bindings for WiFi management
 [target.'cfg(target_os = "linux")'.dependencies]
 nmrs = "2"
+
+[dev-dependencies]
+tempfile = "3.15"

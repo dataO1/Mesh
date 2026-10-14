@@ -34,6 +34,7 @@ pub mod keyboard;
 pub mod knob;
 pub mod multiband;
 pub mod playlist_browser;
+pub mod scope;
 pub mod slice_editor;
 pub mod stem_preset;
 pub mod subscription;

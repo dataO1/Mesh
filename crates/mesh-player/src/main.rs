@@ -233,40 +233,25 @@ fn main() -> iced::Result {
     let config_path = config::default_config_path();
     let config: config::PlayerConfig = config::load_config(&config_path);
 
-    // Run mode is fixed at startup. Live mode is not implemented yet: DJ mode runs.
-    log::info!("Requested run mode: {:?}", config.mode);
-    if config.mode == config::AppRunMode::Live {
-        log::warn!(
-            "Live mode requested (style: {:?}) but not available in this build — starting DJ mode",
-            config.live.style
-        );
-    }
-
     // Set global font size scale (used by sz() helper across all widget code)
     mesh_widgets::set_font_scale(config.display.font_size.scale() * config.display.font.size_scale());
+
+    // Run mode is fixed at startup (D35). Live mode skips the DJ-only setup
+    // below (database, StemBufferPool, DJ engine) and runs its own app.
+    log::info!("Run mode: {:?}", config.mode);
+    if config.mode == config::AppRunMode::Live {
+        let (master_device_id, cue_device_id) = configured_audio_devices(&config);
+        let result = live::run(config, master_device_id, cue_device_id);
+        println!("Mesh stopped.");
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
 
     // Create database service (required for track metadata loading)
     let db_service = DatabaseService::new(&config.collection_path)
         .expect("Failed to create database service - this is required for mesh-player");
     log::info!("Database service initialized at {:?}", config.collection_path);
 
-    // Resolve saved audio device indices from config to DeviceIds.
-    // The config stores a device list index (usize); we enumerate devices at startup
-    // and look up the saved index so the configured device is used from the first frame.
-    let startup_audio_devices = mesh_core::audio::get_available_output_devices();
-    let master_device_id = config.audio.outputs.master_device
-        .and_then(|idx| startup_audio_devices.get(idx))
-        .map(|d| d.id.clone());
-    let cue_device_id = config.audio.outputs.cue_device
-        .and_then(|idx| startup_audio_devices.get(idx))
-        .map(|d| d.id.clone());
-    if master_device_id.is_some() || cue_device_id.is_some() {
-        log::info!(
-            "Using configured audio devices: master={:?}, cue={:?}",
-            master_device_id.as_ref().map(|d| &d.name),
-            cue_device_id.as_ref().map(|d| &d.name),
-        );
-    }
+    let (master_device_id, cue_device_id) = configured_audio_devices(&config);
 
     // Try to start audio system
     // Returns AudioHandle, CommandSender (lock-free queue), DeckAtomics, SlicerAtomics,
@@ -431,6 +416,30 @@ fn main() -> iced::Result {
     // Force-exit to terminate any lingering background threads (history write threads,
     // rayon pool, etc.) that would otherwise keep the process alive during cleanup.
     std::process::exit(if result.is_ok() { 0 } else { 1 });
+}
+
+/// Resolve saved audio device indices from config to DeviceIds.
+///
+/// The config stores a device list index (usize); we enumerate devices at startup
+/// and look up the saved index so the configured device is used from the first frame.
+fn configured_audio_devices(
+    config: &config::PlayerConfig,
+) -> (Option<mesh_core::audio::DeviceId>, Option<mesh_core::audio::DeviceId>) {
+    let startup_audio_devices = mesh_core::audio::get_available_output_devices();
+    let master_device_id = config.audio.outputs.master_device
+        .and_then(|idx| startup_audio_devices.get(idx))
+        .map(|d| d.id.clone());
+    let cue_device_id = config.audio.outputs.cue_device
+        .and_then(|idx| startup_audio_devices.get(idx))
+        .map(|d| d.id.clone());
+    if master_device_id.is_some() || cue_device_id.is_some() {
+        log::info!(
+            "Using configured audio devices: master={:?}, cue={:?}",
+            master_device_id.as_ref().map(|d| &d.name),
+            cue_device_id.as_ref().map(|d| &d.name),
+        );
+    }
+    (master_device_id, cue_device_id)
 }
 
 /// Update function for iced

@@ -423,6 +423,9 @@ pub struct LiveController {
     intent: Option<MusicalKey>,
     captures: Vec<Capture>,
     capture_collection: Option<PathBuf>,
+    /// Results of the off-thread capture saves, for the UI's confirmation.
+    saved_tx: mpsc::Sender<Result<PathBuf, String>>,
+    saved_rx: mpsc::Receiver<Result<PathBuf, String>>,
     dropped: u32,
 }
 
@@ -457,6 +460,11 @@ impl LiveController {
     /// Without it captures stay in memory.
     pub fn set_capture_collection(&mut self, collection: Option<PathBuf>) {
         self.capture_collection = collection;
+    }
+
+    /// Next finished capture save: the file written, or why it failed.
+    pub fn take_saved_capture(&mut self) -> Option<Result<PathBuf, String>> {
+        self.saved_rx.try_recv().ok()
     }
 
     /// Messages lost because the RT ring was full.
@@ -665,14 +673,23 @@ impl LiveController {
         self.captures.push(capture.clone());
         if let Some(collection) = self.capture_collection.clone() {
             let to_save = capture.clone();
+            let saved = self.saved_tx.clone();
             let spawned = std::thread::Builder::new().name("live-capture-save".into()).spawn(move || {
-                match to_save.save(&collection) {
-                    Ok(path) => log::info!("[LIVE] capture saved to {}", path.display()),
-                    Err(e) => log::warn!("[LIVE] capture not saved: {e}"),
-                }
+                let result = match to_save.save(&collection) {
+                    Ok(path) => {
+                        log::info!("[LIVE] capture saved to {}", path.display());
+                        Ok(path)
+                    }
+                    Err(e) => {
+                        log::warn!("[LIVE] capture not saved: {e}");
+                        Err(e.to_string())
+                    }
+                };
+                let _ = saved.send(result);
             });
             if let Err(e) = spawned {
                 log::warn!("[LIVE] capture not saved: {e}");
+                let _ = self.saved_tx.send(Err(e.to_string()));
             }
         }
         capture
@@ -842,6 +859,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         times: StageTimes::default(),
     };
 
+    let (saved_tx, saved_rx) = mpsc::channel();
     let mut controller = LiveController {
         shared: Arc::clone(&shared),
         rt: rt_tx,
@@ -855,6 +873,8 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         intent: None,
         captures: Vec::new(),
         capture_collection: None,
+        saved_tx,
+        saved_rx,
         dropped: 0,
     };
     controller.apply_defaults(&sends);
