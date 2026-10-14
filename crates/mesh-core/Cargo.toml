@@ -116,5 +116,10 @@ name = "style-calibrate"
 path = "src/bin/style_calibrate.rs"
 required-features = []
 
+[[bin]]
+name = "live-starter-style"
+path = "src/bin/live_starter_style.rs"
+required-features = []
+
 [dev-dependencies]
 assert_no_alloc = { version = "1.1", features = ["warn_debug"] }  # RT-safety checks in live-mode tests
