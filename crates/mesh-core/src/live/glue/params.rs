@@ -189,12 +189,98 @@ impl Default for SaturationParams {
     }
 }
 
+// MUSICAL: thresholds measured with `live-render` on the starter style
+// (LUFS-calibrated lanes) for the target peak reduction; makeup restores
+// about the average reduction.
+const DRUM_COMP1_THRESHOLD_DB: f32 = -8.5;
+const DRUM_COMP1_MAKEUP_DB: f32 = 2.0;
+const DRUM_COMP2_THRESHOLD_DB: f32 = -12.0;
+const DRUM_COMP2_MAKEUP_DB: f32 = 1.0;
+/// Bass lanes peak near full scale, so their compressor sits higher.
+const BASS_COMP_THRESHOLD_DB: f32 = -5.0;
+const LANE_COMP_THRESHOLD_DB: f32 = -21.0;
+/// Master level into the saturator and limiter, so the limiter only
+/// catches peaks (about 1-2 dB).
+const MASTER_OUTPUT_DB: f32 = -4.0;
+
+/// Stage 3b: per-lane compressor then saturation (bass, lead, extra; the
+/// drums get theirs on the drum bus).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaneDynamicsParams {
+    pub compressor_enabled: bool,
+    pub compressor: CompressorParams,
+    pub saturation_enabled: bool,
+    pub saturation: SaturationParams,
+}
+
+impl Default for LaneDynamicsParams {
+    fn default() -> Self {
+        Self {
+            compressor_enabled: true,
+            // MUSICAL: light levelling, 2-3 dB peak reduction.
+            compressor: CompressorParams {
+                threshold_db: LANE_COMP_THRESHOLD_DB,
+                ratio: 3.0,
+                attack_ms: 10.0,
+                release_ms: 80.0,
+                makeup_db: 1.0,
+                knee_db: 6.0,
+            },
+            saturation_enabled: true,
+            // MUSICAL: slight saturation, half wet.
+            saturation: SaturationParams { drive_db: 3.0, asymmetry: 0.05, mix: 0.5, output_db: 0.0 },
+        }
+    }
+}
+
+/// Per-role lane dynamics.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoleDynamicsParams {
+    pub bass: LaneDynamicsParams,
+    pub lead: LaneDynamicsParams,
+    pub extra: LaneDynamicsParams,
+}
+
+impl Default for RoleDynamicsParams {
+    fn default() -> Self {
+        let lane = LaneDynamicsParams::default();
+        Self {
+            // MUSICAL: the bass gets a bit more drive for harmonics on small speakers.
+            bass: LaneDynamicsParams {
+                compressor: CompressorParams { threshold_db: BASS_COMP_THRESHOLD_DB, ..lane.compressor },
+                saturation: SaturationParams { drive_db: 4.0, ..lane.saturation },
+                ..lane
+            },
+            lead: lane,
+            extra: lane,
+        }
+    }
+}
+
+impl RoleDynamicsParams {
+    /// Dynamics of a role. Drums use the drum bus instead.
+    pub fn for_role(&self, role: Role) -> Option<&LaneDynamicsParams> {
+        match role {
+            Role::Drums => None,
+            Role::Bass => Some(&self.bass),
+            Role::Lead => Some(&self.lead),
+            Role::Extra => Some(&self.extra),
+        }
+    }
+}
+
 /// Stage 4: drum bus.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DrumBusParams {
     pub compressor_enabled: bool,
+    /// First compressor: punch.
     pub compressor: CompressorParams,
+    pub compressor2_enabled: bool,
+    /// Second compressor: consistency.
+    pub compressor2: CompressorParams,
     pub saturation_enabled: bool,
     pub saturation: SaturationParams,
 }
@@ -203,14 +289,25 @@ impl Default for DrumBusParams {
     fn default() -> Self {
         Self {
             compressor_enabled: true,
-            // MUSICAL: glue compression, slow-ish attack keeps transients.
+            // MUSICAL: user spec: 4:1, 15 ms attack, 59 ms release, hard
+            // knee, about 3-4 dB peak reduction.
             compressor: CompressorParams {
-                threshold_db: -16.0,
+                threshold_db: DRUM_COMP1_THRESHOLD_DB,
                 ratio: 4.0,
-                attack_ms: 10.0,
-                release_ms: 80.0,
-                makeup_db: 2.0,
-                knee_db: 6.0,
+                attack_ms: 15.0,
+                release_ms: 59.0,
+                makeup_db: DRUM_COMP1_MAKEUP_DB,
+                knee_db: 0.0,
+            },
+            compressor2_enabled: true,
+            // MUSICAL: user spec: 2:1, 30 ms attack, 20 ms release, hard knee.
+            compressor2: CompressorParams {
+                threshold_db: DRUM_COMP2_THRESHOLD_DB,
+                ratio: 2.0,
+                attack_ms: 30.0,
+                release_ms: 20.0,
+                makeup_db: DRUM_COMP2_MAKEUP_DB,
+                knee_db: 0.0,
             },
             saturation_enabled: true,
             // MUSICAL: light warmth, slight even-harmonic colour.
@@ -237,14 +334,17 @@ impl Default for DriveParams {
     }
 }
 
-/// Stage 6: master compressor (before the existing limiter / clipper).
+/// Stage 6: master compressor, output gain and saturation (before the
+/// existing limiter / clipper).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MasterParams {
     pub compressor_enabled: bool,
     pub compressor: CompressorParams,
-    /// Output gain applied after the compressor, before the limiter.
+    /// Output gain applied after the compressor, before the saturator.
     pub output_db: f32,
+    pub saturation_enabled: bool,
+    pub saturation: SaturationParams,
 }
 
 impl Default for MasterParams {
@@ -261,7 +361,10 @@ impl Default for MasterParams {
                 makeup_db: 0.0,
                 knee_db: 6.0,
             },
-            output_db: 0.0,
+            output_db: MASTER_OUTPUT_DB,
+            saturation_enabled: true,
+            // MUSICAL: slight final saturation, mostly dry.
+            saturation: SaturationParams { drive_db: 2.0, asymmetry: 0.0, mix: 0.4, output_db: 0.0 },
         }
     }
 }
@@ -311,6 +414,7 @@ pub struct GlueParams {
     pub high_pass: HighPassParams,
     pub mono_below: MonoBelowParams,
     pub duck: DuckParams,
+    pub lane_dynamics: RoleDynamicsParams,
     pub drum_bus: DrumBusParams,
     pub drive: DriveParams,
     pub master: MasterParams,
@@ -325,6 +429,7 @@ struct FullGlueParams {
     high_pass: HighPassParams,
     mono_below: MonoBelowParams,
     duck: DuckParams,
+    lane_dynamics: RoleDynamicsParams,
     drum_bus: DrumBusParams,
     drive: DriveParams,
     master: MasterParams,
@@ -362,6 +467,7 @@ impl<'de> Deserialize<'de> for GlueParams {
             high_pass: f.high_pass,
             mono_below: f.mono_below,
             duck: f.duck,
+            lane_dynamics: f.lane_dynamics,
             drum_bus: f.drum_bus,
             drive: f.drive,
             master: f.master,

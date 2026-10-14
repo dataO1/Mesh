@@ -53,6 +53,17 @@ const DUCK_KICK_OTHERS: usize = 2;
 const DUCK_SNARE_OTHERS: usize = 3;
 const DUCK_ENVS: usize = 4;
 
+/// Peak gain reduction per dynamics stage, in dB (for calibration and metering).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GlueMeters {
+    pub drum_comp1: f32,
+    pub drum_comp2: f32,
+    /// Lane compressors by lane index (0 for the drum lane).
+    pub lane_comp: [f32; NUM_LANES],
+    pub master_comp: f32,
+    pub limiter: f32,
+}
+
 pub struct GlueChain {
     params: GlueParams,
     lanes: [LaneSetup; NUM_LANES],
@@ -61,12 +72,16 @@ pub struct GlueChain {
     high_pass: [RoleHighPass; NUM_LANES],
     mono_below: [MonoBelow; NUM_LANES],
     duck_env: [DuckEnvelope; DUCK_ENVS],
+    lane_comp: [Compressor; NUM_LANES],
+    lane_sat: [Saturator; NUM_LANES],
 
     drum_comp: Compressor,
+    drum_comp2: Compressor,
     drum_sat: Saturator,
     drive: Saturator,
     master_comp: Compressor,
     master_gain: f32,
+    master_sat: Saturator,
     limiter: MasterLimiter,
     clipper: MasterClipper,
     sends: SharedSends,
@@ -91,11 +106,15 @@ impl GlueChain {
             high_pass: std::array::from_fn(|_| RoleHighPass::new()),
             mono_below: std::array::from_fn(|_| MonoBelow::new()),
             duck_env: std::array::from_fn(|_| DuckEnvelope::new()),
+            lane_comp: std::array::from_fn(|_| Compressor::new()),
+            lane_sat: std::array::from_fn(|_| Saturator::new()),
             drum_comp: Compressor::new(),
+            drum_comp2: Compressor::new(),
             drum_sat: Saturator::new(),
             drive: Saturator::new(),
             master_comp: Compressor::new(),
             master_gain: 1.0,
+            master_sat: Saturator::new(),
             limiter: MasterLimiter::new(),
             clipper: MasterClipper::new(),
             sends: SharedSends::new(max_block),
@@ -125,6 +144,8 @@ impl GlueChain {
             env.configure(d.attack_ms, 0.0, group.release_ms, d.key_threshold_db);
         }
         self.drum_comp.configure(&p.drum_bus.compressor);
+        self.drum_comp2.configure(&p.drum_bus.compressor2);
+        self.master_sat.configure(&p.master.saturation);
         self.drum_sat.configure(&p.drum_bus.saturation);
         self.drive.configure(&p.drive.saturation);
         self.master_comp.configure(&p.master.compressor);
@@ -153,6 +174,10 @@ impl GlueChain {
         self.trim[i] = db_to_lin(self.lanes[i].trim_db);
         self.high_pass[i].configure(&self.params.high_pass.for_role(role));
         self.mono_below[i].configure(&self.params.mono_below);
+        if let Some(d) = self.params.lane_dynamics.for_role(role) {
+            self.lane_comp[i].configure(&d.compressor);
+            self.lane_sat[i].configure(&d.saturation);
+        }
     }
 
     /// Output latency in samples (the master limiter's lookahead).
@@ -160,9 +185,15 @@ impl GlueChain {
         self.limiter.latency_samples()
     }
 
-    /// Peak gain reduction of the master compressor in dB since the last call.
-    pub fn take_master_peak_gr_db(&mut self) -> f32 {
-        self.master_comp.take_peak_gr_db()
+    /// Peak gain reduction of every dynamics stage since the last call.
+    pub fn take_meters(&mut self) -> GlueMeters {
+        GlueMeters {
+            drum_comp1: self.drum_comp.take_peak_gr_db(),
+            drum_comp2: self.drum_comp2.take_peak_gr_db(),
+            lane_comp: std::array::from_fn(|i| self.lane_comp[i].take_peak_gr_db()),
+            master_comp: self.master_comp.take_peak_gr_db(),
+            limiter: self.limiter.take_peak_gr_db(),
+        }
     }
 
     /// Clip indicator of the master clipper (for the UI).
@@ -246,7 +277,16 @@ impl GlueChain {
             if setup.role == Role::Bass {
                 self.mono_below[i].process(lane);
             }
-            // 4. Main-kit keyed full-band duck.
+            // 4. Lane compressor then saturation (drums: on the drum bus).
+            if let Some(d) = p.lane_dynamics.for_role(setup.role) {
+                if d.compressor_enabled {
+                    self.lane_comp[i].process(lane);
+                }
+                if d.saturation_enabled {
+                    self.lane_sat[i].process(lane);
+                }
+            }
+            // 5. Main-kit keyed full-band duck.
             if let Some(d) = p.duck.for_role(setup.role).filter(|_| p.duck.enabled) {
                 let (k, s) = if setup.role == Role::Bass {
                     (DUCK_KICK_BASS, DUCK_SNARE_BASS)
@@ -255,9 +295,9 @@ impl GlueChain {
                 };
                 duck_full_band(lane, &self.duck_amount[k][..m], &self.duck_amount[s][..m], d.kick_db, d.snare_db);
             }
-            // 5. Post-lane send taps.
+            // 6. Post-lane send taps.
             self.sends.accumulate(lane, setup.delay_send, setup.reverb_send);
-            // 6. Route to its bus.
+            // 7. Route to its bus.
             let dst: &mut [StereoSample] = match setup.role {
                 Role::Drums => &mut *drum_bus,
                 Role::Bass => &mut *low_bus,
@@ -271,6 +311,9 @@ impl GlueChain {
         // Drum bus → low bus.
         if p.drum_bus.compressor_enabled {
             self.drum_comp.process(drum_bus);
+        }
+        if p.drum_bus.compressor2_enabled {
+            self.drum_comp2.process(drum_bus);
         }
         if p.drum_bus.saturation_enabled {
             self.drum_sat.process(drum_bus);
@@ -291,7 +334,7 @@ impl GlueChain {
         // Send returns.
         self.sends.process_add(mix);
 
-        // Master: compressor → output gain → existing limiter → clipper.
+        // Master: compressor → output gain → saturation → existing limiter → clipper.
         if p.master.compressor_enabled {
             self.master_comp.process(mix);
         }
@@ -299,6 +342,9 @@ impl GlueChain {
             for s in mix.iter_mut() {
                 *s *= self.master_gain;
             }
+        }
+        if p.master.saturation_enabled {
+            self.master_sat.process(mix);
         }
         self.limiter.process(&mut self.mix);
         self.clipper.process(&mut self.mix);
@@ -313,7 +359,13 @@ impl GlueChain {
         for env in &mut self.duck_env {
             env.reset();
         }
+        for i in 0..NUM_LANES {
+            self.lane_comp[i].reset();
+            self.lane_sat[i].reset();
+        }
         self.drum_comp.reset();
+        self.drum_comp2.reset();
+        self.master_sat.reset();
         self.drum_sat.reset();
         self.drive.reset();
         self.master_comp.reset();
@@ -476,6 +528,13 @@ mod tests {
         params.high_pass.lead.enabled = false;
         params.high_pass.extra.enabled = false;
         params.mono_below.enabled = false;
+        // No lane dynamics, so the gain is the duck alone.
+        params.lane_dynamics = crate::live::glue::RoleDynamicsParams {
+            bass: crate::live::glue::LaneDynamicsParams { compressor_enabled: false, saturation_enabled: false, ..Default::default() },
+            ..Default::default()
+        };
+        params.lane_dynamics.lead = params.lane_dynamics.bass;
+        params.lane_dynamics.extra = params.lane_dynamics.bass;
         let mut chain = GlueChain::new(block);
         chain.set_params(&params);
         // Constant signal on every lane, so the lane gain reads off directly.
@@ -497,5 +556,27 @@ mod tests {
         assert!(db(2, after_bass) < -0.3, "lead still ducked: {}", db(2, after_bass));
         // The drums are the key and never ducked.
         assert!(lanes[0].as_slice().iter().all(|s| s.left == 0.25));
+    }
+
+    #[test]
+    fn meters_report_each_dynamics_stage() {
+        let block = 4800;
+        let mut chain = GlueChain::new(block);
+        let loud = |n: usize| {
+            StereoBuffer::from_vec(sine(1000.0, 0.9, n).into_iter().map(|v| StereoSample::new(v, v)).collect())
+        };
+        let mut lanes: [StereoBuffer; NUM_LANES] = std::array::from_fn(|_| loud(block));
+        let mut out = StereoBuffer::silence(block);
+        chain.process(&mut lanes, GlueKey::default(), 174.0, &mut out);
+        let m = chain.take_meters();
+        assert!(m.drum_comp1 > 1.0 && m.drum_comp2 > 0.5, "{m:?}");
+        assert!(m.lane_comp[1] > 1.0 && m.lane_comp[2] > 1.0 && m.lane_comp[3] > 1.0, "{m:?}");
+        assert_eq!(m.lane_comp[0], 0.0, "drums use the drum bus compressors");
+        assert!(m.master_comp > 0.0 && m.limiter >= 0.0, "{m:?}");
+        // Taking resets the peaks.
+        let mut silent: [StereoBuffer; NUM_LANES] = std::array::from_fn(|_| StereoBuffer::silence(block));
+        chain.reset();
+        chain.process(&mut silent, GlueKey::default(), 174.0, &mut out);
+        assert_eq!(chain.take_meters().drum_comp1, 0.0);
     }
 }

@@ -74,6 +74,8 @@ pub struct MasterLimiter {
     attack_coeff: f32,
     /// Release coefficient: exponential decay with `RELEASE_SECS` τ
     release_coeff: f32,
+    /// Lowest applied gain since the last [`MasterLimiter::take_peak_gr_db`].
+    min_gain_seen: f32,
 }
 
 impl MasterLimiter {
@@ -108,7 +110,13 @@ impl MasterLimiter {
             gain: 1.0,
             attack_coeff,
             release_coeff,
+            min_gain_seen: 1.0,
         }
+    }
+
+    /// Peak gain reduction in dB since the last call (for metering).
+    pub fn take_peak_gr_db(&mut self) -> f32 {
+        -20.0 * std::mem::replace(&mut self.min_gain_seen, 1.0).log10()
     }
 
     /// Latency in samples introduced by this limiter.
@@ -149,6 +157,8 @@ impl MasterLimiter {
                 self.gain = self.gain * self.release_coeff
                     + min_gain * (1.0 - self.release_coeff);
             }
+
+            self.min_gain_seen = self.min_gain_seen.min(self.gain);
 
             // ── 5. Read delayed audio ────────────────────────────────────
             let read_pos =

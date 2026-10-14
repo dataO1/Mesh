@@ -7,16 +7,17 @@
 //!  lane[i] ─► trim (LUFS calibration, static dB)
 //!          ─► role high-pass        (lead / extra; drums off by default)
 //!          ─► mono-below crossover  (bass only)
-//!          ─► low-band duck         (bass / lead / extra, keyed by the kick)
+//!          ─► compressor → saturation (bass / lead / extra)
+//!          ─► full-band duck        (bass / lead / extra, keyed by the main kit)
 //!          ├─► delay send ─┐  (post-lane taps, per-lane levels)
 //!          ├─► reverb send ┤
 //!          │               │
-//!  Drums ──► drum bus: compressor → saturation ─┐
+//!  Drums ──► drum bus: comp 1 → comp 2 → sat ───┐
 //!  Bass  ───────────────────────────────────────┴─► low bus ─► shared drive ─┐
 //!  Lead / Extra ─────────────────────────────────────────────────────────────┤
 //!  delay return / reverb return ─────────────────────────────────────────────┤
 //!                                                                             ▼
-//!                       master compressor ─► MasterLimiter ─► MasterClipper ─► out
+//!          master compressor ─► saturation ─► MasterLimiter ─► MasterClipper ─► out
 //! ```
 //!
 //! **Shared drive routing**: drums and bass are summed into one "low bus" and
@@ -43,15 +44,15 @@ mod sends;
 #[cfg(all(test, debug_assertions))]
 mod rt_tests;
 
-pub use chain::{GlueChain, GlueKey, LaneSetup};
+pub use chain::{GlueChain, GlueKey, GlueMeters, LaneSetup};
 pub use dynamics::{static_curve_db, Compressor};
 pub use ducker::{duck_full_band, DuckEnvelope};
 pub use filter::{MonoBelow, RoleHighPass};
 pub use loudness::{measure_lufs, trim_db};
 pub use params::{
     CompressorParams, DelayParams, DrumBusParams, DriveParams, DuckParams, GlueParams,
-    HighPassParams, MasterParams, MonoBelowParams, ReverbParams, RoleHighPassParams,
-    SaturationParams, Slope,
+    HighPassParams, LaneDynamicsParams, MasterParams, MonoBelowParams, ReverbParams,
+    RoleDynamicsParams, RoleHighPassParams, SaturationParams, Slope,
 };
 pub use saturation::Saturator;
 pub use sends::SharedSends;

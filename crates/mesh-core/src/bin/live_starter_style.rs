@@ -614,7 +614,6 @@ glue:
   role_hpf: {{ lead: 500, extra: 300 }}
   bass_mono_hz: 120
   drum_bus:
-    comp: {{ threshold_db: -12, ratio: 4, attack_ms: 10, release_ms: 120 }}
     drive: 0.2
   shared_drive: {{ enabled: false }}
   master: {{ threshold_db: -8, ratio: 4, attack_ms: 25, release_ms: 10 }}

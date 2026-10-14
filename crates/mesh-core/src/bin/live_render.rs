@@ -207,18 +207,27 @@ fn main() {
         sys.renderer.service();
     }
 
-    let master_gr = sys.engine.take_master_peak_gr_db();
+    let meters = sys.engine.take_glue_meters();
     write_wav(&out, rate, &master);
     let peak = master.iter().fold(0.0f32, |p, s| p.max(s.left.abs()).max(s.right.abs()));
     println!(
-        "wrote {} ({:.1} s, peak {:.2} dBFS, {:.1} LUFS, key {} at the end, {} starved bar(s), master comp peak GR {:.1} dB)",
+        "wrote {} ({:.1} s, peak {:.2} dBFS, {:.1} LUFS, key {} at the end, {} starved bar(s))",
         out.display(),
         master.len() as f64 / rate as f64,
         20.0 * peak.max(1e-9).log10(),
         measure_lufs(&master, rate as f64),
         sys.shared.key(),
-        sys.shared.starved_bars(),
-        master_gr
+        sys.shared.starved_bars()
+    );
+    println!(
+        "peak gain reduction: drum comp 1 {:.1} dB, drum comp 2 {:.1} dB, lane comps bass/lead/extra {:.1}/{:.1}/{:.1} dB, master comp {:.1} dB, limiter {:.1} dB",
+        meters.drum_comp1,
+        meters.drum_comp2,
+        meters.lane_comp[1],
+        meters.lane_comp[2],
+        meters.lane_comp[3],
+        meters.master_comp,
+        meters.limiter
     );
     if stems {
         for (i, lane) in lanes.iter().enumerate() {
