@@ -22,6 +22,7 @@ mod config;
 mod direct_dispatch;
 mod domain;
 mod history;
+mod live;
 mod loader;
 mod plugin_gui;
 mod suggestions;
