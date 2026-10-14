@@ -55,14 +55,24 @@ progressions:
 # Optional. Index into `progressions` used at load (default 0).
 default_progression: 0
 
-# Optional. Integrated-loudness target per role in LUFS (-60..=0). The style
-# tool measures each instrument option against its role's target and writes the
-# result into that option's `lufs_trim_db`. Defaults shown.
+# Optional. Loudness targets per role in LUFS (-60..=0); style-calibrate writes
+# both trims. Defaults shown.
+#   loudness         the instrument output, before the lane's processing
+#                    (`lufs_trim_db` per option): every option drives the lane
+#                    FX and compressors at the same level.
+#   output_loudness  the processed lane, after lane FX and glue dynamics
+#                    (`output_trims_db` per lane option / drum kit): the mix
+#                    balance. Unset = `loudness`.
 loudness:
   drums: -12
   bass: -14
   lead: -16
   extra: -18
+output_loudness:
+  drums: -5
+  bass: -9
+  lead: -14
+  extra: -24.5
 
 # Optional. Parameters of the fixed glue chain. Every field in this block is
 # optional. Unset fields keep the engine defaults.
@@ -96,6 +106,9 @@ glue:
       attack_ms: 10      # 0..=1000
       release_ms: 120    # 0..=10000
       makeup_db: 0       # -24..=24
+    # Second compressor, same fields (defaults: 2:1, 30/20 ms, hard knee).
+    comp2:
+      threshold_db: -11
     drive: 0.2           # saturation amount, 0..=1
   # One saturation stage shared by the drum and bass buses.
   shared_drive:
@@ -240,6 +253,9 @@ lanes:
     break_fx:
       - { id: eq, source: native, settings: { low_cut: 120, bell_1_gain: -3 } }
       - { id: transient, source: native, settings: { attack: 4 } }
+    # Output trim per option (drum lane: per kit) in dB, applied after the
+    # lane's processing. Written by style-calibrate; missing entries are 0.
+    output_trims_db: [0.0]
 
     # Exactly 4 performance controls, in hardware order:
     # knob A, fader A, knob B, fader B.

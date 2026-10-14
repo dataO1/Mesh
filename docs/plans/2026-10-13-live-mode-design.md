@@ -524,3 +524,10 @@ These have no answer yet and are expected to be settled during the phases:
   - LSP's CLAP multiband compressor/dynamics processor was rejected. Each compressor band is up or down, not both. Most parameters are exposed only as normalized log values, and it carries FFT analysis.
   - Engine cost on the PC is now 17× realtime (worst block 29 %). The Surge pad (extra lane) dominates, so OPi headroom must be checked (G2).
   - Future, not scheduled: map the 4 lane macros (the performance controls) onto many effect and generator parameters with ranges, like Mesh's multiband FX macros.
+- 2026-10-14: Loudness after processing (user), plus drum EQ and balance changes.
+  - `style-calibrate` runs two passes. Pass 1 keeps the input trims (`lufs_trim_db` to `loudness`), so every option drives its lane processing at the same level.
+  - Pass 2 measures each option / drum kit after the lane's whole processing: break bus, lane FX, glue high-pass, mono-below, compressor and saturation. No duck and no buses. It plays the lane's own generator and writes `output_trims_db` to reach `output_loudness`.
+  - The glue applies the output trim right after the lane dynamics, ramped per block. It is linear, so one pass is exact.
+  - Starter output targets are the balance approved by ear, then drums +1 dB and bass −1.5 dB. Drum-bus thresholds rose 1 dB (`comp` −4, new style key `comp2` −11), so the drum increase survives the bus.
+  - Drum lane EQ: 40 Hz low cut, +1.5 dB at 100 Hz, −2 dB around 320 Hz. Breaks get more highs: +4.5 dB broad around 5 kHz instead of +3 dB at 3.5 kHz. The EQ's second bell now reaches down to 200 Hz.
+  - The starter script always runs the bins through `direnv`. A shell with `IN_NIX_SHELL` set but no devshell environment made CLAP fail to load during calibration.

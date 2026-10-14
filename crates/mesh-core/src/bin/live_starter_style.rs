@@ -759,14 +759,19 @@ progressions:
     bars_per_chord: 2
 default_progression: 0
 
+# Input targets: the level every option feeds into its lane processing.
 loudness: {{ drums: -12, bass: -14, lead: -16, extra: -18 }}
+# Output targets: the processed lanes (mix balance). MUSICAL: the first
+# balance by ear, then drums +1 dB and bass -1.5 dB (by ear).
+output_loudness: {{ drums: -5, bass: -9, lead: -14, extra: -24.5 }}
 
 glue:
   role_hpf: {{ lead: 500, extra: 300 }}
   bass_mono_hz: 120
   drum_bus:
     # MUSICAL: threshold for about 3.5 dB peak reduction on this kit (live-render).
-    comp: {{ threshold_db: -5 }}
+    comp: {{ threshold_db: -4 }}
+    comp2: {{ threshold_db: -11 }}
     drive: 0.2
   shared_drive: {{ enabled: false }}
   master: {{ threshold_db: -8, ratio: 4, attack_ms: 25, release_ms: 10 }}
@@ -798,11 +803,13 @@ lanes:
         options:
 {perc}    fx:
       - {{ id: filter, source: native, settings: {{ filter: 0.0 }} }}
+      # Whole kit: low cut 40 Hz, +1.5 dB at 100 Hz, -2 dB around 200-500 Hz.
+      - {{ id: eq, source: native, settings: {{ low_cut: 40, bell_1_freq: 100, bell_1_gain: 1.5, bell_1_q: 1.0, bell_2_freq: 320, bell_2_gain: -2, bell_2_q: 0.7 }} }}
     # Break bus, before the lane FX (effects: crates/mesh-core/src/live/fx.rs).
     # MUSICAL: user spec, tune by ear.
     break_fx:
-      # Low cut 120 Hz (12 dB/oct), -3 dB at 200 Hz (Q 1), +3 dB at 3.5 kHz (Q 0.8).
-      - {{ id: eq, source: native, settings: {{ low_cut: 120, bell_1_freq: 200, bell_1_gain: -3, bell_1_q: 1.0, bell_2_freq: 3500, bell_2_gain: 3, bell_2_q: 0.8 }} }}
+      # Low cut 120 Hz (12 dB/oct), -3 dB at 200 Hz (Q 1), +4.5 dB broad around 5 kHz (Q 0.5).
+      - {{ id: eq, source: native, settings: {{ low_cut: 120, bell_1_freq: 200, bell_1_gain: -3, bell_1_q: 1.0, bell_2_freq: 5000, bell_2_gain: 4.5, bell_2_q: 0.5 }} }}
       # 4:1 hard knee, 50 ms attack / 50 ms release, threshold -18 dB:
       # lets the attack through and pulls the body down.
       - {{ id: compressor, source: native, settings: {{ threshold: -18, ratio: 4, attack: 50, release: 50, knee: 0, makeup: 0 }} }}

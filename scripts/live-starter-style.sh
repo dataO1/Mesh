@@ -86,7 +86,7 @@ echo "breaks: $breaks"
 echo "dirt:   $dirt"
 
 cargo_in_repo() {
-  if command -v direnv >/dev/null && [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  if command -v direnv >/dev/null; then
     direnv exec "$repo" cargo "$@"
   else
     cargo "$@"
@@ -139,6 +139,12 @@ if [[ "$surge" == 1 ]]; then
   link_clap airwin2rack "Airwindows Consolidated.clap"
 fi
 
-# Loudness trims per option (needs the CLAP bundles for the Surge options).
+# Loudness trims per option: input trims, then output trims after the
+# processing (needs the CLAP bundles for the Surge options).
 cargo_in_repo build --release --manifest-path "$repo/Cargo.toml" -p mesh-core --bin style-calibrate >/dev/null 2>&1
-"$repo/target/release/style-calibrate" --style "$out" --clap | tail -n 1
+# Inside the devshell: the CLAP bundles need its library environment.
+if command -v direnv >/dev/null; then
+  direnv exec "$repo" "$repo/target/release/style-calibrate" --style "$out" --clap | grep -E "^(skipped|warning|wrote)"
+else
+  "$repo/target/release/style-calibrate" --style "$out" --clap | grep -E "^(skipped|warning|wrote)"
+fi

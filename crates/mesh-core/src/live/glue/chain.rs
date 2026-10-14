@@ -74,6 +74,9 @@ pub struct GlueChain {
     mono_below: [MonoBelow; NUM_LANES],
     duck_env: [DuckEnvelope; DUCK_ENVS],
     lane_comp: [Compressor; NUM_LANES],
+    /// Per-lane output gain after the dynamics: target and current (ramped).
+    out_gain: [f32; NUM_LANES],
+    out_gain_now: [f32; NUM_LANES],
     lane_sat: [Saturator; NUM_LANES],
 
     drum_comp: Compressor,
@@ -111,6 +114,8 @@ impl GlueChain {
             mono_below: std::array::from_fn(|_| MonoBelow::new()),
             duck_env: std::array::from_fn(|_| DuckEnvelope::new()),
             lane_comp: std::array::from_fn(|_| Compressor::new()),
+            out_gain: [1.0; NUM_LANES],
+            out_gain_now: [1.0; NUM_LANES],
             lane_sat: std::array::from_fn(|_| Saturator::new()),
             drum_comp: Compressor::new(),
             drum_comp2: Compressor::new(),
@@ -183,6 +188,14 @@ impl GlueChain {
         if let Some(d) = self.params.lane_dynamics.for_role(role) {
             self.lane_comp[i].configure(&d.compressor);
             self.lane_sat[i].configure(&d.saturation);
+        }
+    }
+
+    /// Output gain of `lane` after its dynamics (the option's calibrated
+    /// output trim). Ramped over the next block. RT-safe.
+    pub fn set_output_gain(&mut self, lane: usize, gain: f32) {
+        if lane < NUM_LANES && gain.is_finite() {
+            self.out_gain[lane] = gain.max(0.0);
         }
     }
 
@@ -298,6 +311,15 @@ impl GlueChain {
                 if d.saturation_enabled {
                     self.lane_sat[i].process(lane);
                 }
+            }
+            // 4b. Output trim (calibrated after the processing), ramped.
+            let (from, to) = (self.out_gain_now[i], self.out_gain[i]);
+            if from != 1.0 || to != 1.0 {
+                let step = (to - from) / m as f32;
+                for (k, s) in lane.iter_mut().enumerate() {
+                    *s *= from + step * (k + 1) as f32;
+                }
+                self.out_gain_now[i] = to;
             }
             // 5. Main-kit keyed full-band duck.
             if let Some(d) = p.duck.for_role(setup.role).filter(|_| p.duck.enabled) {
@@ -595,5 +617,28 @@ mod tests {
         chain.reset();
         chain.process(&mut silent, GlueKey::default(), 174.0, &mut out);
         assert_eq!(chain.take_meters().drum_comp1, 0.0);
+    }
+
+    #[test]
+    fn output_gain_ramps_to_the_target_after_the_dynamics() {
+        let block = 512;
+        let mut chain = GlueChain::new(block);
+        let mut params = GlueParams::default();
+        params.lane_dynamics.lead.compressor_enabled = false;
+        params.lane_dynamics.lead.saturation_enabled = false;
+        params.high_pass.lead.enabled = false;
+        chain.set_params(&params);
+        chain.set_output_gain(2, 0.5);
+        let mut out = StereoBuffer::silence(block);
+        let run = |chain: &mut GlueChain, out: &mut StereoBuffer| {
+            let mut lanes: [StereoBuffer; NUM_LANES] = std::array::from_fn(|_| StereoBuffer::silence(block));
+            lanes[2] = StereoBuffer::from_vec(vec![StereoSample::new(0.4, 0.4); block]);
+            chain.process(&mut lanes, GlueKey::default(), 174.0, out);
+            lanes[2].as_slice().to_vec()
+        };
+        let first = run(&mut chain, &mut out);
+        assert!(first[0].left > 0.39 && (first[block - 1].left - 0.2).abs() < 1e-4, "ramped over the block");
+        let second = run(&mut chain, &mut out);
+        assert!(second.iter().all(|s| (s.left - 0.2).abs() < 1e-4), "settled");
     }
 }

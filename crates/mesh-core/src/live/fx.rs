@@ -162,7 +162,7 @@ impl Effect for CompressorEffect {
 
 /// Parameter ranges: low cut Hz (12 dB/oct), bell 1 Hz / dB / Q, bell 2 Hz / dB / Q.
 pub const EQ_RANGES: [(f32, f32); 7] =
-    [(20.0, 500.0), (50.0, 1000.0), (-12.0, 12.0), (0.3, 4.0), (1000.0, 12000.0), (-12.0, 12.0), (0.3, 4.0)];
+    [(20.0, 500.0), (50.0, 1000.0), (-12.0, 12.0), (0.3, 4.0), (200.0, 12000.0), (-12.0, 12.0), (0.3, 4.0)];
 
 /// Low cut plus two bells (constant-Q, Simper SVF).
 pub struct EqEffect {

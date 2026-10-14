@@ -561,6 +561,9 @@ pub struct LaneInit {
     pub fx: LaneFx,
     /// Drum lane: FX chain of the break sub-voice (empty = no break bus).
     pub break_fx: LaneFx,
+    /// Linear output gain per option (drum lane: per kit), applied by the
+    /// glue after the lane's dynamics. Missing entries are unity.
+    pub output_gains: Vec<f32>,
     pub default_option: usize,
 }
 
@@ -586,6 +589,7 @@ pub struct Lane {
     /// run through `break_fx`, then join the lane before `fx`.
     break_fx: LaneFx,
     break_buf: StereoBuffer,
+    output_gains: Vec<f32>,
     scratch: StereoBuffer,
     /// Events fire while on.
     on: bool,
@@ -629,6 +633,7 @@ impl Lane {
             fx: init.fx,
             break_buf: StereoBuffer::silence(if init.break_fx.is_empty() { 0 } else { init.max_block }),
             break_fx: init.break_fx,
+            output_gains: init.output_gains,
             scratch: StereoBuffer::silence(init.max_block),
             on: true,
             pending_on: None,
@@ -664,6 +669,12 @@ impl Lane {
     /// State the lane will be in after a queued toggle.
     pub fn on_target(&self) -> bool {
         self.pending_on.unwrap_or(self.on)
+    }
+
+    /// Output gain of the playing option (glue applies it after the lane's
+    /// dynamics; see [`LaneInit::output_gains`]).
+    pub fn output_gain(&self) -> f32 {
+        self.output_gains.get(self.option).copied().unwrap_or(1.0)
     }
 
     pub fn option(&self) -> usize {

@@ -366,6 +366,9 @@ impl LiveEngine {
 
         let t0 = self.profiling.then(Instant::now);
         self.mix.set_len_from_capacity(frames);
+        for (li, lane) in self.lanes.iter().enumerate() {
+            self.glue.set_output_gain(li, lane.output_gain());
+        }
         // The main kit's kick and snare onsets key the duck.
         let key = GlueKey {
             sidechain: None,

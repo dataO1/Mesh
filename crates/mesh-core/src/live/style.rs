@@ -85,9 +85,15 @@ pub struct StyleSpec {
     pub default_progression: usize,
     /// Exactly [`NUM_LANES`] lanes. Lane 0 is the drum lane.
     pub lanes: Vec<LaneSpec>,
-    /// Per-role loudness targets.
+    /// Per-role loudness targets of the instrument output, before the lane's
+    /// processing (`lufs_trim_db`): every option drives the lane FX and
+    /// dynamics at the same level.
     #[serde(default)]
     pub loudness: LoudnessTargets,
+    /// Per-role loudness targets of the processed lane, after lane FX and
+    /// glue dynamics (`output_trims_db`, the mix balance). Unset = `loudness`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_loudness: Option<LoudnessTargets>,
     /// Glue chain parameters (design §5.6). All optional.
     #[serde(default)]
     pub glue: GlueSpec,
@@ -127,6 +133,11 @@ pub struct LaneSpec {
     /// Drum lane only: FX chain of the break sub-voice, before `fx`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub break_fx: Vec<FxSpec>,
+    /// Output trim per option (drum lane: per kit) in dB, applied after the
+    /// lane's processing (lane FX and glue dynamics), before the duck.
+    /// Written by `style-calibrate` from the processed loudness. Missing = 0.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_trims_db: Vec<f32>,
     /// Exactly [`CONTROLS_PER_LANE`] performance controls.
     pub controls: Vec<ControlSpec>,
     pub generator: GeneratorSpec,
@@ -594,6 +605,9 @@ pub struct CompSpec {
 pub struct DrumBusSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp: Option<CompSpec>,
+    /// Second drum-bus compressor (consistency), after `comp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp2: Option<CompSpec>,
     /// Saturation drive, `0..=1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive: Option<f32>,
@@ -1020,6 +1034,11 @@ impl Validator {
         for (name, v) in [("drums", l.drums), ("bass", l.bass), ("lead", l.lead), ("extra", l.extra)] {
             self.in_range(format!("loudness.{name}"), v, -60.0, 0.0);
         }
+        if let Some(l) = s.output_loudness {
+            for (name, v) in [("drums", l.drums), ("bass", l.bass), ("lead", l.lead), ("extra", l.extra)] {
+                self.in_range(format!("output_loudness.{name}"), v, -60.0, 0.0);
+            }
+        }
         self.glue(&s.glue);
         for (i, fx) in s.glue.drum_bus_fx.iter().enumerate() {
             self.fx(&format!("glue.drum_bus_fx[{i}]"), fx);
@@ -1097,6 +1116,9 @@ impl Validator {
 
         for (i, fx) in lane.fx.iter().enumerate() {
             self.fx(&format!("{at}.fx[{i}]"), fx);
+        }
+        for (i, &t) in lane.output_trims_db.iter().enumerate() {
+            self.in_range(format!("{at}.output_trims_db[{i}]"), t, TRIM_RANGE_DB.0, TRIM_RANGE_DB.1);
         }
         for (i, fx) in lane.break_fx.iter().enumerate() {
             self.fx(&format!("{at}.break_fx[{i}]"), fx);
@@ -1218,6 +1240,9 @@ impl Validator {
         if let Some(b) = &g.drum_bus {
             if let Some(c) = &b.comp {
                 self.comp("glue.drum_bus.comp", c);
+            }
+            if let Some(c) = &b.comp2 {
+                self.comp("glue.drum_bus.comp2", c);
             }
             self.opt_range("glue.drum_bus.drive", b.drive, 0.0, 1.0);
         }

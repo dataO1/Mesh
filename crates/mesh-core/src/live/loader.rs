@@ -489,6 +489,9 @@ pub fn glue_params(spec: &GlueSpec, send_fx: &SendFxSpec, bpm: f64) -> (GluePara
         if let Some(c) = &b.comp {
             comp(c, &mut p.drum_bus.compressor);
         }
+        if let Some(c) = &b.comp2 {
+            comp(c, &mut p.drum_bus.compressor2);
+        }
         if let Some(drive) = b.drive {
             p.drum_bus.saturation_enabled = drive > 0.0;
             p.drum_bus.saturation.drive_db = drive_db(drive);
@@ -756,6 +759,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             claps,
             fx,
             break_fx,
+            output_gains: if calibration { Vec::new() } else { lane.output_trims_db.iter().map(|&db| super::glue::db_to_lin(db)).collect() },
             default_option,
         }));
         meta.push(LaneMeta {
