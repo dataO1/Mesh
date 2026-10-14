@@ -241,12 +241,13 @@ impl Default for MasterParams {
     fn default() -> Self {
         Self {
             compressor_enabled: true,
-            // MUSICAL: gentle bus glue, 1–3 dB of reduction on a full mix.
+            // MUSICAL: user spec: 4:1, 25 ms attack, 10 ms release, about
+            // 4 dB peak reduction (threshold set per style).
             compressor: CompressorParams {
-                threshold_db: -10.0,
-                ratio: 2.0,
-                attack_ms: 30.0,
-                release_ms: 150.0,
+                threshold_db: -8.0,
+                ratio: 4.0,
+                attack_ms: 25.0,
+                release_ms: 10.0,
                 makeup_db: 0.0,
                 knee_db: 6.0,
             },

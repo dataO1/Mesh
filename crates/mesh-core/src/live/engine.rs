@@ -152,6 +152,12 @@ impl LiveEngine {
         self.glue.latency_samples()
     }
 
+    /// Peak gain reduction of the master compressor in dB since the last
+    /// call. Not for the RT thread: call it between `process` calls.
+    pub fn take_master_peak_gr_db(&mut self) -> f32 {
+        self.glue.take_master_peak_gr_db()
+    }
+
     /// Collect per-stage timings (benchmark). Reads the clock twice per lane
     /// and block, so leave it off in performance.
     pub fn set_profiling(&mut self, on: bool) {

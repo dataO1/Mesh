@@ -207,16 +207,18 @@ fn main() {
         sys.renderer.service();
     }
 
+    let master_gr = sys.engine.take_master_peak_gr_db();
     write_wav(&out, rate, &master);
     let peak = master.iter().fold(0.0f32, |p, s| p.max(s.left.abs()).max(s.right.abs()));
     println!(
-        "wrote {} ({:.1} s, peak {:.2} dBFS, {:.1} LUFS, key {} at the end, {} starved bar(s))",
+        "wrote {} ({:.1} s, peak {:.2} dBFS, {:.1} LUFS, key {} at the end, {} starved bar(s), master comp peak GR {:.1} dB)",
         out.display(),
         master.len() as f64 / rate as f64,
         20.0 * peak.max(1e-9).log10(),
         measure_lufs(&master, rate as f64),
         sys.shared.key(),
-        sys.shared.starved_bars()
+        sys.shared.starved_bars(),
+        master_gr
     );
     if stems {
         for (i, lane) in lanes.iter().enumerate() {

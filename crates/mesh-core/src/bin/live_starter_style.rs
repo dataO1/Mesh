@@ -618,7 +618,7 @@ glue:
     comp: {{ threshold_db: -12, ratio: 4, attack_ms: 10, release_ms: 120 }}
     drive: 0.2
   shared_drive: {{ enabled: false }}
-  master: {{ threshold_db: -6, ratio: 2 }}
+  master: {{ threshold_db: -8, ratio: 4, attack_ms: 25, release_ms: 10 }}
 
 send_fx:
   delay: {{ id: delay, source: native, params: {{ 0: 0.375, 1: 0.4 }} }}

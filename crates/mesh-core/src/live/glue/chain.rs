@@ -150,6 +150,11 @@ impl GlueChain {
         self.limiter.latency_samples()
     }
 
+    /// Peak gain reduction of the master compressor in dB since the last call.
+    pub fn take_master_peak_gr_db(&mut self) -> f32 {
+        self.master_comp.take_peak_gr_db()
+    }
+
     /// Clip indicator of the master clipper (for the UI).
     pub fn clip_indicator(&self) -> Arc<AtomicBool> {
         self.clipper.clip_indicator()

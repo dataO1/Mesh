@@ -35,11 +35,13 @@ pub struct Compressor {
     makeup: f32,
     /// Smoothed gain reduction in dB (≥ 0).
     gr_db: f32,
+    /// Largest `gr_db` since the last [`Compressor::take_peak_gr_db`].
+    peak_gr_db: f32,
 }
 
 impl Compressor {
     pub fn new() -> Self {
-        let mut c = Self { p: CompressorParams::default(), attack: 0.0, release: 0.0, makeup: 1.0, gr_db: 0.0 };
+        let mut c = Self { p: CompressorParams::default(), attack: 0.0, release: 0.0, makeup: 1.0, gr_db: 0.0, peak_gr_db: 0.0 };
         c.configure(&CompressorParams::default());
         c
     }
@@ -56,6 +58,11 @@ impl Compressor {
         self.gr_db
     }
 
+    /// Peak gain reduction in dB since the last call (for metering).
+    pub fn take_peak_gr_db(&mut self) -> f32 {
+        std::mem::take(&mut self.peak_gr_db)
+    }
+
     pub fn process(&mut self, buf: &mut [StereoSample]) {
         let p = self.p;
         for s in buf.iter_mut() {
@@ -63,6 +70,7 @@ impl Compressor {
             let target = x_db - static_curve_db(x_db, p.threshold_db, p.ratio, p.knee_db);
             let coeff = if target > self.gr_db { self.attack } else { self.release };
             self.gr_db = coeff * self.gr_db + (1.0 - coeff) * target;
+            self.peak_gr_db = self.peak_gr_db.max(self.gr_db);
             let g = db_to_lin(-self.gr_db) * self.makeup;
             s.left *= g;
             s.right *= g;
@@ -71,6 +79,7 @@ impl Compressor {
 
     pub fn reset(&mut self) {
         self.gr_db = 0.0;
+        self.peak_gr_db = 0.0;
     }
 }
 
