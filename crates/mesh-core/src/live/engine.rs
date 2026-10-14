@@ -243,6 +243,7 @@ impl LiveEngine {
     /// post-glue signal for the block (stems for offline renders and tests);
     /// its buffers must be at least as long as `master`.
     pub fn process(&mut self, master: &mut StereoBuffer, mut lane_tap: Option<&mut [StereoBuffer; NUM_LANES]>) {
+        crate::rt::flush_denormals();
         let started = self.profiling.then(Instant::now);
         self.drain_msgs();
         self.player.poll();

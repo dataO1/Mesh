@@ -40,3 +40,28 @@ pub fn pin_to_big_cores() {
 #[cfg(not(feature = "embedded-rt"))]
 #[inline]
 pub fn pin_to_big_cores() {}
+
+/// Make the current thread flush denormal floats to zero.
+///
+/// Decaying filter, reverb and envelope tails drift into the denormal range,
+/// where x86 and ARM FPUs slow down by orders of magnitude. Audio threads call
+/// this once per block; it is a single control-register write. Applies to
+/// every build, not only `embedded-rt`.
+#[inline]
+pub fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    #[allow(deprecated)]
+    unsafe {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        // FTZ (bit 15) + DAZ (bit 6).
+        _mm_setcsr(_mm_getcsr() | 0x8040);
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // FPCR.FZ (bit 24).
+        let mut fpcr: u64;
+        std::arch::asm!("mrs {}, fpcr", out(reg) fpcr);
+        fpcr |= 1 << 24;
+        std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
+    }
+}
