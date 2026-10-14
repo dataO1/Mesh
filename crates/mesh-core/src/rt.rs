@@ -65,3 +65,36 @@ pub fn flush_denormals() {
         std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
     }
 }
+
+/// Core assignment for live mode (design §4.2).
+///
+/// Live mode inverts the DJ layout: the audio thread does the heavy work
+/// (voices, CLAP synths, FX, glue), so it runs on A76 big cores, while the
+/// light background work (bar renderer, HID, loaders) moves to A55 cores.
+/// Core 4 stays with the UI render thread.
+pub mod live_cores {
+    /// A76 cores for the live audio thread.
+    pub const AUDIO: &[usize] = &[5, 6, 7];
+    /// A55 cores for live background threads.
+    pub const BACKGROUND: &[usize] = &[1, 2, 3];
+}
+
+/// Pin the current thread to the given CPU cores. No-op unless `embedded-rt`.
+#[cfg(feature = "embedded-rt")]
+pub fn pin_to_cores(cores: &[usize]) {
+    unsafe {
+        let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut cpuset);
+        for &c in cores {
+            libc::CPU_SET(c, &mut cpuset);
+        }
+        if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpuset) != 0 {
+            log::warn!("[RT] pin_to_cores {:?} failed: {}", cores, std::io::Error::last_os_error());
+        }
+    }
+}
+
+/// No-op on non-embedded builds.
+#[cfg(not(feature = "embedded-rt"))]
+#[inline]
+pub fn pin_to_cores(_cores: &[usize]) {}

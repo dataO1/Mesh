@@ -315,9 +315,9 @@ impl BarRenderer {
         let thread = std::thread::Builder::new()
             .name("live-bar-renderer".into())
             .spawn(move || {
-                // Background thread: keep it off the cores the audio thread
-                // and the DSP workers run on (see `rt.rs`).
-                crate::rt::pin_to_big_cores();
+                // Light background work: A55 cores, away from the live
+                // audio thread on the A76 cores (`rt::live_cores`).
+                crate::rt::pin_to_cores(crate::rt::live_cores::BACKGROUND);
                 while !stop_thread.load(Ordering::Relaxed) {
                     match self.rx.recv_timeout(RENDER_POLL) {
                         Ok(msg) => self.apply(msg),
