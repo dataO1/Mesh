@@ -57,6 +57,9 @@ pub enum LiveCommand {
     SetSlotSeed { lane: u8, slot: u8, seed: u32 },
     /// Step the selected slot's seed (encoder).
     SeedDelta { lane: u8, delta: i32 },
+    /// Step every slot's seed of the lane by the same amount: new material for
+    /// the whole chain, keeping which bars repeat and which vary.
+    LaneSeedDelta { lane: u8, delta: i32 },
     /// Move performance control `control` (0..4) to `value` (0..=1). Routed
     /// through the style's control mapping.
     SetControl { lane: u8, control: u8, value: f32 },

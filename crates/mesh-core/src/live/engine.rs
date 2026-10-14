@@ -510,6 +510,14 @@ impl LiveController {
                     self.set_seed(lane as usize, slot, l.seeds[slot].wrapping_add_signed(delta));
                 }
             }
+            LiveCommand::LaneSeedDelta { lane, delta } => {
+                if let Some(l) = self.lanes.get(lane as usize) {
+                    let seeds = l.seeds;
+                    for (slot, seed) in seeds.iter().enumerate() {
+                        self.set_seed(lane as usize, slot, seed.wrapping_add_signed(delta));
+                    }
+                }
+            }
             LiveCommand::SetControl { lane, control, value } => {
                 self.set_control(lane as usize, control as usize, value)
             }

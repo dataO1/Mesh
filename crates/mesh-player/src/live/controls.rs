@@ -16,7 +16,7 @@
 //! | Pads rows 3–4 of the half | momentary: stutter fill / double void |
 //! | Play 1 / 3 (button A) | lane on/off |
 //! | Play 2 / 4 (button B) | unassigned (hook for a style mapping) |
-//! | Encoder | seed of the selected slot of the unit's selected lane |
+//! | Encoder | reseed the whole chain of the unit's selected lane (held bar pad: that bar only) |
 //! | Left Shift + fader 1 | key intent |
 //! | Left Shift + fader 2 | tempo (ramp target) |
 //! | Left Shift + encoder | progression |
@@ -126,6 +126,7 @@ const NUM_TARGETS: usize = TARGET_TEMPO + 1;
 pub enum Act {
     SelectSlot { lane: u8, slot: u8 },
     SeedDelta { lane: u8, delta: i32 },
+    LaneSeedDelta { lane: u8, delta: i32 },
     SetControl { lane: u8, control: u8, value: f32 },
     ToggleLane { lane: u8 },
     BrowseOption { lane: u8, delta: i32 },
@@ -148,6 +149,7 @@ fn apply(act: Act, ctl: &mut LiveController) {
     let cmd = match act {
         Act::SelectSlot { lane, slot } => LiveCommand::SelectSlot { lane, slot },
         Act::SeedDelta { lane, delta } => LiveCommand::SeedDelta { lane, delta },
+        Act::LaneSeedDelta { lane, delta } => LiveCommand::LaneSeedDelta { lane, delta },
         Act::SetControl { lane, control, value } => LiveCommand::SetControl { lane, control, value },
         Act::ToggleLane { lane } => LiveCommand::ToggleLane { lane },
         Act::BrowseOption { lane, delta } => LiveCommand::BrowseOption { lane, delta },
@@ -626,8 +628,12 @@ impl LiveControlSurface {
             out.push(Act::BrowseOption { lane: side.lane(half), delta });
         } else if side == Side::Left && unit.shift {
             out.push(Act::ProgressionDelta(delta));
+        } else if let Some((half, _)) = unit.slot_held {
+            // A held bar pad: new pattern for that bar only.
+            out.push(Act::SeedDelta { lane: side.lane(half), delta });
         } else {
-            out.push(Act::SeedDelta { lane: side.lane(unit.half), delta });
+            // Nothing held: new material for the whole 4-bar chain.
+            out.push(Act::LaneSeedDelta { lane: side.lane(unit.half), delta });
         }
     }
 
@@ -941,19 +947,25 @@ mod tests {
     }
 
     #[test]
-    fn slot_select_and_seed_delta_follow_the_selected_lane() {
+    fn encoder_reseeds_chain_or_held_bar() {
         let mut r = Rig::new(None).both();
-        assert_eq!(r.enc(A, 1), vec![Act::SeedDelta { lane: 0, delta: 1 }], "default: lane A");
+        // Nothing held: the whole chain of the selected lane.
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 0, delta: 1 }], "default: lane A");
         assert_eq!(r.press(A, "grid_6"), vec![Act::SelectSlot { lane: 0, slot: 3 }]);
+        assert_eq!(r.enc(A, 2), vec![Act::SeedDelta { lane: 0, delta: 2 }], "held bar only");
         assert_eq!(r.release(A, "grid_6"), vec![]);
-        assert_eq!(r.press(A, "grid_3"), vec![Act::SelectSlot { lane: 1, slot: 0 }]);
-        assert_eq!(r.enc(A, -2), vec![Act::SeedDelta { lane: 1, delta: -2 }]);
-        assert_eq!(r.press(B, "grid_7"), vec![Act::SelectSlot { lane: 3, slot: 2 }]);
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 0, delta: 1 }], "released: whole chain");
+        // Per-unit lane selection.
+        r.press(A, "grid_3");
+        r.release(A, "grid_3");
+        assert_eq!(r.enc(A, -2), vec![Act::LaneSeedDelta { lane: 1, delta: -2 }]);
+        r.press(B, "grid_7");
         assert_eq!(r.enc(B, 3), vec![Act::SeedDelta { lane: 3, delta: 3 }]);
-        assert_eq!(r.enc(A, 1), vec![Act::SeedDelta { lane: 1, delta: 1 }], "per-unit selection");
+        r.release(B, "grid_7");
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 1, delta: 1 }], "per-unit selection");
         // Touching a knob selects its lane too.
         r.abs(A, "knob_1", 0.5);
-        assert_eq!(r.enc(A, 1), vec![Act::SeedDelta { lane: 0, delta: 1 }]);
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 0, delta: 1 }]);
     }
 
     #[test]
@@ -986,7 +998,7 @@ mod tests {
         assert_eq!(r.enc(B, -1), vec![Act::BrowseOption { lane: 3, delta: -1 }]);
         assert_eq!(r.at(2300, B, "browse", rel.clone()), vec![Act::CommitOption { lane: 3 }]);
         assert_eq!(r.s.view().browse_lane, None);
-        assert_eq!(r.enc(B, 1), vec![Act::SeedDelta { lane: 3, delta: 1 }], "browse ended");
+        assert_eq!(r.enc(B, 1), vec![Act::LaneSeedDelta { lane: 3, delta: 1 }], "browse ended");
         // Play button B is a no-op hook.
         assert_eq!(r.at(3000, A, "play_2", p), vec![]);
         assert_eq!(r.at(3050, A, "play_2", rel), vec![]);
@@ -1075,7 +1087,7 @@ mod tests {
         assert_eq!(r.abs(A, "knob_1", 0.5), set(0, 0, 0.5));
         // Right Shift has no layer: encoder stays seed, faders stay lanes.
         r.press(B, "shift");
-        assert_eq!(r.enc(B, 1), vec![Act::SeedDelta { lane: 2, delta: 1 }]);
+        assert_eq!(r.enc(B, 1), vec![Act::LaneSeedDelta { lane: 2, delta: 1 }]);
         assert_eq!(r.abs(B, "fader_1", 0.5), set(2, 1, 0.5));
         assert_eq!(r.press(B, "encoder_push"), vec![]);
         assert_eq!(r.press(B, "capture"), vec![Act::Capture(CaptureScope::All)]);

@@ -654,3 +654,15 @@ fn threaded_start_plays_without_starving() {
     assert_eq!(handles.shared.starved_bars(), 0);
     assert!(handles.shared.clock().bar >= 2);
 }
+
+#[test]
+fn lane_seed_delta_moves_every_slot_and_keeps_their_differences() {
+    let mut r = rig(silent(), 128);
+    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 3, seed: 900 });
+    let before = r.sys.shared.lane(0).view().seeds;
+    r.send(LiveCommand::LaneSeedDelta { lane: 0, delta: 5 });
+    let after = r.sys.shared.lane(0).view().seeds;
+    for slot in 0..4 {
+        assert_eq!(after[slot], before[slot].wrapping_add(5));
+    }
+}
