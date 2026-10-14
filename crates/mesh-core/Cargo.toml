@@ -101,5 +101,20 @@ name = "live-patterns"
 path = "src/bin/live_patterns.rs"
 required-features = []
 
+[[bin]]
+name = "live-render"
+path = "src/bin/live_render.rs"
+required-features = []
+
+[[bin]]
+name = "live-bench"
+path = "src/bin/live_bench.rs"
+required-features = []
+
+[[bin]]
+name = "style-calibrate"
+path = "src/bin/style_calibrate.rs"
+required-features = []
+
 [dev-dependencies]
 assert_no_alloc = { version = "1.1", features = ["warn_debug"] }  # RT-safety checks in live-mode tests

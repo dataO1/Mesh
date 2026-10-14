@@ -86,6 +86,9 @@ pub struct LoadOptions {
     pub collection: Option<PathBuf>,
     /// Replace a lane's generator (fixed patterns for sign-off and tests).
     pub generators: [Option<Box<dyn LaneGenerator>>; NUM_LANES],
+    /// Loudness calibration: load every option at unity gain and without
+    /// lane FX, so `style-calibrate` measures the raw instrument.
+    pub calibration: bool,
 }
 
 impl LoadOptions {
@@ -98,6 +101,7 @@ impl LoadOptions {
             clap: ClapMode::Disabled,
             collection: None,
             generators: std::array::from_fn(|_| None),
+            calibration: false,
         }
     }
 }
@@ -525,6 +529,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         collection: opts.collection,
         warnings: Vec::new(),
     };
+    let calibration = opts.calibration;
     let mut generators = opts.generators;
     let mut lanes = Vec::with_capacity(NUM_LANES);
     let mut meta = Vec::with_capacity(NUM_LANES);
@@ -559,7 +564,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                     let left = (base + capacity).saturating_sub(first);
                     match opt.source() {
                         Some(InstrumentSource::Sampler(s)) => {
-                            let gain = db_to_lin(opt.lufs_trim_db);
+                            let gain = if calibration { 1.0 } else { db_to_lin(opt.lufs_trim_db) };
                             let end = ctx.fill_bank(&mut bank, first, left, &s.samples, sv.choke, gain, false, &mut kicks)?;
                             next[sv.voice as usize] = Some(end);
                             names.push(&opt.name);
@@ -588,7 +593,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                 }
             }
             for opt in &lane.options {
-                let gain = db_to_lin(opt.lufs_trim_db);
+                let gain = if calibration { 1.0 } else { db_to_lin(opt.lufs_trim_db) };
                 let loaded = match opt.source() {
                     Some(InstrumentSource::Sampler(s)) => {
                         let mut bank = SampleBank::new();
@@ -634,8 +639,10 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             };
         }
 
-        let fx = ctx.build_fx(&lane.name, &lane.fx);
-        let fx_len = fx.len();
+        let fx_specs: &[FxSpec] = if calibration { &[] } else { &lane.fx };
+        let fx = ctx.build_fx(&lane.name, fx_specs);
+        // Resolve against the style's chain (calibration loads it empty; unknown slots are ignored).
+        let fx_len = lane.fx.len();
         let generator = generators[li].take().unwrap_or_else(|| generator::build_lane(lane));
 
         let mut gen_params = generator.param_defaults();
