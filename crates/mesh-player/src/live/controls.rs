@@ -12,7 +12,7 @@
 //! | Fader 1 / 3 | lane control 1 (fader A) |
 //! | Knob 2 / 4 | lane control 2 (knob B) |
 //! | Fader 2 / 4 | lane control 3 (fader B) |
-//! | Pads rows 1–2 of the half | chain slots 0 1 / 2 3: press selects the slot |
+//! | Pads rows 1–2 of the half | chain slots 0 1 / 2 3: press selects the bar; hold + encoder = new pattern for that bar (display shows its seed) |
 //! | Pads rows 3–4 of the half | momentary: stutter fill / double void |
 //! | Play 1 / 3 (button A) | lane on/off |
 //! | Play 2 / 4 (button B) | unassigned (hook for a style mapping) |
@@ -286,6 +286,8 @@ struct Unit {
     /// Half last touched (its lane is the unit's selected lane).
     half: u8,
     browse_held: [Option<BrowseHold>; 2],
+    /// Chain slot pad held down: (half, slot). Hold + encoder edits that bar.
+    slot_held: Option<(u8, u8)>,
     /// `knob_1..4` then `fader_1..4`.
     physical: [Physical; 8],
     leds: LedCache,
@@ -298,6 +300,7 @@ impl Unit {
             shift: false,
             half: 0,
             browse_held: [None; 2],
+            slot_held: None,
             physical: [Physical::default(); 8],
             leds: LedCache::default(),
         }
@@ -639,8 +642,15 @@ impl LiveControlSurface {
                     self.touch(u, side, half);
                 }
                 match role {
-                    PadRole::Slot(slot) if pressed => out.push(Act::SelectSlot { lane, slot }),
-                    PadRole::Slot(_) => {}
+                    PadRole::Slot(slot) if pressed => {
+                        self.units[u].slot_held = Some((half, slot));
+                        out.push(Act::SelectSlot { lane, slot });
+                    }
+                    PadRole::Slot(slot) => {
+                        if self.units[u].slot_held == Some((half, slot)) {
+                            self.units[u].slot_held = None;
+                        }
+                    }
                     PadRole::Move(kind) if pressed => out.push(Act::MovePress { lane, kind }),
                     PadRole::Move(kind) => out.push(Act::MoveRelease { lane, kind }),
                 }
@@ -765,9 +775,12 @@ impl LiveControlSurface {
                 }
             }
 
-            let text = match side {
-                Side::Left => key_digits(input.intent_key.unwrap_or(input.key)),
-                Side::Right => {
+            // While a chain slot pad is held, show that bar's seed (last 2 digits).
+            let held_seed = unit.slot_held.map(|(half, slot)| input.lanes[side.lane(half) as usize].seeds[slot as usize]);
+            let text = match (held_seed, side) {
+                (Some(seed), _) => tempo_digits((seed % 100) as f64),
+                (None, Side::Left) => key_digits(input.intent_key.unwrap_or(input.key)),
+                (None, Side::Right) => {
                     let bpm = match self.tempo_requested {
                         Some(requested) if left_shift => requested,
                         _ if input.clock.ramping => input.clock.target_bpm,
@@ -941,6 +954,16 @@ mod tests {
         // Touching a knob selects its lane too.
         r.abs(A, "knob_1", 0.5);
         assert_eq!(r.enc(A, 1), vec![Act::SeedDelta { lane: 0, delta: 1 }]);
+    }
+
+    #[test]
+    fn hold_slot_and_turn_edits_that_bar() {
+        let mut r = Rig::new(None).both();
+        r.abs(A, "knob_1", 0.5); // lane 0 selected
+        assert_eq!(r.press(A, "grid_8"), vec![Act::SelectSlot { lane: 1, slot: 3 }]);
+        assert_eq!(r.enc(A, 2), vec![Act::SeedDelta { lane: 1, delta: 2 }], "held bar of lane 1");
+        assert_eq!(r.release(A, "grid_8"), vec![]);
+        assert!(r.s.units[0].slot_held.is_none());
     }
 
     #[test]
