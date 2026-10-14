@@ -42,7 +42,7 @@ use super::lane::ClapCell;
 use super::player::{BarPacket, BAR_POOL_SIZE};
 use super::state::LiveShared;
 use super::loader::DrumKit;
-use super::{NUM_LANES, SLOTS_PER_CHAIN, STEPS_PER_BAR};
+use super::{slot_for_bar, NUM_LANES, SLOTS_PER_CHAIN, STEPS_PER_BAR};
 
 /// How often the renderer thread looks for work. A structural change made
 /// later than this before a bar boundary may land one bar late.
@@ -54,6 +54,9 @@ const SHIPPED_HISTORY: usize = 2 * BAR_POOL_SIZE;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RenderMsg {
     Seed { lane: u8, slot: u8, seed: u32 },
+    /// Loop the lane's first `len` slots (1, 2, 4 or 8). Lands on the next
+    /// bar the renderer has not shipped yet.
+    LoopLen { lane: u8, len: u8 },
     GenParam { lane: u8, index: u8, value: f32 },
     /// Arm a key for the next phrase.
     Key(MusicalKey),
@@ -69,6 +72,8 @@ pub struct RenderLane {
     pub role: Role,
     pub generator: Box<dyn LaneGenerator>,
     pub seeds: [u32; SLOTS_PER_CHAIN],
+    /// Bars the lane loops: slot = bar % loop_len.
+    pub loop_len: u8,
     pub params: [f32; MAX_GEN_PARAMS],
     /// Drum lane: layout and generator per kit. Empty on other lanes.
     pub kits: Vec<DrumKit>,
@@ -167,6 +172,11 @@ impl BarRenderer {
             RenderMsg::Seed { lane, slot, seed } => {
                 if let Some(s) = self.lanes.get_mut(lane as usize).and_then(|l| l.seeds.get_mut(slot as usize)) {
                     *s = seed;
+                }
+            }
+            RenderMsg::LoopLen { lane, len } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    l.loop_len = len.clamp(1, SLOTS_PER_CHAIN as u8);
                 }
             }
             RenderMsg::GenParam { lane, index, value } => {
@@ -281,8 +291,9 @@ impl BarRenderer {
             for fill in [false, true] {
                 let out = if fill { &mut packet.lanes[li].fill } else { &mut packet.lanes[li].main };
                 out.clear();
+                // The slot follows the lane's loop; phrase position stays global.
                 let bar_ctx = BarCtx {
-                    seed: lane.seeds[bar_in_phrase as usize % SLOTS_PER_CHAIN],
+                    seed: lane.seeds[slot_for_bar(bar, lane.loop_len)],
                     lane: li as u8,
                     role: lane.role,
                     bar_in_phrase,
@@ -397,6 +408,7 @@ mod tests {
             role: Role::Drums,
             generator: Box::new(drums),
             seeds: [0; SLOTS_PER_CHAIN],
+            loop_len: 4,
             params: [0.5; MAX_GEN_PARAMS],
             kits: vec![
                 DrumKit { layout: DrumLayout::standard(), generator: None },
@@ -411,7 +423,8 @@ mod tests {
             lanes.push(RenderLane {
                 role,
                 generator: Box::new(Probe),
-                seeds: [10, 11, 12, 13],
+                seeds: [10, 11, 12, 13, 14, 15, 16, 17],
+                loop_len: 4,
                 params: [0.5; MAX_GEN_PARAMS],
                 kits: Vec::new(),
                 kit: 0,
@@ -570,6 +583,58 @@ mod tests {
         // Every packet is accounted for: pool + RT side + rings.
         r.renderer.service();
         assert_eq!(r.renderer.pool.len() + 1 + r.renderer.bars_tx.slots().abs_diff(BAR_POOL_SIZE), BAR_POOL_SIZE);
+    }
+
+    /// Seed slot (vel − 11 on the probe lanes) and bar_in_phrase of lane 1 for bars `0..bars`.
+    fn played_slots(r: &mut Rig, bars: u64) -> Vec<(u8, u8)> {
+        let mut out = Vec::new();
+        r.renderer.service();
+        for bar in 0..bars {
+            let p = r.rt_enter(bar).unwrap();
+            let e = p.lanes[1].main.as_slice()[0];
+            out.push((e.vel - 11, e.target));
+            r.renderer.service();
+        }
+        out
+    }
+
+    #[test]
+    fn loop_length_picks_the_slot_and_keeps_the_phrase_position() {
+        for (len, want) in [
+            (1u8, [0u8, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (2, [0, 1, 0, 1, 0, 1, 0, 1, 0]),
+            (4, [0, 1, 2, 3, 0, 1, 2, 3, 0]),
+            (8, [0, 1, 2, 3, 4, 5, 6, 7, 0]),
+        ] {
+            let mut r = rig();
+            r.tx.send(RenderMsg::LoopLen { lane: 1, len }).unwrap();
+            let got = played_slots(&mut r, 9);
+            let slots: Vec<u8> = got.iter().map(|g| g.0).collect();
+            assert_eq!(slots, want, "loop {len}");
+            let phrase: Vec<u8> = got.iter().map(|g| g.1).collect();
+            assert_eq!(phrase, [0, 1, 2, 3, 0, 1, 2, 3, 0], "bar_in_phrase stays global (loop {len})");
+        }
+    }
+
+    #[test]
+    fn loop_length_change_lands_on_the_next_bar() {
+        let mut r = rig();
+        r.tx.send(RenderMsg::LoopLen { lane: 1, len: 8 }).unwrap();
+        r.renderer.service();
+        for bar in 0..5 {
+            r.rt_enter(bar);
+            r.renderer.service();
+        }
+        // Bar 5 is pending (slot 5 at length 8). Shorten to 2 while bar 4 plays.
+        r.tx.send(RenderMsg::LoopLen { lane: 1, len: 2 }).unwrap();
+        r.renderer.service();
+        let vel = |p: BarPacket| p.lanes[1].main.as_slice()[0].vel - 11;
+        assert_eq!(vel(r.rt_enter(5).unwrap()), 1, "bar 5 at length 2 plays slot 1");
+        r.renderer.service();
+        assert_eq!(vel(r.rt_enter(6).unwrap()), 0);
+        // Other lanes keep their own length.
+        r.renderer.service();
+        assert_eq!(r.rt_enter(7).unwrap().lanes[2].main.as_slice()[0].vel - 11, 3, "lane 2 still loops 4");
     }
 
     #[test]

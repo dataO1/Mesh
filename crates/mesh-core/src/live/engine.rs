@@ -53,7 +53,7 @@ use super::render::{BarRenderer, RenderLane, RenderMsg, RendererHandle};
 use super::scope::ScopeWriter;
 use super::state::LiveShared;
 use super::style::{SendBus, Style, TempoSpec, CONTROLS_PER_LANE};
-use super::{NUM_LANES, SLOTS_PER_CHAIN, TICKS_PER_BAR};
+use super::{snap_loop_len, DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN, TICKS_PER_BAR};
 
 /// Clock segments handled per pass. A pass is at most `max_block` frames and
 /// a step is at least 2205 frames (300 BPM at 44.1 kHz), so this is ample.
@@ -64,7 +64,7 @@ const MAX_RECORDINGS: usize = 4;
 // MUSICAL: long enough to hear the move, short enough to perform with.
 pub const DEFAULT_TEMPO_RAMP_BARS: u32 = 2;
 /// Seed of every slot of lane `l` at load is `DEFAULT_SEED + l`.
-// MUSICAL: equal seeds make a 4-bar chain of one pattern; the generator's
+// MUSICAL: equal seeds make a chain of one pattern; the generator's
 // phrase position still varies bar 4.
 pub const DEFAULT_SEED: u32 = 50;
 
@@ -405,6 +405,8 @@ pub struct LaneControl {
     /// Control positions, `0..=1`.
     pub positions: [f32; CONTROLS_PER_LANE],
     pub seeds: [u32; SLOTS_PER_CHAIN],
+    /// Bars the lane loops (1, 2, 4 or 8).
+    pub loop_len: u8,
     pub selected_slot: usize,
     pub option_names: Vec<String>,
     pub option_available: Vec<bool>,
@@ -518,6 +520,7 @@ impl LiveController {
                     }
                 }
             }
+            LiveCommand::SetLoopLen { lane, len } => self.set_loop_len(lane as usize, len),
             LiveCommand::SetControl { lane, control, value } => {
                 self.set_control(lane as usize, control as usize, value)
             }
@@ -594,6 +597,15 @@ impl LiveController {
             self.lanes[lane].seeds[slot] = seed;
             self.shared.lane(lane).set_seed(slot, seed);
             self.render(RenderMsg::Seed { lane: lane as u8, slot: slot as u8, seed });
+        }
+    }
+
+    fn set_loop_len(&mut self, lane: usize, len: u8) {
+        if lane < self.lanes.len() {
+            let len = snap_loop_len(len as usize);
+            self.lanes[lane].loop_len = len;
+            self.shared.lane(lane).set_loop_len(len);
+            self.render(RenderMsg::LoopLen { lane: lane as u8, len });
         }
     }
 
@@ -684,7 +696,7 @@ impl LiveController {
         };
         let lanes: [LaneCapture; NUM_LANES] = std::array::from_fn(|i| {
             let l = &self.lanes[i];
-            LaneCapture { seeds: l.seeds, controls: l.positions, option: l.option, on: l.on }
+            LaneCapture { seeds: l.seeds, loop_len: l.loop_len, controls: l.positions, option: l.option, on: l.on }
         });
         let capture = Capture::new(self.style.clone(), scope, global, lanes);
         self.captures.push(capture.clone());
@@ -728,6 +740,7 @@ impl LiveController {
             for (slot, &seed) in src.seeds.iter().enumerate() {
                 self.set_seed(li, slot, seed);
             }
+            self.set_loop_len(li, src.loop_len);
             for (control, &value) in src.controls.iter().enumerate() {
                 self.set_control(li, control, value);
             }
@@ -828,6 +841,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
             controls: m.controls,
             seeds,
             selected_slot: 0,
+            loop_len: DEFAULT_LOOP_LEN,
             option_names: m.option_names,
             option_available: m.option_available,
             option: m.default_option,
@@ -838,6 +852,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
             role: m.role,
             generator: m.generator,
             seeds,
+            loop_len: DEFAULT_LOOP_LEN,
             params: m.gen_params,
             kits: m.drum_kits,
             kit: 0,

@@ -6,7 +6,7 @@
 //!
 //! - **RT thread**: clock position, played harmony, per-lane on/off, option,
 //!   active step, fired tag, voices, peak, moves, scope.
-//! - **Controller** (UI / HID thread): seeds, selected slot, control
+//! - **Controller** (UI / HID thread): seeds, loop length, selected slot, control
 //!   positions, key intent, pending option, half-time target, quantize.
 //! - **Bar renderer**: pending key and progression (set when armed, cleared
 //!   when the RT thread has played the bar that applied them).
@@ -18,7 +18,7 @@ use crate::music::MusicalKey;
 use super::clock::BARS_PER_PHRASE;
 use super::scope::ScopeRing;
 use super::style::CONTROLS_PER_LANE;
-use super::{NUM_LANES, SLOTS_PER_CHAIN};
+use super::{DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN};
 
 const NO_KEY: u8 = 0xFF;
 const NO_INDEX: u16 = u16::MAX;
@@ -107,6 +107,8 @@ pub struct LaneView {
     pub on_target: bool,
     pub selected_slot: u8,
     pub seeds: [u32; SLOTS_PER_CHAIN],
+    /// Bars the lane loops (1, 2, 4 or 8); slots past it do not play.
+    pub loop_len: u8,
     pub controls: [f32; CONTROLS_PER_LANE],
     /// Instrument option / kit that is sounding.
     pub option: u16,
@@ -127,6 +129,7 @@ pub struct LaneShared {
     on_target: AtomicBool,
     selected_slot: AtomicU8,
     seeds: [AtomicU32; SLOTS_PER_CHAIN],
+    loop_len: AtomicU8,
     controls: [AtomicU32; CONTROLS_PER_LANE],
     option: AtomicU16,
     option_pending: AtomicU16,
@@ -146,6 +149,7 @@ impl LaneShared {
             on_target: AtomicBool::new(true),
             selected_slot: AtomicU8::new(0),
             seeds: std::array::from_fn(|_| AtomicU32::new(0)),
+            loop_len: AtomicU8::new(DEFAULT_LOOP_LEN),
             controls: std::array::from_fn(|_| AtomicU32::new(0.5f32.to_bits())),
             option: AtomicU16::new(0),
             option_pending: AtomicU16::new(NO_INDEX),
@@ -166,6 +170,7 @@ impl LaneShared {
             on_target: self.on_target.load(ORD),
             selected_slot: self.selected_slot.load(ORD),
             seeds: std::array::from_fn(|i| self.seeds[i].load(ORD)),
+            loop_len: self.loop_len.load(ORD),
             controls: std::array::from_fn(|i| f32::from_bits(self.controls[i].load(ORD))),
             option: self.option.load(ORD),
             option_pending: (pending != NO_INDEX && pending != self.option.load(ORD)).then_some(pending),
@@ -233,6 +238,10 @@ impl LaneShared {
 
     pub(crate) fn set_seed(&self, slot: usize, seed: u32) {
         self.seeds[slot].store(seed, ORD);
+    }
+
+    pub(crate) fn set_loop_len(&self, len: u8) {
+        self.loop_len.store(len, ORD);
     }
 
     pub(crate) fn set_control(&self, control: usize, position: f32) {

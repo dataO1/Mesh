@@ -60,6 +60,9 @@ pub enum LiveCommand {
     /// Step every slot's seed of the lane by the same amount: new material for
     /// the whole chain, keeping which bars repeat and which vary.
     LaneSeedDelta { lane: u8, delta: i32 },
+    /// Loop the lane's first `len` slots. Snapped down to 1, 2, 4 or 8
+    /// ([`snap_loop_len`](super::snap_loop_len)). Lands on the next bar.
+    SetLoopLen { lane: u8, len: u8 },
     /// Move performance control `control` (0..4) to `value` (0..=1). Routed
     /// through the style's control mapping.
     SetControl { lane: u8, control: u8, value: f32 },
@@ -95,6 +98,7 @@ pub enum LiveCommand {
     ToggleHalfTime,
     /// Snapshot the state into the capture bank and save it off-thread.
     Capture(CaptureScope),
+    /// Restore a capture (UI / tools; no F1 control triggers it).
     RecallCapture(Box<Capture>),
     /// Feed the master output into a set recording.
     StartRecording(rtrb::Producer<StereoSample>),

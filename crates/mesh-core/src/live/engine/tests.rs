@@ -563,6 +563,7 @@ fn capture_round_trip_restores_state() {
     r.send(LiveCommand::SelectSlot { lane: 1, slot: 2 });
     r.send(LiveCommand::SeedDelta { lane: 1, delta: 5 });
     r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 3, seed: 777 });
+    r.send(LiveCommand::SetLoopLen { lane: 0, len: 8 });
     r.send(LiveCommand::SetControl { lane: 2, control: 3, value: 0.8 });
     r.send(LiveCommand::SetOption { lane: 2, option: 1 });
     r.send(LiveCommand::SetLaneOn { lane: 3, on: false });
@@ -577,7 +578,10 @@ fn capture_round_trip_restores_state() {
     assert_eq!(captured.style, "fixture-breaks");
     assert_eq!(captured.global.key, MusicalKey::new(2, true));
     assert_eq!((captured.global.progression, captured.global.tempo, captured.global.half_time), (1, 166.0, true));
-    assert_eq!(captured.lanes[1].seeds, [DEFAULT_SEED + 1, DEFAULT_SEED + 1, DEFAULT_SEED + 6, DEFAULT_SEED + 1]);
+    let mut want = [DEFAULT_SEED + 1; SLOTS_PER_CHAIN];
+    want[2] = DEFAULT_SEED + 6;
+    assert_eq!(captured.lanes[1].seeds, want);
+    assert_eq!((captured.lanes[0].loop_len, captured.lanes[1].loop_len), (8, DEFAULT_LOOP_LEN));
     assert_eq!(captured.lanes[0].seeds[3], 777);
     assert_eq!((captured.lanes[2].controls[3], captured.lanes[2].option), (0.8, 1));
     assert!(!captured.lanes[3].on && captured.lanes[0].on);
@@ -599,6 +603,7 @@ fn capture_round_trip_restores_state() {
             r.send(LiveCommand::SetControl { lane, control, value: 0.0 });
         }
         r.send(LiveCommand::SetLaneOn { lane, on: lane == 3 });
+        r.send(LiveCommand::SetLoopLen { lane, len: 1 });
     }
     r.send(LiveCommand::SetOption { lane: 2, option: 0 });
     r.send(LiveCommand::SetKey(MusicalKey::new(9, true)));
@@ -623,6 +628,8 @@ fn capture_round_trip_restores_state() {
     assert_eq!(shared.lane(2).view().option, 1);
     assert!(!shared.lane(3).view().on && shared.lane(0).view().on);
     assert_eq!(shared.lane(0).view().seeds[3], 777);
+    assert_eq!(shared.lane(0).view().loop_len, 8);
+    assert_eq!(shared.lane(1).view().loop_len, DEFAULT_LOOP_LEN);
     assert_eq!(shared.lane(2).view().controls[3], 0.8);
 
     // A lane capture restores only its lane.
@@ -659,10 +666,24 @@ fn threaded_start_plays_without_starving() {
 fn lane_seed_delta_moves_every_slot_and_keeps_their_differences() {
     let mut r = rig(silent(), 128);
     r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 3, seed: 900 });
+    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 6, seed: 600 });
     let before = r.sys.shared.lane(0).view().seeds;
     r.send(LiveCommand::LaneSeedDelta { lane: 0, delta: 5 });
     let after = r.sys.shared.lane(0).view().seeds;
-    for slot in 0..4 {
-        assert_eq!(after[slot], before[slot].wrapping_add(5));
+    for slot in 0..SLOTS_PER_CHAIN {
+        assert_eq!(after[slot], before[slot].wrapping_add(5), "slot {slot}");
     }
+    assert_eq!(after[7], DEFAULT_SEED + 5, "slots past the loop move too");
+}
+
+#[test]
+fn loop_length_snaps_to_1_2_4_8_per_lane() {
+    let mut r = rig(silent(), 128);
+    assert!((0..NUM_LANES).all(|l| r.sys.shared.lane(l).view().loop_len == DEFAULT_LOOP_LEN));
+    for (len, want) in [(1, 1), (2, 2), (3, 2), (5, 4), (8, 8), (0, 1), (200, 8)] {
+        r.send(LiveCommand::SetLoopLen { lane: 2, len });
+        assert_eq!(r.sys.shared.lane(2).view().loop_len, want, "len {len}");
+        assert_eq!(r.sys.controller.lane(2).loop_len, want);
+    }
+    assert_eq!(r.sys.shared.lane(1).view().loop_len, DEFAULT_LOOP_LEN, "other lanes untouched");
 }

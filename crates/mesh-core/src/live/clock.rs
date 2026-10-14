@@ -28,14 +28,15 @@
 //!
 //! RT-safety: no allocation, no locks, no panics on the advance path.
 
-use super::{SLOTS_PER_CHAIN, STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
+use super::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
 /// Lowest tempo the clock accepts.
 pub const MIN_BPM: f64 = 40.0;
 /// Highest tempo the clock accepts.
 pub const MAX_BPM: f64 = 300.0;
-/// Bars per phrase (one chain of slots).
-pub const BARS_PER_PHRASE: u64 = SLOTS_PER_CHAIN as u64;
+/// Bars per phrase. Harmony and phrase shaping use 4-bar phrases whatever
+/// each lane's loop length.
+pub const BARS_PER_PHRASE: u64 = 4;
 
 const TICKS_PER_BEAT: f64 = TICKS_PER_BAR as f64 / 4.0;
 

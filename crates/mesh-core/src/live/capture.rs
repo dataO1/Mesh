@@ -1,7 +1,7 @@
 //! Capture snapshots (design D16, §9).
 //!
 //! A capture stores what is needed to reproduce the current state from seeds:
-//! per lane the 4 slot seeds, the 4 control positions, the selected instrument
+//! per lane the 8 slot seeds, the loop length, the 4 control positions, the selected instrument
 //! option and the on/off state, plus the global key, progression, tempo and
 //! half-time flag. Generators are pure functions of these, so a capture
 //! reproduces the same bars.
@@ -21,12 +21,13 @@ use crate::music::MusicalKey;
 
 use super::harmony::serde_key;
 use super::style::{is_valid_style_name, CONTROLS_PER_LANE};
-use super::{NUM_LANES, SLOTS_PER_CHAIN};
+use super::{DEFAULT_LOOP_LEN, LOOP_LENGTHS, NUM_LANES, SLOTS_PER_CHAIN};
 
 /// Folder under the collection root holding all captures.
 pub const CAPTURES_FOLDER: &str = "captures";
-/// Capture file format version.
-pub const CAPTURE_VERSION: u32 = 1;
+/// Capture file format version. 2: 8 seeds per lane plus `loop_len`.
+/// Version 1 files (4 seeds, no loop length) still load.
+pub const CAPTURE_VERSION: u32 = 2;
 /// Timestamp format used in the snapshot and its file name.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d_%H-%M-%S";
 
@@ -46,8 +47,13 @@ pub enum CaptureScope {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaneCapture {
-    /// Seed of each chain slot.
+    /// Seed of each chain slot. Shorter lists (version 1: 4 seeds) repeat
+    /// to fill the chain.
+    #[serde(deserialize_with = "deserialize_seeds")]
     pub seeds: [u32; SLOTS_PER_CHAIN],
+    /// Bars the lane loops (1, 2, 4 or 8). Version 1 files: 4.
+    #[serde(default = "default_loop_len")]
+    pub loop_len: u8,
     /// Position of each performance control, `0..=1`.
     pub controls: [f32; CONTROLS_PER_LANE],
     /// Selected instrument option index.
@@ -58,8 +64,22 @@ pub struct LaneCapture {
 
 impl Default for LaneCapture {
     fn default() -> Self {
-        Self { seeds: [0; SLOTS_PER_CHAIN], controls: [0.5; CONTROLS_PER_LANE], option: 0, on: true }
+        Self { seeds: [0; SLOTS_PER_CHAIN], loop_len: DEFAULT_LOOP_LEN, controls: [0.5; CONTROLS_PER_LANE], option: 0, on: true }
     }
+}
+
+fn default_loop_len() -> u8 {
+    DEFAULT_LOOP_LEN
+}
+
+/// 1..=8 seeds, repeated to fill the chain: a version-1 4-bar chain becomes
+/// the same 4 bars twice, so it sounds the same at any loop length up to 4.
+fn deserialize_seeds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u32; SLOTS_PER_CHAIN], D::Error> {
+    let seeds = Vec::<u32>::deserialize(d)?;
+    if seeds.is_empty() || seeds.len() > SLOTS_PER_CHAIN {
+        return Err(serde::de::Error::invalid_length(seeds.len(), &"1 to 8 seeds"));
+    }
+    Ok(std::array::from_fn(|i| seeds[i % seeds.len()]))
 }
 
 /// Captured global state.
@@ -174,6 +194,9 @@ impl Capture {
             }
         }
         for (i, lane) in self.lanes.iter().enumerate() {
+            if !LOOP_LENGTHS.contains(&lane.loop_len) {
+                return bad(format!("lanes[{i}].loop_len = {} is not 1, 2, 4 or 8", lane.loop_len));
+            }
             for (c, &v) in lane.controls.iter().enumerate() {
                 if !v.is_finite() || !(0.0..=1.0).contains(&v) {
                     return bad(format!("lanes[{i}].controls[{c}] = {v} outside 0..=1"));
@@ -248,8 +271,9 @@ mod tests {
 
     fn sample(ts: &str) -> Capture {
         let mut lanes = [LaneCapture::default(); NUM_LANES];
-        lanes[0].seeds = [50, 50, 51, 77];
-        lanes[1] = LaneCapture { seeds: [1, 2, 3, u32::MAX], controls: [0.0, 0.25, 0.5, 1.0], option: 1, on: false };
+        lanes[0].seeds = [50, 50, 51, 77, 50, 50, 51, 78];
+        lanes[0].loop_len = 8;
+        lanes[1] = LaneCapture { seeds: [1, 2, 3, u32::MAX, 5, 6, 7, 8], loop_len: 2, controls: [0.0, 0.25, 0.5, 1.0], option: 1, on: false };
         Capture::with_timestamp(
             "fixture-breaks",
             ts,
@@ -339,7 +363,7 @@ mod tests {
         assert!(matches!(c.validate(), Err(CaptureError::Invalid(_))));
 
         let mut c = sample("2026-10-13_21-30-05");
-        c.version = 2;
+        c.version = 3;
         assert!(matches!(c.validate(), Err(CaptureError::Invalid(_))));
 
         let mut c = sample("2026-10-13_21-30-05");
@@ -362,6 +386,45 @@ mod tests {
         let cut = text.rfind("- seeds:").unwrap();
         std::fs::write(&bad, &text[..cut]).unwrap();
         assert!(matches!(Capture::load(&bad), Err(CaptureError::Parse { .. })));
+    }
+
+    #[test]
+    fn version_1_capture_with_4_seeds_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lane = |s: u32, on: bool| {
+            format!("- seeds: [{s}, {}, {}, {}]\n  controls: [0.5, 0.5, 0.5, 0.5]\n  option: 0\n  on: {on}\n", s + 1, s + 2, s + 3)
+        };
+        let text = format!(
+            "version: 1\nstyle: fixture-breaks\ntimestamp: 2026-10-13_21-30-05\nscope: all\n\
+             global:\n  key: Am\n  progression: 0\n  tempo: 172.0\n  half_time: false\nlanes:\n{}{}{}{}",
+            lane(10, true),
+            lane(20, true),
+            lane(30, false),
+            lane(40, true)
+        );
+        let path = tmp.path().join("old.yaml");
+        std::fs::write(&path, text).unwrap();
+        let c = Capture::load(&path).unwrap();
+        assert_eq!(c.version, 1);
+        assert_eq!(c.lanes[0].seeds, [10, 11, 12, 13, 10, 11, 12, 13], "4 seeds repeat to fill 8 slots");
+        assert!(c.lanes.iter().all(|l| l.loop_len == DEFAULT_LOOP_LEN));
+        assert!(!c.lanes[2].on);
+
+        // More than 8 seeds or a loop length outside 1/2/4/8 are rejected.
+        let mut bad = sample("2026-10-13_21-30-05");
+        bad.lanes[1].loop_len = 3;
+        assert!(matches!(bad.validate(), Err(CaptureError::Invalid(_))));
+        let nine = text_with_seeds("[1, 2, 3, 4, 5, 6, 7, 8, 9]");
+        assert!(serde_yaml::from_str::<Capture>(&nine).is_err());
+    }
+
+    fn text_with_seeds(seeds: &str) -> String {
+        let text = sample("2026-10-13_21-30-05").to_yaml().unwrap();
+        let start = text.find("seeds:").unwrap();
+        let end = start + text[start..].find("loop_len").unwrap();
+        // Flow-style list replaces the block list of lane 0.
+        let indent = &text[text[..end].rfind('\n').unwrap() + 1..end];
+        format!("{}seeds: {seeds}\n{indent}{}", &text[..start], &text[end..])
     }
 
     #[test]
