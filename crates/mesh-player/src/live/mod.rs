@@ -9,6 +9,9 @@
 //!   f1_left_serial: null   # optional, USB serial of the left Kontrol F1
 //! ```
 //!
+//! or for one run with `mesh-player --live [STYLE]`, where STYLE is a style
+//! name or a style folder path (see [`startup::live_flag`]).
+//!
 //! - [`boot`]: startup (style, audio backend, iced application).
 //! - [`app`]: `LiveApp`, the screen of design §8.
 //! - [`controls`]: the two Kontrol F1s mapped onto live commands (§7).

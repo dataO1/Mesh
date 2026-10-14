@@ -16,6 +16,10 @@
 //! ## Command line flags
 //!
 //! - `--midi-learn`: Start in MIDI learn mode for creating controller profiles
+//! - `--live [STYLE]`: Start in live mode for this run, whatever `mode` says in
+//!   `player-config.yaml` (the file is not changed). STYLE is a style name under
+//!   `<collection>/styles/` or a path to a style folder; without it `live.style`
+//!   is used.
 
 mod audio;
 mod config;
@@ -181,6 +185,7 @@ fn main() -> iced::Result {
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
     let start_midi_learn = args.iter().any(|arg| arg == "--midi-learn");
+    let live_override = live::startup::live_flag(args.get(1..).unwrap_or_default());
 
     // Initialize logger - set RUST_LOG=debug for verbose output
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -238,10 +243,12 @@ fn main() -> iced::Result {
 
     // Run mode is fixed at startup (D35). Live mode skips the DJ-only setup
     // below (database, StemBufferPool, DJ engine) and runs its own app.
-    log::info!("Run mode: {:?}", config.mode);
-    if config.mode == config::AppRunMode::Live {
+    // `--live [STYLE]` forces live mode for this run only (config file untouched).
+    let run_mode = if live_override.is_some() { config::AppRunMode::Live } else { config.mode };
+    log::info!("Run mode: {:?}{}", run_mode, if live_override.is_some() { " (--live)" } else { "" });
+    if run_mode == config::AppRunMode::Live {
         let (master_device_id, cue_device_id) = configured_audio_devices(&config);
-        let result = live::run(config, master_device_id, cue_device_id);
+        let result = live::run(config, live_override.flatten(), master_device_id, cue_device_id);
         println!("Mesh stopped.");
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }

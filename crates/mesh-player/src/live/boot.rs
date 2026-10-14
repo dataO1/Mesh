@@ -19,7 +19,7 @@ use crate::audio::start_engine_with_devices;
 use crate::config::PlayerConfig;
 
 use super::app::{LiveApp, LiveBoot};
-use super::startup::{load_problem, resolve_style};
+use super::startup::{collection_for_style_dir, load_problem, resolve_style, resolve_style_dir, StyleSource};
 
 /// Audio-thread engine of live mode. Empty when the style failed to load
 /// at the device rate, so the backend still has something to run.
@@ -63,17 +63,33 @@ fn load_options(sample_rate: u32, collection: &std::path::Path) -> LoadOptions {
 
 /// Load the style and start audio. Returns the app boot state and the audio
 /// handle, which must outlive the UI.
+///
+/// `source` overrides `live.style` (`--live STYLE`). A style loaded by path
+/// sends captures and recordings to [`collection_for_style_dir`]; the
+/// configured collection still provides the theme and Pure Data effects.
 fn boot(
     config: &PlayerConfig,
+    source: Option<StyleSource>,
     master: Option<DeviceId>,
     cue: Option<DeviceId>,
 ) -> (LiveBoot, Option<mesh_core::audio::AudioHandle>) {
-    let collection = config.collection_path.clone();
-    let themes = mesh_widgets::theme::load_themes(&collection.join("theme.yaml"));
+    let library = config.collection_path.clone();
+    let themes = mesh_widgets::theme::load_themes(&library.join("theme.yaml"));
     let theme = mesh_widgets::theme::find_theme(&themes, &config.display.theme).clone();
+
+    let (resolved, collection) = match source {
+        Some(StyleSource::Path(dir)) => {
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            let collection = collection_for_style_dir(&dir, &library);
+            (resolve_style_dir(&dir, &collection), collection)
+        }
+        Some(StyleSource::Named(name)) => (resolve_style(&library, Some(&name)), library.clone()),
+        None => (resolve_style(&library, config.live.style.as_deref()), library.clone()),
+    };
+    log::info!("[LIVE] captures and recordings go to {}", collection.display());
     let failed = |problem, theme| LiveBoot::Failed { problem, collection: collection.clone(), theme };
 
-    let style = match resolve_style(&collection, config.live.style.as_deref()) {
+    let style = match resolved {
         Ok(s) => s,
         Err(problem) => {
             log::error!("[LIVE] {}: {:?}", problem.title, problem.details);
@@ -93,7 +109,7 @@ fn boot(
 
     log::info!("[LIVE] loading style '{name}'");
     let started = start_engine_with_devices(master, cue, |rate| {
-        match LiveEngine::start(&style, load_options(rate, &collection)) {
+        match LiveEngine::start(&style, load_options(rate, &library)) {
             Ok((engine, handles)) => (LiveRt { engine: Some(engine), no_recordings: Vec::new() }, Ok(handles)),
             Err(e) => (LiveRt { engine: None, no_recordings: Vec::new() }, Err::<LiveHandles, LoadError>(e)),
         }
@@ -114,7 +130,7 @@ fn boot(
             // screen and controls can still be developed.
             log::warn!("[LIVE] audio unavailable: {e}");
             let rate = mesh_core::types::SAMPLE_RATE;
-            match LiveEngine::start(&style, load_options(rate, &collection)) {
+            match LiveEngine::start(&style, load_options(rate, &library)) {
                 Ok((_engine, handles)) => (running(style, handles, rate, Some(e.to_string()), theme), None),
                 Err(le) => (failed(load_problem(&collection, &name, &le), theme), None),
             }
@@ -123,8 +139,13 @@ fn boot(
 }
 
 /// Run live mode until the window closes.
-pub fn run(config: PlayerConfig, master: Option<DeviceId>, cue: Option<DeviceId>) -> iced::Result {
-    let (boot, audio_handle) = boot(&config, master, cue);
+pub fn run(
+    config: PlayerConfig,
+    source: Option<StyleSource>,
+    master: Option<DeviceId>,
+    cue: Option<DeviceId>,
+) -> iced::Result {
+    let (boot, audio_handle) = boot(&config, source, master, cue);
     let boot = RefCell::new(Some(boot));
 
     let result = iced::application(
