@@ -3,7 +3,8 @@
 //! | Key | Action |
 //! |---|---|
 //! | `1`–`4` | select lane |
-//! | `q` `w` `e` `r` | select chain slot 1–4 |
+//! | `q` `w` `e` `r` `y` `u` `i` `o` | select chain slot (bar) 1–8 (`t` is taken by Quant) |
+//! | `Shift` + slot key | loop length of the lane: largest of 1, 2, 4, 8 ≤ the bar |
 //! | `Space` | lane on/off (lands on the bar unless Quant is off) |
 //! | `↑` / `↓` | seed ±1 of the selected slot (`Shift`: ±10) |
 //! | `←` / `→` | browse kit / instrument option, `Enter` loads it at the bar |
@@ -21,6 +22,7 @@ use iced::keyboard::{key::Named, Event, Key, Modifiers};
 
 use mesh_core::live::capture::CaptureScope;
 use mesh_core::live::command::{LiveCommand, MoveKind};
+use mesh_core::live::{snap_loop_len, SLOTS_PER_CHAIN};
 
 /// Step of the key-intent position per key press (range −1..=1).
 pub const INTENT_STEP: f32 = 0.2;
@@ -40,7 +42,7 @@ pub enum KeyAction {
 
 const MOVE_KEYS: [(char, MoveKind); 4] =
     [('a', MoveKind::Stutter), ('s', MoveKind::Fill), ('d', MoveKind::Double), ('f', MoveKind::Void)];
-const SLOT_KEYS: [char; 4] = ['q', 'w', 'e', 'r'];
+const SLOT_KEYS: [char; SLOTS_PER_CHAIN] = ['q', 'w', 'e', 'r', 'y', 'u', 'i', 'o'];
 const CONTROL_KEYS: [(char, char); 4] = [('z', 'x'), ('c', 'v'), ('b', 'n'), ('m', ',')];
 
 fn char_of(key: &Key) -> Option<char> {
@@ -87,6 +89,9 @@ fn pressed(key: &Key, mods: Modifiers, repeat: bool, lane: u8) -> Option<KeyActi
         return Some(KeyAction::SelectLane(d as u8 - 1));
     }
     if let Some(slot) = SLOT_KEYS.iter().position(|&k| k == c) {
+        if shift {
+            return (!repeat).then_some(C(LiveCommand::SetLoopLen { lane, len: snap_loop_len(slot + 1) }));
+        }
         return Some(C(LiveCommand::SelectSlot { lane, slot: slot as u8 }));
     }
     if let Some((_, kind)) = MOVE_KEYS.iter().find(|(k, _)| *k == c) {
@@ -150,6 +155,25 @@ mod tests {
             Some(KeyAction::Command(LiveCommand::ToggleLane { lane: 2 }))
         ));
         assert!(map_key(&press(Key::Named(Named::Space), Modifiers::empty(), true), 2).is_none());
+    }
+
+    #[test]
+    fn eight_slot_keys_and_shift_sets_loop_length() {
+        for (i, k) in ["q", "w", "e", "r", "y", "u", "i", "o"].iter().enumerate() {
+            assert!(
+                matches!(map_key(&press(ch(k), Modifiers::empty(), false), 2),
+                    Some(KeyAction::Command(LiveCommand::SelectSlot { lane: 2, slot })) if slot as usize == i),
+                "{k}"
+            );
+        }
+        for (k, want) in [("Q", 1), ("W", 2), ("E", 2), ("R", 4), ("Y", 4), ("I", 4), ("O", 8)] {
+            assert!(
+                matches!(map_key(&press(ch(k), Modifiers::SHIFT, false), 1),
+                    Some(KeyAction::Command(LiveCommand::SetLoopLen { lane: 1, len })) if len == want),
+                "{k}"
+            );
+        }
+        assert!(matches!(map_key(&press(ch("t"), Modifiers::empty(), false), 0), Some(KeyAction::ToggleQuantize)));
     }
 
     #[test]

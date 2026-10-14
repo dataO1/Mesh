@@ -6,17 +6,30 @@
 //! pad columns 1–2, play 1–2) drives the unit's first lane, half B
 //! (knobs/faders 3–4, pad columns 3–4, play 3–4) its second lane.
 //!
+//! Pads of one half (2 columns × 4 rows), default and while Sync is held:
+//!
+//! ```text
+//!  default (bar pads)      Sync held (moves)
+//!  ┌───┬───┐               ┌────────┬──────┐
+//!  │ 1 │ 2 │               │ stutter│ fill │
+//!  │ 3 │ 4 │               │ double │ void │
+//!  │ 5 │ 6 │               │   –    │  –   │
+//!  │ 7 │ 8 │               │   –    │  –   │
+//!  └───┴───┘               └────────┴──────┘
+//! ```
+//!
 //! | Control | Function |
 //! |---|---|
 //! | Knob 1 / 3 | lane control 0 (knob A) |
 //! | Fader 1 / 3 | lane control 1 (fader A) |
 //! | Knob 2 / 4 | lane control 2 (knob B) |
 //! | Fader 2 / 4 | lane control 3 (fader B) |
-//! | Pads rows 1–2 of the half | chain slots 0 1 / 2 3: press selects the bar; hold + encoder = new pattern for that bar (display shows its seed) |
-//! | Pads rows 3–4 of the half | momentary: stutter fill / double void |
+//! | Bar pad | press selects the bar; hold + encoder = new pattern for that bar (display shows its seed). Bars past the loop length are lit very dim and do not play |
+//! | Shift (same unit) + bar pad n | loop length of that lane = largest of 1, 2, 4, 8 ≤ n (lands on the next bar) |
+//! | Sync (held) | the unit's pads become momentary moves (see above); release returns to the bar pads and releases held moves |
 //! | Play 1 / 3 (button A) | lane on/off |
 //! | Play 2 / 4 (button B) | unassigned (hook for a style mapping) |
-//! | Encoder | reseed the whole chain of the unit's selected lane (held bar pad: that bar only) |
+//! | Encoder | reseed all 8 bars of the unit's selected lane (held bar pad: that bar only) |
 //! | Left Shift + fader 1 | key intent |
 //! | Left Shift + fader 2 | tempo (ramp target) |
 //! | Left Shift + encoder | progression |
@@ -24,7 +37,6 @@
 //! | Quant (either unit) | quantized lane toggles on/off (default off) |
 //! | Capture | capture the unit's selected lane. With that unit's Shift: everything |
 //! | Reverse (either unit) | half-time toggle |
-//! | Sync | recall the latest session capture for the unit's selected lane |
 //! | Size / Browse (held) + encoder | browse lane A / lane B option, release loads it at the bar |
 //! | Type | unassigned |
 //!
@@ -43,7 +55,7 @@ use mesh_core::live::command::{LiveCommand, MoveKind};
 use mesh_core::live::engine::LiveController;
 use mesh_core::live::state::{ClockView, LaneView, LiveShared};
 use mesh_core::live::style::{TempoSpec, CONTROLS_PER_LANE};
-use mesh_core::live::NUM_LANES;
+use mesh_core::live::{slot_for_bar, snap_loop_len, NUM_LANES};
 use mesh_core::music::MusicalKey;
 use mesh_midi::types::{ControlAddress, ControlEvent, ControlValue, FeedbackCommand};
 
@@ -52,24 +64,35 @@ use mesh_midi::types::{ControlAddress, ControlEvent, ControlValue, FeedbackComma
 /// What a grid pad does inside its half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PadRole {
+    /// Chain slot (bar) 0..8.
     Slot(u8),
     Move(MoveKind),
+    /// Dark, no function (rows 3–4 while Sync is held).
+    Unused,
 }
 
-// PLAYABILITY: tune on hardware (design §7.1 leaves the pad geometry open).
-/// `grid_1..=16` (row-major, top-left first) → (half, role). Left two
-/// columns = half A, right two = half B. Top two rows = chain slots, bottom
-/// two rows = momentary moves.
-const PADS: [(u8, PadRole); 16] = {
-    use MoveKind::*;
-    use PadRole::{Move, Slot};
-    [
-        (0, Slot(0)), (0, Slot(1)), (1, Slot(0)), (1, Slot(1)),
-        (0, Slot(2)), (0, Slot(3)), (1, Slot(2)), (1, Slot(3)),
-        (0, Move(Stutter)), (0, Move(Fill)), (1, Move(Stutter)), (1, Move(Fill)),
-        (0, Move(Double)), (0, Move(Void)), (1, Move(Double)), (1, Move(Void)),
-    ]
-};
+// PLAYABILITY: tune on hardware.
+/// Pad `0..16` (`grid_1..=16`, row-major, top-left first) → (half, role).
+/// Left two columns = half A, right two = half B. By default every pad of
+/// a half is a bar: row-major, 1 2 / 3 4 / 5 6 / 7 8. While Sync is held
+/// (`moves`): row 1 = stutter fill, row 2 = double void, rows 3–4 unused.
+const fn pad_role(pad: usize, moves: bool) -> (u8, PadRole) {
+    let (row, col) = (pad / 4, pad % 4);
+    let half = (col / 2) as u8;
+    let c = col % 2;
+    let role = if !moves {
+        PadRole::Slot((row * 2 + c) as u8)
+    } else {
+        match (row, c) {
+            (0, 0) => PadRole::Move(MoveKind::Stutter),
+            (0, _) => PadRole::Move(MoveKind::Fill),
+            (1, 0) => PadRole::Move(MoveKind::Double),
+            (1, _) => PadRole::Move(MoveKind::Void),
+            _ => PadRole::Unused,
+        }
+    };
+    (half, role)
+}
 
 /// `knob_1..=4` → (half, lane control). Control order per lane:
 /// knob A = 0, fader A = 1, knob B = 2, fader B = 3.
@@ -107,6 +130,9 @@ const PAD_IDLE: f32 = 0.18;
 const PAD_MOVE_IDLE: f32 = 0.10;
 const PAD_OFF_LANE: f32 = 0.04;
 const PAD_OFF_LANE_SELECTED: f32 = 0.12;
+/// Bar pads past the lane's loop length (selectable, not playing).
+const PAD_BEYOND_LOOP: f32 = 0.02;
+const PAD_BEYOND_LOOP_SELECTED: f32 = 0.12;
 // PLAYABILITY: tune on hardware. Single-colour LED levels (0..=0x7F).
 const LED_ON: u8 = 0x7F;
 const LED_DIM: u8 = 0x0C;
@@ -121,12 +147,13 @@ const NUM_TARGETS: usize = TARGET_TEMPO + 1;
 // ─── Mapper output ─────────────────────────────────────────────────────
 
 /// One surface action. Mirrors the [`LiveCommand`]s the surface sends
-/// (comparable in tests) plus capture / recall, which need the controller.
+/// (comparable in tests) plus capture, which needs the controller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Act {
     SelectSlot { lane: u8, slot: u8 },
     SeedDelta { lane: u8, delta: i32 },
     LaneSeedDelta { lane: u8, delta: i32 },
+    SetLoopLen { lane: u8, len: u8 },
     SetControl { lane: u8, control: u8, value: f32 },
     ToggleLane { lane: u8 },
     BrowseOption { lane: u8, delta: i32 },
@@ -140,9 +167,6 @@ pub enum Act {
     SetQuantize(bool),
     ToggleHalfTime,
     Capture(CaptureScope),
-    /// Recall the newest session capture that holds `lane` (a lane capture
-    /// of that lane or a full capture), restoring only that lane.
-    RecallLatest { lane: u8 },
 }
 
 fn apply(act: Act, ctl: &mut LiveController) {
@@ -150,6 +174,7 @@ fn apply(act: Act, ctl: &mut LiveController) {
         Act::SelectSlot { lane, slot } => LiveCommand::SelectSlot { lane, slot },
         Act::SeedDelta { lane, delta } => LiveCommand::SeedDelta { lane, delta },
         Act::LaneSeedDelta { lane, delta } => LiveCommand::LaneSeedDelta { lane, delta },
+        Act::SetLoopLen { lane, len } => LiveCommand::SetLoopLen { lane, len },
         Act::SetControl { lane, control, value } => LiveCommand::SetControl { lane, control, value },
         Act::ToggleLane { lane } => LiveCommand::ToggleLane { lane },
         Act::BrowseOption { lane, delta } => LiveCommand::BrowseOption { lane, delta },
@@ -165,22 +190,6 @@ fn apply(act: Act, ctl: &mut LiveController) {
         Act::Capture(scope) => {
             // Adds to the bank and saves to the collection off-thread.
             ctl.capture(scope);
-            return;
-        }
-        Act::RecallLatest { lane } => {
-            let found = ctl
-                .captures()
-                .iter()
-                .rev()
-                .find(|c| match c.scope {
-                    CaptureScope::All => true,
-                    CaptureScope::Lane { lane: l } => l == lane,
-                })
-                .cloned();
-            if let Some(mut capture) = found {
-                capture.scope = CaptureScope::Lane { lane };
-                ctl.recall(&capture);
-            }
             return;
         }
     };
@@ -290,6 +299,11 @@ struct Unit {
     browse_held: [Option<BrowseHold>; 2],
     /// Chain slot pad held down: (half, slot). Hold + encoder edits that bar.
     slot_held: Option<(u8, u8)>,
+    /// Sync held: pads are momentary moves.
+    sync: bool,
+    /// Per pad, what it did when pressed (half, role), so its release
+    /// matches the press even if Sync or Shift changed in between.
+    pads_down: [Option<(u8, PadRole)>; 16],
     /// `knob_1..4` then `fader_1..4`.
     physical: [Physical; 8],
     leds: LedCache,
@@ -303,6 +317,8 @@ impl Unit {
             half: 0,
             browse_held: [None; 2],
             slot_held: None,
+            sync: false,
+            pads_down: [None; 16],
             physical: [Physical::default(); 8],
             leds: LedCache::default(),
         }
@@ -632,7 +648,7 @@ impl LiveControlSurface {
             // A held bar pad: new pattern for that bar only.
             out.push(Act::SeedDelta { lane: side.lane(half), delta });
         } else {
-            // Nothing held: new material for the whole 4-bar chain.
+            // Nothing held: new material for all 8 bars of the chain.
             out.push(Act::LaneSeedDelta { lane: side.lane(unit.half), delta });
         }
     }
@@ -641,24 +657,19 @@ impl LiveControlSurface {
         let selected = side.lane(self.units[u].half);
         match control {
             Control::Shift => self.units[u].shift = pressed,
-            Control::Pad(i) => {
-                let (half, role) = PADS[i];
-                let lane = side.lane(half);
-                if pressed {
-                    self.touch(u, side, half);
-                }
-                match role {
-                    PadRole::Slot(slot) if pressed => {
-                        self.units[u].slot_held = Some((half, slot));
-                        out.push(Act::SelectSlot { lane, slot });
-                    }
-                    PadRole::Slot(slot) => {
-                        if self.units[u].slot_held == Some((half, slot)) {
-                            self.units[u].slot_held = None;
+            Control::Pad(i) => self.pad(u, side, i, pressed, out),
+            // Hold Sync: the unit's pads become momentary moves. Release
+            // returns to the bar pads and releases every move still held.
+            Control::Sync => {
+                let unit = &mut self.units[u];
+                unit.sync = pressed;
+                if !pressed {
+                    for down in &mut unit.pads_down {
+                        if let Some((half, PadRole::Move(kind))) = *down {
+                            *down = None;
+                            out.push(Act::MoveRelease { lane: side.lane(half), kind });
                         }
                     }
-                    PadRole::Move(kind) if pressed => out.push(Act::MovePress { lane, kind }),
-                    PadRole::Move(kind) => out.push(Act::MoveRelease { lane, kind }),
                 }
             }
             // Hold Size (lane A) or Browse (lane B) and turn the encoder to
@@ -706,10 +717,48 @@ impl LiveControlSurface {
                 out.push(Act::Capture(scope));
             }
             Control::Reverse => out.push(Act::ToggleHalfTime),
-            Control::Sync => out.push(Act::RecallLatest { lane: selected }),
             // Unassigned (kept free for P4: master FX, page).
             Control::Type => {}
             Control::Knob(_) | Control::Fader(_) | Control::Encoder => {}
+        }
+    }
+
+    fn pad(&mut self, u: usize, side: Side, pad: usize, pressed: bool, out: &mut Vec<Act>) {
+        if pressed {
+            let unit = &self.units[u];
+            let (half, role) = pad_role(pad, unit.sync);
+            let lane = side.lane(half);
+            self.touch(u, side, half);
+            let unit = &mut self.units[u];
+            let recorded = match role {
+                // Shift + bar pad n: loop length = largest of 1/2/4/8 ≤ n.
+                PadRole::Slot(slot) if unit.shift => {
+                    out.push(Act::SetLoopLen { lane, len: snap_loop_len(slot as usize + 1) });
+                    PadRole::Unused
+                }
+                PadRole::Slot(slot) => {
+                    unit.slot_held = Some((half, slot));
+                    out.push(Act::SelectSlot { lane, slot });
+                    role
+                }
+                PadRole::Move(kind) => {
+                    out.push(Act::MovePress { lane, kind });
+                    role
+                }
+                PadRole::Unused => role,
+            };
+            unit.pads_down[pad] = Some((half, recorded));
+        } else {
+            let unit = &mut self.units[u];
+            match unit.pads_down[pad].take() {
+                Some((half, PadRole::Slot(slot))) => {
+                    if unit.slot_held == Some((half, slot)) {
+                        unit.slot_held = None;
+                    }
+                }
+                Some((half, PadRole::Move(kind))) => out.push(Act::MoveRelease { lane: side.lane(half), kind }),
+                Some((_, PadRole::Unused)) | None => {}
+            }
         }
     }
 
@@ -733,9 +782,10 @@ impl LiveControlSurface {
             let unit = &mut self.units[ui];
             let id = &unit.id;
 
-            for (pad, &(half, role)) in PADS.iter().enumerate() {
+            for pad in 0..GRID_NAMES.len() {
+                let (half, role) = pad_role(pad, unit.sync);
                 let lane = side.lane(half) as usize;
-                let rgb = pad_rgb(&input.lanes[lane], lane, role, input.clock.bar_in_phrase, beat_on);
+                let rgb = pad_rgb(&input.lanes[lane], lane, role, input.clock.bar, beat_on);
                 if unit.leds.pads[pad] != Some(rgb) {
                     unit.leds.pads[pad] = Some(rgb);
                     let [r, g, b] = rgb;
@@ -772,7 +822,7 @@ impl LiveControlSurface {
                 lit(unit.shift),
                 LED_DIM,
                 lit(input.quantize),
-                LED_DIM,
+                lit(unit.sync),
             ];
             for (i, &level) in funcs.iter().enumerate() {
                 if unit.leds.funcs[i] != Some(level) {
@@ -813,14 +863,17 @@ fn scale(rgb: [u8; 3], f: f32) -> [u8; 3] {
     rgb.map(|c| (c as f32 * f).round().min(127.0) as u8)
 }
 
-fn pad_rgb(view: &LaneView, lane: usize, role: PadRole, bar_in_phrase: u8, beat_on: bool) -> [u8; 3] {
+fn pad_rgb(view: &LaneView, lane: usize, role: PadRole, bar: u64, beat_on: bool) -> [u8; 3] {
     let base = LANE_RGB[lane];
     match role {
         PadRole::Slot(slot) => {
             let selected = view.selected_slot == slot;
-            if !view.on {
+            if slot >= view.loop_len {
+                // Past the loop: still selectable and editable, not playing.
+                scale(base, if selected { PAD_BEYOND_LOOP_SELECTED } else { PAD_BEYOND_LOOP })
+            } else if !view.on {
                 scale(base, if selected { PAD_OFF_LANE_SELECTED } else { PAD_OFF_LANE })
-            } else if bar_in_phrase == slot && beat_on {
+            } else if slot_for_bar(bar, view.loop_len) == slot as usize && beat_on {
                 // The playing slot pulses white with the beat.
                 WHITE
             } else {
@@ -834,6 +887,7 @@ fn pad_rgb(view: &LaneView, lane: usize, role: PadRole, bar_in_phrase: u8, beat_
                 scale(base, if view.on { PAD_MOVE_IDLE } else { PAD_OFF_LANE })
             }
         }
+        PadRole::Unused => [0, 0, 0],
     }
 }
 
@@ -1005,23 +1059,103 @@ mod tests {
     }
 
     #[test]
-    fn momentary_moves_press_and_release() {
+    fn default_pads_are_eight_bars_per_lane_on_both_units() {
         let mut r = Rig::new(None).both();
+        // grid_n → (half, slot): row-major 1 2 / 3 4 / 5 6 / 7 8 inside each half.
+        let want = [(0, 0), (0, 1), (1, 0), (1, 1), (0, 2), (0, 3), (1, 2), (1, 3), (0, 4), (0, 5), (1, 4), (1, 5), (0, 6), (0, 7), (1, 6), (1, 7)];
+        for (dev, base) in [(A, 0u8), (B, 2u8)] {
+            for (i, &(half, slot)) in want.iter().enumerate() {
+                let pad = GRID_NAMES[i];
+                assert_eq!(r.press(dev, pad), vec![Act::SelectSlot { lane: base + half, slot }], "{dev} {pad}");
+                assert_eq!(r.release(dev, pad), vec![], "{dev} {pad}");
+            }
+        }
+    }
+
+    #[test]
+    fn shift_and_bar_pad_sets_the_loop_length() {
+        let mut r = Rig::new(None).both();
+        // Bar n → largest of 1/2/4/8 ≤ n.
+        let cases = [("grid_1", 1), ("grid_2", 2), ("grid_5", 2), ("grid_6", 4), ("grid_9", 4), ("grid_13", 4), ("grid_14", 8)];
+        for (dev, base) in [(A, 0u8), (B, 2u8)] {
+            r.press(dev, "shift");
+            for (pad, len) in cases {
+                assert_eq!(r.press(dev, pad), vec![Act::SetLoopLen { lane: base, len }], "{dev} {pad}");
+                assert_eq!(r.release(dev, pad), vec![]);
+            }
+            assert_eq!(r.press(dev, "grid_16"), vec![Act::SetLoopLen { lane: base + 1, len: 8 }]);
+            assert_eq!(r.s.view().selected_lane, base + 1, "touching selects the lane");
+            r.release(dev, "grid_16");
+            assert_eq!(r.enc(dev, 1), if dev == A { vec![Act::ProgressionDelta(1)] } else { vec![Act::LaneSeedDelta { lane: base + 1, delta: 1 }] });
+            r.release(dev, "shift");
+        }
+        // Shift is unit-local: left Shift does not change the right unit's pads.
+        r.press(A, "shift");
+        assert_eq!(r.press(B, "grid_1"), vec![Act::SelectSlot { lane: 2, slot: 0 }]);
+        r.release(B, "grid_1");
+        // A pad pressed with Shift and released without it does not leave a held bar.
+        assert_eq!(r.press(A, "grid_4"), vec![Act::SetLoopLen { lane: 1, len: 2 }]);
+        r.release(A, "shift");
+        assert_eq!(r.release(A, "grid_4"), vec![]);
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 1, delta: 1 }], "no bar held");
+    }
+
+    #[test]
+    fn sync_held_turns_pads_into_moves() {
+        let mut r = Rig::new(None).both();
+        assert_eq!(r.press(A, "sync"), vec![], "Sync never recalls");
         let cases = [
-            (A, "grid_9", 0, MoveKind::Stutter),
-            (A, "grid_10", 0, MoveKind::Fill),
-            (A, "grid_13", 0, MoveKind::Double),
-            (A, "grid_14", 0, MoveKind::Void),
-            (A, "grid_11", 1, MoveKind::Stutter),
-            (B, "grid_12", 3, MoveKind::Fill),
-            (B, "grid_15", 3, MoveKind::Double),
-            (B, "grid_16", 3, MoveKind::Void),
-            (B, "grid_13", 2, MoveKind::Double),
+            (A, "grid_1", 0, MoveKind::Stutter),
+            (A, "grid_2", 0, MoveKind::Fill),
+            (A, "grid_5", 0, MoveKind::Double),
+            (A, "grid_6", 0, MoveKind::Void),
+            (A, "grid_3", 1, MoveKind::Stutter),
+            (A, "grid_8", 1, MoveKind::Void),
         ];
         for (dev, pad, lane, kind) in cases {
             assert_eq!(r.press(dev, pad), vec![Act::MovePress { lane, kind }], "{pad}");
             assert_eq!(r.release(dev, pad), vec![Act::MoveRelease { lane, kind }], "{pad}");
         }
+        for pad in ["grid_9", "grid_10", "grid_12", "grid_15", "grid_16"] {
+            assert_eq!(r.press(A, pad), vec![], "{pad}: rows 3-4 unused");
+            assert_eq!(r.release(A, pad), vec![]);
+        }
+        // Only the unit whose Sync is held switches.
+        assert_eq!(r.press(B, "grid_1"), vec![Act::SelectSlot { lane: 2, slot: 0 }]);
+        r.release(B, "grid_1");
+        assert_eq!(r.release(A, "sync"), vec![], "nothing held, nothing released");
+        assert_eq!(r.press(A, "grid_1"), vec![Act::SelectSlot { lane: 0, slot: 0 }], "back to bars");
+        r.release(A, "grid_1");
+        r.press(B, "sync");
+        assert_eq!(r.press(B, "grid_7"), vec![Act::MovePress { lane: 3, kind: MoveKind::Double }]);
+        assert_eq!(r.release(B, "grid_7"), vec![Act::MoveRelease { lane: 3, kind: MoveKind::Double }]);
+    }
+
+    #[test]
+    fn sync_release_releases_held_moves() {
+        let mut r = Rig::new(None).both();
+        r.press(A, "sync");
+        r.press(A, "grid_1"); // lane 0 stutter
+        r.press(A, "grid_4"); // lane 1 fill
+        r.press(A, "grid_9"); // unused
+        let mut released = r.release(A, "sync");
+        released.sort_by_key(|a| format!("{a:?}"));
+        assert_eq!(
+            released,
+            vec![Act::MoveRelease { lane: 0, kind: MoveKind::Stutter }, Act::MoveRelease { lane: 1, kind: MoveKind::Fill }]
+        );
+        // The pads come up later on the bar grid: no second release, no bar held.
+        assert_eq!(r.release(A, "grid_1"), vec![]);
+        assert_eq!(r.release(A, "grid_4"), vec![]);
+        assert_eq!(r.release(A, "grid_9"), vec![]);
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 0, delta: 1 }], "grid_9 touched lane 0 last");
+        // A bar pad held while Sync goes down still releases as a bar.
+        assert_eq!(r.press(A, "grid_2"), vec![Act::SelectSlot { lane: 0, slot: 1 }]);
+        r.press(A, "sync");
+        assert_eq!(r.enc(A, 2), vec![Act::SeedDelta { lane: 0, delta: 2 }]);
+        assert_eq!(r.release(A, "grid_2"), vec![]);
+        assert_eq!(r.release(A, "sync"), vec![]);
+        assert_eq!(r.enc(A, 1), vec![Act::LaneSeedDelta { lane: 0, delta: 1 }]);
     }
 
     #[test]
@@ -1101,8 +1235,10 @@ mod tests {
         assert_eq!(r.release(B, "quant"), vec![]);
         r.press(A, "grid_4");
         assert_eq!(r.press(A, "capture"), vec![Act::Capture(CaptureScope::Lane { lane: 1 })]);
-        assert_eq!(r.press(A, "sync"), vec![Act::RecallLatest { lane: 1 }]);
-        assert_eq!(r.press(B, "sync"), vec![Act::RecallLatest { lane: 2 }]);
+        for dev in [A, B] {
+            assert_eq!(r.press(dev, "sync"), vec![], "Sync does not recall");
+            assert_eq!(r.release(dev, "sync"), vec![]);
+        }
         assert_eq!(r.press(A, "reverse"), vec![Act::ToggleHalfTime]);
         for unassigned in ["type_btn"] {
             assert_eq!(r.press(A, unassigned), vec![]);
@@ -1174,15 +1310,26 @@ mod tests {
         assert_eq!(leds.len(), 1);
         assert!(matches!(&leds[0], (d, FeedbackCommand::SetLed { control, brightness: 0 }) if d == A && control == "play_3"));
 
-        // Lane 1 on: its 8 pads and the play LED change; the playing slot (0) pulses white.
+        // Lane 1 on: its 4 looped bar pads and the play LED change (bars 5-8 stay
+        // dim past the 4-bar loop); the playing slot (0) pulses white.
         leds.clear();
         inp.lanes[1].on = true;
         inp.clock.step = 0;
         r.s.render_feedback(&inp, &mut leds, &mut displays);
-        assert_eq!(leds.len(), 9);
+        assert_eq!(leds.len(), 5);
         assert!(leds.iter().all(|(d, _)| d == A));
         assert!(leds.iter().any(|(_, c)| matches!(c,
             FeedbackCommand::SetRgb { control, r: 0x7F, g: 0x7F, b: 0x7F } if control == "grid_3")));
+
+        // Sync held on B: only B's pads and its Sync LED change; rows 3-4 go dark.
+        leds.clear();
+        r.press(B, "sync");
+        r.s.render_feedback(&inp, &mut leds, &mut displays);
+        assert!(!leds.is_empty() && leds.iter().all(|(d, _)| d == B));
+        assert!(leds.iter().any(|(_, c)| matches!(c,
+            FeedbackCommand::SetLed { control, brightness: LED_ON } if control == "sync")));
+        assert!(leds.iter().any(|(_, c)| matches!(c,
+            FeedbackCommand::SetRgb { control, r: 0, g: 0, b: 0 } if control == "grid_16")));
 
         // Held move lights its pad; intent key and tempo ramp change the displays.
         leds.clear();
@@ -1192,7 +1339,7 @@ mod tests {
         inp.clock.target_bpm = 105.4;
         r.s.render_feedback(&inp, &mut leds, &mut displays);
         assert_eq!(leds.len(), 1);
-        assert!(matches!(&leds[0], (d, FeedbackCommand::SetRgb { control, .. }) if d == B && control == "grid_16"));
+        assert!(matches!(&leds[0], (d, FeedbackCommand::SetRgb { control, .. }) if d == B && control == "grid_8"));
         assert_eq!(displays, vec![(A.to_string(), "AA".to_string()), (B.to_string(), "05".to_string())]);
 
         // Invalidation resends everything.
@@ -1201,6 +1348,33 @@ mod tests {
         r.s.invalidate_feedback();
         r.s.render_feedback(&inp, &mut leds, &mut displays);
         assert_eq!((leds.len(), displays.len()), (56, 2));
+    }
+
+    #[test]
+    fn bar_pads_follow_each_lanes_loop_length() {
+        let mut r = Rig::new(None).both();
+        let mut inp = input();
+        inp.lanes[0].loop_len = 8;
+        inp.lanes[1].loop_len = 2;
+        inp.clock.bar = 6;
+        inp.clock.step = 0;
+        let (mut leds, mut displays) = (Vec::new(), Vec::new());
+        r.s.render_feedback(&inp, &mut leds, &mut displays);
+        let pad = |name: &str| {
+            leds.iter()
+                .find_map(|(d, c)| match c {
+                    FeedbackCommand::SetRgb { control, r, g, b } if d == A && control == name => Some([*r, *g, *b]),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(pad("grid_13"), WHITE, "lane 0, 8-bar loop: bar 7 plays at bar index 6");
+        assert_eq!(pad("grid_14"), scale(LANE_RGB[0], PAD_IDLE), "bar 8 is inside the loop");
+        assert_eq!(pad("grid_3"), WHITE, "lane 1, 2-bar loop: bar 1 plays at bar index 6");
+        assert_eq!(pad("grid_4"), scale(LANE_RGB[1], PAD_IDLE));
+        for beyond in ["grid_7", "grid_8", "grid_11", "grid_12", "grid_15", "grid_16"] {
+            assert_eq!(pad(beyond), scale(LANE_RGB[1], PAD_BEYOND_LOOP), "{beyond}");
+        }
     }
 
     #[test]

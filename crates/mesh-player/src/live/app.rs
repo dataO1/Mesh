@@ -35,7 +35,7 @@ use mesh_core::live::render::RendererHandle;
 use mesh_core::live::scope::SCOPE_POINTS;
 use mesh_core::live::state::{move_bits, LiveShared, SpanTag};
 use mesh_core::live::style::{InstrumentSource, Style, CONTROLS_PER_LANE};
-use mesh_core::live::{NUM_LANES, SLOTS_PER_CHAIN};
+use mesh_core::live::{slot_for_bar, DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN};
 use mesh_core::recording::{RecordingEvent, RecordingHandle};
 use mesh_core::usb::{UsbDevice, UsbManager, UsbMessage};
 use mesh_widgets::scope::{scope, ScopeStyle};
@@ -122,7 +122,9 @@ struct Frame {
     fill_flash: [bool; NUM_LANES],
     scopes: [Arc<[f32]>; NUM_LANES],
     scope_gain: [f32; NUM_LANES],
-    playing_slot: u8,
+    /// Per lane: slot playing this bar and loop length.
+    playing_slot: [u8; NUM_LANES],
+    loop_len: [u8; NUM_LANES],
     surface: SurfaceView,
 }
 
@@ -229,7 +231,8 @@ fn empty_frame() -> Frame {
         fill_flash: [false; NUM_LANES],
         scopes: std::array::from_fn(|_| Arc::clone(&empty)),
         scope_gain: [1.0; NUM_LANES],
-        playing_slot: 0,
+        playing_slot: [0; NUM_LANES],
+        loop_len: [DEFAULT_LOOP_LEN; NUM_LANES],
         surface: SurfaceView::default(),
     }
 }
@@ -598,6 +601,10 @@ impl LiveApp {
                 if flags & mark::MUTED != 0 {
                     s = s.color(with_alpha(ui.text, 0.35));
                 }
+                if flags & mark::BEYOND != 0 {
+                    // Past the loop length: kept, not playing.
+                    s = s.color(with_alpha(ui.text, 0.25));
+                }
                 let mut bg = None;
                 let mut border = None;
                 if flags & mark::PLAYING != 0 {
@@ -636,22 +643,31 @@ impl LiveApp {
         };
         let trace = scope(li as u64, Arc::clone(&f.scopes[li]), scope_style, Length::Fill, Length::Fill);
 
-        // Chain grid.
-        let mut chain = row![].spacing(6).height(Length::Fill);
+        // Chain grid: bars 1–4 on top, 5–8 below. Bars past the loop length are dim.
+        let mut rows = [row![].spacing(6).height(Length::Fill), row![].spacing(6).height(Length::Fill)];
         for slot in 0..SLOTS_PER_CHAIN {
-            let playing = on && f.playing_slot as usize == slot;
+            let playing = on && f.playing_slot[li] as usize == slot;
+            let beyond = slot >= f.loop_len[li] as usize;
             let sel = f.selected_slot[li] as usize == slot;
             let flash = playing && f.fill_flash[li];
             let bg = if flash {
                 Color::WHITE
             } else if playing {
                 with_alpha(color, 0.85)
+            } else if beyond {
+                with_alpha(ui.text, 0.02)
             } else if on {
                 with_alpha(color, 0.15)
             } else {
                 with_alpha(ui.text, 0.05)
             };
-            let fg = if playing || flash { ui.background } else { text_color };
+            let fg = if playing || flash {
+                ui.background
+            } else if beyond {
+                with_alpha(ui.text, 0.25)
+            } else {
+                text_color
+            };
             let cell = container(text(format!("{}", f.seeds[li][slot])).font(MONO).size(size * 0.8).color(fg))
                 .center(Length::Fill)
                 .style(move |_| container::Style {
@@ -663,8 +679,11 @@ impl LiveApp {
                     },
                     ..Default::default()
                 });
-            chain = chain.push(cell);
+            let r = &mut rows[slot / 4];
+            *r = std::mem::replace(r, row![]).push(cell);
         }
+        let [top, bottom] = rows;
+        let chain = column![top, bottom].spacing(6).height(Length::Fill);
 
         let body = row![
             container(code).width(Length::FillPortion(6)).center_y(Length::Fill),
@@ -749,7 +768,6 @@ impl Running {
         );
         f.phrase = header::phrase_cells(clock.bar_in_phrase);
         f.quantize = shared.quantize();
-        f.playing_slot = clock.bar_in_phrase % SLOTS_PER_CHAIN as u8;
         f.surface = surface;
 
         let recent = |t: Option<Instant>, hold: Duration| t.is_some_and(|t| now.duration_since(t) < hold);
@@ -784,7 +802,7 @@ impl Running {
             f.pulse[li] = firing.map(|(_, t)| 1.0 - now.duration_since(t).as_secs_f32() / FIRE_PULSE.as_secs_f32()).unwrap_or(0.0);
             let frame = LaneFrame {
                 view,
-                playing_slot: f.playing_slot,
+                playing_slot: slot_for_bar(clock.bar, view.loop_len) as u8,
                 changed_controls: std::array::from_fn(|c| recent(tr.control_changed[c], CHANGED_HOLD)),
                 changed_seeds: std::array::from_fn(|s| recent(tr.seed_changed[s], CHANGED_HOLD)),
                 firing: firing.map(|(tag, _)| tag),
@@ -792,6 +810,8 @@ impl Running {
             f.lines[li] = readout::format_lane(&self.lanes[li], &frame);
             f.on[li] = view.on;
             f.selected_slot[li] = view.selected_slot;
+            f.playing_slot[li] = frame.playing_slot;
+            f.loop_len[li] = view.loop_len;
             f.seeds[li] = view.seeds;
             f.fill_flash[li] = view.moves & move_bits::FILL != 0 || recent(tr.fill_at, FIRE_PULSE);
 

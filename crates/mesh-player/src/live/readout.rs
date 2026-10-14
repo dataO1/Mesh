@@ -5,9 +5,11 @@
 //! The view turns the ranges into rich-text spans; nothing is parsed.
 //!
 //! ```text
-//! drums.kit("clean-kit").s("bone brk hats perc").style("rolling").dens(0.62).seed[ 50  50  51 ⟨ 77⟩]
-//! bass.sampler("reese-sample").cx(0.40).dens(0.50).drive(0.40).duck(0.50).seed[⟨ 51⟩ 51  51  51 ]
+//! drums.kit("clean-kit").s("bone brk hats perc").style("rolling").dens(0.62).seed[ 50  50  51 ⟨ 77⟩ 50  50  51  77 ].len(4)
+//! bass.sampler("reese-sample").cx(0.40).dens(0.50).drive(0.40).duck(0.50).seed[⟨ 51⟩ 51  51  51  51  51  51  51 ].len(4)
 //! ```
+//!
+//! Seeds past the loop length (`.len`) are marked [`mark::BEYOND`] and shown dim.
 //!
 //! Every token whose content can change is padded to a fixed width, so with
 //! a monospace font the line never shifts while values move.
@@ -35,6 +37,8 @@ pub mod mark {
     pub const MUTED: u8 = 1 << 5;
     /// Momentary move held.
     pub const MOVE: u8 = 1 << 6;
+    /// Chain slot past the lane's loop length (does not play).
+    pub const BEYOND: u8 = 1 << 7;
 }
 
 /// What plays a lane option, shown as the method name.
@@ -104,7 +108,7 @@ const MOVES: [(u8, &str); 4] = [
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LaneFrame {
     pub view: LaneView,
-    /// Chain slot playing in this bar (bar within the phrase).
+    /// Chain slot playing in this bar (bar % loop length).
     pub playing_slot: u8,
     /// Controls whose position changed recently.
     pub changed_controls: [bool; CONTROLS_PER_LANE],
@@ -247,10 +251,14 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
         if f.changed_seeds[slot] {
             flags |= mark::CHANGED;
         }
+        if slot >= v.loop_len as usize {
+            flags |= mark::BEYOND;
+        }
         let (open, close) = if selected { ("⟨", "⟩") } else { (" ", " ") };
         line.push(&format!("{open}{:>3}{close}", v.seeds[slot]), flags);
     }
     line.push("]", 0);
+    line.push(&format!(".len({})", v.loop_len), 0);
 
     for (bit, token) in MOVES {
         if v.moves & bit != 0 {
@@ -321,7 +329,8 @@ mod tests {
             on: true,
             on_target: true,
             selected_slot: 3,
-            seeds: [50, 50, 51, 77],
+            seeds: [50, 50, 51, 77, 60, 61, 62, 63],
+            loop_len: 4,
             controls: [0.5, 0.62, 0.0, 0.25],
             option: 0,
             option_pending: None,
@@ -337,7 +346,7 @@ mod tests {
             view,
             playing_slot: 1,
             changed_controls: [false; 4],
-            changed_seeds: [false; 4],
+            changed_seeds: [false; SLOTS_PER_CHAIN],
             firing: None,
         }
     }
@@ -352,10 +361,11 @@ mod tests {
         assert_eq!(
             line.text,
             "drums.kit(\"clean-kit\").s(\"bone brk hats perc\").style(\"rolling\")  .dens(0.62).cut(20.0)\
-             .verb(0.25).seed[  50   50   51 ⟨ 77⟩]"
+             .verb(0.25).seed[  50   50   51 ⟨ 77⟩  60   61   62   63 ].len(4)"
         );
         assert_eq!(marked(&line, mark::SELECTED), vec!["⟨ 77⟩"]);
         assert_eq!(marked(&line, mark::PLAYING), vec!["  50 "]);
+        assert_eq!(marked(&line, mark::BEYOND), vec!["  60 ", "  61 ", "  62 ", "  63 "], "past the 4-bar loop");
     }
 
     #[test]
@@ -415,6 +425,23 @@ mod tests {
             segs,
             vec![(0..1, 0), (1..2, mark::CHANGED), (2..3, mark::CHANGED | mark::FIRING), (3..4, mark::CHANGED), (4..6, 0)]
         );
+    }
+
+    #[test]
+    fn loop_length_shows_and_dims_the_slots_past_it() {
+        let mut v = view();
+        v.loop_len = 2;
+        let mut f = frame(v);
+        f.playing_slot = 1;
+        let line = format_lane(&bass(), &f);
+        assert!(line.text.ends_with(".len(2)"), "{}", line.text);
+        assert_eq!(marked(&line, mark::BEYOND).len(), 6);
+        assert_eq!(marked(&line, mark::PLAYING), vec!["  50 "]);
+        let base = format_lane(&bass(), &frame(view()));
+        v.loop_len = 8;
+        let long = format_lane(&bass(), &frame(v));
+        assert!(marked(&long, mark::BEYOND).is_empty());
+        assert_eq!(base.text.chars().count(), long.text.chars().count(), "length change keeps the layout");
     }
 
     #[test]
