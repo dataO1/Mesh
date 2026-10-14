@@ -35,7 +35,6 @@ use crate::music::MusicalKey;
 use crate::types::StereoSample;
 
 use super::clock::BARS_PER_PHRASE;
-use super::event::BarEvents;
 use super::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::Role;
 use super::harmony::{HarmonyState, Progression};
@@ -352,7 +351,7 @@ impl Drop for RendererHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::event::{EventKind, LiveEvent};
+    use crate::live::event::{BarEvents, EventKind, LiveEvent};
     use crate::live::generator::fixed::FixedPattern;
     use crate::live::player::StepPlayer;
 
