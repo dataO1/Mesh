@@ -55,6 +55,22 @@ progressions:
 # Optional. Index into `progressions` used at load (default 0).
 default_progression: 0
 
+# Optional. Lane forms: which letter seed plays in which bar. Each lane has a
+# master seed; letters A and B are main seeds (repetitive, mostly on the grid),
+# C and D filler seeds (triplets, swing, busier). A form is segments of a
+# letter and a bar count, 4 to 64 bars in total, repeating and aligned to the
+# global bar. A' plays A with a different second half. Pads step through the
+# list, so order it from simple to detailed. Default: the built-in list
+# (crates/mesh-core/src/live/form.rs, DEFAULT_FORMS).
+forms:
+  - "A3 B1"
+  - "A7 C1"
+  - "A7 B1 A'7 C1"
+  - "A15 C1 A'15 C1 B15 D1 A14 C2"
+
+# Optional. Index into `forms` every lane starts on (default 0).
+default_form: 0
+
 # Optional. Loudness targets per role in LUFS (-60..=0); style-calibrate writes
 # both trims. Defaults shown.
 #   loudness         the instrument output, before the lane's processing
@@ -157,7 +173,13 @@ lanes:
 
     # Drum lane only (required there). The drum lane is several sub-voices
     # playing together. Each sub-voice has its own list of instrument options.
-    #   voice           backbone | break | hats | perc
+    #   voice           backbone | break | hats | ride | shaker | perc | top
+    #                   backbone and break are browsed together as the kit
+    #                   (kit k = option k). The others are pools: they keep
+    #                   their default option and the lane seed picks samples
+    #                   inside it (hats: one closed and one open, ride: one
+    #                   ride and one crash, shaker: one, perc: a few, top: one
+    #                   loop, chopped in 16ths).
     #   choke           default choke group for the sub-voice (0 = none)
     #   options         instrument options, at least one (format below)
     #   default_option  option loaded at start (default 0)
@@ -208,8 +230,11 @@ lanes:
           - name: closed-open
             sampler:
               samples:
-                - { file: assets/drums/hat-closed.wav, choke: 2 }
-                - { file: assets/drums/hat-open.wav, choke: 2 }
+                # Optional. Pool samples say what they are:
+                #   tag  closed | open (hats), ride | crash (ride)
+                # Untagged hats: the second sample is open, the rest closed.
+                - { file: assets/drums/hat-closed.wav, choke: 2, tag: closed }
+                - { file: assets/drums/hat-open.wav, choke: 2, tag: open }
 
       - voice: perc
         options:
@@ -217,6 +242,16 @@ lanes:
             sampler:
               samples:
                 - { file: assets/drums/shaker.wav }
+
+      # Top loops (hat, ride, shaker, percussion loops).
+      #   bars  the loop's length in bars at the style tempo (default 1)
+      # - voice: top
+      #   choke: 3
+      #   options:
+      #     - name: library
+      #       sampler:
+      #         samples:
+      #           - { file: assets/drums/top/hat-loop-174.wav, bars: 2 }
 
     # Optional. FX chain of the lane, in processing order. Control targets of
     # type `fx` address an effect by its index (slot) in this list.
@@ -286,6 +321,13 @@ lanes:
       - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.2, max: 1.0, curve: exp, default: 1.0 }
       - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.6, default: 0.0 }
 
+    # Optional. Up to 4 controls on the Shift layer (Shift + the same knob or
+    # fader), same format and order. `null` leaves a slot empty. On the left
+    # unit, Shift + faders 1/2 stay key intent and tempo.
+    shift_controls:
+      - null
+      - { label: swing, target: { type: generator, param: swing }, default: 0.0 }
+
     # The lane's pattern generator.
     #   family  procedural (generated on the fly, the default approach) |
     #           idiom (driven by curated data in `idiom`, the fallback)
@@ -296,7 +338,10 @@ lanes:
     generator:
       family: procedural
       name: drums
-      params: { style: 0.4, density: 0.5, swing: 0.0 }
+      # Drum lane: overlay_hats / _ghost / _perc / _ride / _shaker / _top set
+      # each voice's amount, enter_<voice> the density where it starts (one
+      # density control brings the voices in, in that order).
+      params: { style: 0.4, density: 0.5, swing: 0.0, enter_ride: 0.5, enter_top: 0.6 }
 
     # Optional. Default send levels of the lane, 0..=1 (default 0).
     sends: { delay: 0.0, reverb: 0.0 }

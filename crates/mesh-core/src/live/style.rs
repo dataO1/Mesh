@@ -83,6 +83,13 @@ pub struct StyleSpec {
     /// Index into `progressions` used at load.
     #[serde(default)]
     pub default_progression: usize,
+    /// Lane forms, simple to detailed, like `"A7 B1 A'7 C1"` (design §6.6).
+    /// Empty = the built-in list ([`DEFAULT_FORMS`](super::form::DEFAULT_FORMS)).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forms: Vec<String>,
+    /// Form every lane starts on (index into the forms).
+    #[serde(default)]
+    pub default_form: usize,
     /// Exactly [`NUM_LANES`] lanes. Lane 0 is the drum lane.
     pub lanes: Vec<LaneSpec>,
     /// Per-role loudness targets of the instrument output, before the lane's
@@ -140,6 +147,11 @@ pub struct LaneSpec {
     pub output_trims_db: Vec<f32>,
     /// Exactly [`CONTROLS_PER_LANE`] performance controls.
     pub controls: Vec<ControlSpec>,
+    /// Up to [`CONTROLS_PER_LANE`] controls on the Shift layer, same order
+    /// (knob A, fader A, knob B, fader B). `null` and missing entries do
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shift_controls: Vec<Option<ControlSpec>>,
     pub generator: GeneratorSpec,
     /// Default send levels.
     #[serde(default)]
@@ -206,6 +218,23 @@ pub struct SampleSpec {
     /// Multisample zone. Unset = the sample covers every key and velocity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<ZoneSpec>,
+    /// Drum pool samples: what the hit is (hats: closed / open, ride: ride /
+    /// crash). Untagged hats: the second sample is open, the rest closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<SampleTag>,
+    /// Top loops: length in bars at the style tempo (1, 2, 4 or 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bars: Option<u8>,
+}
+
+/// Kind of a drum pool sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleTag {
+    Closed,
+    Open,
+    Ride,
+    Crash,
 }
 
 /// One slice marker.
@@ -256,10 +285,29 @@ pub struct ClapSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubVoiceKind {
+    /// Kick, snare, ghost. Browsed with the kit.
     Backbone,
+    /// Break loops, sliced. Browsed with the kit.
     Break,
+    /// Pool of closed and open hats; the seed picks one of each.
     Hats,
+    /// Pool of percussion hits; the seed picks a few.
     Perc,
+    /// Pool of rides and crashes.
+    Ride,
+    /// Pool of shakers and tambourines.
+    Shaker,
+    /// Pool of top loops (hat, ride, shaker, percussion loops), chopped in
+    /// 16ths; the seed picks one.
+    Top,
+}
+
+impl SubVoiceKind {
+    /// Pool sub-voices keep their option when the kit is browsed; the seed
+    /// picks samples inside the option instead (Q4).
+    pub fn is_pool(self) -> bool {
+        !matches!(self, SubVoiceKind::Backbone | SubVoiceKind::Break)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -784,6 +832,10 @@ pub enum Problem {
     IdiomDataMissing,
     #[error("invalid key '{0}'")]
     InvalidKey(String),
+    #[error("invalid form: {0}")]
+    InvalidForm(String),
+    #[error("at most {max} shift controls, found {found}")]
+    ShiftControlCount { max: usize, found: usize },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -867,6 +919,12 @@ impl Style {
     /// Runtime progressions (validated, so none are dropped).
     pub fn progressions(&self) -> Vec<Progression> {
         self.spec.progressions.iter().filter_map(ProgressionSpec::to_progression).collect()
+    }
+
+    /// Runtime forms (validated; the built-in list when the style has none).
+    pub fn forms(&self) -> Vec<super::form::Form> {
+        let parsed: Vec<_> = self.spec.forms.iter().filter_map(|f| super::form::Form::parse(f).ok()).collect();
+        if parsed.is_empty() { super::form::Form::defaults() } else { parsed }
     }
 
     /// Starting key, if the style sets one.
@@ -1015,6 +1073,14 @@ impl Validator {
             self.index("default_progression", s.default_progression, s.progressions.len());
         }
 
+        for (i, f) in s.forms.iter().enumerate() {
+            if let Err(e) = super::form::Form::parse(f) {
+                self.push(format!("forms[{i}]"), Problem::InvalidForm(e.to_string()));
+            }
+        }
+        let form_count = if s.forms.is_empty() { super::form::DEFAULT_FORMS.len() } else { s.forms.len() };
+        self.index("default_form", s.default_form, form_count);
+
         if s.lanes.len() != NUM_LANES {
             self.push("lanes", Problem::LaneCount { expected: NUM_LANES, found: s.lanes.len() });
         }
@@ -1134,6 +1200,17 @@ impl Validator {
         }
         for (i, c) in lane.controls.iter().enumerate() {
             self.control(&format!("{at}.controls[{i}]"), c, lane.fx.len());
+        }
+        if lane.shift_controls.len() > CONTROLS_PER_LANE {
+            self.push(
+                format!("{at}.shift_controls"),
+                Problem::ShiftControlCount { max: CONTROLS_PER_LANE, found: lane.shift_controls.len() },
+            );
+        }
+        for (i, c) in lane.shift_controls.iter().enumerate() {
+            if let Some(c) = c {
+                self.control(&format!("{at}.shift_controls[{i}]"), c, lane.fx.len());
+            }
         }
         self.generator(&format!("{at}.generator"), &lane.generator);
         self.in_range(format!("{at}.sends.delay"), lane.sends.delay, 0.0, 1.0);

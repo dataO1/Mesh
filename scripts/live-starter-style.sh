@@ -3,7 +3,7 @@
 # the Nix store.
 #
 # Usage: scripts/live-starter-style.sh OUT_DIR [--force] [--no-surge]
-#            [--kicks DIR --snares DIR] [--breaks DIR]
+#            [--kicks DIR --snares DIR] [--breaks DIR] [--library DIR]
 #
 #   OUT_DIR       style folder to create, e.g. ~/Music/mesh-live-dev/styles/starter-breaks
 #                 Play it with: mesh-player --live OUT_DIR
@@ -13,7 +13,11 @@
 #   --kicks DIR   kick one-shots; with --snares, kick n + snare n (sorted by
 #   --snares DIR  name) is drum kit n. Without them: one Dirt-Samples kit.
 #   --breaks DIR  break loops (1, 2 or 4 bars), one option each. Default:
-#                 github:switchangel/breaks.
+#                 the library's Breaks/, else github:switchangel/breaks.
+#   --library DIR drum library (Kicks/ Snares/ Breaks/ Cymbals/ Percussion/):
+#                 kicks, snares and breaks unless given, and the hats, ride,
+#                 shaker, percussion and top-loop pools. Correct its sorting
+#                 with DIR/sample-overrides.yaml (see OUT_DIR/sample-classes.txt).
 #
 # Sample banks (copied, never symlinked, so OUT_DIR is self-contained):
 #   github:switchangel/breaks       Unlicense, two-bar breaks
@@ -39,6 +43,7 @@ surge=1
 kicks=""
 snares=""
 user_breaks=""
+library=""
 while [[ $# -gt 0 ]]; do
   arg="$1"
   shift
@@ -48,12 +53,13 @@ while [[ $# -gt 0 ]]; do
     --kicks) kicks="$(cd "${1:?--kicks needs a folder}" && pwd)"; shift ;;
     --snares) snares="$(cd "${1:?--snares needs a folder}" && pwd)"; shift ;;
     --breaks) user_breaks="$(cd "${1:?--breaks needs a folder}" && pwd)"; shift ;;
+    --library) library="$(cd "${1:?--library needs a folder}" && pwd)"; shift ;;
     -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $arg" >&2; exit 2 ;;
     *) out="$arg" ;;
   esac
 done
-[[ -n "$out" ]] || { echo "usage: $0 OUT_DIR [--force] [--no-surge] [--kicks DIR --snares DIR] [--breaks DIR]" >&2; exit 2; }
+[[ -n "$out" ]] || { echo "usage: $0 OUT_DIR [--force] [--no-surge] [--kicks DIR --snares DIR] [--breaks DIR] [--library DIR]" >&2; exit 2; }
 if [[ -n "$kicks" && -z "$snares" ]] || [[ -z "$kicks" && -n "$snares" ]]; then
   echo "--kicks and --snares go together" >&2
   exit 2
@@ -80,6 +86,9 @@ bank() {
   echo "$path"
 }
 
+if [[ -z "$user_breaks" && -n "$library" && -d "$library/Breaks" ]]; then
+  user_breaks="$library/Breaks"
+fi
 breaks="${user_breaks:-$(bank swbreaks-samples switchangel/breaks)}"
 dirt="$(bank dirt-samples tidalcycles/Dirt-Samples)"
 echo "breaks: $breaks"
@@ -100,7 +109,9 @@ fi
 surge_data="$(nix build --no-link --print-out-paths --inputs-from "$repo" nixpkgs#surge-XT)/share/surge-xt"
 pairs=()
 [[ -n "$kicks" ]] && pairs=(--kicks "$kicks" --snares "$snares")
-"$repo/target/release/live-starter-style" --out "$out" --breaks "$breaks" --dirt "$dirt" --surge "$surge_data" "${pairs[@]}" "${force[@]}"
+lib=()
+[[ -n "$library" ]] && lib=(--library "$library")
+"$repo/target/release/live-starter-style" --out "$out" --breaks "$breaks" --dirt "$dirt" --surge "$surge_data" "${pairs[@]}" "${lib[@]}" "${force[@]}"
 
 # CLAP plugins go into the collection the style lives in, under
 # effects/clap/<arch>/, where live mode scans for them and from where USB

@@ -9,8 +9,9 @@
 //!   --out FILE.wav       master output, 32-bit float stereo
 //!   --bars N             bars to render (default 16)
 //!   --fixed              hand-written reference patterns instead of the style's generators
-//!   --seed N             seed of every slot of lane L is N + L (default: engine default)
-//!   --seeds L=A,B,C,D    the four slot seeds of lane L (repeatable)
+//!   --seed N             master seed of lane L is N + L (default: engine default)
+//!   --lane-seed L=S      master seed of lane L (repeatable)
+//!   --form L=N           form N of lane L, from bar 0 (repeatable)
 //!   --control L.C=V      performance control C (0..3) of lane L to V (0..1) (repeatable)
 //!   --option L=N         instrument option / kit of lane L (repeatable)
 //!   --mute L[,L]         lanes switched off
@@ -100,18 +101,18 @@ fn main() {
             "--seed" => {
                 let base: u32 = parse("seed", &value("--seed"));
                 for lane in 0..NUM_LANES as u8 {
-                    for slot in 0..4 {
-                        commands.push(LiveCommand::SetSlotSeed { lane, slot, seed: base.wrapping_add(lane as u32) });
-                    }
+                    commands.push(LiveCommand::SetSeed { lane, seed: base.wrapping_add(lane as u32) });
                 }
             }
-            "--seeds" => {
-                let v = value("--seeds");
-                let (lane, seeds) = split("--seeds", &v, '=');
-                let lane: u8 = parse("lane", lane);
-                for (slot, seed) in seeds.split(',').enumerate().take(4) {
-                    commands.push(LiveCommand::SetSlotSeed { lane, slot: slot as u8, seed: parse("seed", seed) });
-                }
+            "--lane-seed" => {
+                let v = value("--lane-seed");
+                let (lane, seed) = split("--lane-seed", &v, '=');
+                commands.push(LiveCommand::SetSeed { lane: parse("lane", lane), seed: parse("seed", seed) });
+            }
+            "--form" => {
+                let v = value("--form");
+                let (lane, form) = split("--form", &v, '=');
+                commands.push(LiveCommand::SetForm { lane: parse("lane", lane), form: parse("form", form) });
             }
             "--control" => {
                 let v = value("--control");

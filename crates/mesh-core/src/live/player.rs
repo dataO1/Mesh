@@ -20,7 +20,7 @@ use crate::music::MusicalKey;
 use super::clock::ClockSegment;
 use super::command::MoveKind;
 use super::event::{BarEvents, EventKind, LiveEvent};
-use super::state::move_bits;
+use super::state::{move_bits, FormView};
 use super::{NUM_LANES, STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
 /// Bar packets in circulation. The RT side holds at most two (playing and
@@ -39,6 +39,10 @@ const FRAME_EPS: f64 = 1e-6;
 pub struct LaneBar {
     pub main: BarEvents,
     pub fill: BarEvents,
+    /// Form position and chord this bar was rendered at.
+    pub pos: FormView,
+    /// Form index the bar was rendered with.
+    pub form: u16,
 }
 
 /// One rendered bar for all lanes, with the harmony it was rendered in.

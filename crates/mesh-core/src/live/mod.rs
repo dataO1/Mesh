@@ -13,6 +13,7 @@ pub mod event;
 pub mod clock;
 pub mod rng;
 pub mod harmony;
+pub mod form;
 pub mod style;
 pub mod capture;
 pub mod sampler;
@@ -36,33 +37,6 @@ pub const STEPS_PER_BAR: usize = 16;
 pub const TICKS_PER_BAR: u16 = 384;
 /// Ticks per 16th step.
 pub const TICKS_PER_STEP: u16 = TICKS_PER_BAR / STEPS_PER_BAR as u16;
-/// Slots (bars) per lane chain. A lane loops its first `loop_len` slots.
-pub const SLOTS_PER_CHAIN: usize = 8;
-/// Loop lengths a lane can play, in bars. Each divides the chain, so lanes of
-/// any length line up at every 8-bar boundary.
-pub const LOOP_LENGTHS: [u8; 4] = [1, 2, 4, 8];
-/// Loop length of a lane at load (one 4-bar phrase).
-pub const DEFAULT_LOOP_LEN: u8 = 4;
-
-/// Largest loop length in [`LOOP_LENGTHS`] that is at most `bars` (min 1).
-/// Bar 1 → 1, bars 2–3 → 2, bars 4–7 → 4, bar 8 → 8.
-pub const fn snap_loop_len(bars: usize) -> u8 {
-    if bars >= 8 {
-        8
-    } else if bars >= 4 {
-        4
-    } else if bars >= 2 {
-        2
-    } else {
-        1
-    }
-}
-
-/// Chain slot a lane looping `loop_len` bars plays in global bar `bar`.
-pub const fn slot_for_bar(bar: u64, loop_len: u8) -> usize {
-    let len = if loop_len == 0 { 1 } else { loop_len as u64 };
-    (bar % len) as usize
-}
 /// Fixed event capacity per lane per bar (covers 32nd rolls across sub-voices).
 pub const MAX_EVENTS_PER_BAR: usize = 256;
 

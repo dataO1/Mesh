@@ -3,9 +3,18 @@
 //! Runs the lane generators off the audio thread. For the bar after the one
 //! the RT thread is playing it renders, per lane, the bar and its fill
 //! variant, and ships them as one [`BarPacket`]. When a structural input
-//! (seed, generator parameter, key, progression, half-time) changes before
-//! the boundary, the pending bar is rendered again and the newer packet
-//! replaces the older one on the RT side.
+//! (seed, form, rate, generator parameter, key, progression, half-time)
+//! changes before the boundary, the pending bar is rendered again and the
+//! newer packet replaces the older one on the RT side.
+//!
+//! # Forms
+//!
+//! Each lane renders the letter its form places on the bar (see
+//! [`super::form`]): the letter seed, its main or filler class (filler bars
+//! push some generator parameters up and the drum lane plays its fill in the
+//! last filler bar), a primed letter's second half from a derived seed, and
+//! the letter's timing feel. Pitched lanes take their chord from the form.
+//! A form change lands on the next phrase boundary ([`FORM_CHANGE_BARS`]).
 //!
 //! # Harmony and the bar boundary
 //!
@@ -35,14 +44,18 @@ use crate::music::MusicalKey;
 use crate::types::StereoSample;
 
 use super::clock::BARS_PER_PHRASE;
+use super::event::{flags, BarEvents, EventKind};
+use super::form::{
+    form_chord, letter_seed, prime_seed, splice_second_half, Feel, Form, SeedClass, FILLER_BOOSTS, FORM_CHANGE_BARS,
+};
 use super::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::Role;
-use super::harmony::{seeded_chord, HarmonyState, Progression};
+use super::harmony::{HarmonyState, Progression};
 use super::lane::ClapCell;
 use super::player::{BarPacket, BAR_POOL_SIZE};
-use super::state::LiveShared;
+use super::state::{FormView, LiveShared, Rate};
 use super::loader::DrumKit;
-use super::{slot_for_bar, NUM_LANES, SLOTS_PER_CHAIN, STEPS_PER_BAR};
+use super::{NUM_LANES, STEPS_PER_BAR, TICKS_PER_BAR};
 
 /// How often the renderer thread looks for work. A structural change made
 /// later than this before a bar boundary may land one bar late.
@@ -50,13 +63,24 @@ pub const RENDER_POLL: Duration = Duration::from_millis(2);
 /// Shipped epochs remembered for the pending bar.
 const SHIPPED_HISTORY: usize = 2 * BAR_POOL_SIZE;
 
+// MUSICAL: first draft, tune by ear (Q13).
+/// A pitched lane's `gate` parameter at or above this ties every note into
+/// the next one, and the next one glides.
+pub const LEGATO_FROM: f32 = 0.9;
+/// Glide of a legato tie (log scale, as the bass slide).
+const LEGATO_GLIDE: u8 = 138;
+/// Ticks a tied note overlaps the next one.
+const LEGATO_OVERLAP: u16 = 2;
+
 /// Structural input change, from the controller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RenderMsg {
-    Seed { lane: u8, slot: u8, seed: u32 },
-    /// Loop the lane's first `len` slots (1, 2, 4 or 8). Lands on the next
-    /// bar the renderer has not shipped yet.
-    LoopLen { lane: u8, len: u8 },
+    /// The lane's master seed.
+    Seed { lane: u8, seed: u32 },
+    /// Switch the lane's form at the next phrase boundary.
+    Form { lane: u8, form: u16 },
+    /// Note rate of a pitched lane. Lands on the next bar.
+    Rate { lane: u8, rate: Rate },
     GenParam { lane: u8, index: u8, value: f32 },
     /// Arm a key for the next phrase.
     Key(MusicalKey),
@@ -71,14 +95,24 @@ pub enum RenderMsg {
 pub struct RenderLane {
     pub role: Role,
     pub generator: Box<dyn LaneGenerator>,
-    pub seeds: [u32; SLOTS_PER_CHAIN],
-    /// Bars the lane loops: slot = bar % loop_len.
-    pub loop_len: u8,
+    /// Master seed.
+    pub seed: u32,
+    /// Form index into the renderer's forms.
+    pub form: usize,
+    pub rate: Rate,
     pub params: [f32; MAX_GEN_PARAMS],
     /// Drum lane: layout and generator per kit. Empty on other lanes.
     pub kits: Vec<DrumKit>,
     /// Selected kit.
     pub kit: usize,
+}
+
+/// A form change waiting for its phrase boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FormSwitch {
+    form: usize,
+    /// First bar that plays the new form.
+    at: u64,
 }
 
 impl RenderLane {
@@ -107,6 +141,9 @@ pub struct BarRenderer {
     /// Set recordings the RT thread stopped feeding, dropped here.
     trash: rtrb::Consumer<rtrb::Producer<StereoSample>>,
     lanes: Vec<RenderLane>,
+    /// Pending form change per lane.
+    switches: [Option<FormSwitch>; NUM_LANES],
+    forms: Vec<Form>,
     progressions: Vec<Progression>,
     /// Harmony as the RT thread has played it.
     played: HarmonyState,
@@ -126,9 +163,11 @@ pub struct BarRenderer {
 impl BarRenderer {
     /// Build the renderer and its channels. `trash` receives what the RT
     /// thread wants dropped off-thread.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         shared: Arc<LiveShared>,
         lanes: Vec<RenderLane>,
+        forms: Vec<Form>,
         progressions: Vec<Progression>,
         key: MusicalKey,
         progression: usize,
@@ -147,6 +186,8 @@ impl BarRenderer {
             pool: (0..BAR_POOL_SIZE).map(|_| Box::new(BarPacket::default())).collect(),
             trash,
             lanes,
+            switches: [None; NUM_LANES],
+            forms: if forms.is_empty() { vec![Form::single()] } else { forms },
             progressions,
             played: HarmonyState::new(key, progression),
             want_key: None,
@@ -169,14 +210,25 @@ impl BarRenderer {
 
     fn apply(&mut self, msg: RenderMsg) {
         match msg {
-            RenderMsg::Seed { lane, slot, seed } => {
-                if let Some(s) = self.lanes.get_mut(lane as usize).and_then(|l| l.seeds.get_mut(slot as usize)) {
-                    *s = seed;
+            RenderMsg::Seed { lane, seed } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    l.seed = seed;
                 }
             }
-            RenderMsg::LoopLen { lane, len } => {
+            RenderMsg::Form { lane, form } => {
+                let li = lane as usize;
+                if let Some(l) = self.lanes.get(li) {
+                    let form = (form as usize).min(self.forms.len() - 1);
+                    self.switches[li] = (form != l.form).then(|| FormSwitch {
+                        form,
+                        at: self.pending_bar.div_ceil(FORM_CHANGE_BARS) * FORM_CHANGE_BARS,
+                    });
+                    self.shared.lane(li).set_form_pending(self.switches[li].map(|s| s.form as u16));
+                }
+            }
+            RenderMsg::Rate { lane, rate } => {
                 if let Some(l) = self.lanes.get_mut(lane as usize) {
-                    l.loop_len = len.clamp(1, SLOTS_PER_CHAIN as u8);
+                    l.rate = rate;
                 }
             }
             RenderMsg::GenParam { lane, index, value } => {
@@ -257,6 +309,16 @@ impl BarRenderer {
         }
         self.shared.set_pending_key(self.want_key);
         self.shared.set_pending_progression(self.want_progression);
+        // Form switches whose phrase has started are now the lane's form.
+        for (li, switch) in self.switches.iter_mut().enumerate() {
+            if let Some(sw) = *switch {
+                if bar >= sw.at {
+                    self.lanes[li].form = sw.form;
+                    *switch = None;
+                    self.shared.lane(li).set_form_pending(None);
+                }
+            }
+        }
         self.shipped.clear();
         self.pending_bar = bar + 1;
         self.dirty = true;
@@ -286,34 +348,75 @@ impl BarRenderer {
         let phrase = (bar / BARS_PER_PHRASE) as u32;
         let no_mask = [0u8; STEPS_PER_BAR];
         let mut drum_mask = [0u8; STEPS_PER_BAR];
+        let mut scratch = BarEvents::default();
         // Lane 0 (drums) first: its onsets feed the other lanes.
         for (li, lane) in self.lanes.iter().enumerate() {
-            let slot = slot_for_bar(bar, lane.loop_len);
-            // Pitched lanes play their own seeded progression in the shared key.
+            let lane8 = li as u8;
+            let form_index = match self.switches[li] {
+                Some(sw) if bar >= sw.at => sw.form,
+                _ => lane.form,
+            };
+            let form = &self.forms[form_index.min(self.forms.len() - 1)];
+            let pos = form.pos(bar);
+            let seed = letter_seed(lane.seed, lane8, pos.letter);
+            let class = pos.letter.class();
+            let generator = lane.active_generator();
+
+            // Pitched lanes play the chord the form gives them, in the shared key.
             let mut lane_harmony = ctx;
             if lane.role != Role::Drums {
-                lane_harmony.chord_degree = seeded_chord(lane.seeds[slot], li as u8, slot as u8, ctx.key.minor);
+                lane_harmony.chord_degree = form_chord(lane.seed, lane8, &pos, seed, ctx.key.minor);
             }
+            let mut params = lane.params;
+            if class == SeedClass::Filler {
+                boost_filler(generator.param_names(), &mut params);
+            }
+            let feel = Feel::of(seed, lane8, class);
+            // The drum lane fills the last bar of a filler segment.
+            let filler_fill = lane.role == Role::Drums && class == SeedClass::Filler && pos.last_of_segment;
+
             for fill in [false, true] {
                 let out = if fill { &mut packet.lanes[li].fill } else { &mut packet.lanes[li].main };
                 out.clear();
-                // The slot follows the lane's loop; phrase position stays global.
-                let bar_ctx = BarCtx {
-                    seed: lane.seeds[slot],
-                    lane: li as u8,
+                let mut bar_ctx = BarCtx {
+                    seed,
+                    sound_seed: if class == SeedClass::Main { lane.seed } else { seed },
+                    class,
+                    lane: lane8,
                     role: lane.role,
                     bar_in_phrase,
                     phrase,
-                    fill,
+                    fill: fill || filler_fill,
                     half_time: self.half_time,
-                    params: &lane.params,
+                    params: &params,
                     harmony: lane_harmony,
                     drum_mask: if li == 0 { &no_mask } else { &drum_mask },
                 };
-                lane.active_generator().render_bar(&bar_ctx, out);
-                // The player relies on tick order.
+                generator.render_bar(&bar_ctx, out);
                 out.sort();
+                if pos.prime {
+                    // A': same seed, a different second half.
+                    bar_ctx.seed = prime_seed(seed, lane8);
+                    scratch.clear();
+                    generator.render_bar(&bar_ctx, &mut scratch);
+                    scratch.sort();
+                    splice_second_half(out, &scratch);
+                }
+                feel.apply(out, seed, lane8);
+                if lane.role != Role::Drums {
+                    apply_rate(out, lane.rate, bar, &mut scratch);
+                    if param_named(generator.param_names(), &params, "gate").is_some_and(|g| g >= LEGATO_FROM) {
+                        legato(out);
+                    }
+                }
             }
+            packet.lanes[li].pos = FormView {
+                segment: pos.segment,
+                letter: pos.letter.index(),
+                prime: pos.prime,
+                chord: lane_harmony.chord_degree,
+            };
+            packet.lanes[li].form = form_index as u16;
             if li == 0 {
                 drum_mask = lane.layout().onset_mask(packet.lanes[0].main.as_slice());
             }
@@ -350,6 +453,105 @@ impl BarRenderer {
     }
 }
 
+/// Value of the generator parameter `name`, if the generator has it.
+fn param_named(names: &[&str], params: &[f32; MAX_GEN_PARAMS], name: &str) -> Option<f32> {
+    names.iter().position(|n| *n == name).and_then(|i| params.get(i).copied())
+}
+
+/// Push a filler bar's parameters up ([`FILLER_BOOSTS`]).
+fn boost_filler(names: &[&str], params: &mut [f32; MAX_GEN_PARAMS]) {
+    for (name, boost) in FILLER_BOOSTS {
+        if let Some(i) = names.iter().position(|n| *n == name) {
+            if let Some(p) = params.get_mut(i) {
+                *p = (*p + boost).clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+/// Half rate: the bar's first half (even bars) or second half (odd bars) at
+/// half speed. Double rate: the bar compressed into each half.
+fn apply_rate(out: &mut BarEvents, rate: Rate, bar: u64, scratch: &mut BarEvents) {
+    let half = TICKS_PER_BAR / 2;
+    match rate {
+        Rate::Normal => return,
+        Rate::Half => {
+            let from = if bar % 2 == 0 { 0 } else { half };
+            scratch.clear();
+            for e in out.as_slice().iter().filter(|e| e.tick >= from && e.tick < from + half) {
+                let mut e = *e;
+                e.tick = (e.tick - from) * 2;
+                e.gate = e.gate.saturating_mul(2).min(TICKS_PER_BAR - e.tick);
+                scratch.push(e);
+            }
+        }
+        Rate::Double => {
+            scratch.clear();
+            for offset in [0, half] {
+                for e in out.as_slice() {
+                    let mut e = *e;
+                    e.tick = e.tick / 2 + offset;
+                    e.gate = if e.gate > 0 { (e.gate / 2).max(1) } else { 0 };
+                    if offset > 0 {
+                        // Distinct voices for the repeat (NoteOff matching).
+                        e.note_id = e.note_id.wrapping_add(0x4000);
+                    }
+                    scratch.push(e);
+                }
+            }
+            scratch.sort();
+        }
+    }
+    std::mem::swap(out, scratch);
+}
+
+/// Tie every note into the next one, which glides (note length at the top
+/// of its range).
+fn legato(out: &mut BarEvents) {
+    let ev = out.as_mut_slice();
+    let n = ev.len();
+    // Note-on groups by tick: (first index, end index).
+    let group_end = |start: usize, ev: &[crate::live::event::LiveEvent]| {
+        let mut j = start;
+        while j < n && ev[j].tick == ev[start].tick {
+            j += 1;
+        }
+        j
+    };
+    let mut prev: Option<(usize, usize)> = None;
+    let mut i = 0;
+    while i < n {
+        if ev[i].kind != EventKind::NoteOn {
+            i += 1;
+            continue;
+        }
+        let end = group_end(i, ev);
+        let ons = |a: usize, b: usize, ev: &[crate::live::event::LiveEvent]| {
+            (a..b).filter(|&k| ev[k].kind == EventKind::NoteOn).count()
+        };
+        if let Some((ps, pe)) = prev {
+            let (from, to) = (ev[ps].tick, ev[i].tick);
+            for k in ps..pe {
+                if ev[k].kind == EventKind::NoteOn {
+                    ev[k].gate = (to - from + LEGATO_OVERLAP).min(TICKS_PER_BAR - from);
+                }
+            }
+            // Single notes slide into each other; chords just hold.
+            if ons(ps, pe, ev) == 1 && ons(i, end, ev) == 1 {
+                let (pk, k) = ((ps..pe).find(|&k| ev[k].kind == EventKind::NoteOn), (i..end).find(|&k| ev[k].kind == EventKind::NoteOn));
+                if let (Some(pk), Some(k)) = (pk, k) {
+                    if ev[pk].key != ev[k].key {
+                        ev[k].flags |= flags::TIE;
+                        ev[k].glide = LEGATO_GLIDE;
+                    }
+                }
+            }
+        }
+        prev = Some((i, end));
+        i = end;
+    }
+}
+
 /// Stops and joins the renderer thread on drop.
 pub struct RendererHandle {
     stop: Arc<AtomicBool>,
@@ -368,7 +570,8 @@ impl Drop for RendererHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::event::{BarEvents, EventKind, LiveEvent};
+    use crate::live::event::LiveEvent;
+    use crate::live::form::Letter;
     use crate::live::generator::fixed::FixedPattern;
     use crate::live::player::StepPlayer;
 
@@ -392,13 +595,15 @@ mod tests {
         }
 
         fn param_names(&self) -> &'static [&'static str] {
-            &["p"]
+            &["density"]
         }
     }
 
-    /// Key the probe plays on `lane` for a slot seed (its seeded chord root, octave 3).
-    fn lane_key(key: MusicalKey, seed: u32, lane: u8, slot: u8) -> u8 {
-        crate::live::harmony::resolve_degree(key, 0, 3, seeded_chord(seed, lane, slot, key.minor) as i32)
+    /// Key the probe plays on `lane` in bar `bar` of `form` (its chord root, octave 3).
+    fn lane_key(key: MusicalKey, master: u32, lane: u8, form: &Form, bar: u64) -> u8 {
+        let pos = form.pos(bar);
+        let chord = form_chord(master, lane, &pos, letter_seed(master, lane, pos.letter), key.minor);
+        crate::live::harmony::resolve_degree(key, 0, 3, chord as i32)
     }
 
     struct Rig {
@@ -418,8 +623,9 @@ mod tests {
         let mut lanes = vec![RenderLane {
             role: Role::Drums,
             generator: Box::new(drums),
-            seeds: [0; SLOTS_PER_CHAIN],
-            loop_len: 4,
+            seed: 0,
+            form: 0,
+            rate: Rate::Normal,
             params: [0.5; MAX_GEN_PARAMS],
             kits: vec![
                 DrumKit { layout: DrumLayout::standard(), generator: None },
@@ -434,8 +640,9 @@ mod tests {
             lanes.push(RenderLane {
                 role,
                 generator: Box::new(Probe),
-                seeds: [10, 11, 12, 13, 14, 15, 16, 17],
-                loop_len: 4,
+                seed: 10 * role as u32,
+                form: 0,
+                rate: Rate::Normal,
                 params: [0.5; MAX_GEN_PARAMS],
                 kits: Vec::new(),
                 kit: 0,
@@ -443,7 +650,9 @@ mod tests {
         }
         let progressions = vec![Progression::new(&[0, 5, 3, 4], 1).unwrap(), Progression::new(&[0, 6], 2).unwrap()];
         let (_trash_tx, trash) = rtrb::RingBuffer::new(4);
-        let (renderer, tx, rings) = BarRenderer::new(Arc::clone(&shared), lanes, progressions, key, 0, Vec::new(), trash);
+        let forms = vec![Form::single(), Form::parse("A3 C1").unwrap(), Form::parse("A1 A'1").unwrap()];
+        let (renderer, tx, rings) =
+            BarRenderer::new(Arc::clone(&shared), lanes, forms, progressions, key, 0, Vec::new(), trash);
         Rig { renderer, tx, player: StepPlayer::new(rings.rx, rings.ret), shared }
     }
 
@@ -460,24 +669,28 @@ mod tests {
     #[test]
     fn renders_one_bar_ahead_with_context() {
         let mut r = rig();
+        let am = MusicalKey::new(9, true);
         assert!(r.renderer.service(), "bar 0 is rendered before the engine starts");
         assert!(!r.renderer.service(), "nothing changed");
         let p0 = r.rt_enter(0).unwrap();
         assert_eq!(p0.bar, 0);
         let bass = p0.lanes[1].main.as_slice()[0];
-        assert_eq!(bass.vel, 11, "slot 0 seed");
+        assert_eq!(bass.vel, 11, "master seed 10 (letter A)");
         assert_eq!(bass.note_id, 2, "drum mask has two onsets");
-        assert_eq!(bass.key, lane_key(MusicalKey::new(9, true), 10, 1, 0), "A3 on the seeded chord of slot 0");
+        assert_eq!(bass.key, lane_key(am, 10, 1, &Form::single(), 0), "A3 on the lane's form chord");
         assert_eq!(p0.lanes[1].fill.as_slice()[0].flags & 1, 1, "fill variant rendered with fill = true");
         assert_eq!(p0.lanes[0].main.len(), 2);
+        assert_eq!((p0.lanes[1].pos.letter, p0.lanes[1].form), (0, 0));
 
         assert!(r.renderer.service(), "bar 1 follows as soon as bar 0 plays");
         assert_eq!(r.renderer.pending_bar(), 1);
         let p1 = r.rt_enter(1).unwrap();
         let bass = p1.lanes[1].main.as_slice()[0];
-        assert_eq!((bass.target, bass.vel), (1, 12), "bar_in_phrase and slot 1 seed");
-        assert_eq!(bass.key, lane_key(MusicalKey::new(9, true), 11, 1, 1), "slot 1 has its own seeded chord");
-        assert_eq!(p1.lanes[2].main.as_slice()[0].key, lane_key(MusicalKey::new(9, true), 11, 2, 1), "each lane draws its own chord");
+        assert_eq!((bass.target, bass.vel), (1, 11), "bar_in_phrase, same seed");
+        assert_eq!(p1.lanes[2].main.as_slice()[0].key, lane_key(am, 20, 2, &Form::single(), 1), "each lane draws its own chords");
+        let pos = Form::single().pos(1);
+        let chord = form_chord(10, 1, &pos, letter_seed(10, 1, pos.letter), true);
+        assert_eq!(p1.lanes[1].pos.chord, chord, "the packet carries the lane's chord");
     }
 
     #[test]
@@ -487,7 +700,7 @@ mod tests {
         r.rt_enter(0);
         r.renderer.service();
         let first = r.renderer.epoch;
-        r.tx.send(RenderMsg::Seed { lane: 1, slot: 1, seed: 55 }).unwrap();
+        r.tx.send(RenderMsg::Seed { lane: 1, seed: 55 }).unwrap();
         r.tx.send(RenderMsg::GenParam { lane: 1, index: 0, value: 0.25 }).unwrap();
         r.tx.send(RenderMsg::HalfTime(true)).unwrap();
         assert!(r.renderer.service());
@@ -518,7 +731,11 @@ mod tests {
         let p4 = r.rt_enter(4).unwrap();
         assert_eq!(p4.key, MusicalKey::new(0, true));
         assert_eq!(p4.progression, 1);
-        assert_eq!(p4.lanes[1].main.as_slice()[0].key, lane_key(MusicalKey::new(0, true), 10, 1, 0), "C minor, the lane keeps its seeded chord");
+        assert_eq!(
+            p4.lanes[1].main.as_slice()[0].key,
+            lane_key(MusicalKey::new(0, true), 10, 1, &Form::single(), 4),
+            "C minor, the lane keeps its chords"
+        );
         r.renderer.service();
         assert_eq!(r.shared.pending_key(), None, "cleared once the bar played");
         assert_eq!(r.shared.pending_progression(), None);
@@ -578,7 +795,7 @@ mod tests {
         r.rt_enter(0);
         let mut shipped = 0;
         for i in 0..200u32 {
-            r.tx.send(RenderMsg::Seed { lane: 2, slot: 1, seed: i }).unwrap();
+            r.tx.send(RenderMsg::Seed { lane: 2, seed: i }).unwrap();
             if r.renderer.service() {
                 shipped += 1;
             }
@@ -597,56 +814,119 @@ mod tests {
         assert_eq!(r.renderer.pool.len() + 1 + r.renderer.bars_tx.slots().abs_diff(BAR_POOL_SIZE), BAR_POOL_SIZE);
     }
 
-    /// Seed slot (vel − 11 on the probe lanes) and bar_in_phrase of lane 1 for bars `0..bars`.
-    fn played_slots(r: &mut Rig, bars: u64) -> Vec<(u8, u8)> {
+    /// `(vel, gate)` of lane 1's probe event for bars `0..bars`.
+    fn played(r: &mut Rig, bars: u64) -> Vec<(u8, u16)> {
         let mut out = Vec::new();
         r.renderer.service();
         for bar in 0..bars {
             let p = r.rt_enter(bar).unwrap();
             let e = p.lanes[1].main.as_slice()[0];
-            out.push((e.vel - 11, e.target));
+            out.push((e.vel, e.gate));
             r.renderer.service();
         }
         out
     }
 
     #[test]
-    fn loop_length_picks_the_slot_and_keeps_the_phrase_position() {
-        for (len, want) in [
-            (1u8, [0u8, 0, 0, 0, 0, 0, 0, 0, 0]),
-            (2, [0, 1, 0, 1, 0, 1, 0, 1, 0]),
-            (4, [0, 1, 2, 3, 0, 1, 2, 3, 0]),
-            (8, [0, 1, 2, 3, 4, 5, 6, 7, 0]),
-        ] {
-            let mut r = rig();
-            r.tx.send(RenderMsg::LoopLen { lane: 1, len }).unwrap();
-            let got = played_slots(&mut r, 9);
-            let slots: Vec<u8> = got.iter().map(|g| g.0).collect();
-            assert_eq!(slots, want, "loop {len}");
-            let phrase: Vec<u8> = got.iter().map(|g| g.1).collect();
-            assert_eq!(phrase, [0, 1, 2, 3, 0, 1, 2, 3, 0], "bar_in_phrase stays global (loop {len})");
-        }
+    fn form_letters_pick_seeds_and_filler_boosts() {
+        let mut r = rig();
+        r.tx.send(RenderMsg::Form { lane: 1, form: 1 }).unwrap();
+        let got = played(&mut r, 8);
+        let c = 1 + (letter_seed(10, 1, Letter::C) % 100) as u8;
+        let vels: Vec<u8> = got.iter().map(|g| g.0).collect();
+        assert_eq!(vels, [11, 11, 11, c, 11, 11, 11, c], "A3 C1");
+        let gates: Vec<u16> = got.iter().map(|g| g.1).collect();
+        assert_eq!(gates[0], 50, "main bars keep the control value");
+        assert!(gates[3] >= 65, "filler bars push density up: {}", gates[3]);
     }
 
     #[test]
-    fn loop_length_change_lands_on_the_next_bar() {
+    fn form_change_lands_on_the_phrase() {
         let mut r = rig();
-        r.tx.send(RenderMsg::LoopLen { lane: 1, len: 8 }).unwrap();
         r.renderer.service();
-        for bar in 0..5 {
+        for bar in 0..2 {
             r.rt_enter(bar);
             r.renderer.service();
         }
-        // Bar 5 is pending (slot 5 at length 8). Shorten to 2 while bar 4 plays.
-        r.tx.send(RenderMsg::LoopLen { lane: 1, len: 2 }).unwrap();
+        r.tx.send(RenderMsg::Form { lane: 1, form: 1 }).unwrap();
         r.renderer.service();
-        let vel = |p: BarPacket| p.lanes[1].main.as_slice()[0].vel - 11;
-        assert_eq!(vel(r.rt_enter(5).unwrap()), 1, "bar 5 at length 2 plays slot 1");
+        assert_eq!(r.shared.lane(1).view().form_pending, Some(1));
+        for bar in 2..4 {
+            let p = r.rt_enter(bar).unwrap();
+            assert_eq!(p.lanes[1].form, 0, "bar {bar} keeps the old form");
+            r.renderer.service();
+        }
+        let p4 = r.rt_enter(4).unwrap();
+        assert_eq!(p4.lanes[1].form, 1);
         r.renderer.service();
-        assert_eq!(vel(r.rt_enter(6).unwrap()), 0);
-        // Other lanes keep their own length.
-        r.renderer.service();
-        assert_eq!(r.rt_enter(7).unwrap().lanes[2].main.as_slice()[0].vel - 11, 3, "lane 2 still loops 4");
+        assert_eq!(r.shared.lane(1).view().form_pending, None, "cleared once the phrase started");
+        // Bar 7 is the C of the new form.
+        for bar in 5..7 {
+            r.rt_enter(bar);
+            r.renderer.service();
+        }
+        assert_eq!(r.rt_enter(7).unwrap().lanes[1].pos.letter, Letter::C.index());
+    }
+
+    #[test]
+    fn primed_letter_takes_its_second_half_elsewhere() {
+        let gen_bar = |seed: u32| {
+            let mut out = BarEvents::default();
+            for t in [0u16, 96, 192, 288] {
+                out.push(LiveEvent { tick: t, vel: 1 + (seed % 100) as u8, ..Default::default() });
+            }
+            out
+        };
+        // Same logic as the renderer: first half from A, second from A'.
+        let mut a = gen_bar(10);
+        let b = gen_bar(prime_seed(10, 1));
+        splice_second_half(&mut a, &b);
+        let v: Vec<u8> = a.as_slice().iter().map(|e| e.vel).collect();
+        assert_eq!(v[..2], [11, 11]);
+        assert_eq!(v[2], b.as_slice()[2].vel);
+
+        let mut r = rig();
+        r.tx.send(RenderMsg::Form { lane: 1, form: 2 }).unwrap();
+        let got = played(&mut r, 2);
+        assert_eq!(got[0].0, got[1].0, "the probe's one event sits in the first half: A' starts like A");
+    }
+
+    #[test]
+    fn rates_reshape_pitched_bars() {
+        let mut bar = BarEvents::default();
+        for t in [0u16, 96, 192, 288] {
+            bar.push(LiveEvent { tick: t, kind: EventKind::NoteOn, gate: 48, note_id: t, ..Default::default() });
+        }
+        let mut scratch = BarEvents::default();
+        let mut half = bar.clone();
+        apply_rate(&mut half, Rate::Half, 1, &mut scratch);
+        let ticks: Vec<u16> = half.as_slice().iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, [0, 192], "odd bars stretch the second half");
+        assert_eq!(half.as_slice()[0].gate, 96);
+        let mut double = bar.clone();
+        apply_rate(&mut double, Rate::Double, 0, &mut scratch);
+        let ticks: Vec<u16> = double.as_slice().iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, [0, 48, 96, 144, 192, 240, 288, 336]);
+        assert_eq!(double.as_slice()[1].gate, 24);
+        let ids: std::collections::HashSet<u16> = double.as_slice().iter().map(|e| e.note_id).collect();
+        assert_eq!(ids.len(), 8, "repeats get their own note ids");
+    }
+
+    #[test]
+    fn legato_ties_single_notes_and_holds_chords() {
+        let mut bar = BarEvents::default();
+        let note = |tick: u16, key: u8| LiveEvent { tick, kind: EventKind::NoteOn, key, gate: 10, ..Default::default() };
+        for e in [note(0, 60), note(96, 62), note(192, 64), note(192, 67), note(288, 69)] {
+            bar.push(e);
+        }
+        legato(&mut bar);
+        let ev = bar.as_slice();
+        assert_eq!(ev[0].gate, 96 + LEGATO_OVERLAP);
+        assert!(ev[1].has(flags::TIE) && ev[1].glide == LEGATO_GLIDE);
+        assert!(!ev[2].has(flags::TIE) && !ev[3].has(flags::TIE), "a chord does not slide");
+        assert_eq!((ev[2].gate, ev[3].gate), (96 + LEGATO_OVERLAP, 96 + LEGATO_OVERLAP));
+        assert!(!ev[4].has(flags::TIE), "out of a chord: no slide");
+        assert_eq!(ev[4].gate, 10, "the last note keeps its gate");
     }
 
     #[test]

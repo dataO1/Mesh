@@ -17,6 +17,7 @@
 //! - [`controls`]: the two Kontrol F1s mapped onto live commands (§7).
 //! - [`input`]: controller polling and LED feedback thread.
 //! - [`keys`]: keyboard fallback for development without F1s.
+//! - [`pads`]: what the 8 pads of each lane do.
 //! - [`readout`], [`header`]: pure text formatting of the screen.
 //! - [`startup`]: style resolution and its error report.
 
@@ -26,6 +27,7 @@ pub mod controls;
 pub mod header;
 pub mod input;
 pub mod keys;
+pub mod pads;
 pub mod readout;
 pub mod startup;
 

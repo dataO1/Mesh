@@ -39,7 +39,9 @@ use mesh_core::clap::TransportInfo;
 use mesh_core::live::clock::LiveClock;
 use mesh_core::live::event::{BarEvents, EventKind, LiveEvent};
 use mesh_core::live::generator::fixed::FixedPattern;
-use mesh_core::live::generator::layout::{BACKBONE_BASE, BREAK_BASE, HATS_BASE, PERC_BASE};
+use mesh_core::live::generator::layout::{
+    BACKBONE_BASE, BREAK_BASE, HATS_BASE, PERC_BASE, RIDE_BASE, SHAKER_BASE, TOP_BASE,
+};
 use mesh_core::live::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use mesh_core::live::glue::{measure_lufs, trim_db, GlueChain, GlueKey, LaneSetup, Role};
 use mesh_core::live::harmony::HarmonyCtx;
@@ -61,8 +63,9 @@ const OUTPUT_SEED: u32 = 1;
 fn sub_voice_offset_db(kind: SubVoiceKind) -> f64 {
     match kind {
         SubVoiceKind::Backbone | SubVoiceKind::Break => 0.0,
-        SubVoiceKind::Hats => -6.0,
+        SubVoiceKind::Hats | SubVoiceKind::Ride | SubVoiceKind::Shaker => -6.0,
         SubVoiceKind::Perc => -8.0,
+        SubVoiceKind::Top => -4.0,
     }
 }
 
@@ -125,10 +128,17 @@ fn sub_voice_targets(kind: SubVoiceKind, layout: &DrumLayout) -> (Vec<u8>, u8) {
         SubVoiceKind::Backbone => {
             ([layout.kick, layout.snare, layout.ghost].into_iter().flatten().map(|t| t.max(BACKBONE_BASE)).collect(), 0)
         }
-        SubVoiceKind::Hats => {
-            ([layout.hat_closed, layout.hat_open].into_iter().flatten().map(|t| t.max(HATS_BASE)).collect(), layout.hats_choke)
-        }
+        SubVoiceKind::Hats => (
+            (0..32u8).filter(|i| (layout.hats_closed | layout.hats_open) & 1 << i != 0).map(|i| HATS_BASE + i).collect(),
+            layout.hats_choke,
+        ),
+        SubVoiceKind::Ride => (
+            (0..16u8).filter(|i| (layout.rides | layout.crashes) & 1 << i != 0).map(|i| RIDE_BASE + i).collect(),
+            0,
+        ),
+        SubVoiceKind::Shaker => ((0..layout.shaker_count).map(|i| SHAKER_BASE + i).collect(), 0),
         SubVoiceKind::Perc => ((0..layout.perc_count).map(|i| PERC_BASE + i).collect(), 0),
+        SubVoiceKind::Top => ((0..layout.top_count).map(|i| TOP_BASE + i).collect(), layout.top_choke),
         SubVoiceKind::Break => {
             ((0..layout.slices().len()).map(|i| layout.slice_target(i).max(BREAK_BASE)).collect(), layout.break_choke)
         }
@@ -226,6 +236,8 @@ fn main() {
             let params = [0.5f32; MAX_GEN_PARAMS];
             pattern.render_bar(
                 &BarCtx {
+                    sound_seed: 0,
+                    class: mesh_core::live::form::SeedClass::Main,
                     seed: 0,
                     lane: li as u8,
                     role,
@@ -295,6 +307,8 @@ fn main() {
                     let mut bar = BarEvents::default();
                     generator.render_bar(
                         &BarCtx {
+                            sound_seed: OUTPUT_SEED,
+                            class: mesh_core::live::form::SeedClass::Main,
                             seed: OUTPUT_SEED,
                             lane: li as u8,
                             role,

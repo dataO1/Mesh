@@ -198,8 +198,8 @@ fn print_row(label: &str, row: &[char; STEPS_PER_BAR]) {
 }
 
 fn print_drums(events: &[LiveEvent], layout: &DrumLayout) {
-    const ROWS: [&str; 7] = ["kick", "snare", "ghost", "hat", "open", "perc", "break"];
-    let mut rows = [['.'; STEPS_PER_BAR]; 7];
+    const ROWS: [&str; 10] = ["kick", "snare", "ghost", "hat", "open", "ride", "shaker", "perc", "break", "top"];
+    let mut rows = [['.'; STEPS_PER_BAR]; 10];
     for ev in events {
         let s = step_of(ev);
         let (row, mark) = match layout.class(ev.target) {
@@ -208,11 +208,15 @@ fn print_drums(events: &[LiveEvent], layout: &DrumLayout) {
             DrumClass::Ghost => (2, glyph(ev.vel)),
             DrumClass::HatClosed => (3, glyph(ev.vel)),
             DrumClass::HatOpen => (4, glyph(ev.vel)),
-            DrumClass::Perc(_) => (5, glyph(ev.vel)),
+            DrumClass::Ride => (5, glyph(ev.vel)),
+            DrumClass::Crash => (5, 'C'),
+            DrumClass::Shaker(_) => (6, glyph(ev.vel)),
+            DrumClass::Perc(_) => (7, glyph(ev.vel)),
             DrumClass::Slice(i, _) => {
                 let c = char::from_digit(i as u32 % 36, 36).unwrap_or('?');
-                (6, if ev.start > 0 { c.to_ascii_uppercase() } else { c })
+                (8, if ev.start > 0 { c.to_ascii_uppercase() } else { c })
             }
+            DrumClass::Top(_) => (9, glyph(ev.vel)),
             DrumClass::Unknown => continue,
         };
         rows[row][s] = if rows[row][s] == '.' { mark } else { '#' };
@@ -278,6 +282,8 @@ fn main() {
         let render = |lane_index: usize, lane: &Lane, mask: &[u8; STEPS_PER_BAR]| {
             let params: [f32; MAX_GEN_PARAMS] = lane.generator.param_defaults();
             let ctx = BarCtx {
+                sound_seed: args.seed,
+                class: mesh_core::live::form::SeedClass::Main,
                 seed: args.seed,
                 lane: lane_index as u8,
                 role: lane.role,

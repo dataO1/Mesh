@@ -8,7 +8,7 @@
 //!
 //! Usage:
 //!   live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR
-//!                      [--kicks DIR --snares DIR] [--force]
+//!                      [--kicks DIR --snares DIR] [--library DIR] [--force]
 //!   live-starter-style --inspect FILE...
 //!
 //!   --out DIR      style folder to create (must not exist unless --force)
@@ -20,11 +20,39 @@
 //!                  patches for the bass and extra lanes
 //!   --kicks DIR    kick one-shots, paired by sorted name with --snares: pair
 //!   --snares DIR   n is kick n + snare n (the shorter list repeats)
+//!   --library DIR  drum sample library with `Kicks/`, `Snares/`, `Breaks/`,
+//!                  `Cymbals/` and `Percussion/` folders (searched
+//!                  recursively). Kicks, snares and breaks become the kit
+//!                  pairs and breaks unless given explicitly; cymbals and
+//!                  percussion are sorted into the hats, ride, shaker,
+//!                  percussion and top-loop pools (see "Library pools")
 //!   --force        replace an existing style.yaml / assets in DIR
 //!   --inspect      print length, rate and pitch estimate of each FILE
 //!
-//! Drum kit `k` is option `k` of every drum sub-voice, so the kick/snare
-//! pairs and the breaks step together when the kit is browsed.
+//! Drum kit `k` is option `k` of the backbone and break sub-voices, so the
+//! kick/snare pairs and the breaks step together when the kit is browsed.
+//! The pool sub-voices have one option each; the lane seed picks inside it.
+//!
+//! # Library pools (Q3)
+//!
+//! Every file of `Cymbals/` and `Percussion/` is sorted into one pool:
+//! - **Loop or one-shot**: "loop" in the name, or 1.5 s or longer without
+//!   a hit name (crash, ride, cymbal, hat, shaker …), is a loop.
+//!   A loop's bar count is the one of 1, 2, 4, 8 whose tempo is closest to
+//!   the style's; loops more than 10 % off are skipped. Loops go to `top`.
+//! - **One-shots by name**: open (`open`, `ohh`), closed (`closed`, `chh`,
+//!   `hat`, `hh`), ride (`ride`), crash (`crash`, `china`, `splash`,
+//!   `cymbal`), shaker (`shaker`, `shake`, `tamb`, `maraca`, `cabasa`).
+//!   Other `Percussion/` files are percussion.
+//! - **One-shots without a name hint** in `Cymbals/`: by decay, the time the
+//!   envelope takes to fall 30 dB below its peak: under 0.25 s closed,
+//!   under 0.8 s open, longer crash.
+//!
+//! `sample-overrides.yaml` in the library folder corrects the result, by
+//! file name: `"Perc_118.wav": shaker`, `"Loop 3.wav": { kind: top, bars: 2 }`,
+//! `"bad.wav": skip`. Each pool keeps at most its block size, spread evenly
+//! over the sorted candidates. The full sorting goes to
+//! `<out>/sample-classes.txt`, for writing overrides.
 //!
 //! # Analysis
 //!
@@ -64,7 +92,7 @@ use std::path::{Path, PathBuf};
 use mesh_core::live::sampler::SampleData;
 use mesh_core::live::style::{Style, STYLE_FILE};
 
-const USAGE: &str = "usage: live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR [--kicks DIR --snares DIR] [--force]\n       \
+const USAGE: &str = "usage: live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR [--kicks DIR --snares DIR] [--library DIR] [--force]\n       \
 live-starter-style --inspect FILE...";
 
 /// The style's default tempo, also used to guess a break's bar count.
@@ -512,6 +540,288 @@ fn slice_break(data: &SampleData) -> Break {
 
 // ─── Style assembly ───────────────────────────────────────────────────
 
+// ─── Library pools ────────────────────────────────────────────────────
+
+/// A drum pool a library file is sorted into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PoolKind {
+    Closed,
+    Open,
+    Ride,
+    Crash,
+    Shaker,
+    Perc,
+    Top,
+    Skip,
+}
+
+impl PoolKind {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "closed" => Self::Closed,
+            "open" => Self::Open,
+            "ride" => Self::Ride,
+            "crash" => Self::Crash,
+            "shaker" => Self::Shaker,
+            "perc" => Self::Perc,
+            "top" => Self::Top,
+            "skip" => Self::Skip,
+            _ => return None,
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Open => "open",
+            Self::Ride => "ride",
+            Self::Crash => "crash",
+            Self::Shaker => "shaker",
+            Self::Perc => "perc",
+            Self::Top => "top",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+// MUSICAL: first draft, check the report and override by ear.
+/// One-shots at least this long, or named "loop", are loops.
+const LOOP_MIN_SECS: f64 = 1.5;
+/// Loops whose tempo is further than this from the style's are skipped.
+const LOOP_TEMPO_TOLERANCE: f64 = 0.10;
+/// Decay (−30 dB) of an unnamed cymbal one-shot: closed below, open below
+/// the second value, crash above.
+const DECAY_CLOSED_SECS: f64 = 0.25;
+const DECAY_OPEN_SECS: f64 = 0.8;
+/// Most samples per pool (the drum layout's block sizes: hats 32 shared by
+/// closed and open, ride 16 shared by ride and crash).
+const POOL_CAPS: [(PoolKind, usize); 7] = [
+    (PoolKind::Closed, 24),
+    (PoolKind::Open, 8),
+    (PoolKind::Ride, 10),
+    (PoolKind::Crash, 6),
+    (PoolKind::Shaker, 16),
+    (PoolKind::Perc, 32),
+    (PoolKind::Top, 32),
+];
+
+/// One sorted library file.
+struct Classified {
+    path: PathBuf,
+    kind: PoolKind,
+    /// Top loops: bars at the style tempo.
+    bars: Option<u8>,
+    why: String,
+}
+
+/// Name tokens: lower case, split on anything but letters and digits.
+fn has_word(name: &str, words: &[&str]) -> bool {
+    let lower = name.to_ascii_lowercase();
+    words.iter().any(|w| lower.contains(w))
+}
+
+/// Seconds the envelope takes to fall 30 dB below its peak.
+fn decay_secs(data: &SampleData) -> f64 {
+    let x = mono(data);
+    let peak_at = x.iter().enumerate().fold((0, 0.0f32), |m, (i, v)| if v.abs() > m.1 { (i, v.abs()) } else { m });
+    let floor = peak_at.1 * 10f32.powf(-30.0 / 20.0);
+    // 10 ms windows after the peak; the decay ends at the first window under the floor.
+    let win = (data.sample_rate() as usize / 100).max(1);
+    let mut end = x.len();
+    for start in (peak_at.0..x.len()).step_by(win) {
+        let w = &x[start..(start + win).min(x.len())];
+        if w.iter().fold(0.0f32, |m, v| m.max(v.abs())) < floor {
+            end = start;
+            break;
+        }
+    }
+    (end - peak_at.0) as f64 / data.sample_rate() as f64
+}
+
+/// Bars (1, 2, 4 or 8) of a loop at the style tempo and its tempo, or `None`
+/// when every bar count is more than [`LOOP_TEMPO_TOLERANCE`] off.
+fn loop_bars(secs: f64) -> (Option<u8>, f64) {
+    let (bars, bpm) = [1u8, 2, 4, 8]
+        .iter()
+        .map(|&b| (b, b as f64 * 240.0 / secs))
+        .min_by(|a, b| (a.1 - DEFAULT_BPM).abs().total_cmp(&(b.1 - DEFAULT_BPM).abs()))
+        .unwrap_or((1, 0.0));
+    ((bpm - DEFAULT_BPM).abs() / DEFAULT_BPM <= LOOP_TEMPO_TOLERANCE).then_some(bars).map_or((None, bpm), |b| (Some(b), bpm))
+}
+
+fn classify(path: &Path, percussion_folder: bool) -> Classified {
+    let data = match SampleData::decode(path, 60) {
+        Ok(d) => d,
+        Err(e) => return Classified { path: path.to_path_buf(), kind: PoolKind::Skip, bars: None, why: format!("cannot decode: {e}") },
+    };
+    let secs = data.len() as f64 / data.sample_rate() as f64;
+    let name = file_name(path);
+    let done = |kind, bars, why: String| Classified { path: path.to_path_buf(), kind, bars, why };
+    // A long hit that names itself (a crash or ride ringing out) is a one-shot.
+    let named_hit = has_word(&name, &["crash", "ride", "cymbal", "china", "splash", "hat", "shaker", "tamb"])
+        && !has_word(&name, &["loop", "top"]);
+    if has_word(&name, &["loop"]) || (secs >= LOOP_MIN_SECS && !named_hit) {
+        return match loop_bars(secs) {
+            (Some(bars), bpm) => done(PoolKind::Top, Some(bars), format!("loop {secs:.2} s = {bars} bar(s) at {bpm:.1} BPM")),
+            (None, bpm) => done(PoolKind::Skip, None, format!("loop {secs:.2} s, nearest tempo {bpm:.1} BPM is off")),
+        };
+    }
+    let by_name = [
+        (PoolKind::Open, &["open", "ohh"][..]),
+        (PoolKind::Ride, &["ride"][..]),
+        (PoolKind::Crash, &["crash", "china", "splash", "cymbal"][..]),
+        (PoolKind::Shaker, &["shaker", "shake", "tamb", "maraca", "cabasa"][..]),
+        (PoolKind::Closed, &["closed", "chh", "hat", "hh"][..]),
+    ];
+    if let Some((kind, words)) = by_name.iter().find(|(_, words)| has_word(&name, words)) {
+        let word = words.iter().find(|w| name.to_ascii_lowercase().contains(**w)).unwrap_or(&"");
+        return done(*kind, None, format!("one-shot {secs:.2} s, name has '{word}'"));
+    }
+    if percussion_folder || has_word(&name, &["perc", "tom", "bongo", "conga", "rim", "clap", "block", "cowbell"]) {
+        return done(PoolKind::Perc, None, format!("one-shot {secs:.2} s, percussion"));
+    }
+    let decay = decay_secs(&data);
+    let kind = if decay < DECAY_CLOSED_SECS {
+        PoolKind::Closed
+    } else if decay < DECAY_OPEN_SECS {
+        PoolKind::Open
+    } else {
+        PoolKind::Crash
+    };
+    done(kind, None, format!("one-shot {secs:.2} s, decay {decay:.2} s"))
+}
+
+/// `sample-overrides.yaml`: file name → kind, or `{ kind, bars }`.
+fn load_overrides(dir: &Path) -> Vec<(String, PoolKind, Option<u8>)> {
+    let path = dir.join("sample-overrides.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let map: serde_yaml::Mapping =
+        serde_yaml::from_str(&text).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+    map.iter()
+        .map(|(k, v)| {
+            let file = k.as_str().unwrap_or_else(|| fail(format!("{}: keys are file names", path.display()))).to_string();
+            let (kind, bars) = match v {
+                serde_yaml::Value::String(kind) => (kind.clone(), None),
+                serde_yaml::Value::Mapping(m) => (
+                    m.get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string(),
+                    m.get("bars").and_then(|b| b.as_u64()).map(|b| b as u8),
+                ),
+                _ => (String::new(), None),
+            };
+            let kind = PoolKind::parse(&kind)
+                .unwrap_or_else(|| fail(format!("{}: '{file}' has an unknown kind '{kind}'", path.display())));
+            (file, kind, bars)
+        })
+        .collect()
+}
+
+/// Sort the library's cymbals and percussion into pools, applying overrides.
+fn classify_library(library: &Path, report: &mut String, out: &Path) -> Vec<Classified> {
+    let overrides = load_overrides(library);
+    let mut all = Vec::new();
+    for (folder, percussion) in [("Cymbals", false), ("Percussion", true)] {
+        let dir = library.join(folder);
+        if !dir.is_dir() {
+            let _ = writeln!(report, "Library: no {folder}/ folder");
+            continue;
+        }
+        for path in audio_files(&dir) {
+            let mut c = classify(&path, percussion);
+            let name = file_name(&path);
+            if let Some((_, kind, bars)) = overrides.iter().find(|(f, _, _)| *f == name) {
+                c.kind = *kind;
+                c.bars = if *kind == PoolKind::Top { bars.or(c.bars).or(Some(1)) } else { None };
+                c.why = format!("override ({})", c.why);
+            }
+            all.push(c);
+        }
+    }
+    let mut listing = String::new();
+    for c in &all {
+        let _ = writeln!(listing, "{:<7} {:<60} {}", c.kind.name(), c.path.display(), c.why);
+    }
+    let _ = std::fs::write(out.join("sample-classes.txt"), listing);
+    let _ = write!(report, "Library pools ({} files, {} overrides; full list in sample-classes.txt):", all.len(), overrides.len());
+    for kind in [PoolKind::Closed, PoolKind::Open, PoolKind::Ride, PoolKind::Crash, PoolKind::Shaker, PoolKind::Perc, PoolKind::Top, PoolKind::Skip] {
+        let _ = write!(report, " {} {}", kind.name(), all.iter().filter(|c| c.kind == kind).count());
+    }
+    let _ = writeln!(report);
+    all
+}
+
+/// At most `cap` of `items`, spread evenly over the list.
+fn spread<T>(items: Vec<T>, cap: usize) -> Vec<T> {
+    let n = items.len();
+    if n <= cap {
+        return items;
+    }
+    let keep: Vec<usize> = (0..cap).map(|i| i * n / cap).collect();
+    items.into_iter().enumerate().filter(|(i, _)| keep.contains(i)).map(|(_, x)| x).collect()
+}
+
+/// Pool sub-voices (hats, ride, shaker, perc, top) as style YAML, assets copied.
+fn pool_voices(paths: &Paths, classified: Vec<Classified>, report: &mut String) -> String {
+    let mut pools: Vec<(PoolKind, Vec<Classified>)> = POOL_CAPS.iter().map(|&(k, _)| (k, Vec::new())).collect();
+    for c in classified {
+        if let Some((_, v)) = pools.iter_mut().find(|(k, _)| *k == c.kind) {
+            v.push(c);
+        }
+    }
+    for (kind, items) in pools.iter_mut() {
+        let cap = POOL_CAPS.iter().find(|(k, _)| k == kind).map_or(0, |&(_, c)| c);
+        *items = spread(std::mem::take(items), cap);
+    }
+    let take = |kind: PoolKind, pools: &mut Vec<(PoolKind, Vec<Classified>)>| {
+        pools.iter_mut().find(|(k, _)| *k == kind).map(|(_, v)| std::mem::take(v)).unwrap_or_default()
+    };
+    let entries = |items: Vec<Classified>, dir: &str, tag: Option<&str>| -> (usize, String) {
+        let mut y = String::new();
+        for (i, c) in items.iter().enumerate() {
+            let rel = copy_asset(paths, &c.path, &format!("drums/{dir}/{i:03}-{}", file_name(&c.path)));
+            let mut fields = format!("file: {}", q(&rel));
+            if let Some(t) = tag {
+                let _ = write!(fields, ", tag: {t}");
+            }
+            if let Some(b) = c.bars {
+                let _ = write!(fields, ", bars: {b}");
+            }
+            let _ = writeln!(y, "                - {{ {fields} }}");
+        }
+        (items.len(), y)
+    };
+    let mut y = String::new();
+    let voice = |y: &mut String, voice: &str, choke: u8, body: &str, n: usize| {
+        if n == 0 {
+            return;
+        }
+        let choke = if choke > 0 { format!("        choke: {choke}
+") } else { String::new() };
+        let _ = write!(y, "      - voice: {voice}
+{choke}        options:
+          - name: library
+            sampler:
+              samples:
+{body}");
+    };
+    let (nc, closed) = entries(take(PoolKind::Closed, &mut pools), "hats", Some("closed"));
+    let (no, open) = entries(take(PoolKind::Open, &mut pools), "hats", Some("open"));
+    voice(&mut y, "hats", 2, &format!("{closed}{open}"), nc + no);
+    let (nr, rides) = entries(take(PoolKind::Ride, &mut pools), "ride", Some("ride"));
+    let (ncr, crashes) = entries(take(PoolKind::Crash, &mut pools), "ride", Some("crash"));
+    voice(&mut y, "ride", 0, &format!("{rides}{crashes}"), nr + ncr);
+    let (ns, shakers) = entries(take(PoolKind::Shaker, &mut pools), "shaker", None);
+    voice(&mut y, "shaker", 0, &shakers, ns);
+    let (np, perc) = entries(take(PoolKind::Perc, &mut pools), "perc", None);
+    voice(&mut y, "perc", 0, &perc, np);
+    let (nt, tops) = entries(take(PoolKind::Top, &mut pools), "top", None);
+    voice(&mut y, "top", 3, &tops, nt);
+    let _ = writeln!(
+        report,
+        "Pools used: closed {nc} open {no} ride {nr} crash {ncr} shaker {ns} perc {np} top {nt}"
+    );
+    y
+}
+
 struct Paths {
     out: PathBuf,
     breaks: PathBuf,
@@ -519,19 +829,28 @@ struct Paths {
     surge: PathBuf,
     /// Kick and snare folders (both or neither).
     pairs: Option<(PathBuf, PathBuf)>,
+    /// Drum library with Cymbals/ and Percussion/ (pools).
+    library: Option<PathBuf>,
 }
 
-/// Audio files directly in `dir`, sorted by name.
+/// Audio files in `dir` and its subfolders, sorted by path.
 fn audio_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())))
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
+        for p in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p
+                .extension()
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "wav" | "flac" | "aif" | "aiff"))
-        })
-        .collect();
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
     files.sort();
     if files.is_empty() {
         fail(format!("no audio files in {}", dir.display()));
@@ -568,6 +887,21 @@ fn surge_options(paths: &Paths, patches: &[SurgePatch], dir: &str) -> String {
 
 fn decode(path: &Path) -> SampleData {
     SampleData::decode(path, 60).unwrap_or_else(|e| fail(format!("cannot decode {}: {e}", path.display())))
+}
+
+/// `files` that decode; the others are reported and left out (a broken file
+/// would stop the style from loading).
+fn decodable(files: Vec<PathBuf>, report: &mut String) -> Vec<PathBuf> {
+    files
+        .into_iter()
+        .filter(|f| match SampleData::decode(f, 60) {
+            Ok(_) => true,
+            Err(e) => {
+                let _ = writeln!(report, "  skipped {}: cannot decode: {e}", f.display());
+                false
+            }
+        })
+        .collect()
 }
 
 /// Copy `src` to `<out>/assets/<asset>`; returns the style-relative path.
@@ -635,7 +969,7 @@ fn build(paths: &Paths) -> String {
     };
     match &paths.pairs {
         Some((kick_dir, snare_dir)) => {
-            let (kicks, snares) = (audio_files(kick_dir), audio_files(snare_dir));
+            let (kicks, snares) = (decodable(audio_files(kick_dir), &mut report), decodable(audio_files(snare_dir), &mut report));
             let _ = writeln!(report, "Kick/snare pairs ({} kicks, {} snares):", kicks.len(), snares.len());
             for i in 0..kicks.len().max(snares.len()) {
                 let (k, s) = (&kicks[i % kicks.len()], &snares[i % snares.len()]);
@@ -664,19 +998,23 @@ fn build(paths: &Paths) -> String {
             );
         }
     }
-    let hats = format!(
-        "          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {}, choke: 2 }}\n                - {{ file: {}, choke: 2 }}\n",
-        one(HATS[0], "hat-closed"),
-        one(HATS[1], "hat-open")
-    );
-    let perc = format!(
-        "          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
-        one(PERC[0], "perc1"),
-        one(PERC[1], "perc2")
-    );
+    // Pools: the library's cymbals and percussion, else two Dirt hats and percussion hits.
+    let pools = match &paths.library {
+        Some(library) => {
+            let classified = classify_library(library, &mut report, &paths.out);
+            pool_voices(paths, classified, &mut report)
+        }
+        None => format!(
+            "      - voice: hats\n        choke: 2\n        options:\n          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {}, choke: 2 }}\n                - {{ file: {}, choke: 2 }}\n      - voice: perc\n        options:\n          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
+            one(HATS[0], "hat-closed"),
+            one(HATS[1], "hat-open"),
+            one(PERC[0], "perc1"),
+            one(PERC[1], "perc2")
+        ),
+    };
 
     let _ = writeln!(report, "Break slices (16 per bar; K kick, S snare, g ghost, h hat, . other):");
-    for src in audio_files(&paths.breaks) {
+    for src in decodable(audio_files(&paths.breaks), &mut report) {
         let data = decode(&src);
         let b = slice_break(&data);
         let name = stem(&src);
@@ -738,6 +1076,7 @@ fn build(paths: &Paths) -> String {
     let pads = surge_options(paths, &SURGE_PADS, "synth/pad");
     let _ = writeln!(report, "Surge XT patches: {} bass, {} pad", SURGE_BASSES.len(), SURGE_PADS.len());
     let _ = std::fs::copy(paths.breaks.join("LICENSE"), paths.out.join("assets/breaks/LICENSE-breaks.txt"));
+    let _ = writeln!(report, "Forms: built-in list ({} forms)", mesh_core::live::form::DEFAULT_FORMS.len());
 
     let _ = write!(
         y,
@@ -786,7 +1125,9 @@ send_fx:
   reverb: {{ id: reverb, source: native }}
 
 lanes:
-  # Kit k = option k of every sub-voice: kick/snare pair k with break k.
+  # Kit k = option k of the backbone and the break: kick/snare pair k with
+  # break k. The pools (hats, ride, shaker, perc, top) keep one option; the
+  # lane seed picks samples from them.
   - name: drums
     role: drums
     archetypes: [half_time, two_step, rolling, jungle, hardcore]
@@ -796,12 +1137,7 @@ lanes:
 {backbone}      - voice: break
         choke: 1
         options:
-{breaks}      - voice: hats
-        choke: 2
-        options:
-{hats}      - voice: perc
-        options:
-{perc}    fx:
+{breaks}{pools}    fx:
       - {{ id: filter, source: native, settings: {{ filter: 0.0 }} }}
       # Whole kit: low cut 40 Hz, +1.5 dB at 100 Hz, -2 dB around 200-500 Hz.
       - {{ id: eq, source: native, settings: {{ low_cut: 40, bell_1_freq: 100, bell_1_gain: 1.5, bell_1_q: 1.0, bell_2_freq: 320, bell_2_gain: -2, bell_2_q: 0.7 }} }}
@@ -823,7 +1159,12 @@ lanes:
     generator:
       family: procedural
       name: drums
-      params: {{ style: 0.4, density: 0.5, swing: 0.0 }}
+      # One density brings the voices in (Q5): hats, ghosts and percussion
+      # from the bottom, the shaker from 0.35, the ride from 0.5, the top
+      # loop from 0.6. MUSICAL: amounts and entry points to tune by ear.
+      params:
+        {{ style: 0.4, density: 0.5, swing: 0.0, overlay_ride: 0.6, overlay_shaker: 0.5, overlay_top: 0.8,
+          enter_shaker: 0.35, enter_ride: 0.5, enter_top: 0.6 }}
 
   - name: bass
     role: bass
@@ -841,7 +1182,8 @@ lanes:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.3 }}
-      - {{ label: gate, target: {{ type: generator, param: gate }}, default: 0.6 }}
+      # Fader B: note length (legato and glide at the top, Q13).
+      - {{ label: len, target: {{ type: generator, param: gate }}, default: 0.6 }}
     generator:
       family: procedural
       name: bass
@@ -863,7 +1205,14 @@ lanes:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
       - {{ label: cutoff, target: {{ type: instrument, param: 0 }}, default: 1.0 }}
-      - {{ label: delay, target: {{ type: send, bus: delay }}, min: 0.0, max: 0.7, curve: s }}
+      # Fader B: note length (legato and glide at the top, Q13).
+      - {{ label: len, target: {{ type: generator, param: gate }}, default: 0.5 }}
+    # Shift + fader B: the delay send that fader B held before.
+    shift_controls:
+      - null
+      - null
+      - null
+      - {{ label: delay, target: {{ type: send, bus: delay }}, min: 0.0, max: 0.7, curve: s, default: 0.29 }}
     generator:
       family: procedural
       name: lead
@@ -878,8 +1227,9 @@ lanes:
 {mb_pad}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.2 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
-      - {{ label: gate, target: {{ type: generator, param: gate }}, default: 1.0 }}
+      # Knob B: reverb send. Fader B: note length (Q13).
       - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.8 }}
+      - {{ label: len, target: {{ type: generator, param: gate }}, default: 1.0 }}
     generator:
       family: idiom
       name: pad
@@ -922,7 +1272,7 @@ fn inspect(files: &[PathBuf]) {
 fn main() {
     let mut args = std::env::args().skip(1);
     let (mut out, mut breaks, mut dirt, mut surge, mut force) = (None, None, None, None, false);
-    let (mut kicks, mut snares) = (None, None);
+    let (mut kicks, mut snares, mut library) = (None, None, None);
     let mut inspect_files = None::<Vec<PathBuf>>;
     while let Some(a) = args.next() {
         let mut val = || args.next().map(PathBuf::from).unwrap_or_else(|| fail(format!("{a} needs a value")));
@@ -933,6 +1283,7 @@ fn main() {
             "--surge" => surge = Some(val()),
             "--kicks" => kicks = Some(val()),
             "--snares" => snares = Some(val()),
+            "--library" => library = Some(val()),
             "--force" => force = true,
             "--inspect" => inspect_files = Some(args.by_ref().map(PathBuf::from).collect()),
             "-h" | "--help" => {
@@ -946,8 +1297,19 @@ fn main() {
         inspect(&files);
         return;
     }
+    // The library fills in kicks, snares and breaks that were not given.
+    if let Some(lib) = &library {
+        let sub = |name: &str| Some(lib.join(name)).filter(|p| p.is_dir());
+        if kicks.is_none() && snares.is_none() {
+            (kicks, snares) = (sub("Kicks"), sub("Snares"));
+        }
+        if breaks.is_none() {
+            breaks = sub("Breaks");
+        }
+    }
     let need = |p: Option<PathBuf>, what: &str| p.unwrap_or_else(|| fail(format!("missing {what}")));
     let paths = Paths {
+        library,
         out: need(out, "--out"),
         breaks: need(breaks, "--breaks"),
         dirt: need(dirt, "--dirt"),

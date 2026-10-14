@@ -5,6 +5,7 @@
 //! the audio thread, and write only into the fixed-size [`BarEvents`].
 
 use super::event::BarEvents;
+use super::form::SeedClass;
 use super::glue::Role;
 use super::harmony::HarmonyCtx;
 use super::STEPS_PER_BAR;
@@ -29,12 +30,17 @@ pub const MAX_GEN_PARAMS: usize = 12;
 /// Everything a generator may read to render one bar.
 #[derive(Debug, Clone, Copy)]
 pub struct BarCtx<'a> {
-    /// Seed of the chain slot being rendered.
+    /// Seed of the letter being rendered (see [`super::form`]).
     pub seed: u32,
+    /// Seed that picks sounds (drum pools): the master seed in main bars, the
+    /// letter seed in filler bars.
+    pub sound_seed: u32,
+    /// Main or filler material.
+    pub class: SeedClass,
     /// Lane index, 0 = drums.
     pub lane: u8,
     pub role: Role,
-    /// 0..SLOTS_PER_CHAIN.
+    /// Global bar % 4.
     pub bar_in_phrase: u8,
     pub phrase: u32,
     /// Render the fill variant of this bar.

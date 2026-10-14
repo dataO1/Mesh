@@ -11,8 +11,11 @@
 //!    default. Mutations swap in a slice of the same type or repeat the
 //!    previous one; slices on backbone hits are replaced by a slice of the
 //!    hit's type. Random order only in the fill.
-//! 3. **Overlays** — hats, ghosts, percussion. Each has its own density and
-//!    only adds events where the backbone importance is low (A2).
+//! 3. **Overlays** — hats, ghosts, ride (with a crash on the phrase start),
+//!    shaker, percussion and a chopped top loop. Each has its own amount and
+//!    entry point on the lane's one `density` control (reveal order, Q5) and
+//!    only adds events where the backbone importance is low (A2). The pool
+//!    voices pick their samples from `BarCtx::sound_seed` (Q4).
 //! 4. **Fill** — when `ctx.fill`, the second half of the bar is a snare fill
 //!    over shuffled break slices.
 //!
@@ -22,12 +25,16 @@
 //! Performance parameters (`BarCtx::params`, in this order): `style`,
 //! `density`, `overlay_hats`, `overlay_ghost`, `overlay_perc`, `variation`,
 //! `chop`, `swing`, `mutate` (seeded rewrites of the backbone and overlays:
-//! displaced kicks and snares, extra and dropped hits).
+//! displaced kicks and snares, extra and dropped hits), `overlay_ride`,
+//! `overlay_shaker`, `overlay_top`. The `overlay_*` amounts are usually set
+//! in the style and left off the controls.
 //!
 //! Construction options (style `generator.params`, not performable):
 //! `blend` (1 = blend neighbours, 0 = hard switch), `break_layer` (0 = off),
-//! and the rule scales `rule_a2` (backbone lock), `rule_a3` (phrase shape),
-//! `rule_a4` (slices in order), `rule_a5` (velocity tiers). All default to 1.
+//! the rule scales `rule_a2` (backbone lock), `rule_a3` (phrase shape),
+//! `rule_a4` (slices in order), `rule_a5` (velocity tiers), all defaulting
+//! to 1, and the entry points `enter_hats`, `enter_ghost`, `enter_perc`,
+//! `enter_ride`, `enter_shaker`, `enter_top` (density where the voice starts).
 
 use std::collections::BTreeMap;
 
@@ -36,15 +43,27 @@ use super::blocks::{
     roll_velocity, step_tick, swing_offset, tier_for_level, tier_for_metric, trigger, velocity,
     LevelMap, PhraseRng, Tier, VEL_NORMAL,
 };
-use super::layout::DrumLayout;
+use super::layout::{DrumLayout, HATS_BASE, PERC_BASE, RIDE_BASE, SHAKER_BASE, TOP_BASE};
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
 use crate::live::event::{flags, BarEvents};
 use crate::live::rng;
 use crate::live::style::SliceType;
 use crate::live::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
-pub const PARAM_NAMES: [&str; 9] =
-    ["style", "density", "overlay_hats", "overlay_ghost", "overlay_perc", "variation", "chop", "swing", "mutate"];
+pub const PARAM_NAMES: [&str; 12] = [
+    "style",
+    "density",
+    "overlay_hats",
+    "overlay_ghost",
+    "overlay_perc",
+    "variation",
+    "chop",
+    "swing",
+    "mutate",
+    "overlay_ride",
+    "overlay_shaker",
+    "overlay_top",
+];
 const P_STYLE: usize = 0;
 const P_DENSITY: usize = 1;
 const P_HATS: usize = 2;
@@ -54,10 +73,18 @@ const P_VARIATION: usize = 5;
 const P_CHOP: usize = 6;
 const P_SWING: usize = 7;
 const P_MUTATE: usize = 8;
+const P_RIDE: usize = 9;
+const P_SHAKER: usize = 10;
+const P_TOP: usize = 11;
 
 // MUSICAL: first draft, tune by ear. Defaults: two-step at medium density
 // with 8th hats, a few ghosts, little percussion, a lightly chopped break.
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.5, 0.5, 0.5];
+
+// MUSICAL: first draft, tune by ear (Q5). Density where each overlay voice
+// starts: hats, ghosts and percussion from the bottom, then shaker, ride and
+// top loop as the density rises.
+pub const DEFAULT_ENTER: Enter = Enter { hats: 0.0, ghost: 0.0, perc: 0.0, shaker: 0.35, ride: 0.5, top: 0.6 };
 
 /// Archetype order used when the lane gives none (research §7.2).
 pub const DEFAULT_ARCHETYPE_ORDER: [&str; 5] = ["half_time", "two_step", "rolling", "jungle", "hardcore"];
@@ -89,6 +116,22 @@ const S_MUT_DIR: u32 = 0x171;
 const S_MUT_JITTER: u32 = 0x172;
 const S_MUT_ADD: u32 = 0x173;
 const S_MUT_ADD_KIND: u32 = 0x174;
+const S_PICK_CLOSED: u32 = 0x180;
+const S_PICK_OPEN: u32 = 0x181;
+const S_PICK_RIDE: u32 = 0x182;
+const S_PICK_CRASH: u32 = 0x183;
+const S_PICK_SHAKER: u32 = 0x184;
+const S_PICK_PERC: u32 = 0x185;
+const S_PICK_TOP: u32 = 0x186;
+const S_RIDE: u32 = 0x190;
+const S_RIDE_VEL: u32 = 0x191;
+const S_SHAKER: u32 = 0x1A0;
+const S_SHAKER_VEL: u32 = 0x1A1;
+const S_TOP: u32 = 0x1B0;
+const S_TOP_MUT: u32 = 0x1B1;
+const S_TOP_KIND: u32 = 0x1B2;
+const S_TOP_PICK: u32 = 0x1B3;
+const S_TOP_VEL: u32 = 0x1B4;
 
 // ─── Musical tables ────────────────────────────────────────────────────
 
@@ -121,6 +164,25 @@ const GHOST_ROLLING: [u8; 16] = [0, 90, 60, 150, 0, 110, 160, 220, 40, 210, 90, 
 const GHOST_HALF: [u8; 16] = [0, 40, 60, 90, 70, 50, 100, 140, 0, 90, 110, 150, 80, 70, 160, 180];
 const GHOST_JUNGLE: [u8; 16] = [0, 80, 0, 140, 0, 120, 170, 0, 90, 0, 0, 100, 0, 150, 190, 0];
 const GHOST_HARDCORE: [u8; 16] = [0, 50, 90, 110, 0, 60, 100, 160, 0, 60, 100, 120, 0, 70, 130, 170];
+
+// MUSICAL: first draft, tune by ear. Ride: quarters first, then offbeat
+// 8ths, then 16ths.
+const RIDE_LEVELS: [u8; 16] = [240, 60, 200, 80, 235, 60, 200, 90, 240, 60, 200, 80, 235, 60, 200, 100];
+// MUSICAL: first draft, tune by ear. Shaker: offbeat 8ths, then every 16th.
+const SHAKER_LEVELS: [u8; 16] = [150, 120, 240, 130, 150, 120, 240, 140, 150, 120, 240, 130, 150, 120, 240, 160];
+// MUSICAL: first draft, tune by ear. Top loop: which chops stay as the
+// density falls (beats and offbeats last to go).
+const TOP_LEVELS: [u8; 16] = [255, 140, 220, 150, 245, 140, 220, 160, 250, 140, 220, 150, 245, 140, 225, 170];
+const RIDE_CHAOS: f32 = 0.1;
+const SHAKER_CHAOS: f32 = 0.2;
+const TOP_CHAOS: f32 = 0.1;
+/// Chop mutation probability of the top loop per step at `chop = 1`.
+const TOP_MUT_MAX: f32 = 0.25;
+/// Share of top-loop mutations that repeat the previous chop.
+const TOP_STUTTER_SHARE: f32 = 0.5;
+const TOP_VEL: u8 = 100;
+/// Percussion samples a seed picks from the pool.
+const PERC_PICKS: u32 = 3;
 
 // MUSICAL: first draft, tune by ear.
 /// Randomness added to hat / ghost / percussion importance.
@@ -272,6 +334,32 @@ impl Archetype {
     }
 }
 
+/// Density where each overlay voice starts (construction options `enter_*`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Enter {
+    pub hats: f32,
+    pub ghost: f32,
+    pub perc: f32,
+    pub shaker: f32,
+    pub ride: f32,
+    pub top: f32,
+}
+
+impl Enter {
+    pub fn from_spec(params: &BTreeMap<String, f32>) -> Self {
+        let d = DEFAULT_ENTER;
+        let e = |key: &str, v: f32| option(params, key, v).clamp(0.0, 0.99);
+        Self {
+            hats: e("enter_hats", d.hats),
+            ghost: e("enter_ghost", d.ghost),
+            perc: e("enter_perc", d.perc),
+            shaker: e("enter_shaker", d.shaker),
+            ride: e("enter_ride", d.ride),
+            top: e("enter_top", d.top),
+        }
+    }
+}
+
 /// Rule switches and scales, fixed at construction (design §6.3).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrumRules {
@@ -287,11 +375,13 @@ pub struct DrumRules {
     pub order: f32,
     /// A5: velocity tier depth, 0 = flat.
     pub tiers: f32,
+    /// Reveal order of the overlay voices.
+    pub enter: Enter,
 }
 
 impl Default for DrumRules {
     fn default() -> Self {
-        Self { blend: true, break_layer: true, lock: 1.0, phrase: true, order: 1.0, tiers: 1.0 }
+        Self { blend: true, break_layer: true, lock: 1.0, phrase: true, order: 1.0, tiers: 1.0, enter: DEFAULT_ENTER }
     }
 }
 
@@ -304,6 +394,7 @@ impl DrumRules {
             phrase: option(params, "rule_a3", 1.0) >= 0.5,
             order: option(params, "rule_a4", 1.0),
             tiers: option(params, "rule_a5", 1.0),
+            enter: Enter::from_spec(params),
         }
     }
 }
@@ -319,6 +410,9 @@ struct Params {
     chop: f32,
     swing: f32,
     mutate: f32,
+    ride: f32,
+    shaker: f32,
+    top: f32,
 }
 
 impl Params {
@@ -333,6 +427,9 @@ impl Params {
             chop: param(ctx, P_CHOP),
             swing: param(ctx, P_SWING),
             mutate: param(ctx, P_MUTATE),
+            ride: param(ctx, P_RIDE),
+            shaker: param(ctx, P_SHAKER),
+            top: param(ctx, P_TOP),
         }
     }
 }
@@ -360,9 +457,36 @@ fn bit(step: usize) -> u16 {
     1 << step
 }
 
+/// Density of an overlay voice: zero below its entry point, then rising
+/// with the lane density, scaled by its amount.
 #[inline]
-fn overlay_density(density: f32, amount: f32) -> f32 {
-    (density * amount * OVERLAY_DENSITY_GAIN).min(1.0)
+fn overlay_density(density: f32, amount: f32, enter: f32) -> f32 {
+    let d = if enter <= 0.0 { density } else { ((density - enter) / (1.0 - enter)).clamp(0.0, 1.0) };
+    (d * amount * OVERLAY_DENSITY_GAIN).min(1.0)
+}
+
+/// Target of the `n`-th set bit of `mask` (a pool pick), from `base`.
+fn pick_bit(mask: u32, base: u8, h: u64) -> Option<u8> {
+    let count = mask.count_ones();
+    if count == 0 {
+        return None;
+    }
+    let mut n = rng::below(h, count);
+    let mut m = mask;
+    loop {
+        let bit = m.trailing_zeros();
+        if n == 0 {
+            return Some(base + bit as u8);
+        }
+        m &= m - 1;
+        n -= 1;
+    }
+}
+
+/// Random bits for a pool pick, from the bar's sound seed.
+#[inline]
+fn pick(ctx: &BarCtx, stream: u32) -> u64 {
+    rng::hash(ctx.sound_seed, ctx.lane, 0, 0, stream)
 }
 
 /// The drum lane generator. See the module docs.
@@ -686,10 +810,11 @@ impl DrumGenerator {
         }
     }
 
-    fn hats(&self, p: &Params, rng: &PhraseRng, lv: &BarLevels, bb: &Backbone, out: &mut BarEvents) {
+    fn hats(&self, ctx: &BarCtx, p: &Params, rng: &PhraseRng, lv: &BarLevels, bb: &Backbone, out: &mut BarEvents) {
         let l = &self.layout;
-        let Some(closed) = l.hat_closed else { return };
-        let d = overlay_density(p.density, p.hats);
+        let Some(closed) = pick_bit(l.hats_closed, HATS_BASE, pick(ctx, S_PICK_CLOSED)) else { return };
+        let open_hat = pick_bit(l.hats_open, HATS_BASE, pick(ctx, S_PICK_OPEN));
+        let d = overlay_density(p.density, p.hats, self.rules.enter.hats);
         for s in 0..STEPS_PER_BAR {
             let su = s as u8;
             if bb.locked & bit(s) != 0 || !reveals(level_unit(lv.hats[s]), d, HAT_CHAOS, rng.unit(su, S_HAT)) {
@@ -697,7 +822,7 @@ impl DrumGenerator {
             }
             // Open hats on offbeat 8ths, coming in as the density rises.
             let open = s % 4 == 2 && reveals(OPEN_HAT_IMPORTANCE, d, OPEN_HAT_CHAOS, rng.unit(su, S_HAT_OPEN));
-            let target = if open { l.hat_open.unwrap_or(closed) } else { closed };
+            let target = if open { open_hat.unwrap_or(closed) } else { closed };
             let vel = velocity(tier_for_metric(s), rng.unit(su, S_HAT_VEL), self.rules.tiers);
             let mut ev = trigger(step_tick(s) + swing_offset(s, p.swing), target, vel);
             ev.choke = l.hats_choke;
@@ -708,7 +833,7 @@ impl DrumGenerator {
     fn ghosts(&self, p: &Params, rng: &PhraseRng, lv: &BarLevels, bb: &Backbone, out: &mut BarEvents) {
         let l = &self.layout;
         let Some(target) = l.ghost.or(l.snare) else { return };
-        let d = overlay_density(p.density, p.ghost);
+        let d = overlay_density(p.density, p.ghost, self.rules.enter.ghost);
         for s in 0..STEPS_PER_BAR {
             let su = s as u8;
             if bb.locked & bit(s) != 0 || !reveals(level_unit(lv.ghost[s]), d, GHOST_CHAOS, rng.unit(su, S_GHOST)) {
@@ -719,12 +844,15 @@ impl DrumGenerator {
         }
     }
 
-    fn perc(&self, p: &Params, rng: &PhraseRng, lv: &BarLevels, bb: &Backbone, out: &mut BarEvents) {
+    fn perc(&self, ctx: &BarCtx, p: &Params, rng: &PhraseRng, lv: &BarLevels, bb: &Backbone, out: &mut BarEvents) {
         let l = &self.layout;
         if l.perc_count == 0 {
             return;
         }
-        let d = overlay_density(p.density, p.perc);
+        // The seed picks a few sounds from the pool; hits choose among them.
+        let picks = PERC_PICKS.min(l.perc_count as u32);
+        let first = rng::below(pick(ctx, S_PICK_PERC), l.perc_count as u32);
+        let d = overlay_density(p.density, p.perc, self.rules.enter.perc);
         // Without a map: a Euclid rhythm, pulse count from the density and
         // rotation from the seed.
         let euclid_mask = match lv.perc {
@@ -747,9 +875,103 @@ impl DrumGenerator {
             if !fires {
                 continue;
             }
-            let target = super::layout::PERC_BASE + rng::below(rng.at(su, S_PERC_PICK), l.perc_count as u32) as u8;
+            let k = rng::below(rng.at(su, S_PERC_PICK), picks);
+            let target = PERC_BASE + ((first + k * 7) % l.perc_count as u32) as u8;
             let vel = velocity(tier_for_metric(s), rng.unit(su, S_PERC_VEL), self.rules.tiers);
             out.push(trigger(step_tick(s), target, vel));
+        }
+    }
+
+    /// Ride on quarters and 8ths, with a crash on the phrase start.
+    fn ride(&self, ctx: &BarCtx, p: &Params, rng: &PhraseRng, bb: &Backbone, out: &mut BarEvents) {
+        let l = &self.layout;
+        let d = overlay_density(p.density, p.ride, self.rules.enter.ride);
+        if d <= 0.0 {
+            return;
+        }
+        if ctx.bar_in_phrase == 0 {
+            if let Some(crash) = pick_bit(l.crashes as u32, RIDE_BASE, pick(ctx, S_PICK_CRASH)) {
+                let mut ev = trigger(0, crash, velocity(Tier::Accent, rng.unit(0, S_RIDE_VEL), self.rules.tiers));
+                ev.flags |= flags::ACCENT;
+                out.push(ev);
+            }
+        }
+        let Some(ride) = pick_bit(l.rides as u32, RIDE_BASE, pick(ctx, S_PICK_RIDE)) else { return };
+        for s in 0..STEPS_PER_BAR {
+            let su = s as u8;
+            if (ctx.bar_in_phrase == 0 && s == 0 && l.crashes != 0)
+                || bb.locked & bit(s) != 0 && RIDE_LEVELS[s] < 230
+                || !reveals(level_unit(RIDE_LEVELS[s]), d, RIDE_CHAOS, rng.unit(su, S_RIDE))
+            {
+                continue;
+            }
+            let vel = velocity(tier_for_metric(s), rng.unit(su, S_RIDE_VEL), self.rules.tiers);
+            out.push(trigger(step_tick(s) + swing_offset(s, p.swing), ride, vel));
+        }
+    }
+
+    /// Shaker 16ths, offbeat 8ths first.
+    fn shaker(&self, ctx: &BarCtx, p: &Params, rng: &PhraseRng, bb: &Backbone, out: &mut BarEvents) {
+        let l = &self.layout;
+        if l.shaker_count == 0 {
+            return;
+        }
+        let d = overlay_density(p.density, p.shaker, self.rules.enter.shaker);
+        if d <= 0.0 {
+            return;
+        }
+        let target = SHAKER_BASE + rng::below(pick(ctx, S_PICK_SHAKER), l.shaker_count as u32) as u8;
+        for s in 0..STEPS_PER_BAR {
+            let su = s as u8;
+            if bb.locked & bit(s) != 0 && s % 4 == 0 || !reveals(level_unit(SHAKER_LEVELS[s]), d, SHAKER_CHAOS, rng.unit(su, S_SHAKER)) {
+                continue;
+            }
+            let vel = velocity(tier_for_metric(s), rng.unit(su, S_SHAKER_VEL), self.rules.tiers);
+            out.push(trigger(step_tick(s) + swing_offset(s, p.swing), target, vel));
+        }
+    }
+
+    /// Top loop chopped in 16ths: the loop plays in order across bars, the
+    /// density drops chops (each held for one step), `chop` stutters and
+    /// swaps a few.
+    fn top(&self, ctx: &BarCtx, p: &Params, rng: &PhraseRng, out: &mut BarEvents) {
+        let l = &self.layout;
+        if l.top_count == 0 {
+            return;
+        }
+        let d = overlay_density(p.density, p.top, self.rules.enter.top);
+        if d <= 0.0 {
+            return;
+        }
+        let index = rng::below(pick(ctx, S_PICK_TOP), l.top_count as u32) as usize;
+        let steps = l.top_steps[index].max(1) as usize;
+        let bar = ctx.phrase as usize * 4 + ctx.bar_in_phrase as usize;
+        let mut src = [0usize; STEPS_PER_BAR];
+        let mut on = [false; STEPS_PER_BAR];
+        for s in 0..STEPS_PER_BAR {
+            let su = s as u8;
+            let mut q = (bar * STEPS_PER_BAR + s) % steps;
+            if s > 0 && rng.chance(su, S_TOP_MUT, p.chop * TOP_MUT_MAX) {
+                q = if rng.chance(su, S_TOP_KIND, TOP_STUTTER_SHARE) {
+                    src[s - 1]
+                } else {
+                    rng::below(rng.at(su, S_TOP_PICK), steps as u32) as usize
+                };
+            }
+            src[s] = q;
+            on[s] = reveals(level_unit(TOP_LEVELS[s]), d, TOP_CHAOS, rng.unit(su, S_TOP));
+        }
+        for s in 0..STEPS_PER_BAR {
+            if !on[s] {
+                continue;
+            }
+            // Held to the next chop; a gap after it ends the chop on time.
+            let gap_after = s + 1 == STEPS_PER_BAR || !on[s + 1];
+            let mut ev = trigger(step_tick(s), TOP_BASE + index as u8, ((TOP_VEL as f32) * (0.94 + 0.06 * rng.unit(s as u8, S_TOP_VEL))) as u8);
+            ev.start = ((src[s] as u64 * u16::MAX as u64) / steps as u64) as u16;
+            ev.choke = l.top_choke;
+            ev.gate = if gap_after { TICKS_PER_STEP } else { 0 };
+            out.push(ev);
         }
     }
 
@@ -826,9 +1048,12 @@ impl LaneGenerator for DrumGenerator {
         if self.rules.break_layer {
             self.break_layer(ctx, &p, &rng, &bb, fill_from, wants_pickup && !picked_up, out);
         }
-        self.hats(&p, &rng, &lv, &bb, out);
+        self.hats(ctx, &p, &rng, &lv, &bb, out);
         self.ghosts(&p, &rng, &lv, &bb, out);
-        self.perc(&p, &rng, &lv, &bb, out);
+        self.perc(ctx, &p, &rng, &lv, &bb, out);
+        self.ride(ctx, &p, &rng, &bb, out);
+        self.shaker(ctx, &p, &rng, &bb, out);
+        self.top(ctx, &p, &rng, out);
         out.sort();
     }
 
@@ -1038,11 +1263,11 @@ mod tests {
             });
             (0..10).map(|seed| bar(&g, seed, 0, &p).iter().filter(|e| e.target == target).count()).sum::<usize>()
         };
-        // Hats on target 8/9, percussion on 16/17.
+        // Hats on target 8/9, percussion on the first two perc targets.
         let hats = |v| count(P_HATS, v, 8) + count(P_HATS, v, 9);
         assert_eq!(hats(0.0), 0);
         assert!(hats(0.3) < hats(0.6) && hats(0.6) < hats(1.0));
-        let perc = |v| count(P_PERC, v, 16) + count(P_PERC, v, 17);
+        let perc = |v| count(P_PERC, v, PERC_BASE) + count(P_PERC, v, PERC_BASE + 1);
         assert_eq!(perc(0.0), 0);
         assert!(perc(0.3) < perc(1.0));
         // Ghosts share the snare target: more ghosts = more snare-target hits.
@@ -1419,5 +1644,87 @@ o ..............x.
         assert_eq!(g.param_names(), PARAM_NAMES);
         assert_eq!(g.param_defaults(), PARAM_DEFAULTS);
         assert!(g.param_names().len() <= MAX_GEN_PARAMS);
+    }
+
+    fn pool_kit() -> DrumGenerator {
+        DrumGenerator::with_layout(
+            DrumLayout::empty()
+                .with_backbone(2)
+                .with_hat_masks(0b0101, 0b1010, 2)
+                .with_rides(0b01, 0b10)
+                .with_shakers(3)
+                .with_perc(5)
+                .with_tops(&[32, 16], 0),
+        )
+    }
+
+    fn pool_bar(g: &DrumGenerator, density: f32, sound: u32, bar_in_phrase: u8, chop: f32) -> Vec<LiveEvent> {
+        let p = params(|p| {
+            p[P_DENSITY] = density;
+            p[P_RIDE] = 1.0;
+            p[P_SHAKER] = 1.0;
+            p[P_TOP] = 1.0;
+            p[P_CHOP] = chop;
+        });
+        let mut c = ctx(1, bar_in_phrase, &p, &EMPTY);
+        c.sound_seed = sound;
+        render(g, &c).as_slice().to_vec()
+    }
+
+    #[test]
+    fn pool_voices_enter_with_density_and_pick_by_sound_seed() {
+        let g = pool_kit();
+        let classes = |ev: &[LiveEvent]| ev.iter().map(|e| g.layout().class(e.target)).collect::<Vec<_>>();
+        let low = classes(&pool_bar(&g, 0.2, 1, 0, 0.0));
+        assert!(
+            !low.iter().any(|c| matches!(c, DrumClass::Ride | DrumClass::Crash | DrumClass::Shaker(_) | DrumClass::Top(_))),
+            "late voices wait for their entry point"
+        );
+        let high = classes(&pool_bar(&g, 1.0, 1, 0, 0.0));
+        assert!(high.contains(&DrumClass::Crash), "crash on the phrase start");
+        assert!(high.contains(&DrumClass::Ride));
+        assert!(high.iter().any(|c| matches!(c, DrumClass::Shaker(_))));
+        assert!(high.iter().filter(|c| matches!(c, DrumClass::Top(_))).count() >= 12);
+        assert!(!classes(&pool_bar(&g, 1.0, 1, 1, 0.0)).contains(&DrumClass::Crash), "no crash mid-phrase");
+
+        let picks = |sound: u32| {
+            let ev = pool_bar(&g, 1.0, sound, 2, 0.0);
+            let of = |want: fn(DrumClass) -> bool| -> std::collections::HashSet<u8> {
+                ev.iter().filter(|e| want(g.layout().class(e.target))).map(|e| e.target).collect()
+            };
+            (of(|c| c == DrumClass::HatClosed), of(|c| matches!(c, DrumClass::Top(_))), of(|c| matches!(c, DrumClass::Shaker(_))))
+        };
+        let mut hats = std::collections::HashSet::new();
+        let mut tops = std::collections::HashSet::new();
+        for sound in 0..40 {
+            let (h, t, sh) = picks(sound);
+            assert!(h.len() <= 1 && t.len() <= 1 && sh.len() <= 1, "one sample per voice per seed");
+            hats.extend(h);
+            tops.extend(t);
+        }
+        assert_eq!(hats.len(), 2, "every closed hat of the pool gets picked by some seed");
+        assert_eq!(tops.len(), 2);
+    }
+
+    #[test]
+    fn top_loop_chops_follow_the_loop_across_bars() {
+        let g = DrumGenerator::with_layout(DrumLayout::empty().with_tops(&[32], 0));
+        let starts = |bar_in_phrase: u8| -> Vec<u16> {
+            pool_bar(&g, 1.0, 0, bar_in_phrase, 0.0)
+                .iter()
+                .filter(|e| e.target == TOP_BASE)
+                .map(|e| {
+                    assert_eq!(e.choke, crate::live::generator::layout::DEFAULT_TOP_CHOKE);
+                    e.start
+                })
+                .collect()
+        };
+        let want = |from: u64| -> Vec<u16> { (from..from + 16).map(|q| (q * u16::MAX as u64 / 32) as u16).collect() };
+        assert_eq!(starts(0), want(0));
+        assert_eq!(starts(1), want(16), "the second bar plays the loop's second half");
+        assert_eq!(starts(2), want(0), "a 2-bar loop wraps");
+        // Thinned chops end on time instead of running on.
+        let thin = pool_bar(&g, 0.65, 0, 0, 0.0);
+        assert!(thin.len() < 16 && thin.iter().any(|e| e.gate == TICKS_PER_STEP));
     }
 }

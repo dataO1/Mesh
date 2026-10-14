@@ -51,9 +51,9 @@ use super::loader::{load_style, ControlRoute, LoadError, LoadOptions, LoadedStyl
 use super::player::StepPlayer;
 use super::render::{BarRenderer, RenderLane, RenderMsg, RendererHandle};
 use super::scope::ScopeWriter;
-use super::state::LiveShared;
+use super::state::{LiveShared, Rate};
 use super::style::{SendBus, Style, TempoSpec, CONTROLS_PER_LANE};
-use super::{snap_loop_len, DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN, TICKS_PER_BAR};
+use super::{NUM_LANES, TICKS_PER_BAR};
 
 /// Clock segments handled per pass. A pass is at most `max_block` frames and
 /// a step is at least 2205 frames (300 BPM at 44.1 kHz), so this is ample.
@@ -63,10 +63,10 @@ const MAX_RECORDINGS: usize = 4;
 /// Bars a tempo change ramps over unless the command says otherwise.
 // MUSICAL: long enough to hear the move, short enough to perform with.
 pub const DEFAULT_TEMPO_RAMP_BARS: u32 = 2;
-/// Seed of every slot of lane `l` at load is `DEFAULT_SEED + l`.
-// MUSICAL: equal seeds make a chain of one pattern; the generator's
-// phrase position still varies bar 4.
+/// Master seed of lane `l` at load is `DEFAULT_SEED + l`.
 pub const DEFAULT_SEED: u32 = 50;
+/// Octave offset range of pitched lanes.
+pub const OCTAVE_RANGE: i8 = 2;
 
 const BLANK_SEGMENT: ClockSegment = ClockSegment {
     offset: 0,
@@ -185,6 +185,17 @@ impl LiveEngine {
                 RtMsg::InstrumentParam { lane, control, param, value } => {
                     if let Some(l) = self.lanes.get_mut(lane as usize) {
                         l.set_instrument_param(control as usize, param, value);
+                    }
+                }
+                RtMsg::Octave { lane, octave } => {
+                    if let Some(l) = self.lanes.get_mut(lane as usize) {
+                        l.set_octave(octave);
+                    }
+                }
+                RtMsg::DrumMutes { mutes, quantized } => {
+                    if let Some(l) = self.lanes.get_mut(0) {
+                        l.set_mutes(mutes, quantized);
+                        self.shared.lane(0).set_mutes_playing(l.mutes());
                     }
                 }
                 RtMsg::FxParam { lane, slot, param, value } => {
@@ -325,6 +336,9 @@ impl LiveEngine {
                 Some(packet) => {
                     self.shared.set_harmony(packet.key, packet.chord_degree, packet.progression, packet.half_time);
                     self.clock.set_half_time(packet.half_time);
+                    for (li, lane) in packet.lanes.iter().enumerate() {
+                        self.shared.lane(li).set_bar_pos(lane.pos, lane.form);
+                    }
                     packet.epoch
                 }
                 None => 0,
@@ -332,6 +346,9 @@ impl LiveEngine {
             self.shared.set_played(head.bar, epoch);
             for lane in &mut self.lanes {
                 lane.begin_bar(0);
+            }
+            if let Some(drums) = self.lanes.first() {
+                self.shared.lane(0).set_mutes_playing(drums.mutes());
             }
         }
 
@@ -415,12 +432,23 @@ pub struct LaneControl {
     pub name: String,
     pub role: Role,
     pub controls: [ResolvedControl; CONTROLS_PER_LANE],
+    /// Shift-layer controls (may be fewer than [`CONTROLS_PER_LANE`]).
+    pub shift_controls: Vec<ResolvedControl>,
     /// Control positions, `0..=1`.
     pub positions: [f32; CONTROLS_PER_LANE],
-    pub seeds: [u32; SLOTS_PER_CHAIN],
-    /// Bars the lane loops (1, 2, 4 or 8).
-    pub loop_len: u8,
-    pub selected_slot: usize,
+    pub shift_positions: [f32; CONTROLS_PER_LANE],
+    /// Master seed.
+    pub seed: u32,
+    /// Seed a [`LiveCommand::SwapSeed`] returns to.
+    pub prev_seed: u32,
+    /// A seed edit (Play B hold) is running.
+    pub seed_editing: bool,
+    /// Form index, or the one queued for the next phrase.
+    pub form: usize,
+    pub octave: i8,
+    pub rate: Rate,
+    /// Drum lane: muted voices (bit per [`DrumVoice`]).
+    pub mutes: u8,
     pub option_names: Vec<String>,
     pub option_available: Vec<bool>,
     /// Option loaded or queued for the next bar.
@@ -441,6 +469,8 @@ pub struct LiveController {
     style: String,
     tempo: TempoSpec,
     lanes: Vec<LaneControl>,
+    /// Form texts, index = form.
+    forms: Vec<String>,
     progressions: usize,
     quantize: bool,
     half_time: bool,
@@ -469,6 +499,11 @@ impl LiveController {
 
     pub fn lane(&self, lane: usize) -> &LaneControl {
         &self.lanes[lane]
+    }
+
+    /// The style's forms as text (`"A7 C1"`), index = form.
+    pub fn forms(&self) -> &[String] {
+        &self.forms
     }
 
     pub fn progression_count(&self) -> usize {
@@ -511,29 +546,63 @@ impl LiveController {
     /// Apply one command.
     pub fn send(&mut self, cmd: LiveCommand) {
         match cmd {
-            LiveCommand::SelectSlot { lane, slot } => {
-                let (l, slot) = (lane as usize, slot as usize);
-                if l < self.lanes.len() && slot < SLOTS_PER_CHAIN {
-                    self.lanes[l].selected_slot = slot;
-                    self.shared.lane(l).set_selected_slot(slot as u8);
+            LiveCommand::SetSeed { lane, seed } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    let prev = l.seed;
+                    l.seed_editing = false;
+                    self.set_seed(lane as usize, seed, prev);
                 }
             }
-            LiveCommand::SetSlotSeed { lane, slot, seed } => self.set_seed(lane as usize, slot as usize, seed),
             LiveCommand::SeedDelta { lane, delta } => {
-                if let Some(l) = self.lanes.get(lane as usize) {
-                    let slot = l.selected_slot;
-                    self.set_seed(lane as usize, slot, l.seeds[slot].wrapping_add_signed(delta));
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    // The first step of an edit remembers where it started.
+                    let prev = if l.seed_editing { l.prev_seed } else { l.seed };
+                    l.seed_editing = true;
+                    let seed = l.seed.wrapping_add_signed(delta);
+                    self.set_seed(lane as usize, seed, prev);
                 }
             }
-            LiveCommand::LaneSeedDelta { lane, delta } => {
+            LiveCommand::EndSeedEdit { lane } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    l.seed_editing = false;
+                }
+            }
+            LiveCommand::SwapSeed { lane } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    l.seed_editing = false;
+                    let (seed, prev) = (l.prev_seed, l.seed);
+                    self.set_seed(lane as usize, seed, prev);
+                }
+            }
+            LiveCommand::SetForm { lane, form } => self.set_form(lane as usize, form as usize),
+            LiveCommand::FormDelta { lane, delta } => {
                 if let Some(l) = self.lanes.get(lane as usize) {
-                    let seeds = l.seeds;
-                    for (slot, seed) in seeds.iter().enumerate() {
-                        self.set_seed(lane as usize, slot, seed.wrapping_add_signed(delta));
+                    let last = self.forms.len().saturating_sub(1) as i64;
+                    let form = (l.form as i64 + delta as i64).clamp(0, last) as usize;
+                    self.set_form(lane as usize, form);
+                }
+            }
+            LiveCommand::OctaveDelta { lane, delta } => {
+                if let Some(l) = self.lanes.get(lane as usize) {
+                    let octave = (l.octave as i32 + delta as i32).clamp(-(OCTAVE_RANGE as i32), OCTAVE_RANGE as i32) as i8;
+                    self.set_octave(lane as usize, octave);
+                }
+            }
+            LiveCommand::ResetOctave { lane } => self.set_octave(lane as usize, 0),
+            LiveCommand::SetRate { lane, rate } => {
+                if let Some(l) = self.lanes.get_mut(lane as usize) {
+                    if l.role != Role::Drums {
+                        l.rate = rate;
+                        self.shared.lane(lane as usize).set_rate(rate);
+                        self.render(RenderMsg::Rate { lane, rate });
                     }
                 }
             }
-            LiveCommand::SetLoopLen { lane, len } => self.set_loop_len(lane as usize, len),
+            LiveCommand::ToggleDrumVoice { voice } => {
+                if let Some(l) = self.lanes.first() {
+                    self.set_mutes(l.mutes ^ voice.bit());
+                }
+            }
             LiveCommand::SetControl { lane, control, value } => {
                 self.set_control(lane as usize, control as usize, value)
             }
@@ -605,31 +674,64 @@ impl LiveController {
         }
     }
 
-    fn set_seed(&mut self, lane: usize, slot: usize, seed: u32) {
-        if lane < self.lanes.len() && slot < SLOTS_PER_CHAIN {
-            self.lanes[lane].seeds[slot] = seed;
-            self.shared.lane(lane).set_seed(slot, seed);
-            self.render(RenderMsg::Seed { lane: lane as u8, slot: slot as u8, seed });
+    fn set_seed(&mut self, lane: usize, seed: u32, prev: u32) {
+        if let Some(l) = self.lanes.get_mut(lane) {
+            l.seed = seed;
+            l.prev_seed = prev;
+            self.shared.lane(lane).set_seed(seed, prev);
+            self.render(RenderMsg::Seed { lane: lane as u8, seed });
         }
     }
 
-    fn set_loop_len(&mut self, lane: usize, len: u8) {
-        if lane < self.lanes.len() {
-            let len = snap_loop_len(len as usize);
-            self.lanes[lane].loop_len = len;
-            self.shared.lane(lane).set_loop_len(len);
-            self.render(RenderMsg::LoopLen { lane: lane as u8, len });
+    fn set_form(&mut self, lane: usize, form: usize) {
+        if form >= self.forms.len() {
+            return;
+        }
+        if let Some(l) = self.lanes.get_mut(lane) {
+            l.form = form;
+            self.render(RenderMsg::Form { lane: lane as u8, form: form as u16 });
         }
     }
 
+    fn set_octave(&mut self, lane: usize, octave: i8) {
+        if let Some(l) = self.lanes.get_mut(lane) {
+            if l.role == Role::Drums {
+                return;
+            }
+            l.octave = octave;
+            self.shared.lane(lane).set_octave(octave);
+            self.rt(RtMsg::Octave { lane: lane as u8, octave });
+        }
+    }
+
+    fn set_mutes(&mut self, mutes: u8) {
+        if let Some(l) = self.lanes.first_mut() {
+            l.mutes = mutes;
+            self.shared.lane(0).set_mutes(mutes);
+            self.rt(RtMsg::DrumMutes { mutes, quantized: self.quantize });
+        }
+    }
+
+    /// Control `0..4` = main layer, `4..8` = Shift layer.
     fn set_control(&mut self, lane: usize, control: usize, value: f32) {
-        if lane >= self.lanes.len() || control >= CONTROLS_PER_LANE || !value.is_finite() {
+        if lane >= self.lanes.len() || control >= 2 * CONTROLS_PER_LANE || !value.is_finite() {
             return;
         }
         let position = value.clamp(0.0, 1.0);
-        self.lanes[lane].positions[control] = position;
-        self.shared.lane(lane).set_control(control, position);
-        let c = &self.lanes[lane].controls[control];
+        let l = &mut self.lanes[lane];
+        let c = if control < CONTROLS_PER_LANE {
+            l.positions[control] = position;
+            self.shared.lane(lane).set_control(control, position);
+            &l.controls[control]
+        } else {
+            let i = control - CONTROLS_PER_LANE;
+            l.shift_positions[i] = position;
+            self.shared.lane(lane).set_shift_control(i, position);
+            match l.shift_controls.get(i) {
+                Some(c) => c,
+                None => return,
+            }
+        };
         let mapped = c.spec.map(position);
         let (lane8, control8) = (lane as u8, control as u8);
         match c.route {
@@ -709,7 +811,16 @@ impl LiveController {
         };
         let lanes: [LaneCapture; NUM_LANES] = std::array::from_fn(|i| {
             let l = &self.lanes[i];
-            LaneCapture { seeds: l.seeds, loop_len: l.loop_len, controls: l.positions, option: l.option, on: l.on }
+            LaneCapture {
+                seed: l.seed,
+                form: l.form,
+                controls: l.positions,
+                shift_controls: l.shift_positions,
+                option: l.option,
+                on: l.on,
+                octave: l.octave,
+                mutes: l.mutes,
+            }
         });
         let capture = Capture::new(self.style.clone(), scope, global, lanes);
         self.captures.push(capture.clone());
@@ -750,12 +861,18 @@ impl LiveController {
             if li >= self.lanes.len() {
                 continue;
             }
-            for (slot, &seed) in src.seeds.iter().enumerate() {
-                self.set_seed(li, slot, seed);
-            }
-            self.set_loop_len(li, src.loop_len);
+            let prev = self.lanes[li].seed;
+            self.set_seed(li, src.seed, prev);
+            self.set_form(li, src.form);
             for (control, &value) in src.controls.iter().enumerate() {
                 self.set_control(li, control, value);
+            }
+            for (control, &value) in src.shift_controls.iter().enumerate() {
+                self.set_control(li, CONTROLS_PER_LANE + control, value);
+            }
+            self.set_octave(li, src.octave);
+            if li == 0 {
+                self.set_mutes(src.mutes);
             }
             if src.option != self.lanes[li].option {
                 self.set_option(li, src.option);
@@ -781,12 +898,15 @@ impl LiveController {
             self.rt(RtMsg::Send { lane: li as u8, bus: SendBus::Reverb, level: s.reverb });
         }
         for li in 0..self.lanes.len() {
-            for slot in 0..SLOTS_PER_CHAIN {
-                self.shared.lane(li).set_seed(slot, self.lanes[li].seeds[slot]);
-            }
+            let l = &self.lanes[li];
+            self.shared.lane(li).set_seed(l.seed, l.prev_seed);
             for control in 0..CONTROLS_PER_LANE {
                 let position = self.lanes[li].positions[control];
                 self.set_control(li, control, position);
+            }
+            for control in 0..self.lanes[li].shift_controls.len() {
+                let position = self.lanes[li].shift_positions[control];
+                self.set_control(li, CONTROLS_PER_LANE + control, position);
             }
             self.shared.lane(li).set_option_pending(Some(self.lanes[li].option as u16));
         }
@@ -825,6 +945,8 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         key,
         progressions,
         default_progression,
+        forms,
+        default_form,
         glue: glue_params,
         drum_bus_fx,
         master_fx,
@@ -844,8 +966,8 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
     let mut sends = Vec::with_capacity(NUM_LANES);
     let mut setups = [LaneSetup::default(); NUM_LANES];
     for (li, m) in meta.into_iter().enumerate() {
-        // MUSICAL: see DEFAULT_SEED.
-        let seeds = [DEFAULT_SEED + li as u32; SLOTS_PER_CHAIN];
+        let seed = DEFAULT_SEED + li as u32;
+        let form = default_form.min(forms.len().saturating_sub(1));
         // The option trim is applied at the instrument (see `loader`), so the glue trim stays 0.
         setups[li] = LaneSetup { role: m.role, trim_db: 0.0, delay_send: m.sends.delay, reverb_send: m.sends.reverb };
         sends.push(m.sends);
@@ -853,10 +975,16 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
             name: m.name,
             role: m.role,
             positions: std::array::from_fn(|c| m.controls[c].spec.default),
+            shift_positions: std::array::from_fn(|c| m.shift_controls.get(c).map_or(0.5, |s| s.spec.default)),
             controls: m.controls,
-            seeds,
-            selected_slot: 0,
-            loop_len: DEFAULT_LOOP_LEN,
+            shift_controls: m.shift_controls,
+            seed,
+            prev_seed: seed,
+            seed_editing: false,
+            form,
+            octave: 0,
+            rate: Rate::Normal,
+            mutes: 0,
             option_names: m.option_names,
             option_available: m.option_available,
             option: m.default_option,
@@ -866,8 +994,9 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         render_lanes.push(RenderLane {
             role: m.role,
             generator: m.generator,
-            seeds,
-            loop_len: DEFAULT_LOOP_LEN,
+            seed,
+            form,
+            rate: Rate::Normal,
             params: m.gen_params,
             kits: m.drum_kits,
             kit: 0,
@@ -875,8 +1004,9 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
     }
 
     let n_progressions = progressions.len();
+    let form_names: Vec<String> = forms.iter().map(|f| f.to_string()).collect();
     let (mut renderer, render_tx, rings) =
-        BarRenderer::new(Arc::clone(&shared), render_lanes, progressions, key, default_progression, claps, trash_rx);
+        BarRenderer::new(Arc::clone(&shared), render_lanes, forms, progressions, key, default_progression, claps, trash_rx);
 
     let mut glue = GlueChain::new(max_block);
     glue.set_params(&glue_params);
@@ -916,6 +1046,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         style: name,
         tempo,
         lanes: controls,
+        forms: form_names,
         progressions: n_progressions,
         quantize: false,
         half_time: false,

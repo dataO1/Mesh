@@ -243,16 +243,15 @@ impl HarmonyState {
 // degree. The diminished chord (ii° in minor, vii° in major) never comes up.
 const MINOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 0.0, 2.0, 3.0, 2.0, 3.0, 3.0];
 const MAJOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 2.0, 1.0, 3.0, 3.0, 3.0, 0.0];
-/// Extra weight of the tonic on a loop's first slot, so loops mostly start home.
+/// Extra weight of the tonic on a progression's first chord, so it mostly starts home.
 const FIRST_SLOT_TONIC_BOOST: f32 = 12.0;
 /// RNG stream of the chord draw (separate from every generator stream).
 const S_CHORD: u32 = 0x50;
 
-/// Chord root (0-based scale degree) of one chain slot of a pitched lane.
-///
-/// Every slot draws its chord from its own seed, so a lane's loop is its own
-/// progression: reseeding a slot changes that bar's chord, reseeding the
-/// lane changes them all. Stays diatonic in the active mode.
+/// Chord root (0-based scale degree) of chord `slot` of a pitched lane's
+/// seeded progression ([`form_chord`](super::form::form_chord) draws its 4
+/// chords from the master seed). Reseeding the lane changes them all. Stays
+/// diatonic in the active mode.
 pub fn seeded_chord(seed: u32, lane: u8, slot: u8, minor: bool) -> u8 {
     let mut weights = if minor { MINOR_CHORD_WEIGHTS } else { MAJOR_CHORD_WEIGHTS };
     if slot == 0 {

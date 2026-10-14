@@ -31,12 +31,11 @@ use iced::{keyboard, time, window, Background, Border, Color, Element, Font, Len
 use mesh_core::live::command::LiveCommand;
 use mesh_core::live::engine::{LiveHandles, DEFAULT_TEMPO_RAMP_BARS};
 use mesh_core::live::glue::Role;
-use mesh_core::live::harmony::seeded_chord;
 use mesh_core::live::render::RendererHandle;
 use mesh_core::live::scope::SCOPE_POINTS;
-use mesh_core::live::state::{move_bits, LiveShared, SpanTag};
+use mesh_core::live::state::{move_bits, LiveShared, Rate, SpanTag};
 use mesh_core::live::style::{InstrumentSource, Style, CONTROLS_PER_LANE};
-use mesh_core::live::{slot_for_bar, DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN};
+use mesh_core::live::NUM_LANES;
 use mesh_core::recording::{RecordingEvent, RecordingHandle};
 use mesh_core::usb::{UsbDevice, UsbManager, UsbMessage};
 use mesh_widgets::scope::{scope, ScopeStyle};
@@ -46,6 +45,7 @@ use super::controls::{LiveControlSurface, SurfaceView};
 use super::header;
 use super::input::{self, InputThread, LiveCtl, SharedCtl};
 use super::keys::{self, KeyAction};
+use super::pads::{self, PadFn, PadLook, PADS};
 use super::readout::{self, mark, CodeLine, InstrumentKind, LaneFrame, LaneInfo};
 use super::startup::StyleProblem;
 
@@ -98,8 +98,8 @@ enum Screen {
 struct LaneTrack {
     controls: [f32; CONTROLS_PER_LANE],
     control_changed: [Option<Instant>; CONTROLS_PER_LANE],
-    seeds: [u32; SLOTS_PER_CHAIN],
-    seed_changed: [Option<Instant>; SLOTS_PER_CHAIN],
+    seed: u32,
+    seed_changed: Option<Instant>,
     fired_count: u32,
     fired: Option<(SpanTag, Instant)>,
     fill_at: Option<Instant>,
@@ -118,14 +118,11 @@ struct Frame {
     lines: [CodeLine; NUM_LANES],
     pulse: [f32; NUM_LANES],
     on: [bool; NUM_LANES],
-    selected_slot: [u8; NUM_LANES],
-    seeds: [[u32; SLOTS_PER_CHAIN]; NUM_LANES],
+    /// The lane's 8 pads as the F1 shows them (function and state).
+    pads: [[(PadFn, PadLook); PADS]; NUM_LANES],
     fill_flash: [bool; NUM_LANES],
     scopes: [Arc<[f32]>; NUM_LANES],
     scope_gain: [f32; NUM_LANES],
-    /// Per lane: slot playing this bar and loop length.
-    playing_slot: [u8; NUM_LANES],
-    loop_len: [u8; NUM_LANES],
     surface: SurfaceView,
 }
 
@@ -209,6 +206,7 @@ fn lane_infos(style: &Style, handles: &LiveHandles) -> [LaneInfo; NUM_LANES] {
                 .iter()
                 .map(|c| readout::control_info(&c.label, &c.spec, lc.role, &archetypes))
                 .collect(),
+            forms: handles.controller.forms().to_vec(),
         }
     })
 }
@@ -226,13 +224,10 @@ fn empty_frame() -> Frame {
         lines: Default::default(),
         pulse: [0.0; NUM_LANES],
         on: [true; NUM_LANES],
-        selected_slot: [0; NUM_LANES],
-        seeds: [[0; SLOTS_PER_CHAIN]; NUM_LANES],
+        pads: [[(PadFn::None, PadLook { level: 0.0, pending: false }); PADS]; NUM_LANES],
         fill_flash: [false; NUM_LANES],
         scopes: std::array::from_fn(|_| Arc::clone(&empty)),
         scope_gain: [1.0; NUM_LANES],
-        playing_slot: [0; NUM_LANES],
-        loop_len: [DEFAULT_LOOP_LEN; NUM_LANES],
         surface: SurfaceView::default(),
     }
 }
@@ -394,6 +389,25 @@ impl LiveApp {
         match action {
             KeyAction::SelectLane(l) => run.kb_lane = l,
             KeyAction::Command(cmd) => c.send(cmd),
+            KeyAction::SeedStep(delta) => {
+                c.send(LiveCommand::SeedDelta { lane, delta });
+                c.send(LiveCommand::EndSeedEdit { lane });
+            }
+            KeyAction::Pad(f) => {
+                let cmd = match f {
+                    PadFn::Mute(voice) => LiveCommand::ToggleDrumVoice { voice },
+                    PadFn::OctaveDown => LiveCommand::OctaveDelta { lane, delta: -1 },
+                    PadFn::OctaveUp => LiveCommand::OctaveDelta { lane, delta: 1 },
+                    PadFn::Rate(rate) => {
+                        let current = c.lane(lane as usize).rate;
+                        LiveCommand::SetRate { lane, rate: if current == rate { Rate::Normal } else { rate } }
+                    }
+                    PadFn::FormPrev => LiveCommand::FormDelta { lane, delta: -1 },
+                    PadFn::FormNext => LiveCommand::FormDelta { lane, delta: 1 },
+                    PadFn::None => return,
+                };
+                c.send(cmd);
+            }
             KeyAction::ControlDelta { control, delta } => {
                 let value = c.lane(lane as usize).positions[control as usize] + delta;
                 c.send(LiveCommand::SetControl { lane, control, value: value.clamp(0.0, 1.0) });
@@ -642,47 +656,26 @@ impl LiveApp {
         };
         let trace = scope(li as u64, Arc::clone(&f.scopes[li]), scope_style, Length::Fill, Length::Fill);
 
-        // Chain grid: bars 1–4 on top, 5–8 below. Bars past the loop length are dim.
-        let mut rows = [row![].spacing(6).height(Length::Fill), row![].spacing(6).height(Length::Fill)];
-        for slot in 0..SLOTS_PER_CHAIN {
-            let playing = on && f.playing_slot[li] as usize == slot;
-            let beyond = slot >= f.loop_len[li] as usize;
-            let sel = f.selected_slot[li] as usize == slot;
-            let flash = playing && f.fill_flash[li];
-            let bg = if flash {
-                Color::WHITE
-            } else if playing {
-                with_alpha(color, 0.85)
-            } else if beyond {
-                with_alpha(ui.text, 0.02)
-            } else if on {
-                with_alpha(color, 0.15)
-            } else {
-                with_alpha(ui.text, 0.05)
-            };
-            let fg = if playing || flash {
-                ui.background
-            } else if beyond {
-                with_alpha(ui.text, 0.25)
-            } else {
-                text_color
-            };
-            let cell = container(text(format!("{}", f.seeds[li][slot])).font(MONO).size(size * 0.8).color(fg))
+        // Pad mirror: the lane's 8 F1 pads, 2 wide and 4 high like the hardware.
+        let blink_on = (run.shared.clock().step / 2) % 2 == 0;
+        let mut rows: Vec<iced::widget::Row<'_, Message>> = (0..4).map(|_| row![].spacing(6).height(Length::Fill)).collect();
+        for (i, &(pf, look)) in f.pads[li].iter().enumerate() {
+            let level = pads::shown_level(look, blink_on);
+            let level = if on { level } else { level * 0.3 };
+            let lit = level >= 0.5;
+            let bg = if pf == PadFn::None { with_alpha(ui.text, 0.02) } else { with_alpha(color, 0.05 + 0.8 * level) };
+            let fg = if lit { ui.background } else { text_color };
+            let cell = container(text(pads::label(pf)).font(MONO).size(size * 0.7).color(fg))
                 .center(Length::Fill)
                 .style(move |_| container::Style {
                     background: Some(Background::Color(bg)),
-                    border: Border {
-                        color: if sel { ui.text } else { with_alpha(color, 0.4) },
-                        width: if sel { 2.0 } else { 1.0 },
-                        radius: 4.0.into(),
-                    },
+                    border: Border { color: with_alpha(color, 0.4), width: 1.0, radius: 4.0.into() },
                     ..Default::default()
                 });
-            let r = &mut rows[slot / 4];
+            let r = &mut rows[i / 2];
             *r = std::mem::replace(r, row![]).push(cell);
         }
-        let [top, bottom] = rows;
-        let chain = column![top, bottom].spacing(6).height(Length::Fill);
+        let chain = rows.into_iter().fold(column![].spacing(6).height(Length::Fill), |c, r| c.push(r));
 
         let body = row![
             container(code).width(Length::FillPortion(6)).center_y(Length::Fill),
@@ -759,14 +752,8 @@ impl Running {
         f.intent = header::intent_text(key, pending, shared.intent_key());
         f.bpm = header::bpm_text(&clock);
         f.half_time = header::half_time_text(shared.half_time(), shared.half_time_target());
-        // Each pitched lane plays the seeded chord of its current slot.
-        let chords: Vec<u8> = (1..NUM_LANES)
-            .map(|li| {
-                let v = shared.lane(li).view();
-                let slot = slot_for_bar(clock.bar, v.loop_len);
-                seeded_chord(v.seeds[slot], li as u8, slot as u8, key.minor)
-            })
-            .collect();
+        // Each pitched lane plays the chord its form gives the bar.
+        let chords: Vec<u8> = (1..NUM_LANES).map(|li| shared.lane(li).view().pos.chord).collect();
         f.chords = header::chords_text(&chords);
         f.phrase = header::phrase_cells(clock.bar_in_phrase);
         f.quantize = shared.quantize();
@@ -783,10 +770,8 @@ impl Running {
                         tr.control_changed[c] = Some(now);
                     }
                 }
-                for s in 0..SLOTS_PER_CHAIN {
-                    if view.seeds[s] != tr.seeds[s] {
-                        tr.seed_changed[s] = Some(now);
-                    }
+                if view.seed != tr.seed {
+                    tr.seed_changed = Some(now);
                 }
                 if view.fired.count != tr.fired_count {
                     tr.fired = Some((view.fired.tag, now));
@@ -797,24 +782,24 @@ impl Running {
             }
             tr.seen = true;
             tr.controls = view.controls;
-            tr.seeds = view.seeds;
+            tr.seed = view.seed;
             tr.fired_count = view.fired.count;
 
             let firing = tr.fired.filter(|(_, t)| now.duration_since(*t) < FIRE_PULSE);
             f.pulse[li] = firing.map(|(_, t)| 1.0 - now.duration_since(t).as_secs_f32() / FIRE_PULSE.as_secs_f32()).unwrap_or(0.0);
             let frame = LaneFrame {
                 view,
-                playing_slot: slot_for_bar(clock.bar, view.loop_len) as u8,
                 changed_controls: std::array::from_fn(|c| recent(tr.control_changed[c], CHANGED_HOLD)),
-                changed_seeds: std::array::from_fn(|s| recent(tr.seed_changed[s], CHANGED_HOLD)),
+                changed_seed: recent(tr.seed_changed, CHANGED_HOLD),
                 firing: firing.map(|(tag, _)| tag),
             };
             f.lines[li] = readout::format_lane(&self.lanes[li], &frame);
             f.on[li] = view.on;
-            f.selected_slot[li] = view.selected_slot;
-            f.playing_slot[li] = frame.playing_slot;
-            f.loop_len[li] = view.loop_len;
-            f.seeds[li] = view.seeds;
+            let shift = surface.shift;
+            f.pads[li] = std::array::from_fn(|p| {
+                let pf = pads::pad_fn(li == 0, p, shift);
+                (pf, pads::look(&view, pf))
+            });
             f.fill_flash[li] = view.moves & move_bits::FILL != 0 || recent(tr.fill_at, FIRE_PULSE);
 
             lane.scope().snapshot(&mut self.scope_buf);

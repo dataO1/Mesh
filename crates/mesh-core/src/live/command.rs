@@ -4,8 +4,8 @@
 //! [`LiveController`](super::engine::LiveController) applies each one to its
 //! non-RT state and routes the effect:
 //!
-//! - structural inputs (seeds, generator parameters, key, progression,
-//!   half-time) go to the bar renderer,
+//! - structural inputs (seeds, forms, rates, generator parameters, key,
+//!   progression, half-time) go to the bar renderer,
 //! - everything the audio thread must act on goes over an `rtrb` ring as an
 //!   [`RtMsg`], already resolved through the style's control mapping so the
 //!   RT side only stores numbers.
@@ -16,7 +16,8 @@ use crate::types::StereoSample;
 use super::capture::{Capture, CaptureScope};
 use super::glue::{GlueParams, Role};
 use super::sampler::{LaneSamplerParams, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ};
-use super::state::move_bits;
+use super::generator::layout::DrumVoice;
+use super::state::{move_bits, Rate};
 use super::style::SendBus;
 
 /// Capacity of the controller → RT message ring.
@@ -51,20 +52,31 @@ impl MoveKind {
 
 /// A performance command from the UI or the controller surface.
 pub enum LiveCommand {
-    /// Pick the chain slot the seed encoder edits.
-    SelectSlot { lane: u8, slot: u8 },
-    /// Set one slot's seed. Lands on the next bar that plays the slot.
-    SetSlotSeed { lane: u8, slot: u8, seed: u32 },
-    /// Step the selected slot's seed (encoder).
+    /// Set the lane's master seed. Lands on the next bar.
+    SetSeed { lane: u8, seed: u32 },
+    /// Step the master seed (Play B held + encoder). The seed before the
+    /// first step of an edit becomes the previous seed.
     SeedDelta { lane: u8, delta: i32 },
-    /// Step every slot's seed of the lane by the same amount: new material for
-    /// the whole chain, keeping which bars repeat and which vary.
-    LaneSeedDelta { lane: u8, delta: i32 },
-    /// Loop the lane's first `len` slots. Snapped down to 1, 2, 4 or 8
-    /// ([`snap_loop_len`](super::snap_loop_len)). Lands on the next bar.
-    SetLoopLen { lane: u8, len: u8 },
-    /// Move performance control `control` (0..4) to `value` (0..=1). Routed
-    /// through the style's control mapping.
+    /// The seed edit is over (Play B released): the next step starts a new one.
+    EndSeedEdit { lane: u8 },
+    /// Swap the master seed with the previous one (Play B tap).
+    SwapSeed { lane: u8 },
+    /// Select a form. Lands on the next phrase boundary.
+    SetForm { lane: u8, form: u16 },
+    /// Step through the style's forms (pads 5/6, Shift + drum pads 7/8).
+    FormDelta { lane: u8, delta: i32 },
+    /// Step a pitched lane's octave offset (−2..=2). Applies from the next note.
+    OctaveDelta { lane: u8, delta: i8 },
+    /// Octave offset back to 0.
+    ResetOctave { lane: u8 },
+    /// Note rate of a pitched lane. Lands on the next bar.
+    SetRate { lane: u8, rate: Rate },
+    /// Mute or unmute one drum voice. Lands on the next bar (immediately
+    /// when Quant is off).
+    ToggleDrumVoice { voice: DrumVoice },
+    /// Move performance control `control` to `value` (0..=1). `0..4` is the
+    /// main layer, `4..8` the Shift layer. Routed through the style's
+    /// control mapping.
     SetControl { lane: u8, control: u8, value: f32 },
     SetLaneOn { lane: u8, on: bool },
     ToggleLane { lane: u8 },
@@ -245,6 +257,11 @@ pub enum RtMsg {
     Option { lane: u8, option: u16 },
     /// Instrument parameter driven by performance control `control`.
     InstrumentParam { lane: u8, control: u8, param: u32, value: f32 },
+    /// Octave offset of a pitched lane's notes.
+    Octave { lane: u8, octave: i8 },
+    /// Drum voices to mute (bit per [`DrumVoice`]), at the next bar
+    /// (`quantized`) or now.
+    DrumMutes { mutes: u8, quantized: bool },
     FxParam { lane: u8, slot: u8, param: u32, value: f32 },
     Glue { lane: u8, control: GlueControl, value: f32 },
     Send { lane: u8, bus: SendBus, level: f32 },

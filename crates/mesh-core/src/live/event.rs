@@ -121,4 +121,9 @@ impl BarEvents {
     pub fn as_slice(&self) -> &[LiveEvent] {
         &self.events[..self.len as usize]
     }
+
+    /// Edit events in place. Callers keep them sorted by tick.
+    pub fn as_mut_slice(&mut self) -> &mut [LiveEvent] {
+        &mut self.events[..self.len as usize]
+    }
 }

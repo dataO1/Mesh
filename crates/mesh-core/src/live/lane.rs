@@ -27,7 +27,7 @@ use crate::types::{StereoBuffer, StereoSample};
 use super::clock::ClockSegment;
 use super::command::SamplerParam;
 use super::event::{flags, EventKind, LiveEvent};
-use super::generator::layout;
+use super::generator::layout::{self, DrumLayout, DrumVoice};
 use super::glue::{Role, SaturationParams, Saturator};
 use super::player::EventSink;
 use super::sampler::{Interpolation, LaneSamplerParams, SampleBank, Sampler};
@@ -37,8 +37,7 @@ use super::TICKS_PER_STEP;
 
 // ─── Drum-lane target layout ───────────────────────────────────────────
 
-// The numbering is the generators' convention, see `generator::layout`:
-// backbone 0..8 (0 kick, 1 snare), hats 8..16, perc 16..24, break slices 32..96.
+// The numbering is the generators' convention, see `generator::layout`.
 pub const DRUM_TARGET_BACKBONE: u8 = layout::BACKBONE_BASE;
 pub const DRUM_TARGET_HATS: u8 = layout::HATS_BASE;
 pub const DRUM_TARGET_PERC: u8 = layout::PERC_BASE;
@@ -46,22 +45,20 @@ pub const DRUM_TARGET_BREAK: u8 = layout::BREAK_BASE;
 
 /// `(first target, target count)` of a drum sub-voice.
 pub fn drum_target_range(kind: SubVoiceKind) -> (u8, u8) {
-    match kind {
-        SubVoiceKind::Backbone => (DRUM_TARGET_BACKBONE, layout::BLOCK_LEN),
-        SubVoiceKind::Hats => (DRUM_TARGET_HATS, layout::BLOCK_LEN),
-        SubVoiceKind::Perc => (DRUM_TARGET_PERC, layout::BLOCK_LEN),
-        SubVoiceKind::Break => (DRUM_TARGET_BREAK, layout::MAX_BREAK_SLICES as u8),
-    }
+    layout::target_range(kind)
 }
 
 /// Highlight tag of a fired event (see [`SpanTag`]).
 pub fn span_tag(role: Role, ev: &LiveEvent) -> SpanTag {
     if role == Role::Drums {
-        match ev.target {
-            t if t < DRUM_TARGET_HATS => SpanTag::Backbone,
-            t if t < DRUM_TARGET_PERC => SpanTag::Hats,
-            t if t < DRUM_TARGET_BREAK => SpanTag::Perc,
-            _ => SpanTag::Break,
+        match DrumVoice::of_target(ev.target) {
+            Some(DrumVoice::Kick | DrumVoice::Snare) => SpanTag::Backbone,
+            Some(DrumVoice::Hats) => SpanTag::Hats,
+            Some(DrumVoice::Ride) => SpanTag::Ride,
+            Some(DrumVoice::Shaker) => SpanTag::Shaker,
+            Some(DrumVoice::Perc) => SpanTag::Perc,
+            Some(DrumVoice::Top) => SpanTag::Top,
+            Some(DrumVoice::Break) | None => SpanTag::Break,
         }
     } else if ev.has(flags::TIE) {
         SpanTag::Tie
@@ -565,6 +562,8 @@ pub struct LaneInit {
     /// glue after the lane's dynamics. Missing entries are unity.
     pub output_gains: Vec<f32>,
     pub default_option: usize,
+    /// Drum lane: target layout per kit option. Empty on other lanes.
+    pub kit_layouts: Vec<DrumLayout>,
 }
 
 /// One lane on the RT thread.
@@ -600,7 +599,15 @@ pub struct Lane {
     /// Frames a silent lane keeps rendering.
     tail_left: u32,
     /// `(param, value)` last set by each performance control.
-    inst_controls: [Option<(u32, f32)>; CONTROLS_PER_LANE],
+    /// Main then Shift-layer controls.
+    inst_controls: [Option<(u32, f32)>; 2 * CONTROLS_PER_LANE],
+    /// Octave offset added to pitched notes, −2..=2.
+    octave: i8,
+    /// Drum voices muted now / at the next bar (bit per [`DrumVoice`]).
+    mutes: u8,
+    pending_mutes: Option<u8>,
+    /// Drum lane: layout of each kit option (choke groups to fade on a mute).
+    kit_layouts: Vec<DrumLayout>,
     kick_triggers: [u32; MAX_KICK_TRIGGERS],
     kick_len: usize,
     snare_triggers: [u32; MAX_KICK_TRIGGERS],
@@ -641,7 +648,11 @@ impl Lane {
             gain: 1.0,
             fade_step: 1.0,
             tail_left: 0,
-            inst_controls: [None; CONTROLS_PER_LANE],
+            inst_controls: [None; 2 * CONTROLS_PER_LANE],
+            octave: 0,
+            mutes: 0,
+            pending_mutes: None,
+            kit_layouts: init.kit_layouts,
             kick_triggers: [0; MAX_KICK_TRIGGERS],
             kick_len: 0,
             snare_triggers: [0; MAX_KICK_TRIGGERS],
@@ -752,6 +763,41 @@ impl Lane {
         }
     }
 
+    /// Octave offset of pitched notes, from the next note on.
+    pub fn set_octave(&mut self, octave: i8) {
+        self.octave = octave.clamp(-2, 2);
+    }
+
+    /// Drum voices to mute, at the next bar (`quantized`) or now.
+    pub fn set_mutes(&mut self, mutes: u8, quantized: bool) {
+        if quantized {
+            self.pending_mutes = (mutes != self.mutes).then_some(mutes);
+        } else {
+            self.pending_mutes = None;
+            self.apply_mutes(mutes, 0);
+        }
+    }
+
+    /// Muted drum voices of the playing bar.
+    pub fn mutes(&self) -> u8 {
+        self.mutes
+    }
+
+    fn apply_mutes(&mut self, mutes: u8, offset: u32) {
+        let newly = mutes & !self.mutes;
+        self.mutes = mutes;
+        // Loops and slices ring on; fade their choke group.
+        if let Some(layout) = self.kit_layouts.get(self.option).copied() {
+            for v in DrumVoice::ALL {
+                let group = v.choke(&layout);
+                if newly & v.bit() != 0 && group != 0 {
+                    let choke = LiveEvent { kind: EventKind::Choke, choke: group, ..Default::default() };
+                    self.sampler.handle_event(&choke, offset);
+                }
+            }
+        }
+    }
+
     /// Queue an option swap for the next bar.
     pub fn queue_option(&mut self, option: usize) {
         if option < self.options.len() {
@@ -766,6 +812,9 @@ impl Lane {
         }
         if let Some(on) = self.pending_on.take() {
             self.switch(on, QUANTIZED_FADE_SECS, offset);
+        }
+        if let Some(mutes) = self.pending_mutes.take() {
+            self.apply_mutes(mutes, offset);
         }
     }
 
@@ -939,6 +988,22 @@ impl EventSink for Lane {
             return;
         }
         let onset = matches!(ev.kind, EventKind::Trigger | EventKind::NoteOn);
+        if self.role == Role::Drums
+            && self.mutes != 0
+            && onset
+            && DrumVoice::of_target(ev.target).is_some_and(|v| self.mutes & v.bit() != 0)
+        {
+            return;
+        }
+        let shifted;
+        let ev = if self.octave != 0 && matches!(ev.kind, EventKind::NoteOn | EventKind::NoteOff) && ev.key > 0 {
+            let mut e = *ev;
+            e.key = (e.key as i32 + 12 * self.octave as i32).clamp(1, 127) as u8;
+            shifted = e;
+            &shifted
+        } else {
+            ev
+        };
         if onset {
             self.last_fired = Some((span_tag(self.role, ev), fill));
             self.fired_count += 1;
@@ -1063,9 +1128,12 @@ mod tests {
 
         let hit = |target| LiveEvent { target, ..Default::default() };
         assert_eq!(span_tag(Role::Drums, &hit(1)), SpanTag::Backbone);
-        assert_eq!(span_tag(Role::Drums, &hit(40)), SpanTag::Break);
+        assert_eq!(span_tag(Role::Drums, &hit(layout::BREAK_BASE + 8)), SpanTag::Break);
         assert_eq!(span_tag(Role::Drums, &hit(9)), SpanTag::Hats);
-        assert_eq!(span_tag(Role::Drums, &hit(17)), SpanTag::Perc);
+        assert_eq!(span_tag(Role::Drums, &hit(layout::PERC_BASE + 1)), SpanTag::Perc);
+        assert_eq!(span_tag(Role::Drums, &hit(layout::RIDE_BASE)), SpanTag::Ride);
+        assert_eq!(span_tag(Role::Drums, &hit(layout::SHAKER_BASE)), SpanTag::Shaker);
+        assert_eq!(span_tag(Role::Drums, &hit(layout::TOP_BASE)), SpanTag::Top);
         let mut tie = hit(0);
         tie.flags = flags::TIE;
         assert_eq!(span_tag(Role::Bass, &tie), SpanTag::Tie);

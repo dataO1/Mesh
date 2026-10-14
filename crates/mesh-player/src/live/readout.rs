@@ -5,11 +5,12 @@
 //! The view turns the ranges into rich-text spans; nothing is parsed.
 //!
 //! ```text
-//! drums.kit("clean-kit").s("bone brk hats perc").style("rolling").dens(0.62).seed[ 50  50  51 ⟨ 77⟩ 50  50  51  77 ].len(4)
-//! bass.sampler("reese-sample").cx(0.40).dens(0.50).drive(0.40).duck(0.50).seed[⟨ 51⟩ 51  51  51  51  51  51  51 ].len(4)
+//! drums.kit("clean-kit").s("kick snare hats ride shaker perc top brk").style("rolling").dens(0.62).seed(  77).form("A7 C1")
+//! bass.sampler("reese-sample").cx(0.40).dens(0.50).drive(0.40).duck(0.50).seed(  51).form("A3 B1").oct(+1).rate("half")
 //! ```
 //!
-//! Seeds past the loop length (`.len`) are marked [`mark::BEYOND`] and shown dim.
+//! The playing segment of the form is marked [`mark::PLAYING`], muted drum
+//! voices [`mark::MUTED`], a queued form or mute [`mark::PENDING`].
 //!
 //! Every token whose content can change is padded to a fixed width, so with
 //! a monospace font the line never shifts while values move.
@@ -17,19 +18,19 @@
 use std::ops::Range;
 
 use mesh_core::live::glue::Role;
-use mesh_core::live::state::{move_bits, LaneView, SpanTag};
+use mesh_core::live::generator::layout::DrumVoice;
+use mesh_core::live::state::{move_bits, LaneView, Rate, SpanTag};
 use mesh_core::live::style::{ControlSpec, ControlTarget, CONTROLS_PER_LANE};
-use mesh_core::live::SLOTS_PER_CHAIN;
 
 /// Highlight flags of a text range (combinable).
 pub mod mark {
-    /// Selected chain slot (seed the encoder edits).
+    /// Selected element (unused by the lane line, kept for the view).
     pub const SELECTED: u8 = 1 << 0;
     /// Value changed recently (its control is moving).
     pub const CHANGED: u8 = 1 << 1;
     /// Part that fired an event just now.
     pub const FIRING: u8 = 1 << 2;
-    /// Chain slot playing in this bar.
+    /// Form segment playing in this bar.
     pub const PLAYING: u8 = 1 << 3;
     /// Queued for the next bar (option browse, lane toggle).
     pub const PENDING: u8 = 1 << 4;
@@ -37,7 +38,7 @@ pub mod mark {
     pub const MUTED: u8 = 1 << 5;
     /// Momentary move held.
     pub const MOVE: u8 = 1 << 6;
-    /// Chain slot past the lane's loop length (does not play).
+    /// Dimmed text (unused by the lane line, kept for the view).
     pub const BEYOND: u8 = 1 << 7;
 }
 
@@ -78,9 +79,16 @@ pub struct LaneInfo {
     /// Instrument kind per option (same length as `option_names`).
     pub option_kinds: Vec<InstrumentKind>,
     pub controls: Vec<ControlInfo>,
+    /// The style's forms as text (`"A7 C1"`), index = form.
+    pub forms: Vec<String>,
 }
 
 impl LaneInfo {
+    /// Width of the form token, so form changes keep the layout.
+    fn form_width(&self) -> usize {
+        self.forms.iter().map(|f| f.chars().count() + 9).max().unwrap_or(0)
+    }
+
     /// Width of the instrument token, so option changes keep the layout.
     fn option_width(&self) -> usize {
         self.option_names
@@ -92,9 +100,17 @@ impl LaneInfo {
     }
 }
 
-/// Words of the drum lane's voice token, by [`SpanTag`].
-const DRUM_VOICES: [(SpanTag, &str); 4] =
-    [(SpanTag::Backbone, "bone"), (SpanTag::Break, "brk"), (SpanTag::Hats, "hats"), (SpanTag::Perc, "perc")];
+/// The drum lane's voice token: word and the tag its events fire with.
+const DRUM_VOICES: [(DrumVoice, SpanTag, &str); 8] = [
+    (DrumVoice::Kick, SpanTag::Backbone, "kick"),
+    (DrumVoice::Snare, SpanTag::Backbone, "snare"),
+    (DrumVoice::Hats, SpanTag::Hats, "hats"),
+    (DrumVoice::Ride, SpanTag::Ride, "ride"),
+    (DrumVoice::Shaker, SpanTag::Shaker, "shaker"),
+    (DrumVoice::Perc, SpanTag::Perc, "perc"),
+    (DrumVoice::Top, SpanTag::Top, "top"),
+    (DrumVoice::Break, SpanTag::Break, "brk"),
+];
 
 /// Move tokens appended while held, by [`move_bits`].
 const MOVES: [(u8, &str); 4] = [
@@ -108,12 +124,10 @@ const MOVES: [(u8, &str); 4] = [
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LaneFrame {
     pub view: LaneView,
-    /// Chain slot playing in this bar (bar % loop length).
-    pub playing_slot: u8,
     /// Controls whose position changed recently.
     pub changed_controls: [bool; CONTROLS_PER_LANE],
-    /// Slots whose seed changed recently.
-    pub changed_seeds: [bool; SLOTS_PER_CHAIN],
+    /// The master seed changed recently.
+    pub changed_seed: bool,
     /// Tag of an event fired just now.
     pub firing: Option<SpanTag>,
 }
@@ -214,11 +228,21 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
 
     if info.role == Role::Drums {
         line.push(".s(\"", 0);
-        for (i, (tag, word)) in DRUM_VOICES.iter().enumerate() {
+        for (i, (voice, tag, word)) in DRUM_VOICES.iter().enumerate() {
             if i > 0 {
                 line.push(" ", 0);
             }
-            line.push(word, if f.firing == Some(*tag) { mark::FIRING } else { 0 });
+            let bit = voice.bit();
+            let mut flags = 0;
+            if v.mutes_playing & bit != 0 {
+                flags |= mark::MUTED;
+            } else if f.firing == Some(*tag) {
+                flags |= mark::FIRING;
+            }
+            if (v.mutes ^ v.mutes_playing) & bit != 0 {
+                flags |= mark::PENDING;
+            }
+            line.push(word, flags);
         }
         line.push("\")", 0);
     }
@@ -238,27 +262,35 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
         }
     }
 
-    line.push(".seed[", 0);
-    for slot in 0..SLOTS_PER_CHAIN {
-        let selected = v.selected_slot as usize == slot;
-        let mut flags = 0;
-        if selected {
-            flags |= mark::SELECTED;
+    line.push(&format!(".seed({:>4})", v.seed % 10_000), if f.changed_seed { mark::CHANGED } else { 0 });
+
+    // Form: the queued one while pending, its playing segment marked.
+    let start = line.text.len();
+    let pending = v.form_pending.is_some();
+    let shown = v.form_pending.unwrap_or(v.form) as usize;
+    line.push(".form(\"", if pending { mark::PENDING } else { 0 });
+    if let Some(form) = info.forms.get(shown) {
+        for (i, segment) in form.split_whitespace().enumerate() {
+            if i > 0 {
+                line.push(" ", 0);
+            }
+            let playing = !pending && v.on && i == v.pos.segment as usize;
+            let flags = if pending { mark::PENDING } else if playing { mark::PLAYING } else { 0 };
+            line.push(segment, flags);
         }
-        if f.playing_slot as usize == slot && v.on {
-            flags |= mark::PLAYING;
-        }
-        if f.changed_seeds[slot] {
-            flags |= mark::CHANGED;
-        }
-        if slot >= v.loop_len as usize {
-            flags |= mark::BEYOND;
-        }
-        let (open, close) = if selected { ("⟨", "⟩") } else { (" ", " ") };
-        line.push(&format!("{open}{:>3}{close}", v.seeds[slot]), flags);
     }
-    line.push("]", 0);
-    line.push(&format!(".len({})", v.loop_len), 0);
+    line.push("\")", if pending { mark::PENDING } else { 0 });
+    line.pad_to(start, info.form_width());
+
+    if info.role != Role::Drums {
+        line.push(&format!(".oct({:+})", v.octave), 0);
+        let rate = match v.rate {
+            Rate::Normal => "norm",
+            Rate::Half => "half",
+            Rate::Double => "dbl ",
+        };
+        line.push(&format!(".rate(\"{rate}\")"), 0);
+    }
 
     for (bit, token) in MOVES {
         if v.moves & bit != 0 {
@@ -284,7 +316,7 @@ pub fn control_info(label: &str, spec: &ControlSpec, role: Role, archetypes: &[S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_core::live::state::FiredView;
+    use mesh_core::live::state::{FiredView, FormView};
     use mesh_core::live::style::Curve;
 
     fn spec(target: ControlTarget) -> ControlSpec {
@@ -308,6 +340,7 @@ mod tests {
                 control_info("cut", &ControlSpec { min: 20.0, max: 2000.0, ..spec(generator("x")) }, Role::Drums, &arch),
                 control_info("verb", &spec(generator("y")), Role::Drums, &arch),
             ],
+            forms: forms(),
         }
     }
 
@@ -321,17 +354,29 @@ mod tests {
                 .iter()
                 .map(|l| control_info(l, &spec(generator(l)), Role::Bass, &[]))
                 .collect(),
+            forms: forms(),
         }
+    }
+
+    fn forms() -> Vec<String> {
+        vec!["A3 B1".into(), "A7 B1 A'7 C1".into()]
     }
 
     fn view() -> LaneView {
         LaneView {
             on: true,
             on_target: true,
-            selected_slot: 3,
-            seeds: [50, 50, 51, 77, 60, 61, 62, 63],
-            loop_len: 4,
+            seed: 77,
+            prev_seed: 50,
+            form: 1,
+            form_pending: None,
+            pos: FormView { segment: 1, letter: 1, prime: false, chord: 0 },
+            octave: 0,
+            rate: Rate::Normal,
+            mutes: 0,
+            mutes_playing: 0,
             controls: [0.5, 0.62, 0.0, 0.25],
+            shift_controls: [0.5; 4],
             option: 0,
             option_pending: None,
             active_step: 0,
@@ -342,13 +387,7 @@ mod tests {
     }
 
     fn frame(view: LaneView) -> LaneFrame {
-        LaneFrame {
-            view,
-            playing_slot: 1,
-            changed_controls: [false; 4],
-            changed_seeds: [false; SLOTS_PER_CHAIN],
-            firing: None,
-        }
+        LaneFrame { view, changed_controls: [false; 4], changed_seed: false, firing: None }
     }
 
     fn marked<'a>(line: &'a CodeLine, flag: u8) -> Vec<&'a str> {
@@ -360,12 +399,12 @@ mod tests {
         let line = format_lane(&drums(), &frame(view()));
         assert_eq!(
             line.text,
-            "drums.kit(\"clean-kit\").s(\"bone brk hats perc\").style(\"rolling\")  .dens(0.62).cut(20.0)\
-             .verb(0.25).seed[  50   50   51 ⟨ 77⟩  60   61   62   63 ].len(4)"
+            "drums.kit(\"clean-kit\").s(\"kick snare hats ride shaker perc top brk\").style(\"rolling\")  .dens(0.62)\
+             .cut(20.0).verb(0.25).seed(  77).form(\"A7 B1 A'7 C1\")"
         );
-        assert_eq!(marked(&line, mark::SELECTED), vec!["⟨ 77⟩"]);
-        assert_eq!(marked(&line, mark::PLAYING), vec!["  50 "]);
-        assert_eq!(marked(&line, mark::BEYOND), vec!["  60 ", "  61 ", "  62 ", "  63 "], "past the 4-bar loop");
+        assert_eq!(marked(&line, mark::PLAYING), vec!["B1"], "segment 1 plays");
+        let line = format_lane(&bass(), &frame(view()));
+        assert!(line.text.ends_with(".seed(  77).form(\"A7 B1 A'7 C1\").oct(+0).rate(\"norm\")"), "{}", line.text);
     }
 
     #[test]
@@ -374,7 +413,8 @@ mod tests {
         let base = format_lane(&info, &frame(view()));
         let mut v = view();
         v.controls = [1.0, 0.07, 1.0, 0.99];
-        v.selected_slot = 0;
+        v.seed = 3;
+        v.form = 0;
         v.option = 1;
         let moved = format_lane(&info, &frame(v));
         assert_eq!(base.text.chars().count(), moved.text.chars().count());
@@ -387,10 +427,10 @@ mod tests {
     fn changed_values_and_firing_parts_are_marked() {
         let mut f = frame(view());
         f.changed_controls[1] = true;
-        f.changed_seeds[3] = true;
+        f.changed_seed = true;
         f.firing = Some(SpanTag::Hats);
         let line = format_lane(&drums(), &f);
-        assert_eq!(marked(&line, mark::CHANGED), vec![".dens(0.62)", "⟨ 77⟩"]);
+        assert_eq!(marked(&line, mark::CHANGED), vec![".dens(0.62)", ".seed(  77)"]);
         assert_eq!(marked(&line, mark::FIRING), vec!["hats"]);
 
         let mut f = frame(view());
@@ -428,20 +468,25 @@ mod tests {
     }
 
     #[test]
-    fn loop_length_shows_and_dims_the_slots_past_it() {
+    fn mutes_pending_forms_octave_and_rate() {
         let mut v = view();
-        v.loop_len = 2;
-        let mut f = frame(v);
-        f.playing_slot = 1;
-        let line = format_lane(&bass(), &f);
-        assert!(line.text.ends_with(".len(2)"), "{}", line.text);
-        assert_eq!(marked(&line, mark::BEYOND).len(), 6);
-        assert_eq!(marked(&line, mark::PLAYING), vec!["  50 "]);
+        v.mutes = DrumVoice::Hats.bit() | DrumVoice::Top.bit();
+        v.mutes_playing = DrumVoice::Hats.bit();
+        let line = format_lane(&drums(), &frame(v));
+        assert_eq!(marked(&line, mark::MUTED), vec!["hats"]);
+        assert_eq!(marked(&line, mark::PENDING), vec!["top"], "mute lands on the next bar");
+
+        let mut v = view();
+        v.form_pending = Some(0);
+        v.octave = -2;
+        v.rate = Rate::Double;
+        let line = format_lane(&bass(), &frame(v));
+        assert!(line.text.contains(".form(\"A3 B1\")"), "{}", line.text);
+        assert!(marked(&line, mark::PENDING).contains(&"A3"), "queued form shown pending");
+        assert!(marked(&line, mark::PLAYING).is_empty());
+        assert!(line.text.ends_with(".oct(-2).rate(\"dbl \")"), "{}", line.text);
         let base = format_lane(&bass(), &frame(view()));
-        v.loop_len = 8;
-        let long = format_lane(&bass(), &frame(v));
-        assert!(marked(&long, mark::BEYOND).is_empty());
-        assert_eq!(base.text.chars().count(), long.text.chars().count(), "length change keeps the layout");
+        assert_eq!(base.text.chars().count(), line.text.chars().count(), "form and rate keep the layout");
     }
 
     #[test]

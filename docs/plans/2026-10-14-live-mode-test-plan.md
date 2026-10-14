@@ -33,7 +33,7 @@ direnv exec . cargo run --release -p mesh-player -- --live ~/Music/mesh-live-dev
 |---|---|---|
 | A1 | Style loads, audio starts, no xruns for 10 minutes | No dropouts, `starved` stays 0 |
 | A2 | Each lane alone (mute the others): drums, bass, lead, extra | Each sounds clean, no clicks at slice edges or note ends |
-| A3 | Kit browse on drums (hold play A + encoder, release) | Swap lands on the bar, no gap, no click |
+| A3 | Kit browse on drums (hold Size + encoder, release) | Kick/snare pair and break swap on the bar, the pools stay, no gap, no click |
 | A4 | Bass option swap sampler ↔ Surge XT | Swap at the bar, Surge plays notes, glide works on tied notes |
 | A5 | Relative levels of the 4 lanes after `style-calibrate` | No lane buried or dominant at default controls |
 | A6 | Glue: kick ducks the bass, sub stays mono, drum bus glue, master limiter | Low end is clean, no pumping artefacts, master never clips |
@@ -45,7 +45,7 @@ direnv exec . cargo run --release -p mesh-player -- --live ~/Music/mesh-live-dev
 | ID | Check | Pass when |
 |---|---|---|
 | B1 | Timing tightness of all lanes against each other | No flams, no drift over 10 minutes |
-| B2 | Seed change (encoder) lands on the next bar | Never mid-bar |
+| B2 | Seed change (hold Play B + encoder) lands on the next bar; a Play B tap returns to the previous seed | Never mid-bar, the tap swaps back and forth |
 | B3 | Lane toggle with Quant on vs off | On: lands on the bar. Off: immediate, short fade |
 | B4 | Key intent: Shift + left fader 1 up and down | Target key shows in the header and on the 7-segment, nothing changes until commit |
 | B5 | Commit key (Shift + encoder push) | Change lands on the next phrase start, all pitched lanes move together, rhythm unchanged |
@@ -61,7 +61,7 @@ direnv exec . cargo run --release -p mesh-player -- --live ~/Music/mesh-live-dev
 | C1 | Does procedural output sound musical or random at default settings? | Overall verdict for D42. If random, try the idiom family |
 | C2 | Style knob: blend between archetypes, or hard switch? | `generator.params.blend` (0/1) |
 | C3 | Archetype order half-time → two-step → rolling → jungle → hardcore | `archetypes:` list |
-| C4 | Density sweep: does it fall back to the backbone cleanly? | Drums fader A |
+| C4 | Density sweep: voices come in in order (hats/perc, shaker, ride, top loop) and fall back to the backbone cleanly | Drums fader A, `enter_*` / `overlay_*` in the style |
 | C5 | Hats with strict backbone lock (A2) leave gaps on kick/snare steps. OK? | `rule_a2` 0 / 0.5 / 1 |
 | C6 | Break mutation: original order mostly kept; ghosting off-backbone kicks/snares helps or hurts? | `rule_a4`, `chop` |
 | C7 | Phrase shape: bars 1–3 repeat, bar 4 varies. Is the bar-4 ruff too predictable? | `variation`, `rule_a3` |
@@ -79,12 +79,12 @@ direnv exec . cargo run --release -p mesh-player -- --live ~/Music/mesh-live-dev
 | ID | Check | Pass when |
 |---|---|---|
 | D1 | Left/right assignment (first Shift press, or `live.f1_left_serial`) | Both units distinguished. Check that the two F1s report different USB serials |
-| D2 | Pad geometry: columns 1–2 = lane A, 3–4 = lane B; rows 1–2 slots, rows 3–4 moves | Feels natural, or note the alternative |
+| D2 | Pads: drum mutes (kick snare / hats ride / shaker perc / top break), Shift + 7/8 form; pitched oct− oct+ / half dbl / form◀ form▶; Sync = moves | Feels natural, or note the alternative |
 | D3 | Tap vs hold on play A (300 ms window) | No accidental toggles while browsing |
 | D4 | Soft takeover on knobs and faders after recall or kit swap | No value jumps |
-| D5 | LEDs: lane colours, selected/playing slot, held move pads, pending toggle blink | Readable at a glance, off-lane level visible |
+| D5 | LEDs: lane colours, muted voices dim, queued mutes and forms blink, octave / rate state, held move pads, Play B lit while held | Readable at a glance, off-lane level visible |
 | D6 | 7-segment: key (`8A`, `8b`, `AA` = 10A …) and tempo (last 2 digits) | Legible enough |
-| D7 | Capture (lane, Shift = all), Sync recalls the latest lane capture | Restores seeds and controls, file appears in `captures/` |
+| D7 | Capture (lane, Shift = all) | File appears in `captures/` with seed, form, octave and mutes (no F1 recall) |
 | D8 | No menu diving for a 30-minute set | P4 gate |
 
 ## E. Screen (P5, PC)
@@ -94,7 +94,7 @@ direnv exec . cargo run --release -p mesh-player -- --live ~/Music/mesh-live-dev
 | E1 | Header: key → target, BPM + ramp, half-time, progression, phrase cells | Correct and stable |
 | E2 | Code readout per lane: values update, changed values outline, firing parts pulse | Text never shifts, highlights in sync with sound |
 | E3 | Scopes per lane in the lane colour | Smooth, matches the sound |
-| E4 | Chain grid with playhead and fill flash | Correct slot highlighted |
+| E4 | Pad mirror per lane and the form with its playing segment in the readout | Matches the F1 pads and what plays |
 | E5 | Error screen: start with a broken style name | Clear issues listed |
 | E6 | Looks good enough to project | P5 gate |
 

@@ -93,11 +93,11 @@ Codes are the ones used during the grilling. Superseded decisions are kept, with
 
 | Term | Meaning |
 |---|---|
-| **Lane** | One instrument with its FX chain, its generator, 4 mapped controls, a 4-slot chain and an on/off state. There are 4 lanes: Drums, L1, L2, L3 |
+| **Lane** | One instrument with its FX chain, its generator, 4 mapped controls (plus a Shift layer), a master seed, a form and an on/off state. There are 4 lanes: Drums, L1, L2, L3 |
 | **Role** | A lane's mix role (Drums, Bass, Lead, Extra). Selects its glue treatment and LUFS target |
 | **Step** | A 16th note. A bar has 16 steps |
-| **Slot** | One bar in a lane's chain. It holds a **seed** |
-| **Chain** | A lane's 4 slots, looped. 4 bars = 1 **phrase** |
+| **Master seed** | A lane's one seed. Four **letter seeds** derive from it: A and B (main), C and D (filler) |
+| **Form** | Which letter plays in which bar, as segments: `A7 B1 A'7 C1`. 4 to 64 bars, aligned to the global bar. 4 bars = 1 **phrase** |
 | **Generator** | A pure function that turns (seed, position, parameters, harmony) into one bar of events |
 | **Style** | The loaded sound-design bundle |
 | **Capture** | A saved snapshot of seeds and control values |
@@ -345,7 +345,7 @@ Each rule is a parameter of the generator, so an ear test can switch it off.
 
 - **Major style** is an ordered set of backbone archetypes defined in the style. The research ordering is half-time → two-step → rolling → jungle → hardcore, with buildup as a special case (R§7.2). The style control moves along that order, and the change lands at the bar.
 - Whether the control blends neighbouring archetypes (Grids-style) or switches between them is decided by ear test in P3.
-- **Overlays**: hats, ghosts/fills and percussion. Each overlay has a density driven by the drum lane's mapped density control.
+- **Overlays**: hats, ghosts/fills, ride (crash on the phrase start), shaker, percussion and a chopped top loop. One density control brings them in, in an order the style sets (`enter_*` entry points, `overlay_*` amounts). See the 2026-10-15 change log entry.
 
 ---
 
@@ -361,19 +361,20 @@ Left F1 hosts Drums and L1. Right F1 hosts L2 and L3.
 |---|---|---|
 | Knobs | knob 1, 2 | knob 3, 4 |
 | Faders | fader 1, 2 | fader 3, 4 |
-| Pads, top row of the 2×4 block | 4 chain slots: press to select, encoder changes the slot's seed | same |
-| Pads, bottom row | momentary: stutter/roll · fill · double rate · void | same |
-| Play button A | lane on/off, landing on the next bar (immediate with a fade when Quant is off). Hold + encoder = browse kit/instrument, release loads at the bar | same |
-| Play button B | mappable in the style | same |
+| Pads (2×4, row-major 1 2 / 3 4 / 5 6 / 7 8) | Drums: mute toggles kick, snare, hats, ride, shaker, perc, top, break. Shift + 7/8: form ◀/▶. Pitched: oct−, oct+ (both = 0), half rate, double rate, form ◀, form ▶, 7–8 free | same |
+| Pads with Sync held | momentary: stutter · fill / double · void | same |
+| Play button A | lane on/off, landing on the next bar (immediate with a fade when Quant is off) | same |
+| Play button B | hold + encoder: reroll the master seed. Tap: back to the previous seed | same |
+| Size / Browse held + encoder | browse kit/instrument, release loads at the bar | same |
 
-> The 4×4 grid is split into two 2×4 halves: rows 1–2 × columns 1–2 for one lane, columns 3–4 for the other. The exact pad geometry, top row vs left half, is fixed during the P4 hardware test.
+> Superseded layouts: v1 (4 chain slots), v2 (8 bar pads, change log 2026-10-14). Current layout: change log 2026-10-15.
 
 **Default control mappings** (each style can override them):
 
 | Lane | Knob A | Fader A | Knob B, Fader B |
 |---|---|---|---|
-| Drums | major style | overlay density | sound/FX |
-| L1–L3 | complexity | density | sound/FX |
+| Drums | major style | density | sound/FX |
+| L1–L3 | complexity | density | knob B: sound/FX, fader B: note length. Shift + fader B: what fader B held before |
 
 ### 7.2 Global (Shift layer and function buttons)
 
@@ -531,3 +532,19 @@ These have no answer yet and are expected to be settled during the phases:
   - Starter output targets are the balance approved by ear, then drums +1 dB and bass −1.5 dB. Drum-bus thresholds rose 1 dB (`comp` −4, new style key `comp2` −11), so the drum increase survives the bus.
   - Drum lane EQ: 40 Hz low cut, +1.5 dB at 100 Hz, −2 dB around 320 Hz. Breaks get more highs: +4.5 dB broad around 5 kHz instead of +3 dB at 3.5 kHz. The EQ's second bell now reaches down to 200 Hz.
   - The starter script always runs the bins through `direnv`. A shell with `IN_NIX_SHELL` set but no devshell environment made CLAP fail to load during calibration.
+- 2026-10-15: Drum pools, forms and lane pads (user grill Q1–Q33). Supersedes F1 layout v2, the 8-slot chains and loop length.
+  - **Drum voices**: kick, snare (with ghosts), hats (closed / open, choked), ride (crash on the phrase start), shaker, percussion, top loop, break. New sub-voices `ride`, `shaker`, `top`. Target layout: backbone 0–7, hats 8–39, ride 40–55, shaker 56–71, perc 72–103, break 104–167, top 168–199 (`generator::layout`).
+  - **Pools** (Q4): hats, ride, shaker, perc and top keep their default option when the kit is browsed. The bar's sound seed (the master seed in main bars, the letter seed in filler bars) picks one closed and one open hat, one ride and crash, one shaker, a few percussion hits and one top loop. Kit browsing steps only the kick/snare pair and the break. Samples carry `tag: closed | open | ride | crash`, top loops `bars`.
+  - **Top loops** (Q2): one target per loop, chopped in 16ths through the event `start`, in order across bars. The density drops chops (each held one step), `chop` stutters and swaps. Loops more than 10 % off the style tempo are left out by the style builder.
+  - **One density** (Q5): `overlay_density` takes an entry point per voice. Starter: hats, ghosts, perc from 0, shaker 0.35, ride 0.5, top 0.6.
+  - **Mutes** (Q6, Q33): the 8 drum pads toggle voices (`DrumVoice`). RT-side filter in `Lane::fire`, landing on the next bar or immediately when Quant is off; a muted break or top loop fades its choke group.
+  - **Master seed and forms** (Q16, Q21–Q30): each lane has one master seed. Letter seeds derive from it (A = the master seed). A form is segments of a letter and a bar count, 4–64 bars, aligned to the global bar; a form change lands on the next phrase (4 bars). `A'` plays A with the second half from a derived seed. Starter forms: `form::DEFAULT_FORMS` (style key `forms`, `default_form`).
+  - **Seed classes** (Q23): A/B are main (mostly straight, sometimes light swing, ±1 tick drift). C/D are filler (40 % triplet reflow, heavy swing, ±3 ticks, generator parameters pushed up by `FILLER_BOOSTS`, drum fill in the last filler bar). Applied in the renderer (`form::Feel`).
+  - **Chords** (Q24, Q31, Q32): the master seed draws a 4-chord progression (1 or 2 bars per chord). It restarts at every main segment, runs on through filler segments (35 % passing chord), and the bar before the form returns to A plays IV or V. Supersedes the per-slot seeded chords.
+  - **Seeds on Play B** (Q10, Q17, Q18): hold + encoder rerolls; the seed before the edit becomes the previous seed; a tap swaps back. The encoder alone does nothing.
+  - **Pitched pads** (Q12, Q14): octave ±1 per press (±2, both pads = 0, applies from the next note, RT-side). Half / double rate latched, exclusive, next bar (renderer). Pads 5/6 step the form.
+  - **Note length** (Q13): fader B maps to the generator `gate`. At 0.9 and above every note ties into the next one and single notes glide (renderer). Starter: lead delay and extra reverb moved (Shift + fader B, knob B).
+  - **Shift layer**: Shift + any knob / fader drives the lane's `shift_controls` (left Shift + faders 1/2 stay key and tempo).
+  - **Captures** (Q15, Q20): version 3 stores the master seed, form, Shift-layer positions, octave and drum mutes. Versions 1 and 2 load with their first slot seed.
+  - **Style builder**: `--library DIR` (Kicks, Snares, Breaks, Cymbals, Percussion) sorts every file into a pool by name, length and decay, writes `sample-classes.txt`, and reads `sample-overrides.yaml`. Undecodable files are skipped.
+  - Open: chord / letter interplay beyond the turnaround (Q24), pitched pads 7/8, capture recall, form list tuning by ear (Q26).

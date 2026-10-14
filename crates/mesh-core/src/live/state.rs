@@ -5,20 +5,23 @@
 //! without locks or allocation. Each field has exactly one writer:
 //!
 //! - **RT thread**: clock position, played harmony, per-lane on/off, option,
-//!   active step, fired tag, voices, peak, moves, scope.
-//! - **Controller** (UI / HID thread): seeds, loop length, selected slot, control
-//!   positions, key intent, pending option, half-time target, quantize.
+//!   form position and chord of the playing bar, sounding drum mutes, active
+//!   step, fired tag, voices, peak, moves, scope.
+//! - **Controller** (UI / HID thread): master seed, form, control positions,
+//!   octave, rate, drum mutes, key intent, pending option, half-time target,
+//!   quantize.
 //! - **Bar renderer**: pending key and progression (set when armed, cleared
 //!   when the RT thread has played the bar that applied them).
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use crate::music::MusicalKey;
 
 use super::clock::BARS_PER_PHRASE;
 use super::scope::ScopeRing;
+use super::form::Letter;
 use super::style::CONTROLS_PER_LANE;
-use super::{DEFAULT_LOOP_LEN, NUM_LANES, SLOTS_PER_CHAIN};
+use super::NUM_LANES;
 
 const NO_KEY: u8 = 0xFF;
 const NO_INDEX: u16 = u16::MAX;
@@ -50,6 +53,10 @@ pub enum SpanTag {
     /// Tied / sliding note.
     Tie = 6,
     Accent = 7,
+    Ride = 8,
+    Shaker = 9,
+    /// Top loop chop.
+    Top = 10,
 }
 
 impl SpanTag {
@@ -62,6 +69,9 @@ impl SpanTag {
             5 => Self::Note,
             6 => Self::Tie,
             7 => Self::Accent,
+            8 => Self::Ride,
+            9 => Self::Shaker,
+            10 => Self::Top,
             _ => Self::None,
         }
     }
@@ -73,6 +83,54 @@ pub mod move_bits {
     pub const FILL: u8 = 1 << 1;
     pub const DOUBLE: u8 = 1 << 2;
     pub const VOID: u8 = 1 << 3;
+}
+
+/// Note-rate mode of a pitched lane (pads 3/4).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rate {
+    #[default]
+    Normal = 0,
+    /// The bar's first (even bars) or second (odd bars) half at half speed.
+    Half = 1,
+    /// The bar compressed into each half.
+    Double = 2,
+}
+
+impl Rate {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Half,
+            2 => Self::Double,
+            _ => Self::Normal,
+        }
+    }
+}
+
+/// Where the playing bar sits in the lane's form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FormView {
+    /// Segment index in the form.
+    pub segment: u8,
+    /// Letter index (0 = A … 3 = D).
+    pub letter: u8,
+    pub prime: bool,
+    /// Chord-root degree of the bar (pitched lanes).
+    pub chord: u8,
+}
+
+impl FormView {
+    pub fn letter(&self) -> Letter {
+        Letter::ALL[(self.letter & 3) as usize]
+    }
+
+    fn pack(self) -> u32 {
+        self.segment as u32 | (self.letter as u32) << 8 | (self.prime as u32) << 15 | (self.chord as u32) << 16
+    }
+
+    fn unpack(v: u32) -> Self {
+        Self { segment: v as u8, letter: (v >> 8) as u8 & 0x7F, prime: v & 1 << 15 != 0, chord: (v >> 16) as u8 }
+    }
 }
 
 /// Clock snapshot for the header strip.
@@ -105,11 +163,26 @@ pub struct LaneView {
     pub on: bool,
     /// State the lane switches to at the next bar (equals `on` when nothing is queued).
     pub on_target: bool,
-    pub selected_slot: u8,
-    pub seeds: [u32; SLOTS_PER_CHAIN],
-    /// Bars the lane loops (1, 2, 4 or 8); slots past it do not play.
-    pub loop_len: u8,
+    /// Master seed the letter seeds derive from.
+    pub seed: u32,
+    /// Seed a Play B tap returns to.
+    pub prev_seed: u32,
+    /// Form index (into the style's forms).
+    pub form: u16,
+    /// Form queued for the next phrase boundary.
+    pub form_pending: Option<u16>,
+    /// Position of the playing bar in the form.
+    pub pos: FormView,
+    /// Octave offset of pitched notes, −2..=2.
+    pub octave: i8,
+    pub rate: Rate,
+    /// Drum lane: voices muted as requested (bit = [`DrumVoice`](super::generator::layout::DrumVoice)).
+    pub mutes: u8,
+    /// Drum lane: voices muted in the playing bar.
+    pub mutes_playing: u8,
     pub controls: [f32; CONTROLS_PER_LANE],
+    /// Shift-layer control positions.
+    pub shift_controls: [f32; CONTROLS_PER_LANE],
     /// Instrument option / kit that is sounding.
     pub option: u16,
     /// Option being browsed or queued for the next bar.
@@ -127,10 +200,17 @@ pub struct LaneView {
 pub struct LaneShared {
     on: AtomicBool,
     on_target: AtomicBool,
-    selected_slot: AtomicU8,
-    seeds: [AtomicU32; SLOTS_PER_CHAIN],
-    loop_len: AtomicU8,
+    seed: AtomicU32,
+    prev_seed: AtomicU32,
+    form: AtomicU16,
+    form_pending: AtomicU16,
+    pos: AtomicU32,
+    octave: AtomicI8,
+    rate: AtomicU8,
+    mutes: AtomicU8,
+    mutes_playing: AtomicU8,
     controls: [AtomicU32; CONTROLS_PER_LANE],
+    shift_controls: [AtomicU32; CONTROLS_PER_LANE],
     option: AtomicU16,
     option_pending: AtomicU16,
     active_step: AtomicU8,
@@ -147,10 +227,17 @@ impl LaneShared {
         Self {
             on: AtomicBool::new(true),
             on_target: AtomicBool::new(true),
-            selected_slot: AtomicU8::new(0),
-            seeds: std::array::from_fn(|_| AtomicU32::new(0)),
-            loop_len: AtomicU8::new(DEFAULT_LOOP_LEN),
+            seed: AtomicU32::new(0),
+            prev_seed: AtomicU32::new(0),
+            form: AtomicU16::new(0),
+            form_pending: AtomicU16::new(NO_INDEX),
+            pos: AtomicU32::new(0),
+            octave: AtomicI8::new(0),
+            rate: AtomicU8::new(0),
+            mutes: AtomicU8::new(0),
+            mutes_playing: AtomicU8::new(0),
             controls: std::array::from_fn(|_| AtomicU32::new(0.5f32.to_bits())),
+            shift_controls: std::array::from_fn(|_| AtomicU32::new(0.5f32.to_bits())),
             option: AtomicU16::new(0),
             option_pending: AtomicU16::new(NO_INDEX),
             active_step: AtomicU8::new(0),
@@ -168,10 +255,20 @@ impl LaneShared {
         LaneView {
             on: self.on.load(ORD),
             on_target: self.on_target.load(ORD),
-            selected_slot: self.selected_slot.load(ORD),
-            seeds: std::array::from_fn(|i| self.seeds[i].load(ORD)),
-            loop_len: self.loop_len.load(ORD),
+            seed: self.seed.load(ORD),
+            prev_seed: self.prev_seed.load(ORD),
+            form: self.form.load(ORD),
+            form_pending: {
+                let p = self.form_pending.load(ORD);
+                (p != NO_INDEX && p != self.form.load(ORD)).then_some(p)
+            },
+            pos: FormView::unpack(self.pos.load(ORD)),
+            octave: self.octave.load(ORD),
+            rate: Rate::from_u8(self.rate.load(ORD)),
+            mutes: self.mutes.load(ORD),
+            mutes_playing: self.mutes_playing.load(ORD),
             controls: std::array::from_fn(|i| f32::from_bits(self.controls[i].load(ORD))),
+            shift_controls: std::array::from_fn(|i| f32::from_bits(self.shift_controls[i].load(ORD))),
             option: self.option.load(ORD),
             option_pending: (pending != NO_INDEX && pending != self.option.load(ORD)).then_some(pending),
             active_step: self.active_step.load(ORD),
@@ -230,22 +327,45 @@ impl LaneShared {
         self.moves.store(moves, ORD);
     }
 
+    /// Form position, chord and form index of the bar that started playing.
+    pub(crate) fn set_bar_pos(&self, pos: FormView, form: u16) {
+        self.pos.store(pos.pack(), ORD);
+        self.form.store(form, ORD);
+    }
+
+    pub(crate) fn set_mutes_playing(&self, mutes: u8) {
+        self.mutes_playing.store(mutes, ORD);
+    }
+
     // ── Controller writers ──
 
-    pub(crate) fn set_selected_slot(&self, slot: u8) {
-        self.selected_slot.store(slot, ORD);
+    pub(crate) fn set_seed(&self, seed: u32, prev: u32) {
+        self.seed.store(seed, ORD);
+        self.prev_seed.store(prev, ORD);
     }
 
-    pub(crate) fn set_seed(&self, slot: usize, seed: u32) {
-        self.seeds[slot].store(seed, ORD);
+    pub(crate) fn set_form_pending(&self, form: Option<u16>) {
+        self.form_pending.store(form.unwrap_or(NO_INDEX), ORD);
     }
 
-    pub(crate) fn set_loop_len(&self, len: u8) {
-        self.loop_len.store(len, ORD);
+    pub(crate) fn set_octave(&self, octave: i8) {
+        self.octave.store(octave, ORD);
+    }
+
+    pub(crate) fn set_rate(&self, rate: Rate) {
+        self.rate.store(rate as u8, ORD);
+    }
+
+    pub(crate) fn set_mutes(&self, mutes: u8) {
+        self.mutes.store(mutes, ORD);
     }
 
     pub(crate) fn set_control(&self, control: usize, position: f32) {
         self.controls[control].store(position.to_bits(), ORD);
+    }
+
+    pub(crate) fn set_shift_control(&self, control: usize, position: f32) {
+        self.shift_controls[control].store(position.to_bits(), ORD);
     }
 
     pub(crate) fn set_option_pending(&self, option: Option<u16>) {
@@ -446,6 +566,13 @@ mod tests {
         lane.note_fired(SpanTag::Tie, true);
         let v = lane.view().fired;
         assert_eq!((v.count, v.tag, v.fill), (2, SpanTag::Tie, true));
+    }
+
+    #[test]
+    fn form_view_round_trips() {
+        let v = FormView { segment: 7, letter: 3, prime: true, chord: 4 };
+        assert_eq!(FormView::unpack(v.pack()), v);
+        assert_eq!(v.letter(), Letter::D);
     }
 
     #[test]

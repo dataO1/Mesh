@@ -25,9 +25,11 @@
 //!
 //! # Drum kits
 //!
-//! The drum lane has one option list per sub-voice. Kit `k` selects, for each
-//! sub-voice, option `(default_option + k) % options.len()`, so kit 0 is the
-//! style's default and turning the encoder cycles every sub-voice.
+//! The drum lane has one option list per sub-voice. Kit `k` selects, for the
+//! backbone and break sub-voices, option `(default_option + k) % options.len()`,
+//! so kit 0 is the style's default and turning the encoder cycles both. Pool
+//! sub-voices (hats, ride, shaker, perc, top) always load their default
+//! option; the seed picks samples inside it (Q4).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ use crate::types::StereoBuffer;
 use super::command::{drive_db, GlueControl};
 use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::{db_to_lin, GlueParams, Role};
+use super::form::Form;
 use super::harmony::Progression;
 use super::fx::{airwindows_state, setting_key, setting_param, AIRWINDOWS_ID};
 use super::lane::{
@@ -155,6 +158,8 @@ pub struct LaneMeta {
     pub option_available: Vec<bool>,
     pub default_option: usize,
     pub controls: [ResolvedControl; CONTROLS_PER_LANE],
+    /// Shift-layer controls (up to [`CONTROLS_PER_LANE`]).
+    pub shift_controls: Vec<ResolvedControl>,
     pub sends: SendLevels,
     pub generator: Box<dyn LaneGenerator>,
     /// Generator parameters after the style's defaults.
@@ -172,6 +177,9 @@ pub struct LoadedStyle {
     pub key: MusicalKey,
     pub progressions: Vec<Progression>,
     pub default_progression: usize,
+    /// Lane forms (never empty).
+    pub forms: Vec<Form>,
+    pub default_form: usize,
     pub glue: GlueParams,
     /// Insert chains of the drum bus and master (style `glue.drum_bus_fx` / `master_fx`).
     pub drum_bus_fx: LaneFx,
@@ -619,16 +627,28 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         let default_option;
 
         if lane.role == Role::Drums {
-            let kits = lane.sub_voices.iter().map(|sv| sv.options.len()).max().unwrap_or(0).max(1);
+            let kits = lane
+                .sub_voices
+                .iter()
+                .filter(|sv| !sv.voice.is_pool())
+                .map(|sv| sv.options.len())
+                .max()
+                .unwrap_or(0)
+                .max(1);
+            // Kit `kit` steps the backbone and break; pools keep their default.
+            let pick_for = |sv: &style::SubVoiceSpec, kit: usize| {
+                let step = if sv.voice.is_pool() { 0 } else { kit };
+                (sv.default_option + step) % sv.options.len().max(1)
+            };
             for kit in 0..kits {
                 let mut bank = SampleBank::new();
                 let mut names: Vec<&str> = Vec::new();
-                let mut next = [None::<u8>; 4];
+                let mut next = [None::<u8>; 7];
                 for sv in &lane.sub_voices {
                     if sv.options.is_empty() {
                         continue;
                     }
-                    let opt: &InstrumentOption = &sv.options[(sv.default_option + kit) % sv.options.len()];
+                    let opt: &InstrumentOption = &sv.options[pick_for(sv, kit)];
                     let (base, capacity) = drum_target_range(sv.voice);
                     // A second sub-voice of the same kind continues after the first.
                     let first = next[sv.voice as usize].unwrap_or(base);
@@ -646,8 +666,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                 options.push(LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain: 1.0 });
                 option_names.push(names.join("+"));
                 // The generator follows the kit: sample and slice counts differ per kit.
-                let pick = |sv: &style::SubVoiceSpec| (sv.default_option + kit) % sv.options.len().max(1);
-                let layout = DrumLayout::from_sub_voices(&lane.sub_voices, pick);
+                let layout = DrumLayout::from_sub_voices(&lane.sub_voices, |sv| pick_for(sv, kit));
                 let generator = (kit > 0 && !overridden)
                     .then(|| generator::build_with(&lane.generator, lane.role, &layout, &lane.archetypes));
                 drum_kits.push(DrumKit { layout, generator });
@@ -743,6 +762,34 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             }
             control
         });
+        let shift_controls: Vec<ResolvedControl> = lane
+            .shift_controls
+            .iter()
+            .take(CONTROLS_PER_LANE)
+            .enumerate()
+            .map(|(ci, spec)| match spec {
+                Some(spec) => {
+                    let (control, problem) = resolve_control(spec, generator.as_ref(), fx_len);
+                    if let Some(p) = problem {
+                        problems.push(format!("lane '{}' shift control {ci}: {p}", lane.name));
+                    }
+                    control
+                }
+                // An empty slot: the control does nothing.
+                None => ResolvedControl {
+                    label: String::new(),
+                    spec: ControlSpec {
+                        label: None,
+                        target: ControlTarget::Generator { param: String::new() },
+                        min: 0.0,
+                        max: 1.0,
+                        curve: style::Curve::Linear,
+                        default: 0.5,
+                    },
+                    route: ControlRoute::Unresolved,
+                },
+            })
+            .collect();
         for p in problems {
             ctx.warn(p);
         }
@@ -761,6 +808,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             break_fx,
             output_gains: if calibration { Vec::new() } else { lane.output_trims_db.iter().map(|&db| super::glue::db_to_lin(db)).collect() },
             default_option,
+            kit_layouts: drum_kits.iter().map(|k| k.layout).collect(),
         }));
         meta.push(LaneMeta {
             name: lane.name.clone(),
@@ -769,6 +817,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             option_available,
             default_option,
             controls,
+            shift_controls,
             sends: lane.sends,
             generator,
             gen_params,
@@ -792,6 +841,8 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         key: style.default_key().unwrap_or(MusicalKey::new(9, true)),
         progressions: style.progressions(),
         default_progression: spec.default_progression,
+        forms: style.forms(),
+        default_form: spec.default_form,
         glue,
         drum_bus_fx,
         master_fx,
@@ -948,7 +999,7 @@ mod tests {
         assert_eq!(bank.resolve(DRUM_TARGET_HATS, 0).unwrap().choke, 2);
         // Same numbering as the generators' layout for this kit.
         let layout = DrumLayout::from_lane(&style.spec.lanes[0]);
-        assert_eq!((layout.kick, layout.snare, layout.hat_closed, layout.hat_open), (Some(0), Some(1), Some(8), Some(9)));
+        assert_eq!((layout.kick, layout.snare, layout.hat_closed(), layout.hat_open()), (Some(0), Some(1), Some(8), Some(9)));
         assert_eq!((layout.perc_count, layout.slices().len()), (1, 4));
         for i in 0..layout.slices().len() {
             assert!(bank.resolve(layout.slice_target(i), 0).is_some());

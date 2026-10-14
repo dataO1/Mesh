@@ -6,6 +6,7 @@ use crate::live::style::{FxSource, FxSpec, StyleSpec};
 use crate::live::capture::CaptureScope;
 use crate::live::event::{EventKind, LiveEvent};
 use crate::live::generator::fixed::{DegreeNote, FixedPattern};
+use crate::live::generator::layout::DrumVoice;
 use crate::live::generator::LaneGenerator;
 use crate::live::lane::{DRUM_TARGET_BACKBONE, IMMEDIATE_FADE_SECS, QUANTIZED_FADE_SECS, VOID_FADE_SECS};
 use crate::live::loader::fixture_dir;
@@ -151,7 +152,7 @@ fn renders_fixture_style_to_finite_non_silent_audio() {
     assert!(drums.on && drums.fired.count > 30, "{drums:?}");
     assert!(matches!(drums.fired.tag, SpanTag::Backbone | SpanTag::Hats));
     assert!(matches!(shared.lane(1).view().fired.tag, SpanTag::Tie | SpanTag::Accent | SpanTag::Note));
-    assert_eq!(drums.seeds, [DEFAULT_SEED; SLOTS_PER_CHAIN]);
+    assert_eq!((drums.seed, drums.prev_seed), (DEFAULT_SEED, DEFAULT_SEED));
     assert!(shared.lane(0).take_peak() > 0.01);
     let mut scope = [0.0; crate::live::scope::SCOPE_POINTS];
     shared.lane(0).scope().snapshot(&mut scope);
@@ -201,16 +202,14 @@ fn seed_and_generator_param_changes_land_exactly_on_the_bar() {
     let mut plain = rig(seeded(), 256);
     plain.run_to(4.0);
 
-    // Seed of the slot that plays bar 2, changed halfway through bar 1.
+    // Master seed changed halfway through bar 1: bar 2 is the first new bar.
     let mut changed = rig(seeded(), 256);
     changed.run_to(1.5);
-    changed.send(LiveCommand::SetSlotSeed { lane: 0, slot: 2, seed: 9001 });
+    changed.send(LiveCommand::SetSeed { lane: 0, seed: 9001 });
     changed.run_to(4.0);
     let diff = first_difference(&plain.lanes[0], &changed.lanes[0]).expect("a new seed changes the bar");
     assert!(diff >= bar2 && diff < bar2 + bar_frames(BPM) as usize, "first difference at {diff}, bar 2 starts at {bar2}");
-    let bar3 = (3.0 * bar_frames(BPM)).ceil() as usize + 4800;
-    assert_eq!(plain.lanes[0][bar3..], changed.lanes[0][bar3..], "bar 3 uses its own slot's seed");
-    assert_eq!(changed.sys.shared.lane(0).view().seeds[2], 9001);
+    assert_eq!(changed.sys.shared.lane(0).view().seed, 9001);
 
     // The drum lane's second control is mapped to the generator's density.
     let mut thinned = rig(seeded(), 256);
@@ -303,7 +302,8 @@ fn lane_toggle_is_immediate_by_default_and_quantized_with_quant() {
     let pressed = r.master.len();
     r.send(LiveCommand::ToggleLane { lane: 2 });
     r.run_to(1.9);
-    let faded = pressed + ms(IMMEDIATE_FADE_SECS * 1000.0) + 64;
+    // The glue's filters ring for a few ms after the lane gain reaches 0.
+    let faded = pressed + ms(IMMEDIATE_FADE_SECS * 1000.0 + 10.0);
     assert!(r.peak(2, pressed, pressed + ms(5.0)) > QUIET, "fade, not a hard cut");
     assert!(r.peak(2, faded, usize::MAX) < QUIET, "silent well before the bar");
 }
@@ -399,9 +399,8 @@ fn same_seeds_and_commands_give_identical_audio() {
     let play = |seed: u32| {
         let mut r = rig(seeded(), 200);
         for lane in 0..NUM_LANES as u8 {
-            for slot in 0..SLOTS_PER_CHAIN as u8 {
-                r.send(LiveCommand::SetSlotSeed { lane, slot, seed: seed + lane as u32 * 7 + slot as u32 });
-            }
+            r.send(LiveCommand::SetSeed { lane, seed: seed + lane as u32 * 7 });
+            r.send(LiveCommand::SetForm { lane, form: 1 });
         }
         r.run_to(1.3);
         r.send(LiveCommand::SetControl { lane: 0, control: 2, value: 0.6 });
@@ -567,10 +566,12 @@ fn capture_round_trip_restores_state() {
     r.sys.controller.set_capture_collection(Some(tmp.path().to_path_buf()));
 
     // A state worth capturing.
-    r.send(LiveCommand::SelectSlot { lane: 1, slot: 2 });
     r.send(LiveCommand::SeedDelta { lane: 1, delta: 5 });
-    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 3, seed: 777 });
-    r.send(LiveCommand::SetLoopLen { lane: 0, len: 8 });
+    r.send(LiveCommand::SetSeed { lane: 0, seed: 777 });
+    r.send(LiveCommand::SetForm { lane: 0, form: 3 });
+    r.send(LiveCommand::OctaveDelta { lane: 2, delta: -1 });
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Hats });
+    r.send(LiveCommand::SetControl { lane: 3, control: 7, value: 0.3 });
     r.send(LiveCommand::SetControl { lane: 2, control: 3, value: 0.8 });
     r.send(LiveCommand::SetOption { lane: 2, option: 1 });
     r.send(LiveCommand::SetLaneOn { lane: 3, on: false });
@@ -585,11 +586,9 @@ fn capture_round_trip_restores_state() {
     assert_eq!(captured.style, "fixture-breaks");
     assert_eq!(captured.global.key, MusicalKey::new(2, true));
     assert_eq!((captured.global.progression, captured.global.tempo, captured.global.half_time), (1, 166.0, true));
-    let mut want = [DEFAULT_SEED + 1; SLOTS_PER_CHAIN];
-    want[2] = DEFAULT_SEED + 6;
-    assert_eq!(captured.lanes[1].seeds, want);
-    assert_eq!((captured.lanes[0].loop_len, captured.lanes[1].loop_len), (8, DEFAULT_LOOP_LEN));
-    assert_eq!(captured.lanes[0].seeds[3], 777);
+    assert_eq!(captured.lanes[1].seed, DEFAULT_SEED + 6);
+    assert_eq!((captured.lanes[0].seed, captured.lanes[0].form, captured.lanes[1].form), (777, 3, 0));
+    assert_eq!((captured.lanes[2].octave, captured.lanes[0].mutes), (-1, DrumVoice::Hats.bit()));
     assert_eq!((captured.lanes[2].controls[3], captured.lanes[2].option), (0.8, 1));
     assert!(!captured.lanes[3].on && captured.lanes[0].on);
 
@@ -603,15 +602,15 @@ fn capture_round_trip_restores_state() {
 
     // Wreck the state, then recall.
     for lane in 0..NUM_LANES as u8 {
-        for slot in 0..SLOTS_PER_CHAIN as u8 {
-            r.send(LiveCommand::SetSlotSeed { lane, slot, seed: 1 });
-        }
+        r.send(LiveCommand::SetSeed { lane, seed: 1 });
+        r.send(LiveCommand::SetForm { lane, form: 0 });
         for control in 0..CONTROLS_PER_LANE as u8 {
             r.send(LiveCommand::SetControl { lane, control, value: 0.0 });
         }
         r.send(LiveCommand::SetLaneOn { lane, on: lane == 3 });
-        r.send(LiveCommand::SetLoopLen { lane, len: 1 });
+        r.send(LiveCommand::ResetOctave { lane });
     }
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Hats });
     r.send(LiveCommand::SetOption { lane: 2, option: 0 });
     r.send(LiveCommand::SetKey(MusicalKey::new(9, true)));
     r.send(LiveCommand::SelectProgression(0));
@@ -634,18 +633,20 @@ fn capture_round_trip_restores_state() {
     assert!(shared.half_time());
     assert_eq!(shared.lane(2).view().option, 1);
     assert!(!shared.lane(3).view().on && shared.lane(0).view().on);
-    assert_eq!(shared.lane(0).view().seeds[3], 777);
-    assert_eq!(shared.lane(0).view().loop_len, 8);
-    assert_eq!(shared.lane(1).view().loop_len, DEFAULT_LOOP_LEN);
+    assert_eq!(shared.lane(0).view().seed, 777);
+    assert_eq!(shared.lane(0).view().form, 3, "the form switched on a phrase");
+    assert_eq!((shared.lane(0).view().mutes, shared.lane(0).view().mutes_playing), (DrumVoice::Hats.bit(), DrumVoice::Hats.bit()));
+    assert_eq!(shared.lane(2).view().octave, -1);
     assert_eq!(shared.lane(2).view().controls[3], 0.8);
+    assert_eq!(shared.lane(3).view().shift_controls[3], 0.3);
 
     // A lane capture restores only its lane.
     let lane_capture = r.sys.controller.capture(CaptureScope::Lane { lane: 1 });
-    r.send(LiveCommand::SetSlotSeed { lane: 1, slot: 0, seed: 4 });
-    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 0, seed: 4 });
+    r.send(LiveCommand::SetSeed { lane: 1, seed: 4 });
+    r.send(LiveCommand::SetSeed { lane: 0, seed: 4 });
     r.sys.controller.recall(&lane_capture);
-    assert_eq!(r.sys.controller.lane(1).seeds[0], DEFAULT_SEED + 1);
-    assert_eq!(r.sys.controller.lane(0).seeds[0], 4);
+    assert_eq!(r.sys.controller.lane(1).seed, DEFAULT_SEED + 6);
+    assert_eq!(r.sys.controller.lane(0).seed, 4);
     assert_eq!(r.sys.controller.captures().len(), 3);
 }
 
@@ -655,7 +656,7 @@ fn threaded_start_plays_without_starving() {
     let mut opts = LoadOptions::new(SR);
     opts.generators = reference();
     let (mut engine, mut handles) = LiveEngine::start(&style, opts).unwrap();
-    handles.controller.send(LiveCommand::SetSlotSeed { lane: 0, slot: 1, seed: 3 });
+    handles.controller.send(LiveCommand::SetSeed { lane: 0, seed: 3 });
     let mut master = StereoBuffer::silence(256);
     let mut peak = 0.0f32;
     // Three bars at roughly real time, so the renderer thread keeps up.
@@ -670,29 +671,67 @@ fn threaded_start_plays_without_starving() {
 }
 
 #[test]
-fn lane_seed_delta_moves_every_slot_and_keeps_their_differences() {
+fn seed_edits_remember_where_they_started() {
     let mut r = rig(silent(), 128);
-    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 3, seed: 900 });
-    r.send(LiveCommand::SetSlotSeed { lane: 0, slot: 6, seed: 600 });
-    let before = r.sys.shared.lane(0).view().seeds;
-    r.send(LiveCommand::LaneSeedDelta { lane: 0, delta: 5 });
-    let after = r.sys.shared.lane(0).view().seeds;
-    for slot in 0..SLOTS_PER_CHAIN {
-        assert_eq!(after[slot], before[slot].wrapping_add(5), "slot {slot}");
+    for _ in 0..3 {
+        r.send(LiveCommand::SeedDelta { lane: 2, delta: 2 });
     }
-    assert_eq!(after[7], DEFAULT_SEED + 5, "slots past the loop move too");
+    let v = r.sys.shared.lane(2).view();
+    assert_eq!((v.seed, v.prev_seed), (DEFAULT_SEED + 2 + 6, DEFAULT_SEED + 2), "one edit, one previous seed");
+    r.send(LiveCommand::EndSeedEdit { lane: 2 });
+    r.send(LiveCommand::SwapSeed { lane: 2 });
+    let v = r.sys.shared.lane(2).view();
+    assert_eq!((v.seed, v.prev_seed), (DEFAULT_SEED + 2, DEFAULT_SEED + 8), "a tap swaps back");
+    r.send(LiveCommand::SwapSeed { lane: 2 });
+    assert_eq!(r.sys.shared.lane(2).view().seed, DEFAULT_SEED + 8, "and forward again");
+    r.send(LiveCommand::SeedDelta { lane: 2, delta: -1 });
+    assert_eq!(r.sys.shared.lane(2).view().prev_seed, DEFAULT_SEED + 8, "a new edit starts from the current seed");
 }
 
 #[test]
-fn loop_length_snaps_to_1_2_4_8_per_lane() {
+fn forms_step_and_clamp() {
     let mut r = rig(silent(), 128);
-    assert!((0..NUM_LANES).all(|l| r.sys.shared.lane(l).view().loop_len == DEFAULT_LOOP_LEN));
-    for (len, want) in [(1, 1), (2, 2), (3, 2), (5, 4), (8, 8), (0, 1), (200, 8)] {
-        r.send(LiveCommand::SetLoopLen { lane: 2, len });
-        assert_eq!(r.sys.shared.lane(2).view().loop_len, want, "len {len}");
-        assert_eq!(r.sys.controller.lane(2).loop_len, want);
+    let n = r.sys.controller.forms().len();
+    assert!(n >= 2);
+    r.send(LiveCommand::FormDelta { lane: 1, delta: -1 });
+    assert_eq!(r.sys.controller.lane(1).form, 0);
+    r.send(LiveCommand::FormDelta { lane: 1, delta: 100 });
+    assert_eq!(r.sys.controller.lane(1).form, n - 1);
+    assert_eq!(r.sys.shared.lane(1).view().form_pending, Some((n - 1) as u16));
+}
+
+#[test]
+fn octave_clamps_and_skips_the_drum_lane() {
+    let mut r = rig(silent(), 128);
+    for _ in 0..4 {
+        r.send(LiveCommand::OctaveDelta { lane: 1, delta: 1 });
     }
-    assert_eq!(r.sys.shared.lane(1).view().loop_len, DEFAULT_LOOP_LEN, "other lanes untouched");
+    assert_eq!(r.sys.shared.lane(1).view().octave, 2);
+    r.send(LiveCommand::ResetOctave { lane: 1 });
+    assert_eq!(r.sys.shared.lane(1).view().octave, 0);
+    r.send(LiveCommand::OctaveDelta { lane: 0, delta: 1 });
+    assert_eq!(r.sys.shared.lane(0).view().octave, 0);
+}
+
+#[test]
+fn drum_mutes_silence_their_voice_on_the_bar() {
+    let mut r = rig([Some(kicks(&[0, 96, 192, 288])), None, None, None], 256);
+    r.send(LiveCommand::SetQuantize(true));
+    for lane in 1..NUM_LANES as u8 {
+        r.send(LiveCommand::SetLaneOn { lane, on: false });
+    }
+    r.run_to(1.5);
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
+    assert_eq!(r.sys.shared.lane(0).view().mutes, DrumVoice::Kick.bit());
+    assert_eq!(r.sys.shared.lane(0).view().mutes_playing, 0, "waits for the bar");
+    r.run_to(2.5);
+    assert_eq!(r.sys.shared.lane(0).view().mutes_playing, DrumVoice::Kick.bit(), "lands on bar 2");
+    let bar = bar_frames(BPM) as usize;
+    assert!(r.peak(0, 1 * bar + 100, 1 * bar + 4000) > 0.01, "bar 1 still plays the kick");
+    assert!(r.peak(0, 2 * bar + 4000, 5 * bar / 2) < 1e-3, "muted kick is silent");
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
+    r.run_to(3.5);
+    assert!(r.peak(0, 3 * bar + 100, 3 * bar + 4000) > 0.01, "back on the next bar");
 }
 
 #[test]

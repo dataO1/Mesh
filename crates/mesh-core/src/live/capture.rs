@@ -1,9 +1,9 @@
 //! Capture snapshots (design D16, §9).
 //!
 //! A capture stores what is needed to reproduce the current state from seeds:
-//! per lane the 8 slot seeds, the loop length, the 4 control positions, the selected instrument
-//! option and the on/off state, plus the global key, progression, tempo and
-//! half-time flag. Generators are pure functions of these, so a capture
+//! per lane the master seed, the form, the control positions (main and Shift
+//! layer), the octave, the drum mutes, the selected instrument option and the
+//! on/off state, plus the global key, progression, tempo and half-time flag. Generators are pure functions of these, so a capture
 //! reproduces the same bars.
 //!
 //! Captures are written as YAML to
@@ -21,13 +21,15 @@ use crate::music::MusicalKey;
 
 use super::harmony::serde_key;
 use super::style::{is_valid_style_name, CONTROLS_PER_LANE};
-use super::{DEFAULT_LOOP_LEN, LOOP_LENGTHS, NUM_LANES, SLOTS_PER_CHAIN};
+use super::NUM_LANES;
 
 /// Folder under the collection root holding all captures.
 pub const CAPTURES_FOLDER: &str = "captures";
-/// Capture file format version. 2: 8 seeds per lane plus `loop_len`.
-/// Version 1 files (4 seeds, no loop length) still load.
-pub const CAPTURE_VERSION: u32 = 2;
+/// Capture file format version. 3: one master seed and a form per lane,
+/// Shift-layer controls, octave and drum mutes. Version 1 and 2 files (slot
+/// seeds, loop length) still load: the first slot seed becomes the master
+/// seed, everything new starts at its default.
+pub const CAPTURE_VERSION: u32 = 3;
 /// Timestamp format used in the snapshot and its file name.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d_%H-%M-%S";
 
@@ -45,41 +47,84 @@ pub enum CaptureScope {
 
 /// One lane's captured state.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "LaneCaptureFile")]
 pub struct LaneCapture {
-    /// Seed of each chain slot. Shorter lists (version 1: 4 seeds) repeat
-    /// to fill the chain.
-    #[serde(deserialize_with = "deserialize_seeds")]
-    pub seeds: [u32; SLOTS_PER_CHAIN],
-    /// Bars the lane loops (1, 2, 4 or 8). Version 1 files: 4.
-    #[serde(default = "default_loop_len")]
-    pub loop_len: u8,
+    /// Master seed.
+    pub seed: u32,
+    /// Form index.
+    pub form: usize,
     /// Position of each performance control, `0..=1`.
     pub controls: [f32; CONTROLS_PER_LANE],
+    /// Shift-layer control positions.
+    pub shift_controls: [f32; CONTROLS_PER_LANE],
     /// Selected instrument option index.
     pub option: usize,
     /// Lane on/off.
     pub on: bool,
+    /// Octave offset of pitched notes.
+    pub octave: i8,
+    /// Drum lane: muted voices.
+    pub mutes: u8,
 }
 
 impl Default for LaneCapture {
     fn default() -> Self {
-        Self { seeds: [0; SLOTS_PER_CHAIN], loop_len: DEFAULT_LOOP_LEN, controls: [0.5; CONTROLS_PER_LANE], option: 0, on: true }
+        Self {
+            seed: 0,
+            form: 0,
+            controls: [0.5; CONTROLS_PER_LANE],
+            shift_controls: [0.5; CONTROLS_PER_LANE],
+            option: 0,
+            on: true,
+            octave: 0,
+            mutes: 0,
+        }
     }
 }
 
-fn default_loop_len() -> u8 {
-    DEFAULT_LOOP_LEN
+/// A lane as any capture version stores it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaneCaptureFile {
+    #[serde(default)]
+    seed: Option<u32>,
+    /// Versions 1 and 2: slot seeds.
+    #[serde(default)]
+    seeds: Option<Vec<u32>>,
+    /// Versions 1 and 2: loop length (ignored).
+    #[serde(default, rename = "loop_len")]
+    _loop_len: Option<u8>,
+    #[serde(default)]
+    form: usize,
+    controls: [f32; CONTROLS_PER_LANE],
+    #[serde(default = "half_controls")]
+    shift_controls: [f32; CONTROLS_PER_LANE],
+    option: usize,
+    on: bool,
+    #[serde(default)]
+    octave: i8,
+    #[serde(default)]
+    mutes: u8,
 }
 
-/// 1..=8 seeds, repeated to fill the chain: a version-1 4-bar chain becomes
-/// the same 4 bars twice, so it sounds the same at any loop length up to 4.
-fn deserialize_seeds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u32; SLOTS_PER_CHAIN], D::Error> {
-    let seeds = Vec::<u32>::deserialize(d)?;
-    if seeds.is_empty() || seeds.len() > SLOTS_PER_CHAIN {
-        return Err(serde::de::Error::invalid_length(seeds.len(), &"1 to 8 seeds"));
+fn half_controls() -> [f32; CONTROLS_PER_LANE] {
+    [0.5; CONTROLS_PER_LANE]
+}
+
+impl From<LaneCaptureFile> for LaneCapture {
+    fn from(f: LaneCaptureFile) -> Self {
+        let seed = f.seed.or_else(|| f.seeds.as_ref().and_then(|s| s.first().copied())).unwrap_or(0);
+        Self {
+            seed,
+            form: f.form,
+            controls: f.controls,
+            shift_controls: f.shift_controls,
+            option: f.option,
+            on: f.on,
+            octave: f.octave,
+            mutes: f.mutes,
+        }
     }
-    Ok(std::array::from_fn(|i| seeds[i % seeds.len()]))
 }
 
 /// Captured global state.
@@ -194,10 +239,10 @@ impl Capture {
             }
         }
         for (i, lane) in self.lanes.iter().enumerate() {
-            if !LOOP_LENGTHS.contains(&lane.loop_len) {
-                return bad(format!("lanes[{i}].loop_len = {} is not 1, 2, 4 or 8", lane.loop_len));
+            if !(-2..=2).contains(&lane.octave) {
+                return bad(format!("lanes[{i}].octave = {} outside -2..=2", lane.octave));
             }
-            for (c, &v) in lane.controls.iter().enumerate() {
+            for (c, &v) in lane.controls.iter().chain(&lane.shift_controls).enumerate() {
                 if !v.is_finite() || !(0.0..=1.0).contains(&v) {
                     return bad(format!("lanes[{i}].controls[{c}] = {v} outside 0..=1"));
                 }
@@ -271,9 +316,18 @@ mod tests {
 
     fn sample(ts: &str) -> Capture {
         let mut lanes = [LaneCapture::default(); NUM_LANES];
-        lanes[0].seeds = [50, 50, 51, 77, 50, 50, 51, 78];
-        lanes[0].loop_len = 8;
-        lanes[1] = LaneCapture { seeds: [1, 2, 3, u32::MAX, 5, 6, 7, 8], loop_len: 2, controls: [0.0, 0.25, 0.5, 1.0], option: 1, on: false };
+        lanes[0].seed = 77;
+        lanes[0].mutes = 0b1010_0001;
+        lanes[1] = LaneCapture {
+            seed: u32::MAX,
+            form: 3,
+            controls: [0.0, 0.25, 0.5, 1.0],
+            shift_controls: [1.0, 0.0, 0.5, 0.75],
+            option: 1,
+            on: false,
+            octave: -2,
+            mutes: 0,
+        };
         Capture::with_timestamp(
             "fixture-breaks",
             ts,
@@ -306,7 +360,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let a = sample("2026-10-13_21-30-05");
         let mut b = a.clone();
-        b.lanes[0].seeds[0] = 999;
+        b.lanes[0].seed = 999;
         let pa = a.save(tmp.path()).unwrap();
         let pb = b.save(tmp.path()).unwrap();
         assert_ne!(pa, pb);
@@ -363,7 +417,11 @@ mod tests {
         assert!(matches!(c.validate(), Err(CaptureError::Invalid(_))));
 
         let mut c = sample("2026-10-13_21-30-05");
-        c.version = 3;
+        c.version = CAPTURE_VERSION + 1;
+        assert!(matches!(c.validate(), Err(CaptureError::Invalid(_))));
+
+        let mut c = sample("2026-10-13_21-30-05");
+        c.lanes[1].octave = 3;
         assert!(matches!(c.validate(), Err(CaptureError::Invalid(_))));
 
         let mut c = sample("2026-10-13_21-30-05");
@@ -383,48 +441,40 @@ mod tests {
         assert!(matches!(Capture::load(&bad), Err(CaptureError::Parse { .. })));
         // Wrong lane count is a parse error (fixed-size array).
         let text = sample("2026-10-13_21-30-05").to_yaml().unwrap();
-        let cut = text.rfind("- seeds:").unwrap();
+        let cut = text.rfind("- seed:").unwrap();
         std::fs::write(&bad, &text[..cut]).unwrap();
         assert!(matches!(Capture::load(&bad), Err(CaptureError::Parse { .. })));
     }
 
     #[test]
-    fn version_1_capture_with_4_seeds_loads() {
+    fn version_1_and_2_captures_load_with_the_first_seed() {
         let tmp = tempfile::tempdir().unwrap();
-        let lane = |s: u32, on: bool| {
-            format!("- seeds: [{s}, {}, {}, {}]\n  controls: [0.5, 0.5, 0.5, 0.5]\n  option: 0\n  on: {on}\n", s + 1, s + 2, s + 3)
+        let lane = |s: u32, on: bool, extra: &str| {
+            format!(
+                "- seeds: [{s}, {}, {}, {}]\n{extra}  controls: [0.5, 0.5, 0.5, 0.5]\n  option: 0\n  on: {on}\n",
+                s + 1,
+                s + 2,
+                s + 3
+            )
         };
-        let text = format!(
-            "version: 1\nstyle: fixture-breaks\ntimestamp: 2026-10-13_21-30-05\nscope: all\n\
-             global:\n  key: Am\n  progression: 0\n  tempo: 172.0\n  half_time: false\nlanes:\n{}{}{}{}",
-            lane(10, true),
-            lane(20, true),
-            lane(30, false),
-            lane(40, true)
-        );
-        let path = tmp.path().join("old.yaml");
-        std::fs::write(&path, text).unwrap();
-        let c = Capture::load(&path).unwrap();
-        assert_eq!(c.version, 1);
-        assert_eq!(c.lanes[0].seeds, [10, 11, 12, 13, 10, 11, 12, 13], "4 seeds repeat to fill 8 slots");
-        assert!(c.lanes.iter().all(|l| l.loop_len == DEFAULT_LOOP_LEN));
-        assert!(!c.lanes[2].on);
-
-        // More than 8 seeds or a loop length outside 1/2/4/8 are rejected.
-        let mut bad = sample("2026-10-13_21-30-05");
-        bad.lanes[1].loop_len = 3;
-        assert!(matches!(bad.validate(), Err(CaptureError::Invalid(_))));
-        let nine = text_with_seeds("[1, 2, 3, 4, 5, 6, 7, 8, 9]");
-        assert!(serde_yaml::from_str::<Capture>(&nine).is_err());
-    }
-
-    fn text_with_seeds(seeds: &str) -> String {
-        let text = sample("2026-10-13_21-30-05").to_yaml().unwrap();
-        let start = text.find("seeds:").unwrap();
-        let end = start + text[start..].find("loop_len").unwrap();
-        // Flow-style list replaces the block list of lane 0.
-        let indent = &text[text[..end].rfind('\n').unwrap() + 1..end];
-        format!("{}seeds: {seeds}\n{indent}{}", &text[..start], &text[end..])
+        for (version, extra) in [(1, ""), (2, "  loop_len: 8\n")] {
+            let text = format!(
+                "version: {version}\nstyle: fixture-breaks\ntimestamp: 2026-10-13_21-30-05\nscope: all\n\
+                 global:\n  key: Am\n  progression: 0\n  tempo: 172.0\n  half_time: false\nlanes:\n{}{}{}{}",
+                lane(10, true, extra),
+                lane(20, true, extra),
+                lane(30, false, extra),
+                lane(40, true, extra)
+            );
+            let path = tmp.path().join(format!("old-{version}.yaml"));
+            std::fs::write(&path, text).unwrap();
+            let c = Capture::load(&path).unwrap();
+            assert_eq!(c.version, version);
+            assert_eq!(c.lanes[0].seed, 10, "first slot seed becomes the master seed");
+            assert_eq!((c.lanes[1].form, c.lanes[1].octave, c.lanes[0].mutes), (0, 0, 0));
+            assert_eq!(c.lanes[1].shift_controls, [0.5; CONTROLS_PER_LANE]);
+            assert!(!c.lanes[2].on);
+        }
     }
 
     #[test]
