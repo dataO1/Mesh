@@ -1,20 +1,17 @@
-//! Kick-keyed low-band ducker.
+//! Drum-keyed full-band ducker.
 //!
-//! Split in two parts so the key is analysed once per block:
+//! [`DuckEnvelope`] turns a key into a per-sample duck amount (0 = no cut,
+//! 1 = full cut) with an attack → hold → release shape in milliseconds. The
+//! key is trigger events (sample offsets), a sidechain bus, or both. A
+//! sidechain crossing the threshold fires the same trigger as an event.
 //!
-//! - [`DuckEnvelope`] turns the key into a per-sample duck amount (0 = no cut,
-//!   1 = full cut). The key is the drum lane's kick sub-voice bus, trigger
-//!   events (sample offsets), or both. A sidechain crossing the threshold
-//!   fires the same trigger as an event, so both key sources produce the same
-//!   attack → hold → release shape and the release is exactly tempo-relative.
-//! - [`LowBandDucker`] (one per lane) splits the lane at the crossover (LR24),
-//!   applies `depth × amount` dB of cut to the low band only, and sums back.
+//! The glue chain runs one envelope per key (main-kit kick, main-kit snare)
+//! and release time (bass, other lanes), and turns the amounts into a gain:
+//! `depth_db × amount`, summed over the keys (see [`super::params::DuckParams`]).
 
-use crate::effect::native::LinkwitzRileyCrossover;
 use crate::types::{StereoSample, SAMPLE_RATE};
 
 use super::db_to_lin;
-use super::params::DuckParams;
 
 /// Rearm the sidechain detector once the key falls this far below threshold.
 const REARM_RATIO: f32 = 0.5;
@@ -33,7 +30,7 @@ enum Phase {
     Release,
 }
 
-/// Attack / hold / release envelope driven by kick triggers.
+/// Attack / hold / release envelope driven by drum triggers.
 pub struct DuckEnvelope {
     phase: Phase,
     level: f32,
@@ -43,9 +40,7 @@ pub struct DuckEnvelope {
     pos: u32,
     attack_samples: u32,
     hold_samples: u32,
-    release_beats: f32,
     release_samples: u32,
-    bpm: f64,
     // Sidechain detector
     threshold: f32,
     key_env: f32,
@@ -62,46 +57,31 @@ impl DuckEnvelope {
             pos: 0,
             attack_samples: 1,
             hold_samples: 0,
-            release_beats: 0.5,
             release_samples: 1,
-            bpm: 120.0,
             threshold: 1.0,
             key_env: 0.0,
             key_release_coeff: (-1.0 / (KEY_FOLLOWER_RELEASE_MS * 0.001 * SAMPLE_RATE as f32)).exp(),
             armed: true,
         };
-        e.configure(&DuckParams::default());
+        e.configure(0.5, 0.0, 50.0, -30.0);
         e
     }
 
-    pub fn configure(&mut self, p: &DuckParams) {
-        self.attack_samples = ms_to_samples(p.attack_ms).max(1);
-        self.hold_samples = ms_to_samples(p.hold_ms);
-        self.release_beats = p.release_beats.max(0.0);
-        self.threshold = db_to_lin(p.key_threshold_db);
-        self.update_release();
-    }
-
-    /// Set the tempo the release is measured against.
-    pub fn set_bpm(&mut self, bpm: f64) {
-        if bpm != self.bpm && bpm > 0.0 {
-            self.bpm = bpm;
-            self.update_release();
-        }
-    }
-
-    /// Release length in samples at the current tempo.
-    pub fn release_samples(&self) -> u32 {
-        self.release_samples
-    }
-
-    fn update_release(&mut self) {
-        let r = self.release_beats as f64 * 60.0 / self.bpm * SAMPLE_RATE as f64;
-        self.release_samples = (r.round() as u32).max(1);
-        // A retempo mid-release must not jump past the new end.
+    /// Envelope times in ms and the sidechain threshold in dBFS peak.
+    pub fn configure(&mut self, attack_ms: f32, hold_ms: f32, release_ms: f32, key_threshold_db: f32) {
+        self.attack_samples = ms_to_samples(attack_ms).max(1);
+        self.hold_samples = ms_to_samples(hold_ms);
+        self.release_samples = ms_to_samples(release_ms).max(1);
+        // A shorter release mid-release must not jump past the new end.
         if self.phase == Phase::Release && self.pos >= self.release_samples {
             self.pos = self.release_samples - 1;
         }
+        self.threshold = db_to_lin(key_threshold_db);
+    }
+
+    /// Release length in samples.
+    pub fn release_samples(&self) -> u32 {
+        self.release_samples
     }
 
     /// Start (or restart) the duck from the current level.
@@ -114,8 +94,8 @@ impl DuckEnvelope {
 
     /// Render the duck amount for one block.
     ///
-    /// - `sidechain`: the kick bus for this block (same length as `out`), or `None`.
-    /// - `triggers`: kick onsets as sample offsets into this block, ascending.
+    /// - `sidechain`: the key bus for this block (same length as `out`), or `None`.
+    /// - `triggers`: onsets as sample offsets into this block, ascending.
     ///   Offsets `>= out.len()` are ignored.
     pub fn render(&mut self, sidechain: Option<&[StereoSample]>, triggers: &[u32], out: &mut [f32]) {
         debug_assert!(triggers.windows(2).all(|w| w[0] <= w[1]), "triggers must be ascending");
@@ -199,98 +179,51 @@ impl Default for DuckEnvelope {
     }
 }
 
-/// Per-lane dynamic low-band cut.
-pub struct LowBandDucker {
-    crossover: LinkwitzRileyCrossover,
-}
-
-impl LowBandDucker {
-    pub fn new() -> Self {
-        let mut crossover = LinkwitzRileyCrossover::new();
-        crossover.set_band_count(2);
-        let mut d = Self { crossover };
-        d.set_crossover_hz(DuckParams::default().crossover_hz);
-        d
+/// Apply `gain_db(i)` dB of cut to every sample of `buf` (full band).
+#[inline]
+pub fn duck_full_band(buf: &mut [StereoSample], kick: &[f32], snare: &[f32], kick_db: f32, snare_db: f32) {
+    if kick_db <= 0.0 && snare_db <= 0.0 {
+        return;
     }
-
-    pub fn set_crossover_hz(&mut self, hz: f32) {
-        self.crossover.set_frequency(0, hz);
-    }
-
-    /// Cut the low band by `depth_db × amount[i]`. `depth_db <= 0` bypasses
-    /// the split entirely (no LR phase shift on the lane).
-    pub fn process(&mut self, buf: &mut [StereoSample], amount: &[f32], depth_db: f32) {
-        if depth_db <= 0.0 {
-            return;
-        }
-        // gain = 10^(−depth·a/20) = exp(−depth·a·ln10/20)
-        let k = -depth_db * std::f32::consts::LN_10 / 20.0;
-        for (s, &a) in buf.iter_mut().zip(amount) {
-            let bands = self.crossover.process(*s);
-            let g = (k * a).exp();
-            s.left = bands[0].left * g + bands[1].left;
-            s.right = bands[0].right * g + bands[1].right;
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.crossover.reset();
-    }
-}
-
-impl Default for LowBandDucker {
-    fn default() -> Self {
-        Self::new()
+    // gain = 10^(−dB/20) = exp(−dB·ln10/20)
+    let k = -std::f32::consts::LN_10 / 20.0;
+    for ((s, &a), &b) in buf.iter_mut().zip(kick).zip(snare) {
+        let g = (k * (kick_db * a + snare_db * b)).exp();
+        s.left *= g;
+        s.right *= g;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::glue::filter::tests::{rms_tail, sine};
 
-    fn params() -> DuckParams {
-        DuckParams { attack_ms: 1.0, hold_ms: 10.0, release_beats: 0.5, ..DuckParams::default() }
-    }
-
-    fn render_trigger_at_zero(bpm: f64, n: usize) -> Vec<f32> {
+    fn render_trigger_at_zero(attack_ms: f32, release_ms: f32, n: usize) -> Vec<f32> {
         let mut env = DuckEnvelope::new();
-        env.configure(&params());
-        env.set_bpm(bpm);
+        env.configure(attack_ms, 0.0, release_ms, -30.0);
         let mut out = vec![0.0; n];
         env.render(None, &[0], &mut out);
         out
     }
 
     #[test]
-    fn envelope_recovers_after_tempo_relative_release() {
-        for bpm in [120.0, 174.0] {
-            let attack = 48;
-            let hold = 480;
-            let release = (0.5 * 60.0 / bpm * 48_000.0_f64).round() as usize;
-            let end = attack + hold + release;
-            let out = render_trigger_at_zero(bpm, end + 100);
+    fn envelope_recovers_after_its_release() {
+        for release_ms in [50.0, 120.0] {
+            let attack = 24; // 0.5 ms
+            let release = (release_ms * 48.0) as usize;
+            let end = attack + release;
+            let out = render_trigger_at_zero(0.5, release_ms, end + 100);
             assert_eq!(out[attack - 1], 1.0, "full duck after attack");
-            assert_eq!(out[attack + hold - 1], 1.0, "held");
-            assert!(out[attack + hold + release / 2] > 0.45 && out[attack + hold + release / 2] < 0.55);
+            assert!(out[attack + release / 2] > 0.45 && out[attack + release / 2] < 0.55);
             assert!(out[end - 2] > 0.0, "still releasing just before the end");
-            assert_eq!(out[end], 0.0, "fully recovered at {bpm} BPM");
+            assert_eq!(out[end], 0.0, "fully recovered after {release_ms} ms");
         }
-    }
-
-    #[test]
-    fn release_scales_with_tempo() {
-        let slow = render_trigger_at_zero(85.0, 20_000);
-        let fast = render_trigger_at_zero(170.0, 20_000);
-        let recovered = |v: &[f32]| v.iter().skip(10).position(|&a| a == 0.0).unwrap() + 10;
-        let ratio = (recovered(&slow) - 528) as f32 / (recovered(&fast) - 528) as f32;
-        assert!((ratio - 2.0).abs() < 0.01, "half tempo → double release, ratio {ratio}");
     }
 
     #[test]
     fn sidechain_key_fires_like_a_trigger() {
         let mut env = DuckEnvelope::new();
-        env.configure(&params());
+        env.configure(1.0, 10.0, 100.0, -30.0);
         let mut key = vec![StereoSample::default(); 4800];
         for s in &mut key[1000..1200] {
             *s = StereoSample::new(0.8, 0.8);
@@ -301,35 +234,22 @@ mod tests {
         assert_eq!(out[1000 + 47], 1.0, "attack completes 1 ms after the kick");
         // Below-threshold key never fires.
         let mut env2 = DuckEnvelope::new();
-        env2.configure(&params());
+        env2.configure(1.0, 10.0, 100.0, -30.0);
         let quiet = vec![StereoSample::new(0.01, 0.01); 4800];
         env2.render(Some(&quiet), &[], &mut out);
         assert!(out.iter().all(|&a| a == 0.0));
     }
 
     #[test]
-    fn ducker_cuts_low_band_only() {
-        let n = 48_000;
-        let full = vec![1.0; n];
-        // 40 Hz sits 1.6 octaves under the 120 Hz split, where the LR24 high band is ~−38 dB.
-        for (freq, expect_db) in [(40.0, -12.0), (2000.0, 0.0)] {
-            let mut d = LowBandDucker::new();
-            let x = sine(freq, 0.5, n);
-            let mut buf: Vec<StereoSample> = x.iter().map(|&v| StereoSample::new(v, v)).collect();
-            d.process(&mut buf, &full, 12.0);
-            let got = 20.0 * (rms_tail(buf.iter().map(|s| s.left), n) / rms_tail(x.into_iter(), n)).log10();
-            assert!((got - expect_db).abs() < 0.5, "{freq} Hz: expected {expect_db} dB, got {got}");
-        }
-    }
-
-    #[test]
-    fn ducker_unity_when_amount_zero() {
-        let n = 48_000;
-        let mut d = LowBandDucker::new();
-        let x = sine(60.0, 0.5, n);
-        let mut buf: Vec<StereoSample> = x.iter().map(|&v| StereoSample::new(v, v)).collect();
-        d.process(&mut buf, &vec![0.0; n], 12.0);
-        let ratio = rms_tail(buf.iter().map(|s| s.left), n) / rms_tail(x.into_iter(), n);
-        assert!((ratio - 1.0).abs() < 0.02);
+    fn full_band_cut_sums_the_keys() {
+        let mut buf = vec![StereoSample::new(1.0, -1.0); 3];
+        duck_full_band(&mut buf, &[1.0, 0.0, 1.0], &[0.0, 1.0, 1.0], 8.0, 4.0);
+        let db = |v: f32| 20.0 * v.abs().log10();
+        assert!((db(buf[0].left) + 8.0).abs() < 1e-3);
+        assert!((db(buf[1].right) + 4.0).abs() < 1e-3);
+        assert!((db(buf[2].left) + 12.0).abs() < 1e-3);
+        let mut open = vec![StereoSample::new(0.5, 0.5); 3];
+        duck_full_band(&mut open, &[0.0; 3], &[0.0; 3], 8.0, 4.0);
+        assert!(open.iter().all(|s| s.left == 0.5));
     }
 }

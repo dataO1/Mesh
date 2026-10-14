@@ -90,8 +90,11 @@ pub const CLAP_TRIGGER_GATE_TICKS: f64 = TICKS_PER_STEP as f64;
 pub const CLAP_ACCENT_GAIN: f32 = 1.25;
 /// Notes a CLAP lane can hold at once.
 pub const MAX_CLAP_NOTES: usize = 32;
-/// Kick onsets reported to the duck per chunk.
+/// Kick or snare onsets reported to the duck per chunk.
 pub const MAX_KICK_TRIGGERS: usize = 64;
+/// Main-kit targets that key the duck: the backbone's kick and snare.
+pub const DRUM_TARGET_KICK: u8 = DRUM_TARGET_BACKBONE;
+pub const DRUM_TARGET_SNARE: u8 = DRUM_TARGET_BACKBONE + 1;
 
 // ─── Lane FX chain ─────────────────────────────────────────────────────
 
@@ -553,8 +556,6 @@ pub struct LaneInit {
     pub claps: Vec<Arc<ClapCell>>,
     pub fx: LaneFx,
     pub default_option: usize,
-    /// Targets whose onsets key the duck (drum lane).
-    pub kick_targets: [u64; 4],
 }
 
 /// One lane on the RT thread.
@@ -586,9 +587,10 @@ pub struct Lane {
     tail_left: u32,
     /// `(param, value)` last set by each performance control.
     inst_controls: [Option<(u32, f32)>; CONTROLS_PER_LANE],
-    kick_targets: [u64; 4],
     kick_triggers: [u32; MAX_KICK_TRIGGERS],
     kick_len: usize,
+    snare_triggers: [u32; MAX_KICK_TRIGGERS],
+    snare_len: usize,
     /// Tag of the last fired event this chunk, `None` when nothing fired.
     last_fired: Option<(SpanTag, bool)>,
     fired_count: u32,
@@ -623,9 +625,10 @@ impl Lane {
             fade_step: 1.0,
             tail_left: 0,
             inst_controls: [None; CONTROLS_PER_LANE],
-            kick_targets: init.kick_targets,
             kick_triggers: [0; MAX_KICK_TRIGGERS],
             kick_len: 0,
+            snare_triggers: [0; MAX_KICK_TRIGGERS],
+            snare_len: 0,
             last_fired: None,
             fired_count: 0,
         };
@@ -664,9 +667,14 @@ impl Lane {
         self.sampler.voices_active() + self.tracker.len
     }
 
-    /// Kick onsets of the last chunk, ascending frame offsets.
+    /// Main-kit kick onsets of the last chunk, ascending frame offsets.
     pub fn kick_triggers(&self) -> &[u32] {
         &self.kick_triggers[..self.kick_len]
+    }
+
+    /// Main-kit snare onsets of the last chunk, ascending frame offsets.
+    pub fn snare_triggers(&self) -> &[u32] {
+        &self.snare_triggers[..self.snare_len]
     }
 
     /// Tag of the last event fired in the last chunk and how many fired.
@@ -790,6 +798,7 @@ impl Lane {
     pub fn begin_chunk(&mut self) {
         // Notes queued before the chunk (all-notes-off from a command) stay.
         self.kick_len = 0;
+        self.snare_len = 0;
     }
 
     pub fn begin_segment(&mut self, seg: &ClockSegment) {
@@ -866,13 +875,18 @@ impl Lane {
     }
 
     fn sort_kicks(&mut self) {
-        let t = &mut self.kick_triggers[..self.kick_len];
-        for i in 1..t.len() {
-            let mut j = i;
-            while j > 0 && t[j - 1] > t[j] {
-                t.swap(j - 1, j);
-                j -= 1;
-            }
+        sort_offsets(&mut self.kick_triggers[..self.kick_len]);
+        sort_offsets(&mut self.snare_triggers[..self.snare_len]);
+    }
+}
+
+/// Insertion sort (short, mostly sorted, allocation-free).
+fn sort_offsets(t: &mut [u32]) {
+    for i in 1..t.len() {
+        let mut j = i;
+        while j > 0 && t[j - 1] > t[j] {
+            t.swap(j - 1, j);
+            j -= 1;
         }
     }
 }
@@ -892,10 +906,15 @@ impl EventSink for Lane {
         if onset {
             self.last_fired = Some((span_tag(self.role, ev), fill));
             self.fired_count += 1;
-            let kick = self.kick_targets[(ev.target >> 6) as usize] & (1 << (ev.target & 63)) != 0;
-            if kick && ev.vel > 0 && self.kick_len < MAX_KICK_TRIGGERS {
-                self.kick_triggers[self.kick_len] = offset;
-                self.kick_len += 1;
+            // Only the main kit keys the duck, never break slices.
+            if self.role == Role::Drums && ev.vel > 0 && ev.kind == EventKind::Trigger {
+                if ev.target == DRUM_TARGET_KICK && self.kick_len < MAX_KICK_TRIGGERS {
+                    self.kick_triggers[self.kick_len] = offset;
+                    self.kick_len += 1;
+                } else if ev.target == DRUM_TARGET_SNARE && self.snare_len < MAX_KICK_TRIGGERS {
+                    self.snare_triggers[self.snare_len] = offset;
+                    self.snare_len += 1;
+                }
             }
         }
         if self.active_clap.is_some() {

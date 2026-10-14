@@ -613,7 +613,6 @@ loudness: {{ drums: -12, bass: -14, lead: -16, extra: -18 }}
 glue:
   role_hpf: {{ lead: 500, extra: 300 }}
   bass_mono_hz: 120
-  duck: {{ depth_db: -6, low_hz: 50, high_hz: 120, release_beats: 0.5 }}
   drum_bus:
     comp: {{ threshold_db: -12, ratio: 4, attack_ms: 10, release_ms: 120 }}
     drive: 0.2
@@ -670,7 +669,7 @@ lanes:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.3 }}
-      - {{ label: duck, target: {{ type: glue, param: duck_depth }}, min: 0.0, max: 1.0 }}
+      - {{ label: gate, target: {{ type: generator, param: gate }}, default: 0.6 }}
     generator:
       family: procedural
       name: bass

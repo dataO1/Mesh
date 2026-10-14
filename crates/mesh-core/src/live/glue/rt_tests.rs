@@ -46,9 +46,9 @@ fn glue_chain_process_does_not_allocate() {
                 chain.set_lane(2, LaneSetup { role: Role::Lead, trim_db: 0.0, delay_send: 0.0, reverb_send: 0.5 });
             }
             let bpm = if b < 15 { 174.0 } else { 87.0 };
-            chain.process(&mut lanes, GlueKey { sidechain: Some(&key), triggers: &triggers }, bpm, &mut out);
+            chain.process(&mut lanes, GlueKey { sidechain: Some(&key), triggers: &triggers, snares: &triggers }, bpm, &mut out);
         }
-        chain.process(&mut long_lanes, GlueKey { sidechain: None, triggers: &[5, 700, 1300] }, 174.0, &mut long_out);
+        chain.process(&mut long_lanes, GlueKey { sidechain: None, triggers: &[5, 700, 1300], snares: &[300, 1000] }, 174.0, &mut long_out);
     });
     assert_eq!(allocs, 0, "glue chain allocated on the RT path");
     assert!(out.iter().all(|s| s.left.is_finite() && s.right.is_finite()));

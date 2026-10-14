@@ -45,7 +45,7 @@ mod rt_tests;
 
 pub use chain::{GlueChain, GlueKey, LaneSetup};
 pub use dynamics::{static_curve_db, Compressor};
-pub use ducker::{DuckEnvelope, LowBandDucker};
+pub use ducker::{duck_full_band, DuckEnvelope};
 pub use filter::{MonoBelow, RoleHighPass};
 pub use loudness::{measure_lufs, trim_db};
 pub use params::{

@@ -46,7 +46,7 @@ use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::{db_to_lin, GlueParams, Role};
 use super::harmony::Progression;
 use super::lane::{
-    drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption, DRUM_TARGET_BACKBONE,
+    drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption,
 };
 use super::sampler::{Interpolation, SampleBank, SampleData, Slice, SliceType, SlotDef};
 use super::style::{
@@ -232,7 +232,7 @@ impl Ctx<'_> {
     }
 
     /// Map an option's samples to consecutive targets from `first`. Returns
-    /// the next free target. Slots with slice type kick are added to `kicks`.
+    /// the next free target.
     #[allow(clippy::too_many_arguments)]
     fn fill_bank(
         &mut self,
@@ -243,7 +243,6 @@ impl Ctx<'_> {
         default_choke: u8,
         gain: f32,
         mono_groups: bool,
-        kicks: &mut [u64; 4],
     ) -> Result<u8, LoadError> {
         let end = first as usize + capacity as usize;
         let mut next = first as usize;
@@ -265,9 +264,6 @@ impl Ctx<'_> {
                         break;
                     }
                     if let Some(slot) = SlotDef::slice(data.clone(), i) {
-                        if slot.kind == SliceType::Kick {
-                            kicks[next >> 6] |= 1 << (next & 63);
-                        }
                         bank.set(next as u8, finish(slot));
                         next += 1;
                     }
@@ -388,23 +384,24 @@ pub fn glue_params(spec: &GlueSpec, send_fx: &SendFxSpec, bpm: f64) -> (GluePara
         p.mono_below.freq_hz = hz;
     }
     if let Some(d) = &spec.duck {
-        if let Some(db) = d.depth_db {
-            // MUSICAL: the style's depth is the bass cut; lead and extra get
-            // half, they have little energy left there after their high-pass.
-            p.duck.bass_depth_db = db.abs();
-            p.duck.lead_depth_db = db.abs() * 0.5;
-            p.duck.extra_depth_db = db.abs() * 0.5;
-        }
-        // The duck cuts everything below one crossover, so only the band's
-        // upper edge applies; `low_hz` is accepted for a later band-limited duck.
-        if let Some(hz) = d.high_hz {
-            p.duck.crossover_hz = hz;
+        if let Some(on) = d.enabled {
+            p.duck.enabled = on;
         }
         if let Some(ms) = d.attack_ms {
             p.duck.attack_ms = ms;
         }
-        if let Some(beats) = d.release_beats {
-            p.duck.release_beats = beats;
+        for (group, out) in [(&d.bass, &mut p.duck.bass), (&d.others, &mut p.duck.others)] {
+            if let Some(g) = group {
+                if let Some(db) = g.kick_db {
+                    out.kick_db = db;
+                }
+                if let Some(db) = g.snare_db {
+                    out.snare_db = db;
+                }
+                if let Some(ms) = g.release_ms {
+                    out.release_ms = ms;
+                }
+            }
         }
     }
     let comp = |c: &style::CompSpec, out: &mut super::glue::CompressorParams| {
@@ -542,12 +539,9 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         let overridden = generators[li].is_some();
         let mut option_names: Vec<String> = Vec::new();
         let mut claps: Vec<Arc<ClapCell>> = Vec::new();
-        let mut kicks = [0u64; 4];
         let default_option;
 
         if lane.role == Role::Drums {
-            // Target 0 of the backbone is the kick by convention.
-            kicks[0] |= 1 << DRUM_TARGET_BACKBONE;
             let kits = lane.sub_voices.iter().map(|sv| sv.options.len()).max().unwrap_or(0).max(1);
             for kit in 0..kits {
                 let mut bank = SampleBank::new();
@@ -565,7 +559,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                     match opt.source() {
                         Some(InstrumentSource::Sampler(s)) => {
                             let gain = if calibration { 1.0 } else { db_to_lin(opt.lufs_trim_db) };
-                            let end = ctx.fill_bank(&mut bank, first, left, &s.samples, sv.choke, gain, false, &mut kicks)?;
+                            let end = ctx.fill_bank(&mut bank, first, left, &s.samples, sv.choke, gain, false)?;
                             next[sv.voice as usize] = Some(end);
                             names.push(&opt.name);
                         }
@@ -600,7 +594,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                         // MUSICAL: a bass choke group is mono, so overlapping
                         // notes slide instead of stacking.
                         let mono = lane.role == Role::Bass;
-                        ctx.fill_bank(&mut bank, 0, u8::MAX, &s.samples, 0, 1.0, mono, &mut [0; 4])?;
+                        ctx.fill_bank(&mut bank, 0, u8::MAX, &s.samples, 0, 1.0, mono)?;
                         LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain }
                     }
                     Some(InstrumentSource::Clap(c)) if clap_allowed => {
@@ -686,7 +680,6 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             claps,
             fx,
             default_option,
-            kick_targets: kicks,
         }));
         meta.push(LaneMeta {
             name: lane.name.clone(),
@@ -821,14 +814,15 @@ mod tests {
         let drums = &loaded.meta[0].controls;
         assert_eq!(drums[2].route, ControlRoute::Fx { slot: 0, param: 0 });
         assert_eq!(drums[3].route, ControlRoute::Send(SendBus::Reverb));
-        assert_eq!(loaded.meta[1].controls[3].route, ControlRoute::Glue(GlueControl::DuckDepth));
+        assert_eq!(loaded.meta[1].controls[3].route, ControlRoute::Glue(GlueControl::MasterComp));
         assert_eq!(loaded.meta[2].controls[2].route, ControlRoute::Instrument(0));
         assert_eq!(drums[0].label, "style");
 
         // Glue mapped from the style.
         assert_eq!(loaded.glue.high_pass.lead.freq_hz, 500.0);
-        assert_eq!(loaded.glue.duck.bass_depth_db, 6.0);
-        assert_eq!(loaded.glue.duck.lead_depth_db, 3.0);
+        assert_eq!((loaded.glue.duck.bass.kick_db, loaded.glue.duck.bass.release_ms), (6.0, 60.0));
+        assert_eq!(loaded.glue.duck.bass.snare_db, crate::live::glue::DuckParams::default().bass.snare_db, "unset keeps the default");
+        assert_eq!(loaded.glue.duck.others.snare_db, 3.0);
         assert_eq!(loaded.glue.drum_bus.compressor.threshold_db, -12.0);
         assert!(!loaded.glue.drive.enabled);
         assert_eq!(loaded.glue.master.compressor.ratio, 2.0);
@@ -851,11 +845,10 @@ mod tests {
             warnings: Vec::new(),
         };
         let mut bank = SampleBank::new();
-        let mut kicks = [0u64; 4];
         for sv in &style.spec.lanes[0].sub_voices {
             let (base, cap) = drum_target_range(sv.voice);
             let Some(InstrumentSource::Sampler(s)) = sv.options[0].source() else { panic!() };
-            ctx.fill_bank(&mut bank, base, cap, &s.samples, sv.choke, 0.5, false, &mut kicks).unwrap();
+            ctx.fill_bank(&mut bank, base, cap, &s.samples, sv.choke, 0.5, false).unwrap();
         }
         // Backbone: kick, snare. Break: 4 slices. Hats: closed, open. Perc: shaker.
         for t in [0, 1, DRUM_TARGET_BREAK, DRUM_TARGET_BREAK + 3, DRUM_TARGET_HATS, DRUM_TARGET_HATS + 1, DRUM_TARGET_PERC] {
@@ -874,8 +867,6 @@ mod tests {
         for i in 0..layout.slices().len() {
             assert!(bank.resolve(layout.slice_target(i), 0).is_some());
         }
-        // The break's kick slice keys the duck.
-        assert_ne!(kicks[0] & (1 << DRUM_TARGET_BREAK), 0);
         // The amen is decoded once although the cache is asked per option.
         assert_eq!(ctx.cache.iter().filter(|c| c.0.ends_with("amen.wav")).count(), 1);
     }
@@ -897,7 +888,7 @@ mod tests {
         };
         let Some(InstrumentSource::Sampler(s)) = style.spec.lanes[2].options[0].source() else { panic!() };
         let mut bank = SampleBank::new();
-        let next = ctx.fill_bank(&mut bank, 0, u8::MAX, &s.samples, 0, 1.0, false, &mut [0; 4]).unwrap();
+        let next = ctx.fill_bank(&mut bank, 0, u8::MAX, &s.samples, 0, 1.0, false).unwrap();
         assert_eq!(next, 1, "two zones, one target");
         assert_eq!(bank.resolve(0, 57).unwrap().root_key, 57);
         assert_eq!(bank.resolve(0, 72).unwrap().root_key, 69);

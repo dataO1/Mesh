@@ -321,7 +321,8 @@ fn momentary_moves_act_while_held() {
     assert_eq!(r.sys.shared.lane(0).view().moves, 0);
     let diff = first_difference(&plain.lanes[0], &r.lanes[0]).expect("the fill bar differs");
     assert!(diff >= pressed, "fill changed audio before the press");
-    assert_eq!(plain.lanes[1], r.lanes[1], "other lanes are untouched");
+    // Other lanes play the same notes. Only the fill.s snares, keying the duck, reach them.
+    assert_eq!(plain.lanes[1][..pressed], r.lanes[1][..pressed], "other lanes are untouched before the press");
     let bar3 = (3.0 * bar_frames(BPM)).ceil() as usize;
     assert_eq!(plain.lanes[0][bar3..], r.lanes[0][bar3..], "main bar is back after release");
 
@@ -521,13 +522,13 @@ fn controls_route_to_fx_sends_instrument_and_glue() {
     r.run_to(3.0);
     assert!(r.peak(2, from, usize::MAX) < plain.peak(2, from, usize::MAX) * 0.5);
 
-    // Glue: the bass duck depth control changes the bass lane only.
+    // Glue: the master compressor control changes the master, not the lanes.
     let mut r = rig(reference(), 256);
     r.run_to(1.5);
     r.send(LiveCommand::SetControl { lane: 1, control: 3, value: 1.0 });
     r.run_to(3.0);
-    assert!(plain.lanes[1] != r.lanes[1]);
-    assert!(plain.lanes[0] == r.lanes[0]);
+    assert!(plain.master != r.master);
+    assert!(plain.lanes[1] == r.lanes[1]);
     assert_eq!(r.sys.shared.lane(1).view().controls[3], 1.0);
 }
 

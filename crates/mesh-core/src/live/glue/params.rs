@@ -83,53 +83,63 @@ impl Default for MonoBelowParams {
     }
 }
 
-/// Stage 3: kick-keyed low-band duck on bass / lead / extra.
+/// Stage 3: full-band duck on bass / lead / extra, keyed by the main drum
+/// kit's kick and snare (never by break slices).
+///
+/// Each ducked lane's cut is `kick_db × kick envelope + snare_db × snare
+/// envelope`. The bass ducks mostly on the kick with a short release, lead
+/// and extra mostly on the snare with a longer one.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DuckParams {
     pub enabled: bool,
-    /// Upper edge of the ducked band. Everything below it is cut (the
-    /// 50–120 Hz kick region plus the sub under it).
-    pub crossover_hz: f32,
-    /// Full-duck cut on the low band, per role.
-    pub bass_depth_db: f32,
-    pub lead_depth_db: f32,
-    pub extra_depth_db: f32,
     pub attack_ms: f32,
-    pub hold_ms: f32,
-    /// Release in beats, converted with the current BPM every block.
-    pub release_beats: f32,
+    pub bass: DuckRoleParams,
+    /// Lead and extra.
+    pub others: DuckRoleParams,
     /// Sidechain key level that fires the duck (dBFS peak).
     pub key_threshold_db: f32,
+}
+
+/// Cut and release of one group of ducked lanes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DuckRoleParams {
+    /// Full-duck cut on a main-kit kick.
+    pub kick_db: f32,
+    /// Full-duck cut on a main-kit snare.
+    pub snare_db: f32,
+    pub release_ms: f32,
+}
+
+impl Default for DuckRoleParams {
+    fn default() -> Self {
+        Self { kick_db: 0.0, snare_db: 0.0, release_ms: 50.0 }
+    }
 }
 
 impl Default for DuckParams {
     fn default() -> Self {
         Self {
             enabled: true,
-            // MUSICAL: kick band 50–120 Hz (R§7.1.9).
-            crossover_hz: 120.0,
-            // MUSICAL: bass ducks hard, lead/extra have little energy there after their HPF.
-            bass_depth_db: 12.0,
-            lead_depth_db: 6.0,
-            extra_depth_db: 6.0,
-            // MUSICAL: fast attack, short hold, 1/8-note release.
-            attack_ms: 2.0,
-            hold_ms: 20.0,
-            release_beats: 0.5,
+            // MUSICAL: user spec: fastest attack (0.5 ms, short enough to
+            // read as instant without a click), bass 8 dB on the kick with
+            // 50 ms release, lead/extra slight and slower, mostly on the snare.
+            attack_ms: 0.5,
+            bass: DuckRoleParams { kick_db: 8.0, snare_db: 2.0, release_ms: 50.0 },
+            others: DuckRoleParams { kick_db: 2.0, snare_db: 4.0, release_ms: 120.0 },
             key_threshold_db: -30.0,
         }
     }
 }
 
 impl DuckParams {
-    /// Full-duck depth for a role. Drums are never ducked.
-    pub fn depth_db(&self, role: Role) -> f32 {
+    /// Duck settings for a role. Drums are never ducked.
+    pub fn for_role(&self, role: Role) -> Option<&DuckRoleParams> {
         match role {
-            Role::Drums => 0.0,
-            Role::Bass => self.bass_depth_db,
-            Role::Lead => self.lead_depth_db,
-            Role::Extra => self.extra_depth_db,
+            Role::Drums => None,
+            Role::Bass => Some(&self.bass),
+            Role::Lead | Role::Extra => Some(&self.others),
         }
     }
 }
@@ -368,14 +378,15 @@ mod tests {
     #[test]
     fn partial_yaml_keeps_defaults() {
         let p: GlueParams = serde_yaml::from_str(
-            "high_pass:\n  lead:\n    freq_hz: 800\n    slope: db12\nduck:\n  release_beats: 1.0\n",
+            "high_pass:\n  lead:\n    freq_hz: 800\n    slope: db12\nduck:\n  bass:\n    release_ms: 60\n",
         )
         .unwrap();
         assert_eq!(p.high_pass.lead.freq_hz, 800.0);
         assert_eq!(p.high_pass.lead.slope, Slope::Db12);
         assert!(p.high_pass.lead.enabled, "unlisted field keeps its default");
         assert_eq!(p.high_pass.extra, HighPassParams::default().extra);
-        assert_eq!(p.duck.release_beats, 1.0);
+        assert_eq!(p.duck.bass.release_ms, 60.0);
+        assert_eq!(p.duck.bass.kick_db, DuckParams::default().bass.kick_db, "nested field keeps its default");
         assert_eq!(p.master, MasterParams::default());
     }
 
@@ -396,6 +407,6 @@ mod tests {
         let mut p = GlueParams::default();
         p.high_pass.drums.enabled = true;
         assert!(!p.high_pass.for_role(Role::Bass).enabled);
-        assert_eq!(p.duck.depth_db(Role::Drums), 0.0);
+        assert!(p.duck.for_role(Role::Drums).is_none());
     }
 }

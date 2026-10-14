@@ -523,21 +523,32 @@ pub struct RoleHpfSpec {
     pub extra: Option<f32>,
 }
 
-/// Kick-keyed low-band duck on bass, lead and extra.
+/// Full-band duck on bass, lead and extra, keyed by the main drum kit's
+/// kick and snare. Unset fields keep the glue defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DuckSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub depth_db: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub low_hz: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub high_hz: Option<f32>,
+    pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attack_ms: Option<f32>,
-    /// Release as a fraction of a beat (tempo-relative).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_beats: Option<f32>,
+    pub bass: Option<DuckGroupSpec>,
+    /// Lead and extra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub others: Option<DuckGroupSpec>,
+}
+
+/// Duck of one group of lanes: cut in dB on a main-kit kick and snare.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuckGroupSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kick_db: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snare_db: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_ms: Option<f32>,
 }
 
 /// Compressor settings.
@@ -1147,14 +1158,12 @@ impl Validator {
         }
         self.opt_range("glue.bass_mono_hz", g.bass_mono_hz, HZ.0, HZ.1);
         if let Some(d) = &g.duck {
-            self.opt_range("glue.duck.depth_db", d.depth_db, -60.0, 0.0);
-            self.opt_range("glue.duck.low_hz", d.low_hz, HZ.0, HZ.1);
-            self.opt_range("glue.duck.high_hz", d.high_hz, HZ.0, HZ.1);
-            self.opt_range("glue.duck.attack_ms", d.attack_ms, 0.0, 1000.0);
-            self.opt_range("glue.duck.release_beats", d.release_beats, 0.0, 16.0);
-            if let (Some(lo), Some(hi)) = (d.low_hz, d.high_hz) {
-                if lo > hi {
-                    self.push("glue.duck", Problem::OutOfRange { value: lo, min: HZ.0, max: hi });
+            self.opt_range("glue.duck.attack_ms", d.attack_ms, 0.0, 100.0);
+            for (name, group) in [("bass", &d.bass), ("others", &d.others)] {
+                if let Some(g) = group {
+                    self.opt_range(&format!("glue.duck.{name}.kick_db"), g.kick_db, 0.0, 30.0);
+                    self.opt_range(&format!("glue.duck.{name}.snare_db"), g.snare_db, 0.0, 30.0);
+                    self.opt_range(&format!("glue.duck.{name}.release_ms"), g.release_ms, 1.0, 2000.0);
                 }
             }
         }
@@ -1427,9 +1436,9 @@ mod tests {
     fn glue_is_all_optional() {
         let g: GlueSpec = serde_yaml::from_str("{}").unwrap();
         assert_eq!(g, GlueSpec::default());
-        let g: GlueSpec = serde_yaml::from_str("duck: { depth_db: -9 }").unwrap();
-        assert_eq!(g.duck.unwrap().depth_db, Some(-9.0));
-        assert_eq!(g.duck.unwrap().low_hz, None);
+        let g: GlueSpec = serde_yaml::from_str("duck: { bass: { kick_db: 9 } }").unwrap();
+        assert_eq!(g.duck.unwrap().bass.unwrap().kick_db, Some(9.0));
+        assert_eq!(g.duck.unwrap().others, None);
     }
 
     #[test]

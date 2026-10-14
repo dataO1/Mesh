@@ -108,8 +108,6 @@ pub enum LiveCommand {
 /// Glue parameter a performance control can drive (`type: glue` in the style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlueControl {
-    /// Duck depth of the lane's role. 0..1 → 0..[`MAX_DUCK_DB`] dB.
-    DuckDepth,
     /// Drum-bus saturation drive. 0..1 → 0..[`MAX_DRIVE_DB`] dB.
     DrumDrive,
     /// Drum-bus compressor threshold. 0..1 → 0..−36 dB.
@@ -133,8 +131,6 @@ pub enum GlueControl {
 }
 
 // MUSICAL: full-scale ranges of the style's normalized glue amounts.
-/// Duck depth at amount 1.0.
-pub const MAX_DUCK_DB: f32 = 24.0;
 /// Saturation pre-gain at drive amount 1.0.
 pub const MAX_DRIVE_DB: f32 = 24.0;
 
@@ -145,8 +141,7 @@ pub fn drive_db(amount: f32) -> f32 {
 
 impl GlueControl {
     /// Names accepted in `ControlTarget::Glue { param }`.
-    pub const NAMES: [(&'static str, GlueControl); 11] = [
-        ("duck_depth", GlueControl::DuckDepth),
+    pub const NAMES: [(&'static str, GlueControl); 10] = [
         ("drum_drive", GlueControl::DrumDrive),
         ("drum_comp", GlueControl::DrumComp),
         ("shared_drive", GlueControl::SharedDrive),
@@ -168,20 +163,6 @@ impl GlueControl {
     pub fn apply(self, params: &mut GlueParams, role: Role, value: f32) {
         let unit = value.clamp(0.0, 1.0);
         match self {
-            GlueControl::DuckDepth => {
-                let db = unit * MAX_DUCK_DB;
-                match role {
-                    Role::Bass => params.duck.bass_depth_db = db,
-                    Role::Lead => params.duck.lead_depth_db = db,
-                    Role::Extra => params.duck.extra_depth_db = db,
-                    // Drums are the duck key and never ducked: move every role.
-                    Role::Drums => {
-                        params.duck.bass_depth_db = db;
-                        params.duck.lead_depth_db = db * 0.5;
-                        params.duck.extra_depth_db = db * 0.5;
-                    }
-                }
-            }
             GlueControl::DrumDrive => params.drum_bus.saturation.drive_db = drive_db(unit),
             GlueControl::DrumComp => params.drum_bus.compressor.threshold_db = -36.0 * unit,
             GlueControl::SharedDrive => params.drive.saturation.drive_db = drive_db(unit),
@@ -287,9 +268,6 @@ mod tests {
         assert_eq!(GlueControl::from_name("nope"), None);
 
         let mut p = GlueParams::default();
-        GlueControl::DuckDepth.apply(&mut p, Role::Bass, 0.5);
-        assert_eq!(p.duck.bass_depth_db, 12.0);
-        assert_eq!(p.duck.lead_depth_db, GlueParams::default().duck.lead_depth_db, "other roles untouched");
         GlueControl::HighPass.apply(&mut p, Role::Bass, 1.0);
         assert_eq!(p.high_pass, GlueParams::default().high_pass, "bass has no high-pass");
         GlueControl::HighPass.apply(&mut p, Role::Lead, 1.0);

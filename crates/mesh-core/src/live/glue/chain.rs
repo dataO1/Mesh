@@ -9,7 +9,7 @@ use crate::types::{StereoBuffer, StereoSample};
 
 use super::db_to_lin;
 use super::dynamics::Compressor;
-use super::ducker::{DuckEnvelope, LowBandDucker};
+use super::ducker::{duck_full_band, DuckEnvelope};
 use super::filter::{MonoBelow, RoleHighPass};
 use super::params::GlueParams;
 use super::saturation::Saturator;
@@ -35,14 +35,23 @@ impl Default for LaneSetup {
     }
 }
 
-/// Duck key for one block. Either or both sources may be used.
+/// Duck key for one block: the main drum kit's hits.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlueKey<'a> {
-    /// The drum lane's kick sub-voice bus, same length as the block.
+    /// A kick bus, same length as the block (fires the kick envelopes).
     pub sidechain: Option<&'a [StereoSample]>,
-    /// Kick onsets as ascending sample offsets into the block.
+    /// Main-kit kick onsets as ascending sample offsets into the block.
     pub triggers: &'a [u32],
+    /// Main-kit snare onsets as ascending sample offsets into the block.
+    pub snares: &'a [u32],
 }
+
+/// Duck envelopes: (key, release group).
+const DUCK_KICK_BASS: usize = 0;
+const DUCK_SNARE_BASS: usize = 1;
+const DUCK_KICK_OTHERS: usize = 2;
+const DUCK_SNARE_OTHERS: usize = 3;
+const DUCK_ENVS: usize = 4;
 
 pub struct GlueChain {
     params: GlueParams,
@@ -51,8 +60,7 @@ pub struct GlueChain {
 
     high_pass: [RoleHighPass; NUM_LANES],
     mono_below: [MonoBelow; NUM_LANES],
-    duckers: [LowBandDucker; NUM_LANES],
-    duck_env: DuckEnvelope,
+    duck_env: [DuckEnvelope; DUCK_ENVS],
 
     drum_comp: Compressor,
     drum_sat: Saturator,
@@ -64,7 +72,7 @@ pub struct GlueChain {
     sends: SharedSends,
 
     // Scratch, sized to `max_block` at construction.
-    duck_amount: Vec<f32>,
+    duck_amount: [Vec<f32>; DUCK_ENVS],
     drum_bus: Vec<StereoSample>,
     low_bus: Vec<StereoSample>,
     mix: StereoBuffer,
@@ -82,8 +90,7 @@ impl GlueChain {
             trim: [1.0; NUM_LANES],
             high_pass: std::array::from_fn(|_| RoleHighPass::new()),
             mono_below: std::array::from_fn(|_| MonoBelow::new()),
-            duckers: std::array::from_fn(|_| LowBandDucker::new()),
-            duck_env: DuckEnvelope::new(),
+            duck_env: std::array::from_fn(|_| DuckEnvelope::new()),
             drum_comp: Compressor::new(),
             drum_sat: Saturator::new(),
             drive: Saturator::new(),
@@ -92,7 +99,7 @@ impl GlueChain {
             limiter: MasterLimiter::new(),
             clipper: MasterClipper::new(),
             sends: SharedSends::new(max_block),
-            duck_amount: vec![0.0; max_block],
+            duck_amount: std::array::from_fn(|_| vec![0.0; max_block]),
             drum_bus: vec![StereoSample::default(); max_block],
             low_bus: vec![StereoSample::default(); max_block],
             mix: StereoBuffer::silence(max_block),
@@ -112,7 +119,11 @@ impl GlueChain {
         for i in 0..NUM_LANES {
             self.configure_lane(i);
         }
-        self.duck_env.configure(&p.duck);
+        let d = &p.duck;
+        for (i, env) in self.duck_env.iter_mut().enumerate() {
+            let group = if i < DUCK_KICK_OTHERS { &d.bass } else { &d.others };
+            env.configure(d.attack_ms, 0.0, group.release_ms, d.key_threshold_db);
+        }
         self.drum_comp.configure(&p.drum_bus.compressor);
         self.drum_sat.configure(&p.drum_bus.saturation);
         self.drive.configure(&p.drive.saturation);
@@ -142,7 +153,6 @@ impl GlueChain {
         self.trim[i] = db_to_lin(self.lanes[i].trim_db);
         self.high_pass[i].configure(&self.params.high_pass.for_role(role));
         self.mono_below[i].configure(&self.params.mono_below);
-        self.duckers[i].set_crossover_hz(self.params.duck.crossover_hz);
     }
 
     /// Output latency in samples (the master limiter's lookahead).
@@ -172,7 +182,6 @@ impl GlueChain {
         bpm: f64,
         out: &mut StereoBuffer,
     ) {
-        self.duck_env.set_bpm(bpm);
         self.sends.set_bpm(bpm);
 
         let n = out.len();
@@ -181,11 +190,10 @@ impl GlueChain {
         while start < n {
             let end = (start + self.max_block).min(n);
             // Triggers relative to this chunk; ascending input keeps this a contiguous range.
-            let lo = key.triggers.partition_point(|&t| (t as usize) < start);
-            let hi = key.triggers.partition_point(|&t| (t as usize) < end);
             let chunk_key = GlueKey {
                 sidechain: key.sidechain.map(|s| &s[start.min(s.len())..end.min(s.len())]),
-                triggers: &key.triggers[lo..hi],
+                triggers: offsets_in(key.triggers, start, end),
+                snares: offsets_in(key.snares, start, end),
             };
             self.process_chunk(lanes, chunk_key, start, start as u32, end);
             out.as_mut_slice()[start..end].copy_from_slice(&self.mix.as_slice()[..end - start]);
@@ -204,10 +212,13 @@ impl GlueChain {
         let m = end - start;
         let p = &self.params;
 
-        // Duck amount, shared by all ducked lanes. Triggers are rebased to the chunk.
-        let amount = &mut self.duck_amount[..m];
+        // Duck amounts per envelope. Triggers are rebased to the chunk.
         if p.duck.enabled {
-            render_rebased(&mut self.duck_env, key, offset, amount);
+            for (i, env) in self.duck_env.iter_mut().enumerate() {
+                let kick = i == DUCK_KICK_BASS || i == DUCK_KICK_OTHERS;
+                let (sidechain, triggers) = if kick { (key.sidechain, key.triggers) } else { (None, key.snares) };
+                render_rebased(env, sidechain, triggers, offset, &mut self.duck_amount[i][..m]);
+            }
         }
 
         let drum_bus = &mut self.drum_bus[..m];
@@ -235,9 +246,14 @@ impl GlueChain {
             if setup.role == Role::Bass {
                 self.mono_below[i].process(lane);
             }
-            // 4. Kick-keyed low-band duck.
-            if p.duck.enabled {
-                self.duckers[i].process(lane, amount, p.duck.depth_db(setup.role));
+            // 4. Main-kit keyed full-band duck.
+            if let Some(d) = p.duck.for_role(setup.role).filter(|_| p.duck.enabled) {
+                let (k, s) = if setup.role == Role::Bass {
+                    (DUCK_KICK_BASS, DUCK_SNARE_BASS)
+                } else {
+                    (DUCK_KICK_OTHERS, DUCK_SNARE_OTHERS)
+                };
+                duck_full_band(lane, &self.duck_amount[k][..m], &self.duck_amount[s][..m], d.kick_db, d.snare_db);
             }
             // 5. Post-lane send taps.
             self.sends.accumulate(lane, setup.delay_send, setup.reverb_send);
@@ -293,9 +309,10 @@ impl GlueChain {
         for i in 0..NUM_LANES {
             self.high_pass[i].reset();
             self.mono_below[i].reset();
-            self.duckers[i].reset();
         }
-        self.duck_env.reset();
+        for env in &mut self.duck_env {
+            env.reset();
+        }
         self.drum_comp.reset();
         self.drum_sat.reset();
         self.drive.reset();
@@ -304,28 +321,40 @@ impl GlueChain {
     }
 }
 
+/// The part of ascending `offsets` that falls in `start..end`.
+fn offsets_in(offsets: &[u32], start: usize, end: usize) -> &[u32] {
+    &offsets[offsets.partition_point(|&x| (x as usize) < start)..offsets.partition_point(|&x| (x as usize) < end)]
+}
+
 /// Render the duck envelope for a chunk whose triggers are absolute block offsets.
-fn render_rebased(env: &mut DuckEnvelope, key: GlueKey<'_>, offset: u32, out: &mut [f32]) {
+fn render_rebased(
+    env: &mut DuckEnvelope,
+    sidechain: Option<&[StereoSample]>,
+    triggers: &[u32],
+    offset: u32,
+    out: &mut [f32],
+) {
     if offset == 0 {
-        env.render(key.sidechain, key.triggers, out);
+        env.render(sidechain, triggers, out);
         return;
     }
     // Rare path (block > max_block): render between triggers.
     let mut pos = 0usize;
-    for &t in key.triggers {
+    for &t in triggers {
         let rel = (t - offset) as usize;
-        let sc = key.sidechain.map(|s| &s[pos.min(s.len())..rel.min(s.len())]);
+        let sc = sidechain.map(|s| &s[pos.min(s.len())..rel.min(s.len())]);
         env.render(sc, &[], &mut out[pos..rel]);
         env.trigger();
         pos = rel;
     }
-    let sc = key.sidechain.map(|s| &s[pos.min(s.len())..]);
+    let sc = sidechain.map(|s| &s[pos.min(s.len())..]);
     env.render(sc, &[], &mut out[pos..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::live::glue::DuckParams;
     use crate::live::glue::filter::tests::sine;
 
     fn noise(seed: u32, n: usize, amp: f32) -> Vec<StereoSample> {
@@ -378,7 +407,7 @@ mod tests {
             let s0 = b * block;
             let first = (s0 + beat - 1) / beat * beat;
             let trig: Vec<u32> = (first..s0 + block).step_by(beat).map(|t| (t - s0) as u32).collect();
-            chain.process(&mut lanes, GlueKey { sidechain: None, triggers: &trig }, 174.0, &mut out);
+            chain.process(&mut lanes, GlueKey { sidechain: None, triggers: &trig, snares: &[] }, 174.0, &mut out);
             for s in out.iter() {
                 assert!(s.left.is_finite() && s.right.is_finite());
                 peak = peak.max(s.left.abs()).max(s.right.abs());
@@ -421,7 +450,7 @@ mod tests {
         let mut a = GlueChain::new(256);
         let mut lanes = lanes_from(&srcs, 0, n);
         let mut out_a = StereoBuffer::silence(n);
-        a.process(&mut lanes, GlueKey { sidechain: None, triggers: &triggers }, 170.0, &mut out_a);
+        a.process(&mut lanes, GlueKey { sidechain: None, triggers: &triggers, snares: &[] }, 170.0, &mut out_a);
 
         let mut b = GlueChain::new(256);
         let mut out_b = Vec::new();
@@ -429,7 +458,7 @@ mod tests {
             let mut lanes = lanes_from(&srcs, s, e - s);
             let trig: Vec<u32> = triggers.iter().filter(|&&t| (t as usize) >= s && (t as usize) < e).map(|&t| t - s as u32).collect();
             let mut out = StereoBuffer::silence(e - s);
-            b.process(&mut lanes, GlueKey { sidechain: None, triggers: &trig }, 170.0, &mut out);
+            b.process(&mut lanes, GlueKey { sidechain: None, triggers: &trig, snares: &[] }, 170.0, &mut out);
             out_b.extend_from_slice(out.as_slice());
         }
         for (x, y) in out_a.iter().zip(out_b.iter()) {
@@ -438,26 +467,35 @@ mod tests {
     }
 
     #[test]
-    fn kick_trigger_ducks_bass_low_end() {
-        let block = 4800;
+    fn main_kit_kick_and_snare_duck_the_lanes() {
+        let block = 9600;
         let mut params = GlueParams::default();
-        // Isolate the duck: no drive, no master dynamics.
         params.drive.enabled = false;
         params.master.compressor_enabled = false;
+        // No filters, so a constant signal passes unchanged.
+        params.high_pass.lead.enabled = false;
+        params.high_pass.extra.enabled = false;
+        params.mono_below.enabled = false;
         let mut chain = GlueChain::new(block);
         chain.set_params(&params);
-        let bass: Vec<StereoSample> = sine(60.0, 0.25, block * 2).into_iter().map(|v| StereoSample::new(v, v)).collect();
+        // Constant signal on every lane, so the lane gain reads off directly.
+        let mut lanes: [StereoBuffer; NUM_LANES] =
+            std::array::from_fn(|_| StereoBuffer::from_vec(vec![StereoSample::new(0.25, 0.25); block]));
         let mut out = StereoBuffer::silence(block);
-        let run = |chain: &mut GlueChain, out: &mut StereoBuffer, trig: &[u32], part: usize| {
-            let mut lanes: [StereoBuffer; NUM_LANES] = std::array::from_fn(|_| StereoBuffer::silence(block));
-            lanes[1] = StereoBuffer::from_vec(bass[part * block..(part + 1) * block].to_vec());
-            chain.process(&mut lanes, GlueKey { sidechain: None, triggers: trig }, 174.0, out);
-            // Window inside the full-duck hold (attack 2 ms, hold 20 ms after block/2).
-            out.as_slice()[block / 2 + 150..block / 2 + 1000].iter().map(|s| s.left.abs()).fold(0.0f32, f32::max)
-        };
-        let open = run(&mut chain, &mut out, &[], 0);
-        let ducked = run(&mut chain, &mut out, &[block as u32 / 2], 1);
-        let db = 20.0 * (ducked / open).log10();
-        assert!(db < -9.0, "bass low end should duck ~12 dB, got {db}");
+        let (kick, snare) = (100u32, 6000u32);
+        chain.process(&mut lanes, GlueKey { sidechain: None, triggers: &[kick], snares: &[snare] }, 174.0, &mut out);
+        let db = |lane: usize, at: u32| 20.0 * (lanes[lane].as_slice()[at as usize].left / 0.25).log10();
+        let d = DuckParams::default();
+        let full = 30; // just past the 0.5 ms attack
+        assert!((db(1, kick + full) + d.bass.kick_db).abs() < 0.5, "bass on the kick: {}", db(1, kick + full));
+        assert!((db(2, kick + full) + d.others.kick_db).abs() < 0.5, "lead on the kick: {}", db(2, kick + full));
+        assert!((db(1, snare + full) + d.bass.snare_db).abs() < 0.5, "bass on the snare: {}", db(1, snare + full));
+        assert!((db(3, snare + full) + d.others.snare_db).abs() < 0.5, "extra on the snare: {}", db(3, snare + full));
+        // Bass recovers after 50 ms, lead and extra are still releasing.
+        let after_bass = kick + 24 + 2400 + 10;
+        assert!(db(1, after_bass).abs() < 1e-3, "bass back: {}", db(1, after_bass));
+        assert!(db(2, after_bass) < -0.3, "lead still ducked: {}", db(2, after_bass));
+        // The drums are the key and never ducked.
+        assert!(lanes[0].as_slice().iter().all(|s| s.left == 0.25));
     }
 }

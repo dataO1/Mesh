@@ -366,8 +366,12 @@ impl LiveEngine {
 
         let t0 = self.profiling.then(Instant::now);
         self.mix.set_len_from_capacity(frames);
-        // The drum lane's kick onsets key the duck.
-        let key = GlueKey { sidechain: None, triggers: self.lanes[0].kick_triggers() };
+        // The main kit's kick and snare onsets key the duck.
+        let key = GlueKey {
+            sidechain: None,
+            triggers: self.lanes[0].kick_triggers(),
+            snares: self.lanes[0].snare_triggers(),
+        };
         self.glue.process(&mut self.lane_bufs, key, head.bpm, &mut self.mix);
         out.copy_from_slice(self.mix.as_slice());
         if let Some(t) = t0 {

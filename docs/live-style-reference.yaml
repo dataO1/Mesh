@@ -74,13 +74,20 @@ glue:
     extra: 300
   # The bass lane is summed to mono below this frequency, in Hz.
   bass_mono_hz: 120
-  # Low-band duck on bass, lead and extra, keyed by the drum lane's kick.
+  # Full-band duck on bass, lead and extra, keyed by the main drum kit's kick
+  # and snare (never by break slices). Fixed per style, not on a control.
+  # A lane's cut is kick_db on a kick plus snare_db on a snare. All optional.
   duck:
-    depth_db: -6        # gain at full duck (-60..=0)
-    low_hz: 50          # band lower edge
-    high_hz: 120        # band upper edge (>= low_hz)
-    attack_ms: 2        # 0..=1000
-    release_beats: 0.5  # release as a fraction of a beat, follows tempo (0..=16)
+    enabled: true
+    attack_ms: 0.5      # 0..=100
+    bass:
+      kick_db: 8        # cut at full duck (0..=30)
+      snare_db: 2
+      release_ms: 50    # 1..=2000
+    others:             # lead and extra
+      kick_db: 2
+      snare_db: 4
+      release_ms: 120
   # Drum bus: compressor, then saturation.
   drum_bus:
     comp:
@@ -292,7 +299,7 @@ lanes:
       - { label: cx, target: { type: generator, param: complexity }, default: 0.4 }
       - { label: dens, target: { type: generator, param: density }, default: 0.5 }
       - { label: drive, target: { type: fx, slot: 0, param: 0 }, min: 0.0, max: 0.8 }
-      - { label: duck, target: { type: glue, param: duck_depth }, min: 0.0, max: 1.0 }
+      - { label: spread, target: { type: generator, param: spread }, default: 0.3 }
 
     generator:
       family: procedural
