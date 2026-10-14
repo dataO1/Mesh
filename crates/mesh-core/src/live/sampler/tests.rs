@@ -555,3 +555,19 @@ fn bench_voice_render() {
         println!("{interp:?}: {per:.2} ns per voice-sample ({VOICES} voices, {BLOCKS} × {BLOCK} frames)");
     }
 }
+
+#[test]
+fn bus_range_targets_render_into_the_second_output() {
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(0.5, 10_000))), (40, SlotDef::whole(dc(0.25, 10_000)))], 4);
+    s.set_bus_range(Some((32, 96)));
+    s.handle_event(&trig(0), 0);
+    s.handle_event(&trig(40), 0);
+    let (mut main, mut bus) = (vec![StereoSample::default(); BLOCK], vec![StereoSample::default(); BLOCK]);
+    s.process_split(&mut main, Some(&mut bus), 100.0);
+    assert!((main[100].left - 0.5).abs() < 1e-3, "target 0 stays on the main output: {}", main[100].left);
+    assert!((bus[100].left - 0.25).abs() < 1e-3, "target 40 goes to the bus: {}", bus[100].left);
+    // Without a bus buffer everything sums into the main output.
+    let mut both = vec![StereoSample::default(); BLOCK];
+    s.process(&mut both, 100.0);
+    assert!((both[100].left - 0.75).abs() < 1e-3, "{}", both[100].left);
+}

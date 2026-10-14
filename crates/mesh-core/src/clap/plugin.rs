@@ -20,6 +20,7 @@ use clack_extensions::params::{
 };
 use clack_extensions::gui::{GuiSize, HostGui, HostGuiImpl, PluginGui, GuiApiType, GuiConfiguration, Window};
 use clack_extensions::latency::{HostLatency, HostLatencyImpl, PluginLatency};
+use clack_extensions::state::PluginState;
 use crossbeam::channel::{self, Sender, Receiver};
 
 use super::error::{ClapError, ClapResult};
@@ -557,6 +558,35 @@ impl ClapPluginWrapper {
         }
 
         params
+    }
+
+    /// Save the plugin state blob (main thread).
+    pub fn save_state(&mut self) -> ClapResult<Vec<u8>> {
+        let id = self.info.id.clone();
+        let err = |reason: String| ClapError::StateError { plugin_id: id.clone(), reason };
+        let instance = self.instance.as_mut().ok_or_else(|| err("no instance".into()))?;
+        let mut handle = instance.plugin_handle();
+        let state = handle.get_extension::<PluginState>().ok_or_else(|| err("no state extension".into()))?;
+        let mut out = Vec::new();
+        state.save(&mut handle, &mut out).map_err(|e| err(format!("save failed: {e:?}")))?;
+        Ok(out)
+    }
+
+    /// Load a plugin state blob (main thread).
+    pub fn load_state(&mut self, bytes: &[u8]) -> ClapResult<()> {
+        let id = self.info.id.clone();
+        let err = |reason: String| ClapError::StateError { plugin_id: id.clone(), reason };
+        let instance = self.instance.as_mut().ok_or_else(|| err("no instance".into()))?;
+        let mut handle = instance.plugin_handle();
+        let state = handle.get_extension::<PluginState>().ok_or_else(|| err("no state extension".into()))?;
+        let mut reader = bytes;
+        state.load(&mut handle, &mut reader).map_err(|e| err(format!("load failed: {e:?}")))
+    }
+
+    /// Load a state file; VST2 `.fxp` chunk presets load as their chunk.
+    pub fn load_state_from_file(&mut self, path: &std::path::Path) -> ClapResult<()> {
+        let bytes = std::fs::read(path)?;
+        self.load_state(super::instrument::fxp_chunk(&bytes).unwrap_or(&bytes))
     }
 
     /// Get the current value of a parameter by its CLAP param ID

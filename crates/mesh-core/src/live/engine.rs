@@ -823,6 +823,8 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         progressions,
         default_progression,
         glue: glue_params,
+        drum_bus_fx,
+        master_fx,
         lanes,
         meta,
         claps,
@@ -875,6 +877,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
 
     let mut glue = GlueChain::new(max_block);
     glue.set_params(&glue_params);
+    glue.set_inserts(drum_bus_fx, master_fx);
     for (li, setup) in setups.iter().enumerate() {
         glue.set_lane(li, *setup);
     }

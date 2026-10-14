@@ -58,6 +58,8 @@ struct Voice {
     /// Dropped on the RT thread when the voice ends (basedrop defers the free).
     data: Option<Shared<SampleData>>,
     st: VoiceState,
+    /// Renders into the second output (see [`Sampler::set_bus_range`]).
+    bus: bool,
 }
 
 /// The sampler engine for one lane.
@@ -111,13 +113,15 @@ pub struct Sampler {
     active: usize,
     tables: &'static SincTables,
     meters: Arc<SamplerMeters>,
+    /// Targets `lo..hi` render into the second output of [`Sampler::process_split`].
+    bus_range: Option<(u8, u8)>,
 }
 
 impl Sampler {
     /// New lane sampler with `max_voices` pre-allocated voices. Off-RT.
     pub fn new(sample_rate: u32, max_voices: usize) -> Self {
         let voices = (0..max_voices.max(1))
-            .map(|_| Voice { data: None, st: VoiceState::default() })
+            .map(|_| Voice { data: None, st: VoiceState::default(), bus: false })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self {
@@ -132,7 +136,14 @@ impl Sampler {
             active: 0,
             tables: sinc_tables(),
             meters: Arc::new(SamplerMeters::default()),
+            bus_range: None,
         }
+    }
+
+    /// Route voices started on targets `lo..hi` to the second output of
+    /// [`Self::process_split`] (the drum lane's break bus). Off-RT.
+    pub fn set_bus_range(&mut self, range: Option<(u8, u8)>) {
+        self.bus_range = range;
     }
 
     /// Swap the lane's sample bank. Playing voices keep their own sample
@@ -187,7 +198,16 @@ impl Sampler {
     /// Render one block into `out` (overwritten). `samples_per_tick` is the
     /// clock's current tick length, used for gates.
     pub fn process(&mut self, out: &mut [StereoSample], samples_per_tick: f64) {
+        self.process_split(out, None, samples_per_tick);
+    }
+
+    /// [`Self::process`] with the bus-range voices rendered into `bus`
+    /// (same length as `out`, overwritten). Without `bus` they go to `out`.
+    pub fn process_split(&mut self, out: &mut [StereoSample], mut bus: Option<&mut [StereoSample]>, samples_per_tick: f64) {
         out.fill(StereoSample::silence());
+        if let Some(b) = bus.as_deref_mut() {
+            b.fill(StereoSample::silence());
+        }
         let n = out.len();
         let spt = samples_per_tick.max(1e-9);
 
@@ -219,13 +239,13 @@ impl Sampler {
                 break;
             }
             let next = if k < self.pending_len { (self.pending[k].0 as usize).min(last) } else { n };
-            self.render(&mut out[cursor..next], spt);
+            self.render(&mut out[cursor..next], bus.as_deref_mut().map(|b| &mut b[cursor..next]), spt);
             cursor = next;
         }
         self.pending_len = 0;
 
         let (mut pl, mut pr) = (0.0f32, 0.0f32);
-        for o in out.iter_mut() {
+        for o in out.iter_mut().chain(bus.into_iter().flatten()) {
             *o *= p.gain;
             pl = pl.max(o.left.abs());
             pr = pr.max(o.right.abs());
@@ -240,24 +260,28 @@ impl Sampler {
         self.process(&mut out.as_mut_slice()[..frames], samples_per_tick);
     }
 
-    fn render(&mut self, out: &mut [StereoSample], spt: f64) {
+    fn render(&mut self, out: &mut [StereoSample], bus: Option<&mut [StereoSample]>, spt: f64) {
         if out.is_empty() {
             return;
         }
         match self.params.interpolation {
-            Interpolation::Linear => self.render_with::<Linear>(out, spt),
-            Interpolation::Hermite => self.render_with::<Hermite>(out, spt),
-            Interpolation::Sinc8 => self.render_with::<Sinc8>(out, spt),
+            Interpolation::Linear => self.render_with::<Linear>(out, bus, spt),
+            Interpolation::Hermite => self.render_with::<Hermite>(out, bus, spt),
+            Interpolation::Sinc8 => self.render_with::<Sinc8>(out, bus, spt),
         }
     }
 
-    fn render_with<I: Interp>(&mut self, out: &mut [StereoSample], spt: f64) {
+    fn render_with<I: Interp>(&mut self, out: &mut [StereoSample], mut bus: Option<&mut [StereoSample]>, spt: f64) {
         for v in self.voices.iter_mut() {
             if !v.st.active {
                 continue;
             }
+            let dst: &mut [StereoSample] = match bus.as_deref_mut() {
+                Some(b) if v.bus => b,
+                _ => &mut *out,
+            };
             match v.data.as_deref() {
-                Some(data) => v.st.render::<I>(data, out, spt, self.tables, self.sr),
+                Some(data) => v.st.render::<I>(data, dst, spt, self.tables, self.sr),
                 None => v.st.active = false,
             }
             if !v.st.active {
@@ -361,6 +385,7 @@ impl Sampler {
         };
         let v = &mut self.voices[idx];
         v.data = Some(data);
+        v.bus = self.bus_range.is_some_and(|(lo, hi)| (lo..hi).contains(&ev.target));
         v.st.start(&init, &self.params, self.sr);
     }
 

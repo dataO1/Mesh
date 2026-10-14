@@ -45,6 +45,7 @@ use super::command::{drive_db, GlueControl};
 use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::{db_to_lin, GlueParams, Role};
 use super::harmony::Progression;
+use super::fx::{airwindows_state, AIRWINDOWS_ID};
 use super::lane::{
     drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption,
 };
@@ -172,6 +173,9 @@ pub struct LoadedStyle {
     pub progressions: Vec<Progression>,
     pub default_progression: usize,
     pub glue: GlueParams,
+    /// Insert chains of the drum bus and master (style `glue.drum_bus_fx` / `master_fx`).
+    pub drum_bus_fx: LaneFx,
+    pub master_fx: LaneFx,
     /// RT lanes, index = lane.
     pub lanes: Vec<Lane>,
     pub meta: Vec<LaneMeta>,
@@ -300,6 +304,20 @@ impl Ctx<'_> {
             for p in extra_paths {
                 manager.add_search_path(p.clone());
             }
+            // Plugins that travel with the collection (local or USB): the
+            // configured one and the one the style folder sits in.
+            let style_collection = self
+                .style
+                .dir
+                .parent()
+                .filter(|p| p.file_name().is_some_and(|n| n == super::style::STYLES_FOLDER))
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            for collection in self.collection.iter().chain(style_collection.iter()) {
+                for dir in ClapManager::collection_plugin_dirs(collection) {
+                    manager.add_search_path(dir);
+                }
+            }
             manager.scan_plugins();
             self.clap = Some(manager);
         }
@@ -309,11 +327,45 @@ impl Ctx<'_> {
     fn build_effect(&mut self, spec: &FxSpec) -> Result<Box<dyn Effect>, String> {
         let mut fx: Box<dyn Effect> = match spec.source {
             FxSource::Native => native_effect(&spec.id).ok_or_else(|| "unknown native effect".to_string())?,
-            FxSource::Clap => self
-                .clap_manager()
-                .ok_or_else(|| "CLAP is disabled".to_string())?
-                .create_effect(&spec.id)
-                .map_err(|e| e.to_string())?,
+            FxSource::Clap | FxSource::Airwindows => {
+                let airwindows = spec.source == FxSource::Airwindows;
+                let id = if airwindows { AIRWINDOWS_ID } else { spec.id.as_str() };
+                let preset = spec.preset.as_ref().map(|p| self.style.asset_path(p));
+                let (fx, gui) = self
+                    .clap_manager()
+                    .ok_or_else(|| "CLAP is disabled".to_string())?
+                    .create_effect_with_gui_handle(id)
+                    .map_err(|e| e.to_string())?;
+                let mut fx: Box<dyn Effect> = fx;
+                let defaults = {
+                    let mut w = gui.wrapper.lock().map_err(|_| "plugin lock poisoned".to_string())?;
+                    if airwindows {
+                        w.load_state(&airwindows_state(&spec.id)).map_err(|e| e.to_string())?;
+                    }
+                    if let Some(path) = &preset {
+                        w.load_state_from_file(path).map_err(|e| e.to_string())?;
+                    }
+                    // A state without parameter values leaves an Airwindows
+                    // algorithm at 0 everywhere: start from its defaults.
+                    if airwindows && preset.is_none() {
+                        w.query_params()
+                            .iter()
+                            .map(|p| {
+                                // Unused slots are named "-".
+                                (p.name != "-" && p.max > p.min).then(|| ((p.default - p.min) / (p.max - p.min)) as f32)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for (i, d) in defaults.into_iter().enumerate() {
+                    if let Some(d) = d {
+                        fx.set_param(i, d);
+                    }
+                }
+                fx
+            }
             FxSource::Pd => {
                 if self.pd.is_none() {
                     let collection = self.collection.clone().ok_or_else(|| "no collection path for PD effects".to_string())?;
@@ -635,6 +687,8 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
 
         let fx_specs: &[FxSpec] = if calibration { &[] } else { &lane.fx };
         let fx = ctx.build_fx(&lane.name, fx_specs);
+        let break_specs: &[FxSpec] = if calibration { &[] } else { &lane.break_fx };
+        let break_fx = ctx.build_fx(&format!("{} break", lane.name), break_specs);
         // Resolve against the style's chain (calibration loads it empty; unknown slots are ignored).
         let fx_len = lane.fx.len();
         let generator = generators[li].take().unwrap_or_else(|| generator::build_lane(lane));
@@ -679,6 +733,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             options,
             claps,
             fx,
+            break_fx,
             default_option,
         }));
         meta.push(LaneMeta {
@@ -695,6 +750,9 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         });
     }
 
+    let no_fx: &[FxSpec] = &[];
+    let drum_bus_fx = ctx.build_fx("drum bus", if calibration { no_fx } else { &spec.glue.drum_bus_fx });
+    let master_fx = ctx.build_fx("master", if calibration { no_fx } else { &spec.glue.master_fx });
     let (glue, glue_warnings) = glue_params(&spec.glue, &spec.send_fx, spec.tempo.default);
     for w in glue_warnings {
         ctx.warn(w);
@@ -709,6 +767,8 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         progressions: style.progressions(),
         default_progression: spec.default_progression,
         glue,
+        drum_bus_fx,
+        master_fx,
         lanes,
         meta,
         claps: all_claps,

@@ -15,6 +15,7 @@ use super::params::GlueParams;
 use super::saturation::Saturator;
 use super::sends::SharedSends;
 use super::Role;
+use crate::live::lane::LaneFx;
 
 /// Per-lane static setup. Changes when the lane's instrument or mapped send
 /// controls change, not per block.
@@ -88,7 +89,10 @@ pub struct GlueChain {
 
     // Scratch, sized to `max_block` at construction.
     duck_amount: [Vec<f32>; DUCK_ENVS],
-    drum_bus: Vec<StereoSample>,
+    drum_bus: StereoBuffer,
+    /// Insert chains (native or CLAP effects in style order).
+    drum_bus_fx: LaneFx,
+    master_fx: LaneFx,
     low_bus: Vec<StereoSample>,
     mix: StereoBuffer,
     max_block: usize,
@@ -119,7 +123,9 @@ impl GlueChain {
             clipper: MasterClipper::new(),
             sends: SharedSends::new(max_block),
             duck_amount: std::array::from_fn(|_| vec![0.0; max_block]),
-            drum_bus: vec![StereoSample::default(); max_block],
+            drum_bus: StereoBuffer::silence(max_block),
+            drum_bus_fx: LaneFx::new(Vec::new(), max_block),
+            master_fx: LaneFx::new(Vec::new(), max_block),
             low_bus: vec![StereoSample::default(); max_block],
             mix: StereoBuffer::silence(max_block),
             max_block,
@@ -178,6 +184,12 @@ impl GlueChain {
             self.lane_comp[i].configure(&d.compressor);
             self.lane_sat[i].configure(&d.saturation);
         }
+    }
+
+    /// Install the drum-bus and master insert chains. Off-RT (at build).
+    pub fn set_inserts(&mut self, drum_bus: LaneFx, master: LaneFx) {
+        self.drum_bus_fx = drum_bus;
+        self.master_fx = master;
     }
 
     /// Output latency in samples (the master limiter's lookahead).
@@ -252,7 +264,8 @@ impl GlueChain {
             }
         }
 
-        let drum_bus = &mut self.drum_bus[..m];
+        self.drum_bus.set_len_from_capacity(m);
+        let drum_bus = self.drum_bus.as_mut_slice();
         let low_bus = &mut self.low_bus[..m];
         drum_bus.fill(StereoSample::default());
         low_bus.fill(StereoSample::default());
@@ -318,7 +331,8 @@ impl GlueChain {
         if p.drum_bus.saturation_enabled {
             self.drum_sat.process(drum_bus);
         }
-        for (l, d) in low_bus.iter_mut().zip(drum_bus.iter()) {
+        self.drum_bus_fx.process(&mut self.drum_bus);
+        for (l, d) in low_bus.iter_mut().zip(self.drum_bus.as_slice()) {
             *l += *d;
         }
 
@@ -346,6 +360,7 @@ impl GlueChain {
         if p.master.saturation_enabled {
             self.master_sat.process(mix);
         }
+        self.master_fx.process(&mut self.mix);
         self.limiter.process(&mut self.mix);
         self.clipper.process(&mut self.mix);
     }
@@ -369,6 +384,8 @@ impl GlueChain {
         self.drum_sat.reset();
         self.drive.reset();
         self.master_comp.reset();
+        self.drum_bus_fx.reset();
+        self.master_fx.reset();
         self.sends.reset();
     }
 }

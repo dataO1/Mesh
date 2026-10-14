@@ -17,6 +17,7 @@ pub mod style;
 pub mod capture;
 pub mod sampler;
 pub mod glue;
+pub mod fx;
 pub mod generator;
 pub mod scope;
 pub mod state;

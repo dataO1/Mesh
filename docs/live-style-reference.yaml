@@ -110,6 +110,11 @@ glue:
     attack_ms: 30
     release_ms: 200
     makeup_db: 0
+  # Insert chains (same entries as a lane's `fx`, any order): end of the drum
+  # bus, and the master before the limiter.
+  drum_bus_fx:
+    - { id: Pop2, source: airwindows }
+  master_fx: []
 
 # Optional. Effects used for the two shared sends. Unset = engine default.
 # Each is an effect spec, see "FX chain" in the first lane below.
@@ -202,19 +207,36 @@ lanes:
 
     # Optional. FX chain of the lane, in processing order. Control targets of
     # type `fx` address an effect by its index (slot) in this list.
-    #   id        effect identifier: CLAP plugin id, PD patch folder name, or
-    #             native effect id (same identifiers as Mesh's FX presets)
-    #   source    native | clap | pd
+    #   id        effect identifier: CLAP plugin id, PD patch folder name,
+    #             native effect id, or Airwindows algorithm name ("Pop2")
+    #   source    native | clap | pd | airwindows
+    #             native ids: filter, delay, reverb, gain, drive, compressor
+    #             (threshold, ratio, attack, release, knee, makeup), eq (low
+    #             cut, bell 1 freq/gain/Q, bell 2 freq/gain/Q), transient
+    #             (attack, sustain). Ranges: crates/mesh-core/src/live/fx.rs.
+    #             airwindows: an algorithm of the Airwindows Consolidated
+    #             CLAP plugin, starting from that algorithm's defaults.
+    #             CLAP plugins are found in the standard CLAP folders and in
+    #             the style's collection under effects/clap/ and
+    #             effects/clap/<arch>/ (x86_64, aarch64), so a USB stick can
+    #             carry its own.
     #   params    parameter index -> normalized value (0..=1). Unlisted
     #             parameters keep the plugin default.
+    #   preset    optional CLAP state file in the style folder, loaded before
+    #             params (VST2 .fxp chunk presets work too)
     #   bypassed  default false
     #   dry_wet   0..=1, default 1 (fully wet)
+    # Native and CLAP effects mix freely; the chain runs in list order.
     fx:
       - id: filter
         source: native
         params: { 0: 1.0 }
         bypassed: false
         dry_wet: 1.0
+    # Drum lane only: chain of the break sub-voice, before `fx`. Same entries.
+    break_fx:
+      - { id: eq, source: native, params: { 0: 0.2083 } }
+      - { id: transient, source: native, params: { 0: 0.6667 } }
 
     # Exactly 4 performance controls, in hardware order:
     # knob A, fader A, knob B, fader B.

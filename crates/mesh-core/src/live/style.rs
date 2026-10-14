@@ -124,6 +124,9 @@ pub struct LaneSpec {
     /// Lane FX chain, in processing order.
     #[serde(default)]
     pub fx: Vec<FxSpec>,
+    /// Drum lane only: FX chain of the break sub-voice, before `fx`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub break_fx: Vec<FxSpec>,
     /// Exactly [`CONTROLS_PER_LANE`] performance controls.
     pub controls: Vec<ControlSpec>,
     pub generator: GeneratorSpec,
@@ -267,6 +270,9 @@ pub enum FxSource {
     Native,
     Clap,
     Pd,
+    /// An Airwindows Consolidated algorithm; `id` is its name ("Pop2").
+    /// Hosted through the `com.airwindows.consolidated` CLAP plugin.
+    Airwindows,
 }
 
 /// One effect in a chain. `id` is the plugin id (CLAP), patch folder (PD) or
@@ -284,6 +290,10 @@ pub struct FxSpec {
     pub bypassed: bool,
     #[serde(default = "one")]
     pub dry_wet: f32,
+    /// CLAP state file (relative to the style folder), loaded before
+    /// `params`. VST2 `.fxp` chunk presets work too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<PathBuf>,
 }
 
 /// Response curve of a control mapping.
@@ -509,6 +519,12 @@ pub struct GlueSpec {
     pub shared_drive: Option<SharedDriveSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub master: Option<CompSpec>,
+    /// FX chain at the end of the drum bus (after its compressors and saturation).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drum_bus_fx: Vec<FxSpec>,
+    /// FX chain on the master, after its compressor and saturation, before the limiter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_fx: Vec<FxSpec>,
 }
 
 /// High-pass cutoff per non-bass role (Hz).
@@ -711,6 +727,8 @@ pub enum Problem {
     OptionsOnDrumLane,
     #[error("only the drum lane has sub_voices")]
     SubVoicesOnInstrumentLane,
+    #[error("only the drum lane has a break_fx chain")]
+    BreakFxOnInstrumentLane,
     #[error("index {index} out of range (len {len})")]
     IndexOutOfRange { index: usize, len: usize },
     #[error("exactly one of sampler / clap must be set")]
@@ -849,6 +867,19 @@ impl StyleSpec {
 
     /// Visit every asset path with its field location.
     pub fn for_each_asset(&self, f: &mut dyn FnMut(String, &Path)) {
+        let mut fx_assets = |at: String, chain: &[FxSpec]| {
+            for (i, fx) in chain.iter().enumerate() {
+                if let Some(p) = &fx.preset {
+                    f(format!("{at}[{i}].preset"), p);
+                }
+            }
+        };
+        for (li, lane) in self.lanes.iter().enumerate() {
+            fx_assets(format!("lanes[{li}].fx"), &lane.fx);
+            fx_assets(format!("lanes[{li}].break_fx"), &lane.break_fx);
+        }
+        fx_assets("glue.drum_bus_fx".into(), &self.glue.drum_bus_fx);
+        fx_assets("glue.master_fx".into(), &self.glue.master_fx);
         for (li, lane) in self.lanes.iter().enumerate() {
             for (oi, opt) in lane.options.iter().enumerate() {
                 option_assets(&format!("lanes[{li}].options[{oi}]"), opt, f);
@@ -985,6 +1016,12 @@ impl Validator {
             self.in_range(format!("loudness.{name}"), v, -60.0, 0.0);
         }
         self.glue(&s.glue);
+        for (i, fx) in s.glue.drum_bus_fx.iter().enumerate() {
+            self.fx(&format!("glue.drum_bus_fx[{i}]"), fx);
+        }
+        for (i, fx) in s.glue.master_fx.iter().enumerate() {
+            self.fx(&format!("glue.master_fx[{i}]"), fx);
+        }
         if let Some(fx) = &s.send_fx.delay {
             self.fx("send_fx.delay", fx);
         }
@@ -1055,6 +1092,12 @@ impl Validator {
 
         for (i, fx) in lane.fx.iter().enumerate() {
             self.fx(&format!("{at}.fx[{i}]"), fx);
+        }
+        for (i, fx) in lane.break_fx.iter().enumerate() {
+            self.fx(&format!("{at}.break_fx[{i}]"), fx);
+        }
+        if !lane.break_fx.is_empty() && lane.role != Role::Drums {
+            self.push(format!("{at}.break_fx"), Problem::BreakFxOnInstrumentLane);
         }
         if lane.controls.len() != CONTROLS_PER_LANE {
             self.push(

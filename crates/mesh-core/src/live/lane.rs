@@ -169,7 +169,7 @@ impl Effect for DriveEffect {
 }
 
 /// Native effect ids accepted by `FxSource::Native`.
-pub const NATIVE_EFFECT_IDS: [&str; 5] = ["filter", "delay", "reverb", "gain", "drive"];
+pub const NATIVE_EFFECT_IDS: [&str; 8] = ["filter", "delay", "reverb", "gain", "drive", "compressor", "eq", "transient"];
 
 /// Build a native effect by id.
 pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
@@ -179,6 +179,9 @@ pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
         "reverb" => Box::new(ReverbEffect::new()),
         "gain" => Box::new(GainEffect::new()),
         "drive" => Box::new(DriveEffect::new()),
+        "compressor" => Box::new(super::fx::CompressorEffect::new()),
+        "eq" => Box::new(super::fx::EqEffect::new()),
+        "transient" => Box::new(super::fx::TransientEffect::new()),
         _ => return None,
     })
 }
@@ -555,6 +558,8 @@ pub struct LaneInit {
     pub options: Vec<LaneOption>,
     pub claps: Vec<Arc<ClapCell>>,
     pub fx: LaneFx,
+    /// Drum lane: FX chain of the break sub-voice (empty = no break bus).
+    pub break_fx: LaneFx,
     pub default_option: usize,
 }
 
@@ -576,6 +581,10 @@ pub struct Lane {
     clap_params_dirty: bool,
     tracker: NoteTracker,
     fx: LaneFx,
+    /// Break bus (drum lane with a break FX chain): break slices render here,
+    /// run through `break_fx`, then join the lane before `fx`.
+    break_fx: LaneFx,
+    break_buf: StereoBuffer,
     scratch: StereoBuffer,
     /// Events fire while on.
     on: bool,
@@ -617,6 +626,8 @@ impl Lane {
             clap_params_dirty: false,
             tracker: NoteTracker::new(),
             fx: init.fx,
+            break_buf: StereoBuffer::silence(if init.break_fx.is_empty() { 0 } else { init.max_block }),
+            break_fx: init.break_fx,
             scratch: StereoBuffer::silence(init.max_block),
             on: true,
             pending_on: None,
@@ -632,6 +643,10 @@ impl Lane {
             last_fired: None,
             fired_count: 0,
         };
+        if !lane.break_fx.is_empty() {
+            let (first, count) = drum_target_range(SubVoiceKind::Break);
+            lane.sampler.set_bus_range(Some((first, first.saturating_add(count))));
+        }
         lane.apply_option(init.default_option, 0);
         lane.tracker.out_len = 0;
         lane
@@ -828,7 +843,16 @@ impl Lane {
             self.tail_left = (TAIL_SECS * self.sr) as u32;
         }
 
-        self.sampler.process(out.as_mut_slice(), samples_per_tick);
+        if self.break_fx.is_empty() {
+            self.sampler.process(out.as_mut_slice(), samples_per_tick);
+        } else {
+            self.break_buf.set_len_from_capacity(n);
+            self.sampler.process_split(out.as_mut_slice(), Some(self.break_buf.as_mut_slice()), samples_per_tick);
+            self.break_fx.process(&mut self.break_buf);
+            for (o, b) in out.as_mut_slice().iter_mut().zip(self.break_buf.as_slice()) {
+                *o += *b;
+            }
+        }
         self.render_claps(out, transport);
         self.fx.process(out);
 

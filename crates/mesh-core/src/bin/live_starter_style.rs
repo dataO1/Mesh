@@ -667,9 +667,16 @@ glue:
   role_hpf: {{ lead: 500, extra: 300 }}
   bass_mono_hz: 120
   drum_bus:
+    # MUSICAL: threshold for about 3.5 dB peak reduction on this kit (live-render).
+    comp: {{ threshold_db: -5 }}
     drive: 0.2
   shared_drive: {{ enabled: false }}
   master: {{ threshold_db: -8, ratio: 4, attack_ms: 25, release_ms: 10 }}
+  # Drum bus inserts, after its compressors and saturation: Airwindows Pop2
+  # (punchy, 76-style character) into ButterComp2 (smooth, 2A-style).
+  drum_bus_fx:
+    - {{ id: Pop2, source: airwindows }}
+    - {{ id: ButterComp2, source: airwindows, params: {{ 0: 0.3 }} }}
 
 send_fx:
   delay: {{ id: delay, source: native, params: {{ 0: 0.375, 1: 0.4 }} }}
@@ -693,6 +700,17 @@ lanes:
         options:
 {perc}    fx:
       - {{ id: filter, source: native, params: {{ 0: 0.5 }} }}
+    # Break bus, before the lane FX. Normalized params over each effect's
+    # range (crates/mesh-core/src/live/fx.rs).
+    # MUSICAL: user spec, tune by ear.
+    break_fx:
+      # Low cut 120 Hz (12 dB/oct), -3 dB at 200 Hz (Q 1), +3 dB at 3.5 kHz (Q 0.8).
+      - {{ id: eq, source: native, params: {{ 0: 0.2083, 1: 0.1579, 2: 0.375, 3: 0.1892, 4: 0.2273, 5: 0.625, 6: 0.1351 }} }}
+      # 4:1 hard knee, 50 ms attack / 50 ms release, threshold -18 dB:
+      # lets the attack through and pulls the body down.
+      - {{ id: compressor, source: native, params: {{ 0: 0.7, 1: 0.1579, 2: 0.2496, 3: 0.0452, 4: 0.0, 5: 0.0 }} }}
+      # Transient shaper: +4 dB attack, sustain unchanged.
+      - {{ id: transient, source: native, params: {{ 0: 0.6667, 1: 0.5 }} }}
     controls:
       - {{ label: style, target: {{ type: generator, param: style }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}

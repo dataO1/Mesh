@@ -1272,7 +1272,7 @@ impl Drop for ClapInstrument {
 const FXP_CHUNK_HEADER: usize = 60;
 
 /// The chunk of a VST2 `.fxp` program-chunk preset, `None` for anything else.
-fn fxp_chunk(bytes: &[u8]) -> Option<&[u8]> {
+pub(crate) fn fxp_chunk(bytes: &[u8]) -> Option<&[u8]> {
     (bytes.len() > FXP_CHUNK_HEADER && &bytes[0..4] == b"CcnK" && &bytes[8..12] == b"FPCh")
         .then(|| &bytes[FXP_CHUNK_HEADER..])
 }

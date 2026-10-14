@@ -139,6 +139,18 @@ impl ExportService {
                         Err(e) => log::warn!("Failed to copy styles: {}", e),
                     }
                 }
+                // CLAP plugins live mode loads from the stick
+                // (`effects/clap/` and `effects/clap/<arch>/`).
+                let plugins_src = local_root.join("effects/clap");
+                if plugins_src.exists() {
+                    match copy_dir_all_incremental(&plugins_src, &usb_root.join("effects/clap")) {
+                        Ok((copied, skipped)) => log::info!(
+                            "[export] CLAP plugins: {} files copied, {} unchanged",
+                            copied, skipped
+                        ),
+                        Err(e) => log::warn!("Failed to copy CLAP plugins: {}", e),
+                    }
+                }
                 log::info!("[export] Phase 0 (presets to USB): {:.1}s", t.elapsed().as_secs_f64());
                 let _ = progress_tx.send(ExportProgress::PresetsCopied);
             }
@@ -704,10 +716,12 @@ fn copy_dir_all_incremental(src: &Path, dst: &Path) -> std::io::Result<(usize, u
     let (mut copied, mut skipped) = (0, 0);
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dest_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
+        // Follows symlinks (exFAT has none): a linked plugin bundle or sample
+        // folder is copied as its target.
+        let Ok(meta) = std::fs::metadata(&src_path) else { continue };
+        if meta.is_dir() {
             let (c, s) = copy_dir_all_incremental(&src_path, &dest_path)?;
             copied += c;
             skipped += s;

@@ -198,7 +198,8 @@ const DRUM_COMP2_THRESHOLD_DB: f32 = -12.0;
 const DRUM_COMP2_MAKEUP_DB: f32 = 1.0;
 /// Bass lanes peak near full scale, so their compressor sits higher.
 const BASS_COMP_THRESHOLD_DB: f32 = -5.0;
-const LANE_COMP_THRESHOLD_DB: f32 = -21.0;
+const LEAD_COMP_THRESHOLD_DB: f32 = -14.0;
+const EXTRA_COMP_THRESHOLD_DB: f32 = -18.0;
 /// Master level into the saturator and limiter, so the limiter only
 /// catches peaks (about 1-2 dB).
 const MASTER_OUTPUT_DB: f32 = -4.0;
@@ -220,7 +221,7 @@ impl Default for LaneDynamicsParams {
             compressor_enabled: true,
             // MUSICAL: light levelling, 2-3 dB peak reduction.
             compressor: CompressorParams {
-                threshold_db: LANE_COMP_THRESHOLD_DB,
+                threshold_db: LEAD_COMP_THRESHOLD_DB,
                 ratio: 3.0,
                 attack_ms: 10.0,
                 release_ms: 80.0,
@@ -254,7 +255,10 @@ impl Default for RoleDynamicsParams {
                 ..lane
             },
             lead: lane,
-            extra: lane,
+            extra: LaneDynamicsParams {
+                compressor: CompressorParams { threshold_db: EXTRA_COMP_THRESHOLD_DB, ..lane.compressor },
+                ..lane
+            },
         }
     }
 }

@@ -8,8 +8,8 @@
 #   OUT_DIR       style folder to create, e.g. ~/Music/mesh-live-dev/styles/starter-breaks
 #                 Play it with: mesh-player --live OUT_DIR
 #   --force       replace an existing style in OUT_DIR
-#   --no-surge    do not set up Surge XT in ~/.clap (the reese and pad options
-#                 then show as unavailable)
+#   --no-surge    do not set up the Surge XT and Airwindows CLAP plugins (the
+#                 reese/pad options and the drum-bus FX then show as unavailable)
 #   --kicks DIR   kick one-shots; with --snares, kick n + snare n (sorted by
 #   --snares DIR  name) is drum kit n. Without them: one Dirt-Samples kit.
 #   --breaks DIR  break loops (1, 2 or 4 bars), one option each. Default:
@@ -25,14 +25,11 @@
 # GitHub repos. The analysis and style writing is done by the
 # `live-starter-style` bin (crates/mesh-core/src/bin/live_starter_style.rs).
 #
-# Surge XT: mesh discovers CLAP plugins only in ~/.clap, /usr/lib/clap and
-# /usr/local/lib/clap (crates/mesh-core/src/clap/discovery.rs). Surge XT is
-# built from the Mesh flake's nixpkgs (same glibc as the devshell; the
-# system profile's build fails to dlopen there) with a GC root at
-# ~/.clap/.surge-xt, and ~/.clap/"Surge XT.clap" links into it. Skipped when
-# ~/.clap is itself a symlink (managed elsewhere, e.g. home-manager) or
-# already holds a "Surge XT.clap" that is not this link. The patches are
-# read from the same build either way.
+# CLAP plugins (Surge XT for reeses and pads, Airwindows Consolidated for the
+# drum bus) are linked into <collection>/effects/clap/<arch>/ when OUT_DIR is
+# <collection>/styles/<name>, else into ~/.clap. Live mode scans the style's
+# collection, so a USB stick carries its own plugins; see the end of this
+# script. The Surge patches are read from the same build either way.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -105,20 +102,41 @@ pairs=()
 [[ -n "$kicks" ]] && pairs=(--kicks "$kicks" --snares "$snares")
 "$repo/target/release/live-starter-style" --out "$out" --breaks "$breaks" --dirt "$dirt" --surge "$surge_data" "${pairs[@]}" "${force[@]}"
 
-if [[ "$surge" == 1 ]]; then
-  clap="$HOME/.clap"
-  link="$clap/Surge XT.clap"
-  if [[ -L "$clap" ]]; then
-    echo "Surge XT: $clap is a symlink (managed elsewhere), not touched."
-    echo "  Add a Surge XT CLAP bundle there yourself to enable the reese and pad options."
-  elif [[ -e "$link" && ! -L "$link" ]] || { [[ -L "$link" ]] && [[ "$(readlink "$link")" != "$clap/.surge-xt/"* ]]; }; then
-    echo "Surge XT: $link already exists, not touched."
+# CLAP plugins go into the collection the style lives in, under
+# effects/clap/<arch>/, where live mode scans for them and from where USB
+# export copies them (crates/mesh-core/src/clap/mod.rs
+# `collection_plugin_dirs`). Styles outside a collection use ~/.clap. Built
+# from the Mesh flake's nixpkgs (same glibc as the devshell), with GC roots in
+# <collection>/.nix-gcroots/ (not exported).
+style_parent="$(dirname "$out")"
+if [[ "$(basename "$style_parent")" == styles ]]; then
+  collection="$(dirname "$style_parent")"
+  plugin_dir="$collection/effects/clap/$(uname -m)"
+  roots="$collection/.nix-gcroots"
+else
+  plugin_dir="$HOME/.clap"
+  roots="$HOME/.clap"
+fi
+
+# Link one CLAP bundle (nixpkgs attribute, bundle file name) into $plugin_dir.
+link_clap() {
+  local attr="$1" bundle="$2"
+  local link="$plugin_dir/$bundle" root="$roots/.${attr,,}"
+  if [[ -L "$plugin_dir" ]]; then
+    echo "$bundle: $plugin_dir is a symlink (managed elsewhere), not touched."
+  elif [[ -e "$link" && ! -L "$link" ]] || { [[ -L "$link" ]] && [[ "$(readlink "$link")" != "$root/"* ]]; }; then
+    echo "$bundle: $link already exists, not touched."
   else
-    mkdir -p "$clap"
-    nix build --inputs-from "$repo" nixpkgs#surge-XT --out-link "$clap/.surge-xt"
-    ln -sfn "$clap/.surge-xt/lib/clap/Surge XT.clap" "$link"
-    echo "Surge XT: $link -> $(readlink -f "$link")"
+    mkdir -p "$plugin_dir" "$roots"
+    nix build --inputs-from "$repo" "nixpkgs#$attr" --out-link "$root"
+    ln -sfn "$root/lib/clap/$bundle" "$link"
+    echo "$bundle: $link -> $(readlink -f "$link")"
   fi
+}
+
+if [[ "$surge" == 1 ]]; then
+  link_clap surge-XT "Surge XT.clap"
+  link_clap airwin2rack "Airwindows Consolidated.clap"
 fi
 
 # Loudness trims per option (needs the CLAP bundles for the Surge options).

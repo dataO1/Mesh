@@ -507,6 +507,16 @@ impl ClapManager {
         crate::effect::MultibandHost::new(buffer_size)
     }
 
+    /// Plugin folders of a collection, as scanned by live mode:
+    /// `effects/clap/` and `effects/clap/<arch>/` (`x86_64`, `aarch64`). A USB
+    /// stick carries its own plugins this way. The arch folder is scanned
+    /// last, so its build wins when both hold the same plugin id.
+    pub fn collection_plugin_dirs(collection: &std::path::Path) -> [PathBuf; 2] {
+        let base = collection.join("effects").join("clap");
+        let arch = base.join(std::env::consts::ARCH);
+        [base, arch]
+    }
+
     /// Add a custom search path for plugins
     pub fn add_search_path(&mut self, path: PathBuf) {
         self.discovery.add_search_path(path);

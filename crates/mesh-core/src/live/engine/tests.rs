@@ -2,6 +2,7 @@
 //! bar renderer serviced between blocks (deterministic).
 
 use super::*;
+use crate::live::style::{FxSource, FxSpec, StyleSpec};
 use crate::live::capture::CaptureScope;
 use crate::live::event::{EventKind, LiveEvent};
 use crate::live::generator::fixed::{DegreeNote, FixedPattern};
@@ -52,7 +53,12 @@ fn dense_lead() -> Box<dyn LaneGenerator> {
 }
 
 fn rig(gens: Gens, block: usize) -> Rig {
-    let style = Style::load(&fixture_dir()).unwrap_or_else(|e| panic!("{e}"));
+    rig_with(gens, block, |_| {})
+}
+
+fn rig_with(gens: Gens, block: usize, edit: impl FnOnce(&mut StyleSpec)) -> Rig {
+    let mut style = Style::load(&fixture_dir()).unwrap_or_else(|e| panic!("{e}"));
+    edit(&mut style.spec);
     let mut opts = LoadOptions::new(SR);
     opts.max_block = 1024;
     opts.generators = gens;
@@ -687,4 +693,33 @@ fn loop_length_snaps_to_1_2_4_8_per_lane() {
         assert_eq!(r.sys.controller.lane(2).loop_len, want);
     }
     assert_eq!(r.sys.shared.lane(1).view().loop_len, DEFAULT_LOOP_LEN, "other lanes untouched");
+}
+
+#[test]
+fn break_bus_and_master_inserts_process_in_place() {
+    let mute = || FxSpec {
+        id: "gain".into(),
+        source: FxSource::Native,
+        params: [(0, 0.0)].into_iter().collect(),
+        bypassed: false,
+        dry_wet: 1.0,
+        preset: None,
+    };
+    // The style's own drum generator plays break slices.
+    let style_gens = || -> Gens { std::array::from_fn(|_| None) };
+    let mut plain = rig(style_gens(), 256);
+    plain.run_to(2.0);
+
+    // Muting the break bus leaves the backbone: quieter, but not silent.
+    let mut r = rig_with(style_gens(), 256, |s| s.lanes[0].break_fx = vec![mute()]);
+    r.run_to(2.0);
+    let energy = |x: &[StereoSample]| x.iter().map(|s| s.left * s.left).sum::<f32>();
+    let (p, q) = (energy(&plain.lanes[0]), energy(&r.lanes[0]));
+    assert!(q > 0.01 * p && q < 0.95 * p, "drum lane energy {p} -> {q}");
+
+    // A master insert changes the master only.
+    let mut r = rig_with(style_gens(), 256, |s| s.glue.master_fx = vec![mute()]);
+    r.run_to(2.0);
+    assert!(r.master.iter().all(|s| s.left.abs() < 1e-6), "muted master");
+    assert!(r.lanes[1] == plain.lanes[1], "lanes untouched");
 }
