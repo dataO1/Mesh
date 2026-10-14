@@ -24,7 +24,7 @@ pub use layout::DrumLayout;
 pub use registry::{build, build_drums, build_lane, build_with};
 
 /// Maximum number of generator parameters a lane can expose to controls.
-pub const MAX_GEN_PARAMS: usize = 8;
+pub const MAX_GEN_PARAMS: usize = 12;
 
 /// Everything a generator may read to render one bar.
 #[derive(Debug, Clone, Copy)]

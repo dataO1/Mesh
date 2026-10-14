@@ -37,7 +37,7 @@ use crate::types::StereoSample;
 use super::clock::BARS_PER_PHRASE;
 use super::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::Role;
-use super::harmony::{HarmonyState, Progression};
+use super::harmony::{seeded_chord, HarmonyState, Progression};
 use super::lane::ClapCell;
 use super::player::{BarPacket, BAR_POOL_SIZE};
 use super::state::LiveShared;
@@ -288,12 +288,18 @@ impl BarRenderer {
         let mut drum_mask = [0u8; STEPS_PER_BAR];
         // Lane 0 (drums) first: its onsets feed the other lanes.
         for (li, lane) in self.lanes.iter().enumerate() {
+            let slot = slot_for_bar(bar, lane.loop_len);
+            // Pitched lanes play their own seeded progression in the shared key.
+            let mut lane_harmony = ctx;
+            if lane.role != Role::Drums {
+                lane_harmony.chord_degree = seeded_chord(lane.seeds[slot], li as u8, slot as u8, ctx.key.minor);
+            }
             for fill in [false, true] {
                 let out = if fill { &mut packet.lanes[li].fill } else { &mut packet.lanes[li].main };
                 out.clear();
                 // The slot follows the lane's loop; phrase position stays global.
                 let bar_ctx = BarCtx {
-                    seed: lane.seeds[slot_for_bar(bar, lane.loop_len)],
+                    seed: lane.seeds[slot],
                     lane: li as u8,
                     role: lane.role,
                     bar_in_phrase,
@@ -301,7 +307,7 @@ impl BarRenderer {
                     fill,
                     half_time: self.half_time,
                     params: &lane.params,
-                    harmony: ctx,
+                    harmony: lane_harmony,
                     drum_mask: if li == 0 { &no_mask } else { &drum_mask },
                 };
                 lane.active_generator().render_bar(&bar_ctx, out);
@@ -390,6 +396,11 @@ mod tests {
         }
     }
 
+    /// Key the probe plays on `lane` for a slot seed (its seeded chord root, octave 3).
+    fn lane_key(key: MusicalKey, seed: u32, lane: u8, slot: u8) -> u8 {
+        crate::live::harmony::resolve_degree(key, 0, 3, seeded_chord(seed, lane, slot, key.minor) as i32)
+    }
+
     struct Rig {
         renderer: BarRenderer,
         tx: mpsc::Sender<RenderMsg>,
@@ -456,7 +467,7 @@ mod tests {
         let bass = p0.lanes[1].main.as_slice()[0];
         assert_eq!(bass.vel, 11, "slot 0 seed");
         assert_eq!(bass.note_id, 2, "drum mask has two onsets");
-        assert_eq!(bass.key, 57, "A3, chord i");
+        assert_eq!(bass.key, lane_key(MusicalKey::new(9, true), 10, 1, 0), "A3 on the seeded chord of slot 0");
         assert_eq!(p0.lanes[1].fill.as_slice()[0].flags & 1, 1, "fill variant rendered with fill = true");
         assert_eq!(p0.lanes[0].main.len(), 2);
 
@@ -465,7 +476,8 @@ mod tests {
         let p1 = r.rt_enter(1).unwrap();
         let bass = p1.lanes[1].main.as_slice()[0];
         assert_eq!((bass.target, bass.vel), (1, 12), "bar_in_phrase and slot 1 seed");
-        assert_eq!(bass.key, 65, "chord VI of A minor: F4");
+        assert_eq!(bass.key, lane_key(MusicalKey::new(9, true), 11, 1, 1), "slot 1 has its own seeded chord");
+        assert_eq!(p1.lanes[2].main.as_slice()[0].key, lane_key(MusicalKey::new(9, true), 11, 2, 1), "each lane draws its own chord");
     }
 
     #[test]
@@ -506,7 +518,7 @@ mod tests {
         let p4 = r.rt_enter(4).unwrap();
         assert_eq!(p4.key, MusicalKey::new(0, true));
         assert_eq!(p4.progression, 1);
-        assert_eq!(p4.lanes[1].main.as_slice()[0].key, 48, "C3, new progression starts on its first chord");
+        assert_eq!(p4.lanes[1].main.as_slice()[0].key, lane_key(MusicalKey::new(0, true), 10, 1, 0), "C minor, the lane keeps its seeded chord");
         r.renderer.service();
         assert_eq!(r.shared.pending_key(), None, "cleared once the bar played");
         assert_eq!(r.shared.pending_progression(), None);

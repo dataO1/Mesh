@@ -16,7 +16,9 @@
 //!
 //! Performance parameters, in order: `density`, `complexity`, `variation`,
 //! `kick_mode` (< 1/3 avoid the kick, < 2/3 ignore it, else double it),
-//! `register` (octave down / base / up), `slide`, `accent`, `gate`.
+//! `register` (octave down / base / up), `slide`, `accent`, `gate`, `spread`
+//! (0 = mostly the root in one octave, 1 = the whole pool over two octaves
+//! and more).
 //!
 //! Construction options: `rule_a3` (phrase shape), `rule_a5` (velocity
 //! tiers), `rule_a6` (gap-following and root weighting). All default to 1.
@@ -34,8 +36,8 @@ use crate::live::rng;
 use crate::live::{STEPS_PER_BAR, TICKS_PER_STEP};
 use crate::music::MusicalKey;
 
-pub const PARAM_NAMES: [&str; 8] =
-    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "gate"];
+pub const PARAM_NAMES: [&str; 9] =
+    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "gate", "spread"];
 const P_DENSITY: usize = 0;
 const P_COMPLEXITY: usize = 1;
 const P_VARIATION: usize = 2;
@@ -44,9 +46,10 @@ const P_REGISTER: usize = 4;
 const P_SLIDE: usize = 5;
 const P_ACCENT: usize = 6;
 const P_GATE: usize = 7;
+const P_SPREAD: usize = 8;
 
 // MUSICAL: first draft, tune by ear.
-pub const PARAM_DEFAULTS: [f32; 8] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.6];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.6, 0.3, 0.0, 0.0, 0.0];
 
 const S_CELL: u32 = 0x200;
 const S_RHYTHM: u32 = 0x201;
@@ -55,6 +58,7 @@ const S_ACCENT: u32 = 0x203;
 const S_SLIDE: u32 = 0x204;
 const S_VEL: u32 = 0x205;
 const S_TURN: u32 = 0x206;
+const S_OCTAVE: u32 = 0x207;
 
 // MUSICAL: first draft, tune by ear. Rhythm importance per step at
 // complexity 0 (on the beat) and at complexity 1 (syncopated).
@@ -72,8 +76,10 @@ const BASS_CHAOS_MAX: f32 = 0.35;
 // MUSICAL: first draft, tune by ear. Pitch pool as (chord-relative scale
 // degree, weight): root, octave, 5th, 7th, 3rd (research §7.1.2: root-heavy).
 const BASS_POOL: [(i32, f32); 5] = [(0, 6.0), (7, 2.0), (4, 2.0), (6, 1.0), (2, 1.0)];
-/// Weight factor of the non-root degrees at complexity 0 and 1.
-const POOL_SPREAD: (f32, f32) = (0.4, 1.6);
+/// Weight factor of the non-root degrees at spread 0 and 1.
+const POOL_SPREAD: (f32, f32) = (0.05, 1.6);
+/// Chance of an octave jump up at spread 1.
+const OCTAVE_JUMP_MAX: f32 = 0.35;
 /// Degrees a phrase-end turnaround note may take (5th, 7th).
 const TURNAROUND_DEGREES: [i32; 2] = [4, 6];
 /// Steps tried for the turnaround note, last first.
@@ -82,8 +88,9 @@ const TURNAROUND_STEPS: [usize; 3] = [15, 14, 13];
 // MUSICAL: first draft, tune by ear. Register and articulation.
 /// Lowest MIDI key of the key's root at the base register (E1).
 const BASS_ROOT_MIN: i32 = 28;
-/// Notes more than this many semitones above the root drop an octave.
-const BASS_SPAN: i32 = 14;
+/// Notes more than this many semitones above the root drop an octave, at
+/// spread 0 and 1.
+const BASS_SPAN: (f32, f32) = (12.0, 26.0);
 /// Accent / slide probability at parameter value 1 (the defaults of 0.5 give
 /// the acid-style 30 % accents and 10 % slides).
 const ACCENT_PROB_MAX: f32 = 0.6;
@@ -179,14 +186,14 @@ impl BassGenerator {
     }
 
     /// Draw a chord-relative degree from the pool.
-    fn pick_degree(&self, h: u64, complexity: f32) -> i32 {
+    fn pick_degree(&self, h: u64, spread: f32) -> i32 {
         if !rng::chance(rng::derive(h, 1), self.rules.root) {
             return rng::below(h, SCALE_LEN as u32) as i32;
         }
-        let spread = lerp(POOL_SPREAD.0, POOL_SPREAD.1, complexity);
+        let factor = lerp(POOL_SPREAD.0, POOL_SPREAD.1, spread);
         let mut weights = [0.0f32; BASS_POOL.len()];
         for (i, &(degree, w)) in BASS_POOL.iter().enumerate() {
-            weights[i] = if degree == 0 { w } else { w * spread };
+            weights[i] = if degree == 0 { w } else { w * factor };
         }
         BASS_POOL[rng::weighted_pick(h, &weights).unwrap_or(0)].0
     }
@@ -253,7 +260,8 @@ impl LaneGenerator for BassGenerator {
 
         // Pitch and articulation.
         let octave = root_octave(ctx.harmony.key, BASS_ROOT_MIN) + register_shift(param(ctx, P_REGISTER));
-        let ceiling = ctx.harmony.resolve_in_key(0, octave) as i32 + BASS_SPAN;
+        let spread = param(ctx, P_SPREAD);
+        let ceiling = ctx.harmony.resolve_in_key(0, octave) as i32 + lerp(BASS_SPAN.0, BASS_SPAN.1, spread).round() as i32;
         let gate = param(ctx, P_GATE);
         let (slide, accent) = (param(ctx, P_SLIDE), param(ctx, P_ACCENT));
         let mut events = [LiveEvent::default(); STEPS_PER_BAR];
@@ -266,16 +274,19 @@ impl LaneGenerator for BassGenerator {
             }
             let su = s as u8;
             let first = prev.is_none() && self.rules.root >= 0.5;
-            let mut degree = if first { 0 } else { self.pick_degree(rng.at(su, S_PITCH), complexity) };
+            let mut degree = if first { 0 } else { self.pick_degree(rng.at(su, S_PITCH), spread) };
             if turnaround == Some(s) {
                 // Differ from what the repeating bars play on this step.
-                let repeated = if first { 0 } else { self.pick_degree(rng.base.at(su, S_PITCH), complexity) };
+                let repeated = if first { 0 } else { self.pick_degree(rng.base.at(su, S_PITCH), spread) };
                 let i = rng::below(rng.bar.at(su, S_TURN), TURNAROUND_DEGREES.len() as u32) as usize;
                 degree = if TURNAROUND_DEGREES[i] == repeated {
                     TURNAROUND_DEGREES[(i + 1) % TURNAROUND_DEGREES.len()]
                 } else {
                     TURNAROUND_DEGREES[i]
                 };
+            }
+            if !first && rng.chance(su, S_OCTAVE, spread * OCTAVE_JUMP_MAX) {
+                degree += SCALE_LEN;
             }
             let mut key = ctx.harmony.resolve(degree, octave) as i32;
             while key > ceiling {
@@ -297,6 +308,7 @@ impl LaneGenerator for BassGenerator {
             if let Some((prev_step, prev_degree)) = prev {
                 if s - prev_step <= SLIDE_MAX_GAP_STEPS
                     && degree != prev_degree
+                    && key != events[n - 1].key as i32
                     && rng.chance(su, S_SLIDE, slide * SLIDE_PROB_MAX)
                 {
                     ev.flags |= flags::TIE;
@@ -339,13 +351,13 @@ mod tests {
         BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new())
     }
 
-    fn params(edit: impl FnOnce(&mut [f32; 8])) -> [f32; 8] {
+    fn params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
         let mut p = PARAM_DEFAULTS;
         edit(&mut p);
         p
     }
 
-    fn bar(g: &BassGenerator, seed: u32, bar: u8, p: &[f32; 8], mask: &[u8; 16]) -> Vec<LiveEvent> {
+    fn bar(g: &BassGenerator, seed: u32, bar: u8, p: &[f32; MAX_GEN_PARAMS], mask: &[u8; 16]) -> Vec<LiveEvent> {
         let mut c = ctx(seed, bar, p, mask);
         c.lane = 1;
         render(g, &c).as_slice().to_vec()
@@ -400,7 +412,7 @@ mod tests {
                     for e in render(&g, &c).as_slice() {
                         let pc = (e.key as i32 - root as i32).rem_euclid(12) as u8;
                         assert!(scale_for(key).contains(&pc), "{} not in {key}", e.key);
-                        assert!((28..=28 + 11 + BASS_SPAN as u8).contains(&e.key), "key {} out of register", e.key);
+                        assert!((28..=28 + 11 + BASS_SPAN.1 as u8).contains(&e.key), "key {} out of register", e.key);
                     }
                 }
             }
@@ -437,6 +449,30 @@ mod tests {
         for seed in 0..50 {
             assert_eq!(bar(&g, seed, 0, &PARAM_DEFAULTS, &TWO_STEP)[0].key % 12, 9);
         }
+    }
+
+    #[test]
+    fn spread_widens_the_pitch_range() {
+        let g = generator();
+        let stats = |spread: f32| {
+            let (mut distinct, mut range) = (0usize, 0i32);
+            for seed in 0..100 {
+                let p = params(|p| {
+                    p[P_SPREAD] = spread;
+                    p[P_DENSITY] = 0.8;
+                });
+                let keys: Vec<i32> = bar(&g, seed, 0, &p, &TWO_STEP).iter().map(|e| e.key as i32).collect();
+                let mut set = keys.clone();
+                set.sort();
+                set.dedup();
+                distinct += set.len();
+                range += set.last().unwrap_or(&0) - set.first().unwrap_or(&0);
+            }
+            (distinct, range)
+        };
+        let (narrow, wide) = (stats(0.0), stats(1.0));
+        assert!(narrow.0 * 2 < wide.0, "distinct pitches {narrow:?} vs {wide:?}");
+        assert!(narrow.1 * 3 < wide.1, "pitch range {narrow:?} vs {wide:?}");
     }
 
     #[test]
@@ -654,8 +690,8 @@ mod tests {
 
     const GOLDEN: [&str; 3] = [
         "3:33 6:33 7:40 8:33 11:33 14:33 15:33",
-        "2:33 3:33 6:33 7:33 8:40 11:40 14:45 15:40",
-        "3:33 6:33 7:36 8:33 11:33 14:33",
+        "2:33 3:33 6:33 7:33 8:45 11:45 14:45 15:40",
+        "3:33 6:33 7:36 8:33 11:45 14:45",
     ];
 
     #[test]

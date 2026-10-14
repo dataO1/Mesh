@@ -1,4 +1,4 @@
-//! Header strip texts (design §8): key, tempo, half-time, progression,
+//! Header strip texts (design §8): key, tempo, half-time, lane chords,
 //! phrase position, recording. Pure functions so the formats are tested.
 //!
 //! Numbers use fixed widths so the strip does not shift with a monospace font.
@@ -61,15 +61,11 @@ pub fn roman(degree: u8) -> &'static str {
     }
 }
 
-/// "prog i-VI-iv-v · VI", plus the progression armed for the next phrase.
-/// `chord_degree` is 0-based.
-pub fn progression_text(names: &[String], current: usize, pending: Option<usize>, chord_degree: u8) -> String {
-    let name = |i: usize| names.get(i).map(String::as_str).unwrap_or("?");
-    let mut s = format!("prog {} · {}", name(current), roman(chord_degree + 1));
-    if let Some(p) = pending.filter(|&p| p != current) {
-        s.push_str(&format!(" → {}", name(p)));
-    }
-    s
+/// "chords VI · IV · I": the chord each pitched lane plays, in lane order.
+/// Degrees are 0-based.
+pub fn chords_text(chord_degrees: &[u8]) -> String {
+    let romans: Vec<&str> = chord_degrees.iter().map(|&d| roman(d + 1)).collect();
+    format!("chords {}", romans.join(" · "))
 }
 
 /// Which of the phrase's 4 bar cells are lit (bars played so far, inclusive).
@@ -120,13 +116,10 @@ mod tests {
     }
 
     #[test]
-    fn half_time_progression_phrase_recording() {
+    fn half_time_chords_phrase_recording() {
         assert_eq!(half_time_text(false, false), "½T off");
         assert_eq!(half_time_text(false, true), "½T off → on");
-        let names = vec!["i-VI-iv-v".to_string(), "i-VII".to_string()];
-        assert_eq!(progression_text(&names, 0, None, 5), "prog i-VI-iv-v · VI");
-        assert_eq!(progression_text(&names, 0, Some(1), 0), "prog i-VI-iv-v · I → i-VII");
-        assert_eq!(progression_text(&names, 0, Some(0), 0), "prog i-VI-iv-v · I");
+        assert_eq!(chords_text(&[5, 3, 0]), "chords VI · IV · I");
         assert_eq!(phrase_cells(0), [true, false, false, false]);
         assert_eq!(phrase_cells(3), [true; 4]);
         assert_eq!(recording_text(Duration::from_secs(3725)), "● REC 62:05");

@@ -237,6 +237,31 @@ impl HarmonyState {
     }
 }
 
+// ─── Seeded lane chords ────────────────────────────────────────────────
+
+// MUSICAL: first draft, tune by ear. Chord-root weights per 0-based scale
+// degree. The diminished chord (ii° in minor, vii° in major) never comes up.
+const MINOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 0.0, 2.0, 3.0, 2.0, 3.0, 3.0];
+const MAJOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 2.0, 1.0, 3.0, 3.0, 3.0, 0.0];
+/// Extra weight of the tonic on a loop's first slot, so loops mostly start home.
+const FIRST_SLOT_TONIC_BOOST: f32 = 12.0;
+/// RNG stream of the chord draw (separate from every generator stream).
+const S_CHORD: u32 = 0x50;
+
+/// Chord root (0-based scale degree) of one chain slot of a pitched lane.
+///
+/// Every slot draws its chord from its own seed, so a lane's loop is its own
+/// progression: reseeding a slot changes that bar's chord, reseeding the
+/// lane changes them all. Stays diatonic in the active mode.
+pub fn seeded_chord(seed: u32, lane: u8, slot: u8, minor: bool) -> u8 {
+    let mut weights = if minor { MINOR_CHORD_WEIGHTS } else { MAJOR_CHORD_WEIGHTS };
+    if slot == 0 {
+        weights[0] += FIRST_SLOT_TONIC_BOOST;
+    }
+    let h = crate::live::rng::hash(seed, lane, slot, 0, S_CHORD);
+    crate::live::rng::weighted_pick(h, &weights).unwrap_or(0) as u8
+}
+
 // ─── Key intent ────────────────────────────────────────────────────────
 
 /// Up moves, closest to centre first (design §4.6).
@@ -408,6 +433,31 @@ mod tests {
                 assert_eq!(resolve_degree(key, -7, octave, 0), root - 12);
             }
         }
+    }
+
+    #[test]
+    fn seeded_chords_are_diatonic_and_varied() {
+        for minor in [true, false] {
+            let dim = if minor { 1 } else { 6 };
+            let mut seen = [0u32; 7];
+            let mut first_tonic = 0;
+            for seed in 0..2000u32 {
+                for slot in 0..8u8 {
+                    let c = seeded_chord(seed, 1, slot, minor);
+                    assert!(c < 7 && c != dim, "degree {c}");
+                    assert_eq!(c, seeded_chord(seed, 1, slot, minor), "deterministic");
+                    seen[c as usize] += 1;
+                    if slot == 0 && c == 0 {
+                        first_tonic += 1;
+                    }
+                }
+            }
+            assert_eq!(seen.iter().filter(|&&n| n > 0).count(), 6, "{seen:?}");
+            assert!(first_tonic > 1000, "first slot mostly tonic: {first_tonic}");
+        }
+        // Lanes sharing a seed get different progressions.
+        let differ = (0..100u32).filter(|&s| seeded_chord(s, 1, 2, true) != seeded_chord(s, 2, 2, true)).count();
+        assert!(differ > 50);
     }
 
     #[test]

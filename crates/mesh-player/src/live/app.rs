@@ -31,6 +31,7 @@ use iced::{keyboard, time, window, Background, Border, Color, Element, Font, Len
 use mesh_core::live::command::LiveCommand;
 use mesh_core::live::engine::{LiveHandles, DEFAULT_TEMPO_RAMP_BARS};
 use mesh_core::live::glue::Role;
+use mesh_core::live::harmony::seeded_chord;
 use mesh_core::live::render::RendererHandle;
 use mesh_core::live::scope::SCOPE_POINTS;
 use mesh_core::live::state::{move_bits, LiveShared, SpanTag};
@@ -111,7 +112,7 @@ struct Frame {
     intent: Option<String>,
     bpm: String,
     half_time: String,
-    progression: String,
+    chords: String,
     phrase: [bool; 4],
     quantize: bool,
     lines: [CodeLine; NUM_LANES],
@@ -143,7 +144,6 @@ struct Running {
     input: Option<InputThread>,
     style_name: String,
     lanes: [LaneInfo; NUM_LANES],
-    progressions: Vec<String>,
     warnings: Vec<String>,
     sample_rate: u32,
     audio_error: Option<String>,
@@ -220,7 +220,7 @@ fn empty_frame() -> Frame {
         intent: None,
         bpm: String::new(),
         half_time: String::new(),
-        progression: String::new(),
+        chords: String::new(),
         phrase: [false; 4],
         quantize: true,
         lines: Default::default(),
@@ -271,7 +271,6 @@ impl LiveApp {
                     input,
                     style_name,
                     lanes,
-                    progressions: style.spec.progressions.iter().map(|p| p.name.clone()).collect(),
                     warnings,
                     sample_rate,
                     audio_error,
@@ -535,7 +534,7 @@ impl LiveApp {
             mono(f.intent.clone().unwrap_or_default(), ui.warning),
             mono(f.bpm.clone(), ui.text),
             mono(f.half_time.clone(), ui.text),
-            mono(f.progression.clone(), ui.text),
+            mono(f.chords.clone(), ui.text),
             cells,
             mono(if f.quantize { "Q bar".into() } else { "Q now".into() }, dim),
         ]
@@ -760,12 +759,15 @@ impl Running {
         f.intent = header::intent_text(key, pending, shared.intent_key());
         f.bpm = header::bpm_text(&clock);
         f.half_time = header::half_time_text(shared.half_time(), shared.half_time_target());
-        f.progression = header::progression_text(
-            &self.progressions,
-            shared.progression(),
-            shared.pending_progression(),
-            shared.chord_degree(),
-        );
+        // Each pitched lane plays the seeded chord of its current slot.
+        let chords: Vec<u8> = (1..NUM_LANES)
+            .map(|li| {
+                let v = shared.lane(li).view();
+                let slot = slot_for_bar(clock.bar, v.loop_len);
+                seeded_chord(v.seeds[slot], li as u8, slot as u8, key.minor)
+            })
+            .collect();
+        f.chords = header::chords_text(&chords);
         f.phrase = header::phrase_cells(clock.bar_in_phrase);
         f.quantize = shared.quantize();
         f.surface = surface;

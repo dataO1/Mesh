@@ -21,7 +21,8 @@
 //!
 //! Performance parameters (`BarCtx::params`, in this order): `style`,
 //! `density`, `overlay_hats`, `overlay_ghost`, `overlay_perc`, `variation`,
-//! `chop`, `swing`.
+//! `chop`, `swing`, `mutate` (seeded rewrites of the backbone and overlays:
+//! displaced kicks and snares, extra and dropped hits).
 //!
 //! Construction options (style `generator.params`, not performable):
 //! `blend` (1 = blend neighbours, 0 = hard switch), `break_layer` (0 = off),
@@ -42,8 +43,8 @@ use crate::live::rng;
 use crate::live::style::SliceType;
 use crate::live::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
-pub const PARAM_NAMES: [&str; 8] =
-    ["style", "density", "overlay_hats", "overlay_ghost", "overlay_perc", "variation", "chop", "swing"];
+pub const PARAM_NAMES: [&str; 9] =
+    ["style", "density", "overlay_hats", "overlay_ghost", "overlay_perc", "variation", "chop", "swing", "mutate"];
 const P_STYLE: usize = 0;
 const P_DENSITY: usize = 1;
 const P_HATS: usize = 2;
@@ -52,10 +53,11 @@ const P_PERC: usize = 4;
 const P_VARIATION: usize = 5;
 const P_CHOP: usize = 6;
 const P_SWING: usize = 7;
+const P_MUTATE: usize = 8;
 
 // MUSICAL: first draft, tune by ear. Defaults: two-step at medium density
 // with 8th hats, a few ghosts, little percussion, a lightly chopped break.
-pub const PARAM_DEFAULTS: [f32; 8] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0];
 
 /// Archetype order used when the lane gives none (research §7.2).
 pub const DEFAULT_ARCHETYPE_ORDER: [&str; 5] = ["half_time", "two_step", "rolling", "jungle", "hardcore"];
@@ -82,6 +84,11 @@ const S_BRK_RATCHET: u32 = 0x146;
 const S_FILL_CELL: u32 = 0x150;
 const S_FILL_VEL: u32 = 0x151;
 const S_PICKUP: u32 = 0x160;
+const S_MUT_MOVE: u32 = 0x170;
+const S_MUT_DIR: u32 = 0x171;
+const S_MUT_JITTER: u32 = 0x172;
+const S_MUT_ADD: u32 = 0x173;
+const S_MUT_ADD_KIND: u32 = 0x174;
 
 // ─── Musical tables ────────────────────────────────────────────────────
 
@@ -148,6 +155,22 @@ const BREAK_VEL_JITTER: f32 = 4.0;
 const BREAK_OFF_BACKBONE_GAIN: f32 = 0.55;
 /// Chance that a fill chop is doubled to 32nds.
 const BREAK_FILL_RATCHET_PROB: f32 = 0.3;
+
+// MUSICAL: first draft, tune by ear. Mutation (`mutate`).
+/// Chance per kick / snare anchor of moving to a neighbouring step at
+/// `mutate = 1`. The bar's first kick and the backbeat snares stay.
+const MUT_MOVE_MAX: f32 = 0.5;
+/// Step offsets of a moved hit and their weights.
+const MUT_MOVES: [(i32, f32); 4] = [(-2, 1.0), (-1, 2.0), (1, 2.0), (2, 1.0)];
+/// Level an anchor leaves behind when it moves (density can bring it back).
+const MUT_MOVE_REST: u8 = 90;
+/// Levels at or above this count as anchors.
+const MUT_ANCHOR: u8 = 200;
+/// Largest level change of a step at `mutate = 1`.
+const MUT_JITTER: f32 = 110.0;
+/// Chance per empty step of an extra kick or snare at `mutate = 1`, and its level.
+const MUT_ADD_MAX: f32 = 0.15;
+const MUT_ADD_LEVEL: u8 = 180;
 
 // MUSICAL: first draft, tune by ear. Fill.
 /// The fill replaces the bar from this step.
@@ -295,6 +318,7 @@ struct Params {
     variation: f32,
     chop: f32,
     swing: f32,
+    mutate: f32,
 }
 
 impl Params {
@@ -308,6 +332,7 @@ impl Params {
             variation: param(ctx, P_VARIATION),
             chop: param(ctx, P_CHOP),
             swing: param(ctx, P_SWING),
+            mutate: param(ctx, P_MUTATE),
         }
     }
 }
@@ -395,6 +420,54 @@ impl DrumGenerator {
             t = if t < 0.5 { 0.0 } else { 1.0 };
         }
         (a, b, t)
+    }
+
+    /// Seeded rewrite of the bar's levels (`mutate`): anchors move to a
+    /// neighbouring step, levels jitter, empty steps gain kicks or snares.
+    /// The bar's first kick and full-level snares (the backbeat) stay put.
+    fn mutate(&self, m: f32, rng: &PhraseRng, lv: &mut BarLevels) {
+        if m <= 0.0 {
+            return;
+        }
+        let mut move_weights = [0.0f32; MUT_MOVES.len()];
+        for (w, &(_, weight)) in move_weights.iter_mut().zip(&MUT_MOVES) {
+            *w = weight;
+        }
+        for (row, stream) in [(&mut lv.kick, 0u32), (&mut lv.snare, 1)] {
+            let src = *row;
+            for s in 0..STEPS_PER_BAR {
+                let protected = if stream == 0 { s == 0 } else { src[s] == u8::MAX };
+                if src[s] < MUT_ANCHOR || protected || !rng.chance(s as u8, S_MUT_MOVE + stream * 0x10, m * MUT_MOVE_MAX) {
+                    continue;
+                }
+                let pick = rng::weighted_pick(rng.at(s as u8, S_MUT_DIR + stream * 0x10), &move_weights).unwrap_or(1);
+                let to = (s as i32 + MUT_MOVES[pick].0).rem_euclid(STEPS_PER_BAR as i32) as usize;
+                if to != 0 && row[to] < src[s] {
+                    row[to] = src[s];
+                    row[s] = row[s].min(MUT_MOVE_REST);
+                }
+            }
+        }
+        for (i, row) in [&mut lv.kick, &mut lv.snare, &mut lv.hats, &mut lv.ghost].into_iter().enumerate() {
+            for (s, level) in row.iter_mut().enumerate() {
+                if i < 2 && (*level == u8::MAX || (i == 0 && s == 0)) {
+                    continue;
+                }
+                let r = rng.unit(s as u8, S_MUT_JITTER + i as u32 * 0x10) * 2.0 - 1.0;
+                if *level > 0 {
+                    *level = (*level as f32 + r * m * MUT_JITTER).round().clamp(1.0, 254.0) as u8;
+                }
+            }
+        }
+        for s in 1..STEPS_PER_BAR {
+            if lv.kick[s] < MUT_ADD_LEVEL
+                && lv.snare[s] < MUT_ADD_LEVEL
+                && rng.chance(s as u8, S_MUT_ADD, m * MUT_ADD_MAX)
+            {
+                let row = if rng.chance(s as u8, S_MUT_ADD_KIND, 0.5) { &mut lv.kick } else { &mut lv.snare };
+                row[s] = MUT_ADD_LEVEL;
+            }
+        }
     }
 
     fn backbone(&self, p: &Params, rng: &PhraseRng, lv: &BarLevels, until: usize, out: &mut BarEvents) -> Backbone {
@@ -715,7 +788,7 @@ impl LaneGenerator for DrumGenerator {
             return;
         }
         let bar = ctx.bar_in_phrase;
-        let lv = BarLevels {
+        let mut lv = BarLevels {
             kick: blend_levels(&a.kick.bar_levels(bar), &b.kick.bar_levels(bar), t),
             snare: blend_levels(&a.snare.bar_levels(bar), &b.snare.bar_levels(bar), t),
             hats: blend_levels(&a.hats.bar_levels(bar), &b.hats.bar_levels(bar), t),
@@ -728,6 +801,7 @@ impl LaneGenerator for DrumGenerator {
             },
         };
         let rng = PhraseRng::new(ctx, p.variation, self.rules.phrase);
+        self.mutate(p.mutate, &rng, &mut lv);
         let fill_from = if ctx.fill { FILL_START_STEP } else { STEPS_PER_BAR };
 
         let mut bb = self.backbone(&p, &rng, &lv, fill_from, out);
@@ -789,7 +863,7 @@ mod tests {
         DrumGenerator::with_layout(DrumLayout::empty().with_backbone(2).with_hats(2, 2).with_perc(2))
     }
 
-    fn params(edit: impl FnOnce(&mut [f32; 8])) -> [f32; 8] {
+    fn params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
         let mut p = PARAM_DEFAULTS;
         edit(&mut p);
         p
@@ -804,7 +878,7 @@ mod tests {
             .collect()
     }
 
-    fn bar(g: &DrumGenerator, seed: u32, bar: u8, p: &[f32; 8]) -> Vec<LiveEvent> {
+    fn bar(g: &DrumGenerator, seed: u32, bar: u8, p: &[f32; MAX_GEN_PARAMS]) -> Vec<LiveEvent> {
         render(g, &ctx(seed, bar, p, &EMPTY)).as_slice().to_vec()
     }
 
@@ -911,7 +985,7 @@ mod tests {
     #[test]
     fn densest_bar_fits_the_capacity() {
         let g = generator();
-        let p = [1.0; 8];
+        let p = [1.0; MAX_GEN_PARAMS];
         for seed in 0..20 {
             let mut c = ctx(seed, 3, &p, &EMPTY);
             c.fill = true;
@@ -976,7 +1050,7 @@ mod tests {
     }
 
     /// Steps the backbone occupies in a bar rendered without overlays.
-    fn backbone_steps(g: &DrumGenerator, seed: u32, b: u8, p: &[f32; 8]) -> Vec<usize> {
+    fn backbone_steps(g: &DrumGenerator, seed: u32, b: u8, p: &[f32; MAX_GEN_PARAMS]) -> Vec<usize> {
         let bare = params(|q| {
             *q = *p;
             q[P_HATS] = 0.0;
@@ -987,6 +1061,29 @@ mod tests {
         let mut s = steps(&ev, 0);
         s.extend(steps(&ev, 1));
         s
+    }
+
+    #[test]
+    fn mutate_rewrites_the_backbone_but_keeps_the_downbeat_and_backbeat() {
+        let g = generator();
+        let at = |seed: u32, m: f32| {
+            let p = params(|p| {
+                p[P_STYLE] = 0.25;
+                p[P_VARIATION] = 0.0;
+                p[P_MUTATE] = m;
+            });
+            let ev = bar(&g, seed, 0, &p);
+            (steps(&ev, 0), steps(&ev, 1))
+        };
+        let mut changed = 0;
+        for seed in 0..100 {
+            let (plain, wild) = (at(seed, 0.0), at(seed, 1.0));
+            assert_eq!(wild, at(seed, 1.0), "deterministic");
+            assert!(wild.0.contains(&0), "downbeat kick stays (seed {seed})");
+            assert!(wild.1.contains(&4) && wild.1.contains(&12), "backbeat stays (seed {seed})");
+            changed += (plain != wild) as usize;
+        }
+        assert!(changed > 70, "mutate changed {changed} of 100 bars");
     }
 
     #[test]
@@ -1295,7 +1392,7 @@ mod tests {
     fn empty_layout_renders_nothing() {
         let g = DrumGenerator::with_layout(DrumLayout::empty());
         for b in 0..4 {
-            assert!(bar(&g, 1, b, &[1.0; 8]).is_empty());
+            assert!(bar(&g, 1, b, &[1.0; MAX_GEN_PARAMS]).is_empty());
         }
     }
 

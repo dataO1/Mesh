@@ -20,7 +20,8 @@
 //!
 //! Performance parameters, in order: `density`, `complexity`, `variation`,
 //! `mode`, `register` (octave down / base / up), `rate` (arp rate: quarters,
-//! dotted 8ths, 8ths, 16ths), `gate`.
+//! dotted 8ths, 8ths, 16ths), `gate`, `spread` (0 = few notes close together,
+//! 1 = wide moves and octave jumps over several octaves).
 //!
 //! Construction options: `rule_a3` (phrase shape), `rule_a5` (velocity
 //! tiers), `rule_a7` (sparseness against the drums). All default to 1.
@@ -34,10 +35,12 @@ use super::blocks::{
 };
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
 use crate::live::event::BarEvents;
+use crate::live::harmony::SCALE_LEN;
 use crate::live::rng;
 use crate::live::{STEPS_PER_BAR, TICKS_PER_STEP};
 
-pub const PARAM_NAMES: [&str; 7] = ["density", "complexity", "variation", "mode", "register", "rate", "gate"];
+pub const PARAM_NAMES: [&str; 8] =
+    ["density", "complexity", "variation", "mode", "register", "rate", "gate", "spread"];
 const P_DENSITY: usize = 0;
 const P_COMPLEXITY: usize = 1;
 const P_VARIATION: usize = 2;
@@ -45,6 +48,7 @@ const P_MODE: usize = 3;
 const P_REGISTER: usize = 4;
 const P_RATE: usize = 5;
 const P_GATE: usize = 6;
+const P_SPREAD: usize = 7;
 
 const S_CELL: u32 = 0x300;
 const S_MOTIF: u32 = 0x301;
@@ -54,6 +58,8 @@ const S_ARP: u32 = 0x304;
 const S_INVERSION: u32 = 0x305;
 const S_SEQUENCE: u32 = 0x306;
 const S_TURN: u32 = 0x307;
+const S_OCTAVE: u32 = 0x308;
+const S_VOICING: u32 = 0x309;
 
 /// Most simultaneous notes of one hit.
 const MAX_CHORD: usize = 4;
@@ -71,8 +77,23 @@ const MOTIF_START_WEIGHTS: [f32; 8] = [1.0, 1.0, 3.0, 2.0, 1.0, 1.0, 3.0, 2.0];
 const MOTIF_INTERVALS: [(usize, f32); 3] = [(1, 0.25), (2, 0.45), (3, 0.3)];
 /// First motif note: a chord tone (root, 3rd, 5th).
 const MOTIF_FIRST: [(i32, f32); 3] = [(0, 3.0), (2, 2.0), (4, 2.0)];
-/// Scale-degree moves between motif notes.
-const MOTIF_MOVES: [(i32, f32); 4] = [(-2, 1.0), (-1, 2.0), (1, 2.0), (2, 1.0)];
+/// Scale-degree moves between motif notes, weighted at spread 0 and at
+/// spread 1: repeats and steps when narrow, leaps when wide.
+const MOTIF_MOVES: [(i32, f32, f32); 9] = [
+    (0, 2.0, 0.0),
+    (-1, 2.0, 1.0),
+    (1, 2.0, 1.0),
+    (-2, 0.5, 1.0),
+    (2, 0.5, 1.0),
+    (-3, 0.0, 0.6),
+    (3, 0.0, 0.6),
+    (-4, 0.0, 1.0),
+    (4, 0.0, 1.0),
+];
+/// Chance per motif note of an octave jump at spread 1.
+const MOTIF_OCTAVE_MAX: f32 = 0.4;
+/// Motif notes stay within this many degrees of the start, at spread 0 and 1.
+const MOTIF_RANGE: (f32, f32) = (5.0, 19.0);
 /// Importance of the motif's first statement and of its repeat half a bar
 /// later, and what each later note of the motif loses.
 const MOTIF_REPEAT_IMPORTANCE: [f32; 2] = [1.0, 0.55];
@@ -89,8 +110,10 @@ const TURN_SHIFTS: [i32; 3] = [1, -1, 2];
 // MUSICAL: first draft, tune by ear. Arp.
 /// Steps between arp notes by `rate`.
 const ARP_INTERVALS: [usize; 4] = [4, 3, 2, 1];
-/// Chord tones the arp runs over (root, 3rd, 5th, octave).
-const ARP_TONES: [i32; 4] = [0, 2, 4, 7];
+/// Chord tones the arp can run over, low to high. Spread 0 uses the first 3
+/// (one triad), spread 1 all of them (about two and a half octaves).
+const ARP_TONES: [i32; 9] = [0, 2, 4, 7, 9, 11, 14, 16, 18];
+const ARP_TONES_MIN: usize = 3;
 /// Arp importance: this floor plus the rest by metric weight.
 const ARP_IMPORTANCE_FLOOR: f32 = 0.6;
 /// The random arp is a mostly locked loop of this many notes.
@@ -104,6 +127,10 @@ const STAB_IMPORTANCE: [u8; 16] = [60, 0, 200, 90, 0, 0, 230, 120, 70, 0, 200, 1
 const PAD_IMPORTANCE: [u8; 16] = [255, 0, 0, 0, 0, 0, 0, 0, 140, 0, 0, 0, 0, 0, 90, 0];
 /// Chord tones by chord size (2, 3, 4 notes).
 const STAB_CHORDS: [&[i32]; 3] = [&[0, 4], &[0, 2, 4], &[0, 2, 4, 6]];
+/// Chance per upper chord tone of an octave up, and per hit of an octave
+/// jump, at spread 1.
+const STAB_OPEN_MAX: f32 = 0.5;
+const STAB_JUMP_MAX: f32 = 0.3;
 /// Stab rhythm randomness at complexity 1.
 const STAB_CHAOS_MAX: f32 = 0.2;
 
@@ -146,12 +173,12 @@ pub enum LeadKind {
 impl LeadKind {
     // MUSICAL: first draft, tune by ear. Defaults per preset, in
     // `PARAM_NAMES` order.
-    pub fn defaults(self) -> [f32; 7] {
+    pub fn defaults(self) -> [f32; 8] {
         match self {
-            LeadKind::Lead => [0.3, 0.3, 0.5, 0.0, 0.5, 0.6, 0.5],
-            LeadKind::Arp => [0.6, 0.1, 0.5, 0.5, 0.5, 0.6, 0.4],
-            LeadKind::Stab => [0.4, 0.4, 0.5, 1.0, 0.5, 0.6, 0.2],
-            LeadKind::Pad => [0.3, 0.5, 0.5, 1.0, 0.5, 0.6, 1.0],
+            LeadKind::Lead => [0.3, 0.3, 0.5, 0.0, 0.5, 0.6, 0.5, 0.4],
+            LeadKind::Arp => [0.6, 0.1, 0.5, 0.5, 0.5, 0.6, 0.4, 0.3],
+            LeadKind::Stab => [0.4, 0.4, 0.5, 1.0, 0.5, 0.6, 0.2, 0.3],
+            LeadKind::Pad => [0.3, 0.5, 0.5, 1.0, 0.5, 0.6, 1.0, 0.2],
         }
     }
 
@@ -231,6 +258,7 @@ struct Frame<'a> {
     /// Density after ducking against the drums.
     density: f32,
     complexity: f32,
+    spread: f32,
     variation: f32,
     cell: Option<&'a LevelMap>,
     gaps: f32,
@@ -279,9 +307,27 @@ impl LeadGenerator {
         let mut offsets = [0usize; MAX_CHORD];
         let mut degrees = [0i32; MAX_CHORD];
         degrees[0] = pick(rng::derive(h, 10), &MOTIF_FIRST);
+        let mut move_weights = [0.0f32; MOTIF_MOVES.len()];
+        for (w, &(_, narrow, wide)) in move_weights.iter_mut().zip(&MOTIF_MOVES) {
+            *w = lerp(narrow, wide, f.spread);
+        }
+        let range = lerp(MOTIF_RANGE.0, MOTIF_RANGE.1, f.spread) as i32;
         for i in 1..notes {
             offsets[i] = offsets[i - 1] + pick(rng::derive(h, i as u32), &MOTIF_INTERVALS);
-            degrees[i] = degrees[i - 1] + pick(rng::derive(h, 10 + i as u32), &MOTIF_MOVES);
+            let step = MOTIF_MOVES[rng::weighted_pick(rng::derive(h, 10 + i as u32), &move_weights).unwrap_or(1)].0;
+            let mut d = degrees[i - 1] + step;
+            let hj = rng::derive(h, 20 + i as u32);
+            if rng::chance(hj, f.spread * MOTIF_OCTAVE_MAX) {
+                d += if rng::chance(rng::derive(hj, 1), 0.5) { SCALE_LEN } else { -SCALE_LEN };
+            }
+            // Fold back into the range by octaves (same pitch class).
+            while d > range {
+                d -= SCALE_LEN;
+            }
+            while d < -range {
+                d += SCALE_LEN;
+            }
+            degrees[i] = d;
         }
         // A7: start where the motif's notes miss the drum onsets.
         let mut start_weights = MOTIF_START_WEIGHTS;
@@ -344,7 +390,7 @@ impl LeadGenerator {
     fn arp(&self, f: &Frame, rate: f32) -> Plan {
         let mut plan: Plan = [None; STEPS_PER_BAR];
         let interval = ARP_INTERVALS[((rate * 3.999) as usize).min(ARP_INTERVALS.len() - 1)];
-        let tones = ARP_TONES.len();
+        let tones = ARP_TONES_MIN + (f.spread * (ARP_TONES.len() - ARP_TONES_MIN) as f32).round() as usize;
         let mut n = 0usize;
         for s in 0..STEPS_PER_BAR {
             // Idiom: the cell's steps. Procedural: every `interval` steps,
@@ -388,8 +434,13 @@ impl LeadGenerator {
         let mut hit = Hit { size: chord.len() as u8, ..Hit::default() };
         for (i, &degree) in chord.iter().enumerate() {
             hit.degrees[i] = if i < inversion { degree + 7 } else { degree };
+            // Spread opens the voicing: upper tones move up an octave.
+            if i > 0 && f.rng.base.chance(i as u8, S_VOICING, f.spread * STAB_OPEN_MAX) {
+                hit.degrees[i] += SCALE_LEN;
+            }
         }
         hit.repeated = hit.degrees;
+        let base = hit;
         for s in 0..STEPS_PER_BAR {
             let importance = f.cell_level(s).unwrap_or(level_unit(table[s]));
             if importance <= 0.0 {
@@ -399,7 +450,16 @@ impl LeadGenerator {
             // Pads are sustained: a drum hit under their onset does not matter.
             let importance = if self.kind == LeadKind::Pad { importance } else { f.ducked(s, importance) };
             if reveals(importance, f.density, chaos, f.rng.unit(s as u8, S_RHYTHM)) {
+                hit = base;
                 hit.accent = metric_level(s) <= 2;
+                // Spread: single hits jump an octave up or down.
+                let h = f.rng.at(s as u8, S_OCTAVE);
+                if rng::chance(h, f.spread * STAB_JUMP_MAX) {
+                    let shift = if rng::chance(rng::derive(h, 1), 0.5) { SCALE_LEN } else { -SCALE_LEN };
+                    for d in &mut hit.degrees[..hit.size as usize] {
+                        *d += shift;
+                    }
+                }
                 plan[s] = Some(hit);
             }
         }
@@ -422,6 +482,7 @@ impl LaneGenerator for LeadGenerator {
             rng,
             density: density * (1.0 - self.rules.gaps * LEAD_DRUM_DUCK * drum_density),
             complexity: param(ctx, P_COMPLEXITY),
+            spread: param(ctx, P_SPREAD),
             variation,
             cell: (!self.cells.is_empty())
                 .then(|| &self.cells[rng::below(rng.base.at(0, S_CELL), self.cells.len() as u32) as usize]),
@@ -485,13 +546,13 @@ mod tests {
     const TWO_STEP: [u8; 16] = [120, 0, 0, 0, 80, 0, 0, 0, 0, 0, 118, 0, 80, 0, 0, 0];
     const FULL: [u8; 16] = [100; 16];
 
-    fn params(kind: LeadKind, edit: impl FnOnce(&mut [f32; 8])) -> [f32; 8] {
+    fn params(kind: LeadKind, edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
         let mut p = LeadGenerator::preset(kind).param_defaults();
         edit(&mut p);
         p
     }
 
-    fn bar(g: &LeadGenerator, seed: u32, bar: u8, p: &[f32; 8], mask: &[u8; 16]) -> Vec<LiveEvent> {
+    fn bar(g: &LeadGenerator, seed: u32, bar: u8, p: &[f32; MAX_GEN_PARAMS], mask: &[u8; 16]) -> Vec<LiveEvent> {
         let mut c = ctx(seed, bar, p, mask);
         c.lane = 2;
         render(g, &c).as_slice().to_vec()
@@ -673,6 +734,8 @@ mod tests {
                 p[P_DENSITY] = 1.0;
                 p[P_COMPLEXITY] = complexity;
                 p[P_RATE] = rate;
+                // Four tones: root, 3rd, 5th, octave.
+                p[P_SPREAD] = 1.0 / 6.0;
             }), &EMPTY)
         };
         // Rates: quarters, dotted 8ths, 8ths, 16ths.
@@ -795,6 +858,29 @@ mod tests {
     }
 
     #[test]
+    fn spread_widens_the_pitch_range() {
+        for (mode, kind) in [(0.0, LeadKind::Lead), (0.5, LeadKind::Arp), (1.0, LeadKind::Stab)] {
+            let g = LeadGenerator::preset(kind);
+            let range = |spread: f32| -> i32 {
+                (0..100u32)
+                    .map(|seed| {
+                        let p = params(kind, |p| {
+                            p[P_MODE] = mode;
+                            p[P_DENSITY] = 0.8;
+                            p[P_COMPLEXITY] = 1.0;
+                            p[P_SPREAD] = spread;
+                        });
+                        let keys: Vec<i32> = bar(&g, seed, 0, &p, &EMPTY).iter().map(|e| e.key as i32).collect();
+                        keys.iter().max().unwrap_or(&0) - keys.iter().min().unwrap_or(&0)
+                    })
+                    .sum()
+            };
+            let (narrow, wide) = (range(0.0), range(1.0));
+            assert!(narrow * 3 < wide * 2, "{kind:?}: range {narrow} vs {wide}");
+        }
+    }
+
+    #[test]
     fn golden_bars() {
         // Pinned output: a change here changes how saved seeds sound.
         let got: Vec<String> = KINDS
@@ -809,7 +895,7 @@ mod tests {
 
     const GOLDEN: [&str; 4] = [
         "3:64 6:65",
-        "0:57 2:60 4:64 6:69 8:57 12:64 14:69",
+        "0:57 2:60 4:64 6:69 8:72 12:60 14:64",
         "2:69 2:60 2:64 6:69 6:60 6:64 14:69 14:60 14:64",
         "0:69 0:60 0:64",
     ];
@@ -822,7 +908,7 @@ mod tests {
         for kind in KINDS {
             let g = LeadGenerator::preset(kind);
             assert_eq!(g.param_names(), PARAM_NAMES);
-            assert_eq!(g.param_defaults()[..7], kind.defaults());
+            assert_eq!(g.param_defaults()[..8], kind.defaults());
         }
     }
 }

@@ -32,7 +32,6 @@
 //! | Encoder | reseed all 8 bars of the unit's selected lane (held bar pad: that bar only) |
 //! | Left Shift + fader 1 | key intent |
 //! | Left Shift + fader 2 | tempo (ramp target) |
-//! | Left Shift + encoder | progression |
 //! | Left Shift + encoder push | commit the key intent |
 //! | Quant (either unit) | quantized lane toggles on/off (default off) |
 //! | Capture | capture the unit's selected lane. With that unit's Shift: everything |
@@ -162,7 +161,6 @@ pub enum Act {
     MoveRelease { lane: u8, kind: MoveKind },
     SetKeyIntent(f32),
     CommitKey,
-    ProgressionDelta(i32),
     RequestTempo { bpm: f64, bars: u32 },
     SetQuantize(bool),
     ToggleHalfTime,
@@ -183,7 +181,6 @@ fn apply(act: Act, ctl: &mut LiveController) {
         Act::MoveRelease { lane, kind } => LiveCommand::MoveRelease { lane, kind },
         Act::SetKeyIntent(position) => LiveCommand::SetKeyIntent(position),
         Act::CommitKey => LiveCommand::CommitKey,
-        Act::ProgressionDelta(delta) => LiveCommand::ProgressionDelta(delta),
         Act::RequestTempo { bpm, bars } => LiveCommand::RequestTempo { bpm, bars },
         Act::SetQuantize(on) => LiveCommand::SetQuantize(on),
         Act::ToggleHalfTime => LiveCommand::ToggleHalfTime,
@@ -642,8 +639,6 @@ impl LiveControlSurface {
                 p.browsed = true;
             }
             out.push(Act::BrowseOption { lane: side.lane(half), delta });
-        } else if side == Side::Left && unit.shift {
-            out.push(Act::ProgressionDelta(delta));
         } else if let Some((half, _)) = unit.slot_held {
             // A held bar pad: new pattern for that bar only.
             out.push(Act::SeedDelta { lane: side.lane(half), delta });
@@ -1086,7 +1081,7 @@ mod tests {
             assert_eq!(r.press(dev, "grid_16"), vec![Act::SetLoopLen { lane: base + 1, len: 8 }]);
             assert_eq!(r.s.view().selected_lane, base + 1, "touching selects the lane");
             r.release(dev, "grid_16");
-            assert_eq!(r.enc(dev, 1), if dev == A { vec![Act::ProgressionDelta(1)] } else { vec![Act::LaneSeedDelta { lane: base + 1, delta: 1 }] });
+            assert_eq!(r.enc(dev, 1), vec![Act::LaneSeedDelta { lane: base + 1, delta: 1 }]);
             r.release(dev, "shift");
         }
         // Shift is unit-local: left Shift does not change the right unit's pads.
@@ -1214,7 +1209,6 @@ mod tests {
         assert_eq!(r.abs(A, "fader_2", 0.9), vec![]);
         assert_eq!(r.abs(A, "fader_2", 0.2), vec![Act::RequestTempo { bpm: 164.0, bars: TEMPO_RAMP_BARS }]);
 
-        assert_eq!(r.enc(A, 1), vec![Act::ProgressionDelta(1)]);
         assert_eq!(r.press(A, "encoder_push"), vec![Act::CommitKey]);
         assert_eq!(r.press(A, "capture"), vec![Act::Capture(CaptureScope::All)]);
         // Shift layer faders 3/4 and knobs stay lane controls.

@@ -11,7 +11,6 @@
 //! | `a` `s` `d` `f` (hold) | stutter · fill · double rate · void |
 //! | `z`/`x` `c`/`v` `b`/`n` `m`/`,` | control 1–4 down / up (`Shift`: fine) |
 //! | `k` / `l` | key intent left / right, `j` commits it for the next phrase |
-//! | `p` / `Shift+p` | next / previous progression |
 //! | `-` / `=` | tempo −1 / +1 BPM (ramped) |
 //! | `h` | half-time toggle |
 //! | `t` | quantized lane toggles on/off |
@@ -111,7 +110,6 @@ fn pressed(key: &Key, mods: Modifiers, repeat: bool, lane: u8) -> Option<KeyActi
         'k' => KeyAction::IntentStep(-INTENT_STEP),
         'l' => KeyAction::IntentStep(INTENT_STEP),
         'j' => C(LiveCommand::CommitKey),
-        'p' => C(LiveCommand::ProgressionDelta(if shift { -1 } else { 1 })),
         '-' => KeyAction::TempoDelta(-1.0),
         '=' => KeyAction::TempoDelta(1.0),
         'h' => C(LiveCommand::ToggleHalfTime),

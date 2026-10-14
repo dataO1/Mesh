@@ -645,7 +645,7 @@ lanes:
     controls:
       - {{ label: style, target: {{ type: generator, param: style }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
-      - {{ label: cutoff, target: {{ type: fx, slot: 0, param: 0 }}, min: 0.1, max: 0.5, curve: exp, default: 1.0 }}
+      - {{ label: mutate, target: {{ type: generator, param: mutate }}, default: 0.0 }}
       - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.6, default: 0.0 }}
     generator:
       family: procedural
@@ -669,7 +669,7 @@ lanes:
     controls:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
-      - {{ label: drive, target: {{ type: fx, slot: 0, param: 0 }}, min: 0.0, max: 0.8 }}
+      - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.3 }}
       - {{ label: duck, target: {{ type: glue, param: duck_depth }}, min: 0.0, max: 1.0 }}
     generator:
       family: procedural
@@ -688,7 +688,7 @@ lanes:
           samples:
             - {{ file: {l1_file}, root_key: {l1_root} }}   # {l1_note}, measured
     controls:
-      - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.2 }}
+      - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
       - {{ label: cutoff, target: {{ type: instrument, param: 0 }}, default: 1.0 }}
       - {{ label: delay, target: {{ type: send, bus: delay }}, min: 0.0, max: 0.7, curve: s }}
@@ -706,14 +706,14 @@ lanes:
           samples:
             - {{ file: {pad_file}, root_key: {pad_root} }}   # {pad_note}, measured
     controls:
-      - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.1 }}
+      - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.2 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
       - {{ label: reso, target: {{ type: instrument, param: 1 }}, curve: log, default: 0.0 }}
       - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.8 }}
     generator:
       family: idiom
       name: pad
-      params: {{ density: 0.3 }}
+      params: {{ complexity: 0.1, density: 0.3 }}
       idiom:
         level_maps:
           - name: long-notes
