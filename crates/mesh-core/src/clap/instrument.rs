@@ -1048,10 +1048,12 @@ impl ClapInstrument {
         Ok(())
     }
 
-    /// Load a state blob from `path`.
+    /// Load a state blob from `path`. A VST2 `.fxp` chunk preset (Surge XT's
+    /// patch format) loads as its chunk: plugins that save their state as
+    /// that chunk read it back without the 60-byte fxp header.
     pub fn load_state_from_file(&mut self, path: &Path) -> ClapResult<()> {
         let bytes = std::fs::read(path)?;
-        self.load_state(&bytes)
+        self.load_state(fxp_chunk(&bytes).unwrap_or(&bytes))
     }
 
     // ------------------------------------------------------------------------
@@ -1266,9 +1268,30 @@ impl Drop for ClapInstrument {
     }
 }
 
+/// Size of a VST2 fxp program-chunk header (`CcnK` … `FPCh` … chunk size).
+const FXP_CHUNK_HEADER: usize = 60;
+
+/// The chunk of a VST2 `.fxp` program-chunk preset, `None` for anything else.
+fn fxp_chunk(bytes: &[u8]) -> Option<&[u8]> {
+    (bytes.len() > FXP_CHUNK_HEADER && &bytes[0..4] == b"CcnK" && &bytes[8..12] == b"FPCh")
+        .then(|| &bytes[FXP_CHUNK_HEADER..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fxp_chunk_strips_the_header_only_from_chunk_presets() {
+        let mut fxp = b"CcnK\0\0\0\0FPCh".to_vec();
+        fxp.resize(FXP_CHUNK_HEADER, 0);
+        fxp.extend_from_slice(b"sub3data");
+        assert_eq!(fxp_chunk(&fxp), Some(&b"sub3data"[..]));
+        assert_eq!(fxp_chunk(b"<?xml version=\"1.0\"?>"), None);
+        let mut params_preset = fxp.clone();
+        params_preset[8..12].copy_from_slice(b"FxCk");
+        assert_eq!(fxp_chunk(&params_preset), None, "parameter presets are not chunks");
+    }
     use clack_host::events::UnknownEvent;
 
     fn kinds(buf: &EventBuffer) -> Vec<(u32, u16)> {

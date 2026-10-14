@@ -7,15 +7,24 @@
 //! self-contained and can be exported to USB as is.
 //!
 //! Usage:
-//!   live-starter-style --out DIR --breaks DIR --dirt DIR --pads DIR [--force]
+//!   live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR
+//!                      [--kicks DIR --snares DIR] [--force]
 //!   live-starter-style --inspect FILE...
 //!
 //!   --out DIR      style folder to create (must not exist unless --force)
-//!   --breaks DIR   github:switchangel/breaks (NN_break.wav, two bars each)
-//!   --dirt DIR     github:tidalcycles/Dirt-Samples
-//!   --pads DIR     github:switchangel/pad
+//!   --breaks DIR   break loops, one option each (1, 2 or 4 bars, picked by
+//!                  the tempo closest to the style's default)
+//!   --dirt DIR     github:tidalcycles/Dirt-Samples (hats, percussion, lead
+//!                  one-shots, the sub; the kick/snare fallback)
+//!   --surge DIR    Surge XT data folder (`share/surge-xt`): reese and pad
+//!                  patches for the bass and extra lanes
+//!   --kicks DIR    kick one-shots, paired by sorted name with --snares: pair
+//!   --snares DIR   n is kick n + snare n (the shorter list repeats)
 //!   --force        replace an existing style.yaml / assets in DIR
 //!   --inspect      print length, rate and pitch estimate of each FILE
+//!
+//! Drum kit `k` is option `k` of every drum sub-voice, so the kick/snare
+//! pairs and the breaks step together when the kit is browsed.
 //!
 //! # Analysis
 //!
@@ -55,8 +64,11 @@ use std::path::{Path, PathBuf};
 use mesh_core::live::sampler::SampleData;
 use mesh_core::live::style::{Style, STYLE_FILE};
 
-const USAGE: &str = "usage: live-starter-style --out DIR --breaks DIR --dirt DIR --pads DIR [--force]\n       \
+const USAGE: &str = "usage: live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR [--kicks DIR --snares DIR] [--force]\n       \
 live-starter-style --inspect FILE...";
+
+/// The style's default tempo, also used to guess a break's bar count.
+const DEFAULT_BPM: f64 = 172.0;
 
 fn fail(msg: impl AsRef<str>) -> ! {
     eprintln!("live-starter-style: {}\n{USAGE}", msg.as_ref());
@@ -65,68 +77,43 @@ fn fail(msg: impl AsRef<str>) -> ! {
 
 // ─── Selection ────────────────────────────────────────────────────────
 
-/// One drum kit: an option of every drum sub-voice. Paths are relative to
-/// Dirt-Samples. Kit `k` of the lane is option `k` of each sub-voice.
-struct Kit {
-    name: &'static str,
-    /// kick, snare, ghost/rim
-    backbone: [&'static str; 3],
-    /// closed, open
-    hats: [&'static str; 2],
-    perc: [&'static str; 2],
-    /// Break file in the switchangel bank.
-    break_file: &'static str,
-}
+/// Dirt-Samples files of the fallback kick / snare / ghost and of the hats
+/// and percussion layers.
+const FALLBACK_BACKBONE: [&str; 3] = ["jungle/jungle4kick1.wav", "jungle/jungle4snare1.wav", "jungle/jungle4hit1.wav"];
+const HATS: [&str; 2] = ["jungle/jungle4closedhh.wav", "jungle/jungle4openhh.wav"];
+const PERC: [&str; 2] = ["jungle/jungle4perc1.wav", "jungle/jungle4perc2.wav"];
 
-const KITS: [Kit; 3] = [
-    Kit {
-        name: "909",
-        backbone: ["bd/BT0A0D0.wav", "sn/ST0T0S7.wav", "rm/RIM0.wav"],
-        hats: ["hc/HHCD0.wav", "ho/HHOD0.wav"],
-        perc: ["perc/000_perc0.wav", "cp/HANDCLP0.wav"],
-        break_file: "10_break.wav",
-    },
-    Kit {
-        name: "808",
-        backbone: ["808bd/BD0050.WAV", "808sd/SD0050.WAV", "808/RS.WAV"],
-        hats: ["808hc/HC00.WAV", "808oh/OH00.WAV"],
-        perc: ["808/CB.WAV", "808/CP.WAV"],
-        break_file: "12_break.wav",
-    },
-    Kit {
-        name: "jungle",
-        backbone: ["jungle/jungle4kick1.wav", "jungle/jungle4snare1.wav", "jungle/jungle4hit1.wav"],
-        hats: ["jungle/jungle4closedhh.wav", "jungle/jungle4openhh.wav"],
-        perc: ["jungle/jungle4perc1.wav", "jungle/jungle4perc2.wav"],
-        break_file: "14_break.wav",
-    },
-];
-
-/// A pitched one-shot: option name, bank, path in the bank, asset name.
+/// A pitched one-shot in Dirt-Samples: option name, path, asset name.
 struct Pitched {
     option: &'static str,
-    bank: Bank,
     path: &'static str,
     asset: &'static str,
 }
 
-#[derive(Clone, Copy)]
-enum Bank {
-    Dirt,
-    Pads,
-}
-
-const BASS: Pitched =
-    Pitched { option: "round-sub", bank: Bank::Dirt, path: "jungbass/018_synthy_round.wav", asset: "bass/round-sub.wav" };
+const BASS: Pitched = Pitched { option: "round-sub", path: "jungbass/018_synthy_round.wav", asset: "bass/round-sub.wav" };
 const LEADS: [Pitched; 2] = [
-    Pitched { option: "stab", bank: Bank::Dirt, path: "stab/006_stab15.wav", asset: "lead/stab.wav" },
-    Pitched { option: "juno", bank: Bank::Dirt, path: "juno/07_juno_release_mid.wav", asset: "lead/juno.wav" },
+    Pitched { option: "stab", path: "stab/006_stab15.wav", asset: "lead/stab.wav" },
+    Pitched { option: "juno", path: "juno/07_juno_release_mid.wav", asset: "lead/juno.wav" },
 ];
-const PAD: Pitched =
-    Pitched { option: "sw-pad", bank: Bank::Pads, path: "14_switch_angel_pad.wav", asset: "pad/sw-pad.wav" };
 
-/// License files copied next to the assets (bank, file in bank, asset name).
-const LICENSES: [(Bank, &str, &str); 1] = [(Bank::Pads, "LICENSE", "LICENSE-switchangel.txt")];
+/// A Surge XT patch option: option name, `.fxp` path in the Surge data folder.
+type SurgePatch = (&'static str, &'static str);
+
+// MUSICAL: picked by name, audition and replace by ear.
+const SURGE_BASSES: [SurgePatch; 5] = [
+    ("reese-primitive", "patches_3rdparty/Vospi/Basses/Primitive Reese.fxp"),
+    ("reese-rave", "patches_3rdparty/Giana Brotherz/Basses/Rave Detuner.fxp"),
+    ("reese-jungler", "patches_3rdparty/Giana Brotherz/Basses/Deep Jungler.fxp"),
+    ("reese-neuro", "patches_3rdparty/Altenberg/Basses/Neuro.fxp"),
+    ("hoover", "patches_3rdparty/Kuniklo/Basses/Hoover.fxp"),
+];
+const SURGE_PADS: [SurgePatch; 4] = [
+    ("warm-pad", "patches_factory/Pads/MKS-70 Warm Pad.fxp"),
+    ("pad-1", "patches_factory/Pads/Pad 1.fxp"),
+    ("ghost-pad", "patches_factory/Pads/Ghost Pad.fxp"),
+    ("distant", "patches_factory/Pads/Distant.fxp"),
+];
+const SURGE_ID: &str = "org.surge-synth-team.surge-xt";
 
 // ─── DSP helpers ──────────────────────────────────────────────────────
 
@@ -313,7 +300,14 @@ fn note_name(midi: u8) -> String {
 
 // ─── Break slicing ────────────────────────────────────────────────────
 
-const SLICES: usize = 32;
+const SLICES_PER_BAR: usize = 16;
+
+/// Bar count (1, 2 or 4) whose tempo is closest to [`DEFAULT_BPM`].
+fn break_bars(frames: usize, sample_rate: u32) -> usize {
+    let secs = frames as f64 / sample_rate as f64;
+    let off = |bars: usize| (bars as f64 * 4.0 * 60.0 / secs / DEFAULT_BPM).ln().abs();
+    [1, 2, 4].into_iter().min_by(|&a, &b| off(a).total_cmp(&off(b))).unwrap_or(2)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -359,19 +353,22 @@ struct SliceInfo {
 
 struct Break {
     slices: Vec<SliceInfo>,
+    bars: usize,
     bpm: f64,
     fallback: bool,
 }
 
 fn slice_break(data: &SampleData) -> Break {
+    let bars = break_bars(data.len(), data.sample_rate());
+    let slices_n = bars * SLICES_PER_BAR;
     let x = mono(data);
     let sr = data.sample_rate() as f32;
     let n = x.len();
     let low = Biquad::new(sr, 150.0, false).run2(&x);
     let mid = Biquad::new(sr, 2500.0, false).run2(&Biquad::new(sr, 200.0, true).run2(&x));
     let high = Biquad::new(sr, 5000.0, true).run2(&x);
-    let starts: Vec<usize> = (0..SLICES).map(|i| (i as f64 * n as f64 / SLICES as f64).round() as usize).collect();
-    let win = ((0.05 * sr) as usize).min(n / SLICES);
+    let starts: Vec<usize> = (0..slices_n).map(|i| (i as f64 * n as f64 / slices_n as f64).round() as usize).collect();
+    let win = ((0.05 * sr) as usize).min(n / slices_n);
     let attack = |sig: &[f32], s: usize| rms(&sig[s..(s + win).min(n)]);
     let before = |sig: &[f32], s: usize| rms(&sig[s.saturating_sub(win)..s]);
     let rise = |sig: &[f32], s: usize| if s == 0 { 10.0 } else { attack(sig, s) / before(sig, s).max(1e-6) };
@@ -411,8 +408,8 @@ fn slice_break(data: &SampleData) -> Break {
             s.kind = AMEN[i % 16];
         }
     }
-    let bpm = 8.0 * 60.0 * data.sample_rate() as f64 / n as f64;
-    Break { slices, bpm, fallback }
+    let bpm = bars as f64 * 4.0 * 60.0 * data.sample_rate() as f64 / n as f64;
+    Break { slices, bpm, bars, fallback }
 }
 
 // ─── Style assembly ───────────────────────────────────────────────────
@@ -421,16 +418,54 @@ struct Paths {
     out: PathBuf,
     breaks: PathBuf,
     dirt: PathBuf,
-    pads: PathBuf,
+    surge: PathBuf,
+    /// Kick and snare folders (both or neither).
+    pairs: Option<(PathBuf, PathBuf)>,
 }
 
-impl Paths {
-    fn bank(&self, bank: Bank) -> &Path {
-        match bank {
-            Bank::Dirt => &self.dirt,
-            Bank::Pads => &self.pads,
-        }
+/// Audio files directly in `dir`, sorted by name.
+fn audio_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "wav" | "flac" | "aif" | "aiff"))
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        fail(format!("no audio files in {}", dir.display()));
     }
+    files
+}
+
+/// Single-quoted YAML scalar.
+fn q(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn stem(p: &Path) -> String {
+    p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Surge patch options for a lane; the `.fxp` files are copied into the style.
+fn surge_options(paths: &Paths, patches: &[SurgePatch], dir: &str) -> String {
+    let mut y = String::new();
+    for (name, rel) in patches {
+        let preset = copy_asset(paths, &paths.surge.join(rel), &format!("{dir}/{name}.fxp"));
+        let _ = write!(
+            y,
+            "      - name: {name}   # Surge XT {rel}\n        clap:\n          plugin_id: {SURGE_ID}\n          preset: {}\n",
+            q(&preset)
+        );
+    }
+    y
 }
 
 fn decode(path: &Path) -> SampleData {
@@ -442,6 +477,10 @@ fn copy_asset(paths: &Paths, src: &Path, asset: &str) -> String {
     let rel = format!("assets/{asset}");
     let dst = paths.out.join(&rel);
     std::fs::create_dir_all(dst.parent().unwrap()).unwrap_or_else(|e| fail(format!("{}: {e}", dst.display())));
+    // A repeated pair partner is already there (and may be read-only).
+    if dst.exists() {
+        return rel;
+    }
     std::fs::copy(src, &dst).unwrap_or_else(|e| fail(format!("copy {} -> {}: {e}", src.display(), dst.display())));
     rel
 }
@@ -477,7 +516,7 @@ fn estimate_root(data: &SampleData) -> Option<Root> {
 
 /// Copy a pitched sample and measure its root. Returns (path, MIDI root).
 fn pitched(paths: &Paths, p: &Pitched, report: &mut String) -> (String, u8) {
-    let src = paths.bank(p.bank).join(p.path);
+    let src = paths.dirt.join(p.path);
     let data = decode(&src);
     let root = estimate_root(&data).unwrap_or_else(|| fail(format!("no pitch found in {}", src.display())));
     let _ = writeln!(report, "  {:<10} root {:<4} {}  ({})", p.option, note_name(root.midi), root.detail, p.path);
@@ -488,49 +527,62 @@ fn build(paths: &Paths) -> String {
     let mut report = String::new();
     let mut y = String::new();
 
-    // Drum kits.
+    // Drum kits: kick/snare pairs (or the fallback kit), breaks, one hats and
+    // one percussion option.
     let mut backbone = String::new();
     let mut breaks = String::new();
-    let mut hats = String::new();
-    let mut perc = String::new();
-    let _ = writeln!(report, "Break slices (32 = two bars of 16ths; K kick, S snare, g ghost, h hat, . other):");
-    for kit in &KITS {
-        let dir = format!("drums/{}", kit.name);
-        let one = |file: &str, name: &str| {
-            let ext = Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
-            copy_asset(paths, &paths.dirt.join(file), &format!("{dir}/{name}.{ext}"))
-        };
-        let [k, s, g] = kit.backbone;
-        let _ = write!(
-            backbone,
-            "          - name: {n}\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
-            one(k, "kick"),
-            one(s, "snare"),
-            one(g, "ghost"),
-            n = kit.name
-        );
-        let [c, o] = kit.hats;
-        let _ = write!(
-            hats,
-            "          - name: {n}\n            sampler:\n              samples:\n                - {{ file: {}, choke: 2 }}\n                - {{ file: {}, choke: 2 }}\n",
-            one(c, "hat-closed"),
-            one(o, "hat-open"),
-            n = kit.name
-        );
-        let [p1, p2] = kit.perc;
-        let _ = write!(
-            perc,
-            "          - name: {n}\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
-            one(p1, "perc1"),
-            one(p2, "perc2"),
-            n = kit.name
-        );
+    let one = |file: &str, name: &str| {
+        let ext = Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
+        copy_asset(paths, &paths.dirt.join(file), &format!("drums/jungle/{name}.{ext}"))
+    };
+    match &paths.pairs {
+        Some((kick_dir, snare_dir)) => {
+            let (kicks, snares) = (audio_files(kick_dir), audio_files(snare_dir));
+            let _ = writeln!(report, "Kick/snare pairs ({} kicks, {} snares):", kicks.len(), snares.len());
+            for i in 0..kicks.len().max(snares.len()) {
+                let (k, s) = (&kicks[i % kicks.len()], &snares[i % snares.len()]);
+                let kf = copy_asset(paths, k, &format!("drums/kicks/{}", file_name(k)));
+                let sf = copy_asset(paths, s, &format!("drums/snares/{}", file_name(s)));
+                let name = format!("pair-{:02}", i + 1);
+                let _ = writeln!(report, "  {name}  {} + {}", file_name(k), file_name(s));
+                let _ = write!(
+                    backbone,
+                    "          - name: {name}   # {} + {}\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
+                    stem(k),
+                    stem(s),
+                    q(&kf),
+                    q(&sf)
+                );
+            }
+        }
+        None => {
+            let [k, s, g] = FALLBACK_BACKBONE;
+            let _ = write!(
+                backbone,
+                "          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
+                one(k, "kick"),
+                one(s, "snare"),
+                one(g, "ghost")
+            );
+        }
+    }
+    let hats = format!(
+        "          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {}, choke: 2 }}\n                - {{ file: {}, choke: 2 }}\n",
+        one(HATS[0], "hat-closed"),
+        one(HATS[1], "hat-open")
+    );
+    let perc = format!(
+        "          - name: jungle\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
+        one(PERC[0], "perc1"),
+        one(PERC[1], "perc2")
+    );
 
-        let src = paths.breaks.join(kit.break_file);
+    let _ = writeln!(report, "Break slices (16 per bar; K kick, S snare, g ghost, h hat, . other):");
+    for src in audio_files(&paths.breaks) {
         let data = decode(&src);
         let b = slice_break(&data);
-        let stem = kit.break_file.trim_end_matches(".wav");
-        let rel = copy_asset(paths, &src, &format!("breaks/sw-{stem}.wav"));
+        let name = stem(&src);
+        let rel = copy_asset(paths, &src, &format!("breaks/{}", file_name(&src)));
         let grid: String = b
             .slices
             .iter()
@@ -543,13 +595,14 @@ fn build(paths: &Paths) -> String {
                     Kind::Hat => 'h',
                     Kind::Other => '.',
                 };
-                if i % 4 == 3 && i != SLICES - 1 { format!("{c} ") } else { c.to_string() }
+                if i % 4 == 3 && i != b.slices.len() - 1 { format!("{c} ") } else { c.to_string() }
             })
             .collect();
         let _ = writeln!(
             report,
-            "  sw-{stem:<9} {grid}  ({:.1} BPM at 2 bars, {} frames @ {} Hz{})",
+            "  {name:<12} {grid}  ({:.1} BPM at {} bar(s), {} frames @ {} Hz{})",
             b.bpm,
+            b.bars,
             data.len(),
             data.sample_rate(),
             if b.fallback { ", AMEN FALLBACK" } else { "" }
@@ -571,7 +624,9 @@ fn build(paths: &Paths) -> String {
         }
         let _ = write!(
             breaks,
-            "          - name: sw-{stem}\n            sampler:\n              samples:\n                - file: {rel}\n                  choke: 1\n                  slices:\n"
+            "          - name: {}\n            sampler:\n              samples:\n                - file: {}\n                  choke: 1\n                  slices:\n",
+            q(&name),
+            q(&rel)
         );
         for s in &b.slices {
             let _ = writeln!(breaks, "                    - {{ start: {}, type: {} }}", s.start, s.kind.yaml());
@@ -581,19 +636,17 @@ fn build(paths: &Paths) -> String {
     let _ = writeln!(report, "Root keys:");
     let (bass_file, bass_root) = pitched(paths, &BASS, &mut report);
     let leads: Vec<(String, u8)> = LEADS.iter().map(|p| pitched(paths, p, &mut report)).collect();
-    let (pad_file, pad_root) = pitched(paths, &PAD, &mut report);
-
-    for (bank, file, name) in LICENSES {
-        copy_asset(paths, &paths.bank(bank).join(file), name);
-    }
-    let _ = std::fs::copy(paths.breaks.join("LICENSE"), paths.out.join("assets/breaks/LICENSE-switchangel-breaks.txt"));
+    let reeses = surge_options(paths, &SURGE_BASSES, "synth/bass");
+    let pads = surge_options(paths, &SURGE_PADS, "synth/pad");
+    let _ = writeln!(report, "Surge XT patches: {} bass, {} pad", SURGE_BASSES.len(), SURGE_PADS.len());
+    let _ = std::fs::copy(paths.breaks.join("LICENSE"), paths.out.join("assets/breaks/LICENSE-breaks.txt"));
 
     let _ = write!(
         y,
         r#"# Starter breakbeat style, generated by scripts/live-starter-style.sh
 # (crates/mesh-core/src/bin/live_starter_style.rs). Samples come from
-# switchangel/breaks + switchangel/pad (Unlicense) and tidalcycles/Dirt-Samples
-# (mixed sources: keep this folder private). Values are starting points to
+# the break folder, tidalcycles/Dirt-Samples and Surge XT patches (mixed
+# sources: keep this folder private). Values are starting points to
 # tune by ear; style-calibrate writes the lufs_trim_db fields.
 name: starter-breaks
 version: 1
@@ -623,7 +676,7 @@ send_fx:
   reverb: {{ id: reverb, source: native }}
 
 lanes:
-  # Kit k = option k of every sub-voice (909 + sw-10, 808 + sw-12, jungle + sw-14).
+  # Kit k = option k of every sub-voice: kick/snare pair k with break k.
   - name: drums
     role: drums
     archetypes: [half_time, two_step, rolling, jungle, hardcore]
@@ -658,11 +711,8 @@ lanes:
         sampler:
           samples:
             - {{ file: {bass_file}, root_key: {bass_root}, choke: 1 }}   # {bass_note}, measured
-      # Surge XT init patch. Needs the CLAP bundle discoverable (~/.clap).
-      - name: surge-init
-        clap:
-          plugin_id: org.surge-synth-team.surge-xt
-    fx:
+      # Surge XT reese patches. Need the CLAP bundle discoverable (~/.clap).
+{reeses}    fx:
       - {{ id: drive, source: native, params: {{ 0: 0.3 }}, dry_wet: 0.8 }}
     controls:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
@@ -699,14 +749,11 @@ lanes:
   - name: extra
     role: extra
     options:
-      - name: {pad_opt}
-        sampler:
-          samples:
-            - {{ file: {pad_file}, root_key: {pad_root} }}   # {pad_note}, measured
-    controls:
+      # Surge XT pad patches.
+{pads}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.2 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
-      - {{ label: reso, target: {{ type: instrument, param: 1 }}, curve: log, default: 0.0 }}
+      - {{ label: gate, target: {{ type: generator, param: gate }}, default: 1.0 }}
       - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.8 }}
     generator:
       family: idiom
@@ -729,8 +776,6 @@ lanes:
         l1_file = leads[1].0,
         l1_root = leads[1].1,
         l1_note = note_name(leads[1].1),
-        pad_opt = PAD.option,
-        pad_note = note_name(pad_root),
     );
     std::fs::write(paths.out.join(STYLE_FILE), y).unwrap_or_else(|e| fail(format!("write style.yaml: {e}")));
     report
@@ -748,7 +793,8 @@ fn inspect(files: &[PathBuf]) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let (mut out, mut breaks, mut dirt, mut pads, mut force) = (None, None, None, None, false);
+    let (mut out, mut breaks, mut dirt, mut surge, mut force) = (None, None, None, None, false);
+    let (mut kicks, mut snares) = (None, None);
     let mut inspect_files = None::<Vec<PathBuf>>;
     while let Some(a) = args.next() {
         let mut val = || args.next().map(PathBuf::from).unwrap_or_else(|| fail(format!("{a} needs a value")));
@@ -756,7 +802,9 @@ fn main() {
             "--out" => out = Some(val()),
             "--breaks" => breaks = Some(val()),
             "--dirt" => dirt = Some(val()),
-            "--pads" => pads = Some(val()),
+            "--surge" => surge = Some(val()),
+            "--kicks" => kicks = Some(val()),
+            "--snares" => snares = Some(val()),
             "--force" => force = true,
             "--inspect" => inspect_files = Some(args.by_ref().map(PathBuf::from).collect()),
             "-h" | "--help" => {
@@ -775,7 +823,12 @@ fn main() {
         out: need(out, "--out"),
         breaks: need(breaks, "--breaks"),
         dirt: need(dirt, "--dirt"),
-        pads: need(pads, "--pads"),
+        surge: need(surge, "--surge"),
+        pairs: match (kicks, snares) {
+            (Some(k), Some(s)) => Some((k, s)),
+            (None, None) => None,
+            _ => fail("--kicks and --snares go together"),
+        },
     };
     if paths.out.join(STYLE_FILE).exists() && !force {
         fail(format!("{} already holds a style (use --force)", paths.out.display()));
