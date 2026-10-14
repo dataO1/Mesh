@@ -169,7 +169,7 @@ impl Effect for DriveEffect {
 }
 
 /// Native effect ids accepted by `FxSource::Native`.
-pub const NATIVE_EFFECT_IDS: [&str; 8] = ["filter", "delay", "reverb", "gain", "drive", "compressor", "eq", "transient"];
+pub const NATIVE_EFFECT_IDS: [&str; 9] = ["filter", "delay", "reverb", "gain", "drive", "compressor", "eq", "transient", "multiband"];
 
 /// Build a native effect by id.
 pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
@@ -182,6 +182,7 @@ pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
         "compressor" => Box::new(super::fx::CompressorEffect::new()),
         "eq" => Box::new(super::fx::EqEffect::new()),
         "transient" => Box::new(super::fx::TransientEffect::new()),
+        "multiband" => Box::new(super::fx::MultibandEffect::new()),
         _ => return None,
     })
 }

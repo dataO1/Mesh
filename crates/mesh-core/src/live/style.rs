@@ -294,6 +294,11 @@ pub struct FxSpec {
     /// `params`. VST2 `.fxp` chunk presets work too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<PathBuf>,
+    /// Parameters by name in real units (dB, Hz, ms, ratio), applied after
+    /// `params`: `{ threshold: -18, ratio: 4 }`. Names are the effect's
+    /// parameter names in lower case with `_` for spaces.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, f32>,
 }
 
 /// Response curve of a control mapping.

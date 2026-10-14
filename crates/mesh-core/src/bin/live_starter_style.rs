@@ -114,6 +114,104 @@ const SURGE_PADS: [SurgePatch; 4] = [
     ("distant", "patches_factory/Pads/Distant.fxp"),
 ];
 const SURGE_ID: &str = "org.surge-synth-team.surge-xt";
+// MUSICAL: first drafts, tune by ear. Multiband up/down compression per lane
+// (native `multiband`, crates/mesh-core/src/live/fx.rs). Bands: sub | high
+// bass | mids | high mids | highs | air.
+/// Bass: a smiley shape for full-range (neuro / reese) basses. Sub lightly
+/// held, high bass firmly, mids hard and pushed down, the top lifted.
+const MB_BASS: &str = "      - id: multiband
+        source: native
+        settings:
+          split_1: 90
+          split_2: 250
+          split_3: 2000
+          split_4: 5000
+          split_5: 10000
+          band_1_down_threshold: -16
+          band_1_down_ratio: 2
+          band_1_attack: 20
+          band_1_release: 150
+          band_2_down_threshold: -24
+          band_2_down_ratio: 4
+          band_2_up_threshold: -42
+          band_2_up_ratio: 1.5
+          band_2_attack: 8
+          band_2_release: 100
+          band_3_down_threshold: -30
+          band_3_down_ratio: 8
+          band_3_up_threshold: -50
+          band_3_up_ratio: 2
+          band_3_attack: 4
+          band_3_release: 80
+          band_3_gain: -3
+          band_4_down_threshold: -26
+          band_4_down_ratio: 2
+          band_4_up_threshold: -48
+          band_4_up_ratio: 3
+          band_4_attack: 2
+          band_4_release: 60
+          band_4_gain: 1
+          band_5_down_threshold: -26
+          band_5_down_ratio: 1.5
+          band_5_up_threshold: -52
+          band_5_up_ratio: 3
+          band_5_attack: 1
+          band_5_release: 50
+          band_5_gain: 1.5
+          band_6_down_threshold: -26
+          band_6_down_ratio: 1.5
+          band_6_up_threshold: -52
+          band_6_up_ratio: 3
+          band_6_attack: 1
+          band_6_release: 50
+          band_6_gain: 1.5
+          up_max: 10
+          up_gate: -65
+";
+/// Lead: lighter, same shape.
+const MB_LEAD: &str = "      - id: multiband
+        source: native
+        settings:
+          split_1: 120
+          split_2: 400
+          split_3: 2500
+          split_4: 6000
+          split_5: 12000
+          band_2_down_threshold: -24
+          band_2_down_ratio: 2
+          band_3_down_threshold: -26
+          band_3_down_ratio: 3
+          band_3_attack: 5
+          band_3_release: 80
+          band_3_gain: -1.5
+          band_4_up_threshold: -45
+          band_4_up_ratio: 2
+          band_5_down_threshold: -20
+          band_5_down_ratio: 1.5
+          band_5_up_threshold: -50
+          band_5_up_ratio: 2
+          band_6_down_threshold: -20
+          band_6_down_ratio: 1.5
+          band_6_up_threshold: -50
+          band_6_up_ratio: 2
+          up_max: 8
+          up_gate: -65
+";
+/// Pads: gentle, mids a little down, the top a little up.
+const MB_PAD: &str = "      - id: multiband
+        source: native
+        settings:
+          band_3_down_threshold: -28
+          band_3_down_ratio: 2
+          band_3_gain: -1
+          band_5_up_threshold: -50
+          band_5_up_ratio: 1.5
+          band_6_up_threshold: -50
+          band_6_up_ratio: 1.5
+          up_max: 6
+          up_gate: -65
+";
+
 
 // ─── DSP helpers ──────────────────────────────────────────────────────
 
@@ -676,7 +774,7 @@ glue:
   # (punchy, 76-style character) into ButterComp2 (smooth, 2A-style).
   drum_bus_fx:
     - {{ id: Pop2, source: airwindows }}
-    - {{ id: ButterComp2, source: airwindows, params: {{ 0: 0.3 }} }}
+    - {{ id: ButterComp2, source: airwindows, settings: {{ compress: 0.3 }} }}
 
 send_fx:
   delay: {{ id: delay, source: native, params: {{ 0: 0.375, 1: 0.4 }} }}
@@ -699,18 +797,17 @@ lanes:
 {hats}      - voice: perc
         options:
 {perc}    fx:
-      - {{ id: filter, source: native, params: {{ 0: 0.5 }} }}
-    # Break bus, before the lane FX. Normalized params over each effect's
-    # range (crates/mesh-core/src/live/fx.rs).
+      - {{ id: filter, source: native, settings: {{ filter: 0.0 }} }}
+    # Break bus, before the lane FX (effects: crates/mesh-core/src/live/fx.rs).
     # MUSICAL: user spec, tune by ear.
     break_fx:
       # Low cut 120 Hz (12 dB/oct), -3 dB at 200 Hz (Q 1), +3 dB at 3.5 kHz (Q 0.8).
-      - {{ id: eq, source: native, params: {{ 0: 0.2083, 1: 0.1579, 2: 0.375, 3: 0.1892, 4: 0.2273, 5: 0.625, 6: 0.1351 }} }}
+      - {{ id: eq, source: native, settings: {{ low_cut: 120, bell_1_freq: 200, bell_1_gain: -3, bell_1_q: 1.0, bell_2_freq: 3500, bell_2_gain: 3, bell_2_q: 0.8 }} }}
       # 4:1 hard knee, 50 ms attack / 50 ms release, threshold -18 dB:
       # lets the attack through and pulls the body down.
-      - {{ id: compressor, source: native, params: {{ 0: 0.7, 1: 0.1579, 2: 0.2496, 3: 0.0452, 4: 0.0, 5: 0.0 }} }}
+      - {{ id: compressor, source: native, settings: {{ threshold: -18, ratio: 4, attack: 50, release: 50, knee: 0, makeup: 0 }} }}
       # Transient shaper: +4 dB attack, sustain unchanged.
-      - {{ id: transient, source: native, params: {{ 0: 0.6667, 1: 0.5 }} }}
+      - {{ id: transient, source: native, settings: {{ attack: 4, sustain: 0 }} }}
     controls:
       - {{ label: style, target: {{ type: generator, param: style }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
@@ -730,8 +827,9 @@ lanes:
           samples:
             - {{ file: {bass_file}, root_key: {bass_root}, choke: 1 }}   # {bass_note}, measured
       # Surge XT reese patches. Need the CLAP bundle discoverable (~/.clap).
-{reeses}    fx:
-      - {{ id: drive, source: native, params: {{ 0: 0.3 }}, dry_wet: 0.8 }}
+{reeses}    # Multiband first, then the drive (the glue adds compression and saturation).
+    fx:
+{mb_bass}      - {{ id: drive, source: native, settings: {{ drive: 7 }}, dry_wet: 0.8 }}
     controls:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
@@ -753,7 +851,8 @@ lanes:
         sampler:
           samples:
             - {{ file: {l1_file}, root_key: {l1_root} }}   # {l1_note}, measured
-    controls:
+    fx:
+{mb_lead}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
       - {{ label: cutoff, target: {{ type: instrument, param: 0 }}, default: 1.0 }}
@@ -768,7 +867,8 @@ lanes:
     role: extra
     options:
       # Surge XT pad patches.
-{pads}    controls:
+{pads}    fx:
+{mb_pad}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.2 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
       - {{ label: gate, target: {{ type: generator, param: gate }}, default: 1.0 }}
@@ -794,6 +894,9 @@ lanes:
         l1_file = leads[1].0,
         l1_root = leads[1].1,
         l1_note = note_name(leads[1].1),
+        mb_bass = MB_BASS,
+        mb_lead = MB_LEAD,
+        mb_pad = MB_PAD,
     );
     std::fs::write(paths.out.join(STYLE_FILE), y).unwrap_or_else(|e| fail(format!("write style.yaml: {e}")));
     report

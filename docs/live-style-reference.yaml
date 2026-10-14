@@ -210,10 +210,9 @@ lanes:
     #   id        effect identifier: CLAP plugin id, PD patch folder name,
     #             native effect id, or Airwindows algorithm name ("Pop2")
     #   source    native | clap | pd | airwindows
-    #             native ids: filter, delay, reverb, gain, drive, compressor
-    #             (threshold, ratio, attack, release, knee, makeup), eq (low
-    #             cut, bell 1 freq/gain/Q, bell 2 freq/gain/Q), transient
-    #             (attack, sustain). Ranges: crates/mesh-core/src/live/fx.rs.
+    #             native ids: filter, delay, reverb, gain, drive, compressor,
+    #             eq, transient, multiband (6-band up/down compressor).
+    #             Parameters and ranges: crates/mesh-core/src/live/fx.rs.
     #             airwindows: an algorithm of the Airwindows Consolidated
     #             CLAP plugin, starting from that algorithm's defaults.
     #             CLAP plugins are found in the standard CLAP folders and in
@@ -222,6 +221,10 @@ lanes:
     #             carry its own.
     #   params    parameter index -> normalized value (0..=1). Unlisted
     #             parameters keep the plugin default.
+    #   settings  parameter name -> value in real units (dB, Hz, ms, ratio),
+    #             applied after params. Names are the effect's parameter names
+    #             in lower case with _ for spaces (low_cut, band_3_gain). An
+    #             unknown name is a load warning that lists the known ones.
     #   preset    optional CLAP state file in the style folder, loaded before
     #             params (VST2 .fxp chunk presets work too)
     #   bypassed  default false
@@ -235,8 +238,8 @@ lanes:
         dry_wet: 1.0
     # Drum lane only: chain of the break sub-voice, before `fx`. Same entries.
     break_fx:
-      - { id: eq, source: native, params: { 0: 0.2083 } }
-      - { id: transient, source: native, params: { 0: 0.6667 } }
+      - { id: eq, source: native, settings: { low_cut: 120, bell_1_gain: -3 } }
+      - { id: transient, source: native, settings: { attack: 4 } }
 
     # Exactly 4 performance controls, in hardware order:
     # knob A, fader A, knob B, fader B.

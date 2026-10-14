@@ -45,7 +45,7 @@ use super::command::{drive_db, GlueControl};
 use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::{db_to_lin, GlueParams, Role};
 use super::harmony::Progression;
-use super::fx::{airwindows_state, AIRWINDOWS_ID};
+use super::fx::{airwindows_state, setting_key, setting_param, AIRWINDOWS_ID};
 use super::lane::{
     drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption,
 };
@@ -325,6 +325,9 @@ impl Ctx<'_> {
     }
 
     fn build_effect(&mut self, spec: &FxSpec) -> Result<Box<dyn Effect>, String> {
+        // CLAP parameters as the plugin reports them after its state loaded
+        // (an Airwindows algorithm renames them), for `settings` by name.
+        let mut clap_info: Option<crate::effect::EffectInfo> = None;
         let mut fx: Box<dyn Effect> = match spec.source {
             FxSource::Native => native_effect(&spec.id).ok_or_else(|| "unknown native effect".to_string())?,
             FxSource::Clap | FxSource::Airwindows => {
@@ -339,6 +342,7 @@ impl Ctx<'_> {
                 let mut fx: Box<dyn Effect> = fx;
                 let defaults = {
                     let mut w = gui.wrapper.lock().map_err(|_| "plugin lock poisoned".to_string())?;
+                    let defaults = {
                     if airwindows {
                         w.load_state(&airwindows_state(&spec.id)).map_err(|e| e.to_string())?;
                     }
@@ -358,6 +362,13 @@ impl Ctx<'_> {
                     } else {
                         Vec::new()
                     }
+                    };
+                    let mut info = crate::effect::EffectInfo::new(id, "CLAP");
+                    for p in w.query_params() {
+                        info = info.with_param(crate::effect::ParamInfo::new(p.name, 0.0).with_range(p.min as f32, p.max as f32));
+                    }
+                    clap_info = Some(info);
+                    defaults
                 };
                 for (i, d) in defaults.into_iter().enumerate() {
                     if let Some(d) = d {
@@ -379,6 +390,17 @@ impl Ctx<'_> {
         };
         for (&index, &value) in &spec.params {
             fx.set_param(index as usize, value);
+        }
+        for (name, &value) in &spec.settings {
+            let info = clap_info.as_ref().unwrap_or_else(|| fx.info());
+            match setting_param(info, name, value) {
+                Some((index, normalized)) => fx.set_param(index, normalized),
+                None => {
+                    let known: Vec<String> =
+                        info.params.iter().map(|p| setting_key(&p.name)).filter(|k| !k.is_empty()).collect();
+                    self.warn(format!("effect '{}': unknown setting '{name}' (known: {})", spec.id, known.join(", ")));
+                }
+            }
         }
         fx.set_bypass(spec.bypassed);
         // Let the effect size its buffers now instead of on the first RT block.

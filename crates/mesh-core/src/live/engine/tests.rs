@@ -704,6 +704,7 @@ fn break_bus_and_master_inserts_process_in_place() {
         bypassed: false,
         dry_wet: 1.0,
         preset: None,
+        settings: Default::default(),
     };
     // The style's own drum generator plays break slices.
     let style_gens = || -> Gens { std::array::from_fn(|_| None) };

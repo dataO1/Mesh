@@ -517,3 +517,10 @@ These have no answer yet and are expected to be settled during the phases:
   - Starter break chain: EQ (120 Hz 12 dB/oct cut, −3 dB at 200 Hz, +3 dB at 3.5 kHz) → compressor (4:1 hard knee, 50/50 ms, −18 dB) → transient (+4 dB attack). Starter drum bus: Pop2 → ButterComp2, as 1176/LA-2A stand-ins. No FOSS 1176/LA-2A plugin exists for Linux/aarch64.
   - Live mode scans `<collection>/effects/clap/` and `effects/clap/<arch>/` of the style's collection. Export copies `effects/clap` to the stick, following symlinks.
   - Open: aarch64 builds of Surge XT and Airwindows Consolidated for `effects/clap/aarch64/` (nixpkgs marks airwin2rack x86_64-only).
+- 2026-10-14: Readable FX settings and multiband (user).
+  - FX entries take `settings`: parameter name → real units (`low_cut: 120`, `threshold: -18`). This works for native effects and CLAP plugins, including Airwindows names read after the algorithm loads. An unknown name warns with the list of known names.
+  - New native `multiband`: 6 LR4 bands with allpass compensation (flat when idle), downward and upward compression per band, band gain, `up max` and `up gate`.
+  - The starter style puts a multiband first in the bass (neuro smiley: sub lightly held, high bass firm, mids 8:1 and −3 dB, top lifted), lead (lighter) and extra (gentle) chains.
+  - LSP's CLAP multiband compressor/dynamics processor was rejected. Each compressor band is up or down, not both. Most parameters are exposed only as normalized log values, and it carries FFT analysis.
+  - Engine cost on the PC is now 17× realtime (worst block 29 %). The Surge pad (extra lane) dominates, so OPi headroom must be checked (G2).
+  - Future, not scheduled: map the 4 lane macros (the performance controls) onto many effect and generator parameters with ranges, like Mesh's multiband FX macros.
