@@ -14,18 +14,19 @@
 //! | Fader 2 / 4 | lane control 3 (fader B) |
 //! | Pads rows 1–2 of the half | chain slots 0 1 / 2 3: press selects the slot |
 //! | Pads rows 3–4 of the half | momentary: stutter fill / double void |
-//! | Play 1 / 3 (button A) | tap: lane on/off. Hold + encoder: browse option, release commits |
+//! | Play 1 / 3 (button A) | lane on/off |
 //! | Play 2 / 4 (button B) | unassigned (hook for a style mapping) |
 //! | Encoder | seed of the selected slot of the unit's selected lane |
 //! | Left Shift + fader 1 | key intent |
 //! | Left Shift + fader 2 | tempo (ramp target) |
 //! | Left Shift + encoder | progression |
 //! | Left Shift + encoder push | commit the key intent |
-//! | Quant (either unit) | quantized lane toggles on/off |
+//! | Quant (either unit) | quantized lane toggles on/off (default off) |
 //! | Capture | capture the unit's selected lane. With that unit's Shift: everything |
 //! | Reverse (either unit) | half-time toggle |
 //! | Sync | recall the latest session capture for the unit's selected lane |
-//! | Browse / Size / Type | unassigned |
+//! | Size / Browse (held) + encoder | browse lane A / lane B option, release loads it at the bar |
+//! | Type | unassigned |
 //!
 //! The selected lane of a unit is the lane last touched on it. Knobs and
 //! faders use soft takeover: after a layer change or an external value
@@ -87,8 +88,6 @@ const PLAY_NAMES: [&str; 4] = ["play_1", "play_2", "play_3", "play_4"];
 const FUNC_NAMES: [&str; 8] = ["browse", "size", "type_btn", "reverse", "shift", "capture", "quant", "sync"];
 
 // PLAYABILITY: tune on hardware.
-/// A play-button-A press shorter than this toggles the lane.
-const TAP_MAX: Duration = Duration::from_millis(300);
 /// Bars the Shift + fader 2 tempo ramp takes.
 const TEMPO_RAMP_BARS: u32 = 4;
 /// A soft-takeover control also picks up when this close to the value.
@@ -256,9 +255,9 @@ impl Control {
     }
 }
 
-/// Play button A held down.
+/// Size (lane A) or Browse (lane B) held down for option browsing.
 #[derive(Debug, Clone, Copy)]
-struct PlayHold {
+struct BrowseHold {
     since: Instant,
     browsed: bool,
 }
@@ -286,7 +285,7 @@ struct Unit {
     shift: bool,
     /// Half last touched (its lane is the unit's selected lane).
     half: u8,
-    play_held: [Option<PlayHold>; 2],
+    browse_held: [Option<BrowseHold>; 2],
     /// `knob_1..4` then `fader_1..4`.
     physical: [Physical; 8],
     leds: LedCache,
@@ -298,7 +297,7 @@ impl Unit {
             id: id.to_string(),
             shift: false,
             half: 0,
-            play_held: [None; 2],
+            browse_held: [None; 2],
             physical: [Physical::default(); 8],
             leds: LedCache::default(),
         }
@@ -383,7 +382,7 @@ impl LiveControlSurface {
             tempo: None,
             seen_target_bpm: None,
             tempo_requested: None,
-            quantize: true,
+            quantize: false,
             out: Vec::with_capacity(4),
         }
     }
@@ -549,7 +548,7 @@ impl LiveControlSurface {
 
         self.view.shift = self.units.iter().any(|x| x.shift);
         self.view.browse_lane = self.units.iter().enumerate().find_map(|(i, x)| {
-            let half = x.play_held.iter().position(|h| h.is_some())?;
+            let half = x.browse_held.iter().position(|h| h.is_some())?;
             Some(self.side(i).lane(half as u8))
         });
     }
@@ -613,12 +612,12 @@ impl LiveControlSurface {
             return;
         }
         let unit = &mut self.units[u];
-        // The most recently pressed held play button A browses.
+        // The most recently pressed held Size/Browse button browses its lane.
         let held = (0..2u8)
-            .filter_map(|h| unit.play_held[h as usize].map(|p| (h, p.since)))
+            .filter_map(|h| unit.browse_held[h as usize].map(|p| (h, p.since)))
             .max_by_key(|&(_, since)| since);
         if let Some((half, _)) = held {
-            if let Some(p) = unit.play_held[half as usize].as_mut() {
+            if let Some(p) = unit.browse_held[half as usize].as_mut() {
                 p.browsed = true;
             }
             out.push(Act::BrowseOption { lane: side.lane(half), delta });
@@ -646,6 +645,23 @@ impl LiveControlSurface {
                     PadRole::Move(kind) => out.push(Act::MoveRelease { lane, kind }),
                 }
             }
+            // Hold Size (lane A) or Browse (lane B) and turn the encoder to
+            // browse kits/instruments; release loads the choice at the bar.
+            Control::Size | Control::Browse => {
+                let half = if control == Control::Size { 0 } else { 1 };
+                let lane = side.lane(half);
+                if pressed {
+                    self.touch(u, side, half);
+                }
+                let slot = &mut self.units[u].browse_held[half as usize];
+                if pressed {
+                    *slot = Some(BrowseHold { since: now, browsed: false });
+                } else if let Some(hold) = slot.take() {
+                    if hold.browsed {
+                        out.push(Act::CommitOption { lane });
+                    }
+                }
+            }
             Control::Play(i) => {
                 let (half, is_a) = PLAYS[i];
                 if pressed {
@@ -655,16 +671,8 @@ impl LiveControlSurface {
                     // Play button B: no-op hook, style-mappable later (§7.1).
                     return;
                 }
-                let lane = side.lane(half);
-                let slot = &mut self.units[u].play_held[half as usize];
                 if pressed {
-                    *slot = Some(PlayHold { since: now, browsed: false });
-                } else if let Some(hold) = slot.take() {
-                    if hold.browsed {
-                        out.push(Act::CommitOption { lane });
-                    } else if now.saturating_duration_since(hold.since) < TAP_MAX {
-                        out.push(Act::ToggleLane { lane });
-                    }
+                    out.push(Act::ToggleLane { lane: side.lane(half) });
                 }
             }
             _ if !pressed => {}
@@ -684,7 +692,7 @@ impl LiveControlSurface {
             Control::Reverse => out.push(Act::ToggleHalfTime),
             Control::Sync => out.push(Act::RecallLatest { lane: selected }),
             // Unassigned (kept free for P4: master FX, page).
-            Control::Browse | Control::Size | Control::Type => {}
+            Control::Type => {}
             Control::Knob(_) | Control::Fader(_) | Control::Encoder => {}
         }
     }
@@ -741,8 +749,8 @@ impl LiveControlSurface {
             let lit = |on: bool| if on { LED_ON } else { LED_DIM };
             // Order of FUNC_NAMES: browse size type reverse shift capture quant sync.
             let funcs = [
-                LED_OFF,
-                LED_OFF,
+                lit(unit.browse_held[1].is_some()),
+                lit(unit.browse_held[0].is_some()),
                 LED_OFF,
                 lit(input.half_time),
                 lit(unit.shift),
@@ -891,7 +899,7 @@ mod tests {
 
         fn sync(&mut self, positions: [[f32; 4]; 4], target_bpm: f64) {
             let tempo = TempoSpec { default: 170.0, min: 160.0, max: 180.0 };
-            self.s.sync_state(&positions, tempo, target_bpm, true);
+            self.s.sync_state(&positions, tempo, target_bpm, false);
         }
     }
 
@@ -936,21 +944,24 @@ mod tests {
     }
 
     #[test]
-    fn play_button_tap_hold_and_browse() {
+    fn play_toggles_and_size_browse_buttons_browse() {
         let mut r = Rig::new(None).both();
         let (p, rel) = (ControlValue::Button(true), ControlValue::Button(false));
-        // Tap.
-        assert_eq!(r.at(0, A, "play_1", p.clone()), vec![]);
-        assert_eq!(r.at(299, A, "play_1", rel.clone()), vec![Act::ToggleLane { lane: 0 }]);
-        // Long hold without browsing: nothing.
-        r.at(1000, A, "play_3", p.clone());
-        assert_eq!(r.at(1300, A, "play_3", rel.clone()), vec![]);
-        // Hold + encoder browses; release commits even when quick.
-        r.at(2000, B, "play_3", p.clone());
+        // Play A toggles on press.
+        assert_eq!(r.at(0, A, "play_1", p.clone()), vec![Act::ToggleLane { lane: 0 }]);
+        assert_eq!(r.at(900, A, "play_1", rel.clone()), vec![]);
+        // Holding Size without turning: nothing.
+        r.at(1000, A, "size", p.clone());
+        assert_eq!(r.at(1300, A, "size", rel.clone()), vec![]);
+        // Size = lane A, Browse = lane B; release commits.
+        r.at(2000, A, "size", p.clone());
+        assert_eq!(r.s.view().browse_lane, Some(0));
+        assert_eq!(r.enc(A, 1), vec![Act::BrowseOption { lane: 0, delta: 1 }]);
+        assert_eq!(r.at(2100, A, "size", rel.clone()), vec![Act::CommitOption { lane: 0 }]);
+        r.at(2200, B, "browse", p.clone());
         assert_eq!(r.s.view().browse_lane, Some(3));
-        assert_eq!(r.enc(B, 1), vec![Act::BrowseOption { lane: 3, delta: 1 }]);
         assert_eq!(r.enc(B, -1), vec![Act::BrowseOption { lane: 3, delta: -1 }]);
-        assert_eq!(r.at(2100, B, "play_3", rel.clone()), vec![Act::CommitOption { lane: 3 }]);
+        assert_eq!(r.at(2300, B, "browse", rel.clone()), vec![Act::CommitOption { lane: 3 }]);
         assert_eq!(r.s.view().browse_lane, None);
         assert_eq!(r.enc(B, 1), vec![Act::SeedDelta { lane: 3, delta: 1 }], "browse ended");
         // Play button B is a no-op hook.
@@ -1050,15 +1061,15 @@ mod tests {
         assert!(!r.s.view().shift);
 
         assert_eq!(r.press(A, "encoder_push"), vec![], "push without Shift");
-        assert_eq!(r.press(A, "quant"), vec![Act::SetQuantize(false)]);
-        assert_eq!(r.press(B, "quant"), vec![Act::SetQuantize(true)]);
+        assert_eq!(r.press(A, "quant"), vec![Act::SetQuantize(true)]);
+        assert_eq!(r.press(B, "quant"), vec![Act::SetQuantize(false)]);
         assert_eq!(r.release(B, "quant"), vec![]);
         r.press(A, "grid_4");
         assert_eq!(r.press(A, "capture"), vec![Act::Capture(CaptureScope::Lane { lane: 1 })]);
         assert_eq!(r.press(A, "sync"), vec![Act::RecallLatest { lane: 1 }]);
         assert_eq!(r.press(B, "sync"), vec![Act::RecallLatest { lane: 2 }]);
         assert_eq!(r.press(A, "reverse"), vec![Act::ToggleHalfTime]);
-        for unassigned in ["browse", "size", "type_btn"] {
+        for unassigned in ["type_btn"] {
             assert_eq!(r.press(A, unassigned), vec![]);
         }
     }

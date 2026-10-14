@@ -257,7 +257,7 @@ fn key_commit_lands_on_the_phrase_and_changes_pitches() {
 }
 
 #[test]
-fn lane_toggle_is_quantized_by_default_and_immediate_without_quant() {
+fn lane_toggle_is_immediate_by_default_and_quantized_with_quant() {
     let lead = || {
         let mut gens = silent();
         gens[2] = Some(dense_lead());
@@ -268,6 +268,8 @@ fn lane_toggle_is_quantized_by_default_and_immediate_without_quant() {
 
     // Quantized: sounds until the bar, then cuts.
     let mut r = rig(lead(), 128);
+    assert!(!r.sys.shared.quantize(), "quantize defaults off");
+    r.send(LiveCommand::SetQuantize(true));
     r.run_to(1.4);
     let pressed = r.master.len();
     r.send(LiveCommand::ToggleLane { lane: 2 });

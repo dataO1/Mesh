@@ -878,7 +878,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         tempo,
         lanes: controls,
         progressions: n_progressions,
-        quantize: true,
+        quantize: false,
         half_time: false,
         intent: None,
         captures: Vec::new(),

@@ -286,7 +286,7 @@ impl LiveShared {
             progression_pending: AtomicU16::new(NO_INDEX),
             half_time: AtomicBool::new(false),
             half_time_target: AtomicBool::new(false),
-            quantize: AtomicBool::new(true),
+            quantize: AtomicBool::new(false),
             lanes: std::array::from_fn(|_| LaneShared::new()),
         }
     }
