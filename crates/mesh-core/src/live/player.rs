@@ -43,6 +43,13 @@ pub struct LaneBar {
     pub pos: FormView,
     /// Form index the bar was rendered with.
     pub form: u16,
+    /// Drum lane: voices the bar's arrangement turns on.
+    pub voices: u8,
+    /// A form swap (`*`) in this bar: option and its ticks `from..to`.
+    pub swap: Option<(u16, u16, u16)>,
+    /// Synth lanes in breaks and rests: the lane's least delay and reverb
+    /// send for this bar (tails ring out). None: the lane's own sends.
+    pub break_sends: Option<(f32, f32)>,
 }
 
 /// One rendered bar for all lanes, with the harmony it was rendered in.
@@ -55,7 +62,11 @@ pub struct BarPacket {
     pub key: MusicalKey,
     pub chord_degree: u8,
     pub progression: usize,
+    /// Mode in the key's family.
+    pub mode: u8,
     pub half_time: bool,
+    /// A re-render of the bar that is playing: replaces it mid-bar.
+    pub replace: bool,
     pub lanes: [LaneBar; NUM_LANES],
 }
 
@@ -67,7 +78,9 @@ impl Default for BarPacket {
             key: MusicalKey::new(9, true),
             chord_degree: 0,
             progression: 0,
+            mode: 0,
             half_time: false,
+            replace: false,
             lanes: std::array::from_fn(|_| LaneBar::default()),
         }
     }
@@ -156,10 +169,21 @@ impl StepPlayer {
     }
 
     /// Take newly rendered packets. The newest one for the expected bar
-    /// replaces any earlier render of it; anything else is stale.
-    pub fn poll(&mut self) {
+    /// replaces any earlier render of it; a replacement of the playing bar
+    /// swaps in at once (returns `true`); anything else is stale.
+    pub fn poll(&mut self) -> bool {
+        let mut replaced = false;
         while let Ok(packet) = self.bars_rx.pop() {
-            if packet.bar == self.expected {
+            if packet.replace {
+                if self.current.as_ref().is_some_and(|c| c.bar == packet.bar) {
+                    if let Some(old) = self.current.replace(packet) {
+                        self.give_back(old);
+                    }
+                    replaced = true;
+                } else {
+                    self.give_back(packet);
+                }
+            } else if packet.bar == self.expected {
                 if let Some(old) = self.next.replace(packet) {
                     self.give_back(old);
                 }
@@ -167,6 +191,7 @@ impl StepPlayer {
                 self.give_back(packet);
             }
         }
+        replaced
     }
 
     /// Enter `bar`. Swaps in its packet if it arrived and returns it;

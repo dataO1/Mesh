@@ -105,6 +105,7 @@ fn boot(
         collection: collection.clone(),
         theme,
         left_serial: config.live.f1_left_serial.clone(),
+        auto_record: config.live.auto_record,
     };
 
     log::info!("[LIVE] loading style '{name}'");

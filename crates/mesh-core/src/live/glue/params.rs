@@ -95,10 +95,66 @@ pub struct DuckParams {
     pub enabled: bool,
     pub attack_ms: f32,
     pub bass: DuckRoleParams,
-    /// Lead and extra.
+    /// The lead: ducked in a band only (`lead_band_hz`), so its top stays.
+    pub lead: DuckRoleParams,
+    /// Centre of the lead's ducked band in Hz (0 = full band).
+    pub lead_band_hz: f32,
+    /// Extra.
     pub others: DuckRoleParams,
     /// Sidechain key level that fires the duck (dBFS peak).
     pub key_threshold_db: f32,
+}
+
+/// Bands of the band duck.
+pub const BAND_DUCK_BANDS: usize = 6;
+
+/// Stage 5b: the bass ducked band by band by the lead and extra lanes (see
+/// `bandduck`): where the synths are loud in a band, the bass gives way there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BandDuckParams {
+    pub enabled: bool,
+    /// Split frequencies in Hz, ascending: sub | bass | low mids | mids | presence | air.
+    pub splits_hz: [f32; BAND_DUCK_BANDS - 1],
+    /// Key band level (dBFS peak) where a band starts to duck.
+    pub threshold_db: f32,
+    pub ratio: f32,
+    /// Deepest cut per band in dB.
+    pub max_db: [f32; BAND_DUCK_BANDS],
+    /// Attack per band in ms. Slower in the low bands, so a cycle of a low
+    /// tone never modulates the gain (no ripple distortion).
+    pub attack_ms: [f32; BAND_DUCK_BANDS],
+    /// Base release per band in ms (for short synth notes).
+    pub release_ms: [f32; BAND_DUCK_BANDS],
+    /// Program-dependent release: a band whose key stays over the threshold
+    /// releases up to `1 + adaptive_release` times slower (a held note lets
+    /// the bass back gently, a stab quickly). 0 = fixed release.
+    pub adaptive_release: f32,
+    /// Time over the threshold until the release is fully stretched, in ms.
+    pub adapt_ms: f32,
+}
+
+impl Default for BandDuckParams {
+    fn default() -> Self {
+        // MUSICAL: user: the bass lane gives way to the synth lanes band by
+        // band (sub < 80, bass 80-400, low mids 400-2k, mids 2-5k, presence
+        // 5-8k, air above), like a multiband sidechain, as the last
+        // stage of the bass lane. Gentle: 3-4 dB at most per band.
+        Self {
+            enabled: true,
+            splits_hz: [80.0, 400.0, 2000.0, 5000.0, 8000.0],
+            threshold_db: -40.0,
+            ratio: 4.0,
+            max_db: [3.0, 4.0, 4.0, 4.0, 4.0, 4.0],
+            // Times per band after multiband practice: low bands attack in
+            // 10-20 ms and release in hundreds of ms, high bands in 1-2 ms and
+            // tens of ms.
+            attack_ms: [20.0, 10.0, 5.0, 3.0, 2.0, 1.5],
+            release_ms: [250.0, 180.0, 120.0, 90.0, 70.0, 60.0],
+            adaptive_release: 2.0,
+            adapt_ms: 400.0,
+        }
+    }
 }
 
 /// Cut and release of one group of ducked lanes.
@@ -127,6 +183,10 @@ impl Default for DuckParams {
             // 50 ms release, lead/extra slight and slower, mostly on the snare.
             attack_ms: 0.5,
             bass: DuckRoleParams { kick_db: 8.0, snare_db: 2.0, release_ms: 50.0 },
+            // MUSICAL: user: the lead gives way to kick and snare multiband
+            // style: a deeper cut, only around the mids it shares with them.
+            lead: DuckRoleParams { kick_db: 6.0, snare_db: 6.0, release_ms: 120.0 },
+            lead_band_hz: 900.0,
             others: DuckRoleParams { kick_db: 2.0, snare_db: 4.0, release_ms: 120.0 },
             key_threshold_db: -30.0,
         }
@@ -139,7 +199,8 @@ impl DuckParams {
         match role {
             Role::Drums => None,
             Role::Bass => Some(&self.bass),
-            Role::Lead | Role::Extra => Some(&self.others),
+            Role::Lead => Some(&self.lead),
+            Role::Extra => Some(&self.others),
         }
     }
 }
@@ -219,18 +280,19 @@ impl Default for LaneDynamicsParams {
     fn default() -> Self {
         Self {
             compressor_enabled: true,
-            // MUSICAL: light levelling, 2-3 dB peak reduction.
+            // MUSICAL: slight glue (user): slow attack, 2:1; the lane FX tame
+            // the peaks first.
             compressor: CompressorParams {
                 threshold_db: LEAD_COMP_THRESHOLD_DB,
-                ratio: 3.0,
-                attack_ms: 10.0,
-                release_ms: 80.0,
+                ratio: 2.0,
+                attack_ms: 30.0,
+                release_ms: 100.0,
                 makeup_db: 1.0,
                 knee_db: 6.0,
             },
             saturation_enabled: true,
-            // MUSICAL: slight saturation, half wet.
-            saturation: SaturationParams { drive_db: 3.0, asymmetry: 0.05, mix: 0.5, output_db: 0.0 },
+            // MUSICAL: a slight lift, not distortion (user): little drive, mostly dry.
+            saturation: SaturationParams { drive_db: 0.75, asymmetry: 0.05, mix: 1.0, output_db: 0.0 },
         }
     }
 }
@@ -251,7 +313,7 @@ impl Default for RoleDynamicsParams {
             // MUSICAL: the bass gets a bit more drive for harmonics on small speakers.
             bass: LaneDynamicsParams {
                 compressor: CompressorParams { threshold_db: BASS_COMP_THRESHOLD_DB, ..lane.compressor },
-                saturation: SaturationParams { drive_db: 4.0, ..lane.saturation },
+                saturation: SaturationParams { drive_db: 1.0, ..lane.saturation },
                 ..lane
             },
             lead: lane,
@@ -315,7 +377,7 @@ impl Default for DrumBusParams {
             },
             saturation_enabled: true,
             // MUSICAL: light warmth, slight even-harmonic colour.
-            saturation: SaturationParams { drive_db: 4.0, asymmetry: 0.1, mix: 0.6, output_db: 0.0 },
+            saturation: SaturationParams { drive_db: 4.0, asymmetry: 0.1, mix: 1.0, output_db: 0.0 },
         }
     }
 }
@@ -367,8 +429,8 @@ impl Default for MasterParams {
             },
             output_db: MASTER_OUTPUT_DB,
             saturation_enabled: true,
-            // MUSICAL: slight final saturation, mostly dry.
-            saturation: SaturationParams { drive_db: 2.0, asymmetry: 0.0, mix: 0.4, output_db: 0.0 },
+            // MUSICAL: a slight final lift, mostly dry (user: no distortion).
+            saturation: SaturationParams { drive_db: 0.5, asymmetry: 0.0, mix: 1.0, output_db: 0.0 },
         }
     }
 }
@@ -418,6 +480,7 @@ pub struct GlueParams {
     pub high_pass: HighPassParams,
     pub mono_below: MonoBelowParams,
     pub duck: DuckParams,
+    pub band_duck: BandDuckParams,
     pub lane_dynamics: RoleDynamicsParams,
     pub drum_bus: DrumBusParams,
     pub drive: DriveParams,
@@ -433,6 +496,7 @@ struct FullGlueParams {
     high_pass: HighPassParams,
     mono_below: MonoBelowParams,
     duck: DuckParams,
+    band_duck: BandDuckParams,
     lane_dynamics: RoleDynamicsParams,
     drum_bus: DrumBusParams,
     drive: DriveParams,
@@ -471,6 +535,7 @@ impl<'de> Deserialize<'de> for GlueParams {
             high_pass: f.high_pass,
             mono_below: f.mono_below,
             duck: f.duck,
+            band_duck: f.band_duck,
             lane_dynamics: f.lane_dynamics,
             drum_bus: f.drum_bus,
             drive: f.drive,

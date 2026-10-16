@@ -238,6 +238,13 @@
           inherit pkgs;
         };
 
+        # Sound-pack shell — Polyphone, Qtractor and sfizz for building
+        # live-mode packs (SFZ + MIDI) from raw WAVs and mudpies.
+        #   nix develop .#packs
+        packsShell = import ./nix/devshell-packs.nix {
+          inherit pkgs;
+        };
+
       in
       {
         # Export packages
@@ -250,6 +257,7 @@
 
         devShells.default = devShell;
         devShells.mlspike = mlspikeShell;
+        devShells.packs = packsShell;
 
         # For CI/CD or quick checks
         checks = {

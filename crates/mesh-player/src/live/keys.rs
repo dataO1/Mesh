@@ -3,7 +3,7 @@
 //! | Key | Action |
 //! |---|---|
 //! | `1`–`4` | select lane |
-//! | `q` `w` `e` `r` `y` `u` `i` `o` | lane pads 1–8 (`t` is taken by Quant): drum voice mutes, or oct− oct+ half dbl form◀ form▶ |
+//! | `q` `w` `e` `r` `y` `u` `i` `o` | lane pads 1–8 (`t` is taken by Quant): drum voices on / off, or oct− oct+ half dbl form◀ form▶ |
 //! | `Shift` + `i` / `o` (drums) | previous / next form |
 //! | `Space` | lane on/off (lands on the bar unless Quant is off) |
 //! | `↑` / `↓` | master seed ±1 (`Shift`: ±10) |
@@ -12,6 +12,7 @@
 //! | `a` `s` `d` `f` (hold) | stutter · fill · double rate · void |
 //! | `z`/`x` `c`/`v` `b`/`n` `m`/`,` | control 1–4 down / up (`Shift`: fine) |
 //! | `k` / `l` | key intent left / right, `j` commits it for the next phrase |
+//! | `p` / `Shift+p` | minor / major switch · new harmony seed (mode), both for the next phrase |
 //! | `-` / `=` | tempo −1 / +1 BPM (ramped) |
 //! | `h` | half-time toggle |
 //! | `t` | quantized lane toggles on/off |
@@ -117,6 +118,7 @@ fn pressed(key: &Key, mods: Modifiers, repeat: bool, lane: u8) -> Option<KeyActi
         'k' => KeyAction::IntentStep(-INTENT_STEP),
         'l' => KeyAction::IntentStep(INTENT_STEP),
         'j' => C(LiveCommand::CommitKey),
+        'p' => C(if shift { LiveCommand::RandomizeHarmony } else { LiveCommand::ToggleMinor }),
         '-' => KeyAction::TempoDelta(-1.0),
         '=' => KeyAction::TempoDelta(1.0),
         'h' => C(LiveCommand::ToggleHalfTime),
@@ -155,7 +157,7 @@ mod tests {
         assert!(map_key(&press(ch("5"), Modifiers::empty(), false), 0).is_none());
         assert!(matches!(
             map_key(&press(ch("e"), Modifiers::empty(), false), 0),
-            Some(KeyAction::Pad(PadFn::Mute(DrumVoice::Hats)))
+            Some(KeyAction::Pad(PadFn::Voice(DrumVoice::Hats)))
         ));
         assert!(matches!(map_key(&press(ch("e"), Modifiers::empty(), false), 1), Some(KeyAction::Pad(PadFn::Rate(Rate::Half)))));
         assert!(matches!(map_key(&press(ch("O"), Modifiers::SHIFT, false), 0), Some(KeyAction::Pad(PadFn::FormNext))));

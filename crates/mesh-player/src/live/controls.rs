@@ -7,7 +7,7 @@
 //! (knobs/faders 3–4, pad columns 3–4, play 3–4) its second lane.
 //!
 //! Pads of one half (2 columns × 4 rows) are the lane's pads ([`pads`]):
-//! drum voice mutes on the drum lane, octave / rate / form pads on the
+//! drum voices on / off on the drum lane, octave / rate / form pads on the
 //! pitched lanes. While Sync is held they are momentary moves:
 //!
 //! ```text
@@ -27,28 +27,28 @@
 //! | Knob 2 / 4 | lane control 2 (knob B) |
 //! | Fader 2 / 4 | lane control 3 (fader B) |
 //! | Shift (same unit) + knob / fader | the lane's Shift-layer control |
-//! | Drum pad n | mute / unmute drum voice n (lands on the next bar; immediate when Quant is off) |
-//! | Shift + drum pad 7 / 8 | previous / next form of the drum lane |
+//! | Drum pad n | turn drum voice n on / off against the seed's arrangement (lands on the next bar; immediate when Quant is off; a new drum seed clears the changes) |
+//! | Drum pads, bottom left to top right | kick, snare, break, perc, hats, ride, top loop, shaker |
+//! | Shift + drum pad 7 / 8 (bottom row) | previous / next form of the drum lane |
 //! | Pitched pad 1 / 2 | octave down / up (both = back to 0) |
 //! | Pitched pad 3 / 4 | half / double rate, latched (next bar) |
 //! | Pitched pad 5 / 6 | previous / next form (next phrase) |
 //! | Sync (held) | the unit's pads become momentary moves (see above); release returns to the lane pads and releases held moves |
 //! | Play 1 / 3 (button A) | lane on/off |
-//! | Play 2 / 4 (button B), held + encoder | reroll the lane's master seed (display shows it) |
-//! | Play 2 / 4 (button B), tap | back to the previous seed (tap again: forward) |
+//! | Play 2 / 4 (button B) | press: a random new master seed for the lane (lands on the next bar; the display shows it while held) |
 //! | Encoder | nothing on its own |
 //! | Left Shift + fader 1 | key intent |
 //! | Left Shift + fader 2 | tempo (ramp target) |
 //! | Left Shift + encoder push | commit the key intent |
-//! | Quant (either unit) | quantized lane toggles and mutes on/off (default off) |
+//! | Quant (either unit) | quantized lane and voice toggles on/off (default off) |
 //! | Capture | capture the unit's selected lane. With that unit's Shift: everything |
 //! | Reverse (either unit) | half-time toggle |
 //! | Size / Browse (held) + encoder | browse lane A / lane B option, release loads it at the bar |
-//! | Type | unassigned |
+//! | Type | minor / major switch for the next phrase. With that unit's Shift: a new harmony seed (the mode) |
 //!
 //! The selected lane of a unit is the lane last touched on it. Knobs and
-//! faders use soft takeover: after a layer change or an external value
-//! change (recall) a control only acts once it crosses the current value.
+//! faders act on the first move: the value jumps to the control position,
+//! also after a layer change or a recall (no soft takeover).
 //!
 //! [`LiveControlSurface::map_into`] is the pure mapper (events → [`Act`]),
 //! [`LiveControlSurface::render_feedback`] the pure feedback renderer; both
@@ -126,8 +126,6 @@ const FUNC_NAMES: [&str; 8] = ["browse", "size", "type_btn", "reverse", "shift",
 // PLAYABILITY: tune on hardware.
 /// Bars the Shift + fader 2 tempo ramp takes.
 const TEMPO_RAMP_BARS: u32 = 4;
-/// A soft-takeover control also picks up when this close to the value.
-const PICKUP_WINDOW: f32 = 0.02;
 
 // PLAYABILITY: tune on hardware. Lane colours (RGB, 0..=0x7F).
 const LANE_RGB: [[u8; 3]; NUM_LANES] = [
@@ -159,9 +157,8 @@ const NUM_TARGETS: usize = TARGET_TEMPO + 1;
 /// (comparable in tests) plus capture, which needs the controller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Act {
-    SeedDelta { lane: u8, delta: i32 },
-    EndSeedEdit { lane: u8 },
-    SwapSeed { lane: u8 },
+    /// A random new master seed (Play B).
+    RandomizeSeed { lane: u8 },
     ToggleDrumVoice(DrumVoice),
     OctaveDelta { lane: u8, delta: i8 },
     ResetOctave { lane: u8 },
@@ -177,6 +174,8 @@ pub enum Act {
     MoveRelease { lane: u8, kind: MoveKind },
     SetKeyIntent(f32),
     CommitKey,
+    ToggleMinor,
+    RandomizeHarmony,
     RequestTempo { bpm: f64, bars: u32 },
     SetQuantize(bool),
     ToggleHalfTime,
@@ -185,9 +184,7 @@ pub enum Act {
 
 fn apply(act: Act, ctl: &mut LiveController) {
     let cmd = match act {
-        Act::SeedDelta { lane, delta } => LiveCommand::SeedDelta { lane, delta },
-        Act::EndSeedEdit { lane } => LiveCommand::EndSeedEdit { lane },
-        Act::SwapSeed { lane } => LiveCommand::SwapSeed { lane },
+        Act::RandomizeSeed { lane } => LiveCommand::RandomizeSeed { lane },
         Act::ToggleDrumVoice(voice) => LiveCommand::ToggleDrumVoice { voice },
         Act::OctaveDelta { lane, delta } => LiveCommand::OctaveDelta { lane, delta },
         Act::ResetOctave { lane } => LiveCommand::ResetOctave { lane },
@@ -207,6 +204,8 @@ fn apply(act: Act, ctl: &mut LiveController) {
         Act::RequestTempo { bpm, bars } => LiveCommand::RequestTempo { bpm, bars },
         Act::SetQuantize(on) => LiveCommand::SetQuantize(on),
         Act::ToggleHalfTime => LiveCommand::ToggleHalfTime,
+        Act::ToggleMinor => LiveCommand::ToggleMinor,
+        Act::RandomizeHarmony => LiveCommand::RandomizeHarmony,
         Act::Capture(scope) => {
             // Adds to the bank and saves to the collection off-thread.
             ctl.capture(scope);
@@ -286,25 +285,11 @@ impl Control {
     }
 }
 
-/// Play button B held down for a seed edit.
-#[derive(Debug, Clone, Copy)]
-struct SeedHold {
-    /// The encoder turned while held (release ends the edit instead of swapping).
-    turned: bool,
-}
-
 /// Size (lane A) or Browse (lane B) held down for option browsing.
 #[derive(Debug, Clone, Copy)]
 struct BrowseHold {
     since: Instant,
     browsed: bool,
-}
-
-/// A physical knob or fader.
-#[derive(Debug, Clone, Copy, Default)]
-struct Physical {
-    last: Option<f32>,
-    target: Option<usize>,
 }
 
 /// Change-tracked LED and display state of one unit (`None` = unknown).
@@ -324,15 +309,13 @@ struct Unit {
     /// Half last touched (its lane is the unit's selected lane).
     half: u8,
     browse_held: [Option<BrowseHold>; 2],
-    /// Play button B held per half (seed edit).
-    seed_held: [Option<SeedHold>; 2],
+    /// Play button B held per half (the display shows the new seed).
+    seed_held: [bool; 2],
     /// Sync held: pads are momentary moves.
     sync: bool,
     /// Per pad, what it did when pressed (half, role), so its release
     /// matches the press even if Sync or Shift changed in between.
     pads_down: [Option<(u8, PadRole)>; 16],
-    /// `knob_1..4` then `fader_1..4`.
-    physical: [Physical; 8],
     leds: LedCache,
 }
 
@@ -343,24 +326,21 @@ impl Unit {
             shift: false,
             half: 0,
             browse_held: [None; 2],
-            seed_held: [None; 2],
+            seed_held: [false; 2],
             sync: false,
             pads_down: [None; 16],
-            physical: [Physical::default(); 8],
             leds: LedCache::default(),
         }
     }
 }
 
-/// Current value of a soft-takeover target.
+/// Current value of a control target.
 #[derive(Debug, Clone, Copy, Default)]
 struct Target {
     /// Value, `0..=1` (fader position).
     value: f32,
-    /// Value has been read from the engine; until then controls act directly.
+    /// Value has been read from the engine.
     known: bool,
-    /// The physical control has crossed the value and now drives it.
-    picked: bool,
 }
 
 /// What the UI should highlight (selected lane/slot, shift state).
@@ -498,8 +478,7 @@ impl LiveControlSurface {
         self.sync_state(&positions, ctl.tempo_range(), shared.clock().target_bpm, shared.quantize());
     }
 
-    /// Take over engine values. A value that changed behind the surface's
-    /// back (recall, UI) re-arms soft takeover for its control.
+    /// Take over engine values (recall, UI).
     /// `positions`: per lane, main then Shift-layer controls.
     fn sync_state(
         &mut self,
@@ -517,7 +496,7 @@ impl LiveControlSurface {
                 };
                 let t = &mut self.targets[index];
                 if !t.known || (t.value - value).abs() > 1e-4 {
-                    *t = Target { value, known: true, picked: false };
+                    *t = Target { value, known: true };
                 }
             }
         }
@@ -527,12 +506,12 @@ impl LiveControlSurface {
             let ours = self.tempo_requested.is_some_and(|r| (r - target_bpm).abs() < 0.5);
             let t = &mut self.targets[TARGET_TEMPO];
             if !ours || !t.known {
-                *t = Target { value: tempo_position(tempo, target_bpm), known: true, picked: false };
+                *t = Target { value: tempo_position(tempo, target_bpm), known: true };
             }
         }
         if !self.targets[TARGET_KEY_INTENT].known {
             // The intent fader rests at the centre (no transition).
-            self.targets[TARGET_KEY_INTENT] = Target { value: 0.5, known: true, picked: false };
+            self.targets[TARGET_KEY_INTENT] = Target { value: 0.5, known: true };
         }
         self.quantize = quantize;
     }
@@ -632,27 +611,9 @@ impl LiveControlSurface {
             }
         };
 
-        let p = &mut self.units[u].physical[phys];
-        if p.target != Some(target) {
-            // The control left its previous target; that one needs a pickup later.
-            if let Some(old) = p.target {
-                self.targets[old].picked = false;
-            }
-            p.target = Some(target);
-        }
-        let last = p.last.replace(v);
-
         let t = &mut self.targets[target];
-        if !t.known {
-            t.picked = true;
-        } else if !t.picked {
-            let crossed = last.is_some_and(|l| (l - t.value) * (v - t.value) <= 0.0);
-            t.picked = crossed || (v - t.value).abs() <= PICKUP_WINDOW;
-        }
-        if !t.picked {
-            return;
-        }
         t.value = v;
+        t.known = true;
 
         match target {
             TARGET_KEY_INTENT => out.push(Act::SetKeyIntent(v * 2.0 - 1.0)),
@@ -687,12 +648,6 @@ impl LiveControlSurface {
                 p.browsed = true;
             }
             out.push(Act::BrowseOption { lane: side.lane(half), delta });
-        } else if let Some(half) = (0..2u8).find(|&h| unit.seed_held[h as usize].is_some()) {
-            // Play B held: new master seed for its lane.
-            if let Some(hold) = unit.seed_held[half as usize].as_mut() {
-                hold.turned = true;
-            }
-            out.push(Act::SeedDelta { lane: side.lane(half), delta });
         }
         // Nothing held: the encoder does nothing, so a nudge never rerolls a lane.
     }
@@ -740,12 +695,10 @@ impl LiveControlSurface {
                 }
                 let lane = side.lane(half);
                 if !is_a {
-                    // Play button B: hold + encoder rerolls, a tap swaps back.
-                    let slot = &mut self.units[u].seed_held[half as usize];
+                    // Play button B: a press rolls a random new seed.
+                    self.units[u].seed_held[half as usize] = pressed;
                     if pressed {
-                        *slot = Some(SeedHold { turned: false });
-                    } else if let Some(hold) = slot.take() {
-                        out.push(if hold.turned { Act::EndSeedEdit { lane } } else { Act::SwapSeed { lane } });
+                        out.push(Act::RandomizeSeed { lane });
                     }
                     return;
                 }
@@ -768,7 +721,9 @@ impl LiveControlSurface {
                 out.push(Act::Capture(scope));
             }
             Control::Reverse => out.push(Act::ToggleHalfTime),
-            // Unassigned (kept free for P4: master FX, page).
+            Control::Type if pressed => {
+                out.push(if self.units[u].shift { Act::RandomizeHarmony } else { Act::ToggleMinor });
+            }
             Control::Type => {}
             Control::Knob(_) | Control::Fader(_) | Control::Encoder => {}
         }
@@ -794,7 +749,7 @@ impl LiveControlSurface {
                             && matches!((f, r), (PadFn::OctaveDown, PadRole::Lane(PadFn::OctaveUp)) | (PadFn::OctaveUp, PadRole::Lane(PadFn::OctaveDown)))
                     });
                     out.push(match f {
-                        PadFn::Mute(voice) => Act::ToggleDrumVoice(voice),
+                        PadFn::Voice(voice) => Act::ToggleDrumVoice(voice),
                         PadFn::OctaveDown | PadFn::OctaveUp if other_octave => Act::ResetOctave { lane },
                         PadFn::OctaveDown => Act::OctaveDelta { lane, delta: -1 },
                         PadFn::OctaveUp => Act::OctaveDelta { lane, delta: 1 },
@@ -856,7 +811,7 @@ impl LiveControlSurface {
                     } else {
                         LED_DIM
                     }
-                } else if unit.seed_held[half as usize].is_some() {
+                } else if unit.seed_held[half as usize] {
                     LED_ON
                 } else {
                     LED_DIM
@@ -888,7 +843,7 @@ impl LiveControlSurface {
 
             // While Play B is held, show that lane's seed (last 2 digits).
             let held_seed =
-                (0..2u8).find(|&h| unit.seed_held[h as usize].is_some()).map(|h| input.lanes[side.lane(h) as usize].seed);
+                (0..2u8).find(|&h| unit.seed_held[h as usize]).map(|h| input.lanes[side.lane(h) as usize].seed);
             let text = match (held_seed, side) {
                 (Some(seed), _) => tempo_digits((seed % 100) as f64),
                 (None, Side::Left) => key_digits(input.intent_key.unwrap_or(input.key)),
@@ -1050,26 +1005,15 @@ mod tests {
     }
 
     #[test]
-    fn play_b_holds_for_seed_edits_and_taps_swap() {
+    fn play_b_press_rolls_a_new_seed() {
         let mut r = Rig::new(None).both();
         assert_eq!(r.enc(A, 1), vec![], "the encoder alone does nothing");
-        r.press(A, "play_2"); // lane 0
-        assert_eq!(r.enc(A, 2), vec![Act::SeedDelta { lane: 0, delta: 2 }]);
-        assert_eq!(r.enc(A, -1), vec![Act::SeedDelta { lane: 0, delta: -1 }]);
-        assert_eq!(r.release(A, "play_2"), vec![Act::EndSeedEdit { lane: 0 }]);
-        assert_eq!(r.enc(A, 1), vec![]);
-        // A tap without turning swaps back to the previous seed.
-        r.press(B, "play_4"); // lane 3
-        assert_eq!(r.release(B, "play_4"), vec![Act::SwapSeed { lane: 3 }]);
-        r.press(A, "play_4"); // lane 1
-        assert_eq!(r.enc(A, 5), vec![Act::SeedDelta { lane: 1, delta: 5 }]);
-        assert_eq!(r.release(A, "play_4"), vec![Act::EndSeedEdit { lane: 1 }]);
-        // Kit browsing wins while its button is held.
-        r.press(A, "play_2");
-        r.press(A, "size");
-        assert_eq!(r.enc(A, 1), vec![Act::BrowseOption { lane: 0, delta: 1 }]);
-        r.release(A, "size");
-        assert_eq!(r.release(A, "play_2"), vec![Act::SwapSeed { lane: 0 }], "the encoder went to browsing");
+        assert_eq!(r.press(A, "play_2"), vec![Act::RandomizeSeed { lane: 0 }]);
+        assert_eq!(r.enc(A, 2), vec![], "no hold + encoder any more");
+        assert_eq!(r.release(A, "play_2"), vec![]);
+        assert_eq!(r.press(B, "play_4"), vec![Act::RandomizeSeed { lane: 3 }]);
+        assert_eq!(r.release(B, "play_4"), vec![]);
+        assert_eq!(r.press(A, "play_4"), vec![Act::RandomizeSeed { lane: 1 }]);
     }
 
     #[test]
@@ -1093,9 +1037,9 @@ mod tests {
         assert_eq!(r.at(2300, B, "browse", rel.clone()), vec![Act::CommitOption { lane: 3 }]);
         assert_eq!(r.s.view().browse_lane, None);
         assert_eq!(r.enc(B, 1), vec![], "browse ended");
-        // Play button B never toggles the lane.
-        assert_eq!(r.at(3000, A, "play_2", p), vec![]);
-        assert_eq!(r.at(3050, A, "play_2", rel), vec![Act::SwapSeed { lane: 0 }]);
+        // Play button B never toggles the lane: it rolls a new seed.
+        assert_eq!(r.at(3000, A, "play_2", p), vec![Act::RandomizeSeed { lane: 0 }]);
+        assert_eq!(r.at(3050, A, "play_2", rel), vec![]);
     }
 
     #[test]
@@ -1103,7 +1047,7 @@ mod tests {
         let mut r = Rig::new(None).both();
         // Left unit, half A = drums: row-major voice order.
         let drum_pads = ["grid_1", "grid_2", "grid_5", "grid_6", "grid_9", "grid_10", "grid_13", "grid_14"];
-        for (pad, voice) in drum_pads.iter().zip(DrumVoice::ALL) {
+        for (pad, voice) in drum_pads.iter().zip(pads::DRUM_PADS) {
             assert_eq!(r.press(A, pad), vec![Act::ToggleDrumVoice(voice)], "{pad}");
             assert_eq!(r.release(A, pad), vec![]);
         }
@@ -1140,12 +1084,12 @@ mod tests {
         r.press(A, "shift");
         assert_eq!(r.press(A, "grid_13"), vec![Act::FormDelta { lane: 0, delta: -1 }]);
         assert_eq!(r.press(A, "grid_14"), vec![Act::FormDelta { lane: 0, delta: 1 }]);
-        assert_eq!(r.press(A, "grid_1"), vec![], "Shift leaves the mutes alone");
+        assert_eq!(r.press(A, "grid_1"), vec![], "Shift leaves the voice pads alone");
         // Shift is unit-local and does not change pitched pads.
         assert_eq!(r.press(B, "grid_1"), vec![Act::OctaveDelta { lane: 2, delta: -1 }]);
         r.release(A, "shift");
         assert_eq!(r.release(A, "grid_13"), vec![]);
-        assert_eq!(r.press(A, "grid_13"), vec![Act::ToggleDrumVoice(DrumVoice::Top)]);
+        assert_eq!(r.press(A, "grid_13"), vec![Act::ToggleDrumVoice(DrumVoice::Kick)], "kick bottom left");
     }
 
     #[test]
@@ -1172,7 +1116,7 @@ mod tests {
         assert_eq!(r.press(B, "grid_1"), vec![Act::OctaveDelta { lane: 2, delta: -1 }]);
         r.release(B, "grid_1");
         assert_eq!(r.release(A, "sync"), vec![], "nothing held, nothing released");
-        assert_eq!(r.press(A, "grid_1"), vec![Act::ToggleDrumVoice(DrumVoice::Kick)], "back to the lane pads");
+        assert_eq!(r.press(A, "grid_1"), vec![Act::ToggleDrumVoice(DrumVoice::Top)], "back to the lane pads");
         r.release(A, "grid_1");
         r.press(B, "sync");
         assert_eq!(r.press(B, "grid_7"), vec![Act::MovePress { lane: 3, kind: MoveKind::Double }]);
@@ -1198,47 +1142,31 @@ mod tests {
         assert_eq!(r.release(A, "grid_9"), vec![]);
         assert_eq!(r.s.view().selected_lane, 0, "grid_9 touched lane 0 last");
         // A lane pad held while Sync goes down releases without a move.
-        assert_eq!(r.press(A, "grid_2"), vec![Act::ToggleDrumVoice(DrumVoice::Snare)]);
+        assert_eq!(r.press(A, "grid_2"), vec![Act::ToggleDrumVoice(DrumVoice::Shaker)]);
         r.press(A, "sync");
         assert_eq!(r.release(A, "grid_2"), vec![]);
         assert_eq!(r.release(A, "sync"), vec![]);
     }
 
     #[test]
-    fn soft_takeover_after_sync_and_layer_change() {
+    fn controls_act_on_the_first_move() {
         let mut r = Rig::new(None).both();
         let mut pos = [[0.5f32; 4]; 4];
         r.sync(pos, 170.0);
-        // Fader A of lane 0 (control 1) at 0.5: must cross it.
-        assert_eq!(r.abs(A, "fader_1", 0.2), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.4), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.6), set(0, 1, 0.6));
+        // Fader A of lane 0 (control 1) at 0.5: no pickup, every move sets it.
+        assert_eq!(r.abs(A, "fader_1", 0.2), set(0, 1, 0.2));
         assert_eq!(r.abs(A, "fader_1", 0.7), set(0, 1, 0.7));
-        // Our own value echoed back by the engine keeps the pickup.
-        pos[0][1] = 0.7;
-        r.sync(pos, 170.0);
-        assert_eq!(r.abs(A, "fader_1", 0.8), set(0, 1, 0.8));
-        // A recall moves the value: pickup again.
+        // A recall moves the value: the next move still acts at once.
         pos[0][1] = 0.1;
         r.sync(pos, 170.0);
-        assert_eq!(r.abs(A, "fader_1", 0.65), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.11), set(0, 1, 0.11), "within the pickup window");
+        assert_eq!(r.abs(A, "fader_1", 0.65), set(0, 1, 0.65));
 
-        // Shift layer: fader 1 becomes key intent (centre 0.5), picks up on crossing.
-        pos[0][1] = 0.11;
-        r.sync(pos, 170.0);
+        // Shift layer: fader 1 is key intent, acting at once.
         r.press(A, "shift");
-        assert_eq!(r.abs(A, "fader_1", 0.05), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.3), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.75), vec![Act::SetKeyIntent(0.5)]);
+        assert_eq!(r.abs(A, "fader_1", 0.05), vec![Act::SetKeyIntent(0.05f32 * 2.0 - 1.0)]);
         r.release(A, "shift");
-        // Back on the lane layer: the lane value (0.11) must be crossed again.
-        assert_eq!(r.abs(A, "fader_1", 0.6), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.05), set(0, 1, 0.05));
-        // And the key intent needs a pickup at its last value (0.75).
-        r.press(A, "shift");
-        assert_eq!(r.abs(A, "fader_1", 0.5), vec![]);
-        assert_eq!(r.abs(A, "fader_1", 0.76), vec![Act::SetKeyIntent(0.76f32 * 2.0 - 1.0)]);
+        // Back on the lane layer: acts at once.
+        assert_eq!(r.abs(A, "fader_1", 0.3), set(0, 1, 0.3));
     }
 
     #[test]
@@ -1252,12 +1180,11 @@ mod tests {
         assert_eq!(r.abs(A, "fader_2", 0.5), vec![Act::RequestTempo { bpm: 170.0, bars: TEMPO_RAMP_BARS }]);
         assert_eq!(r.abs(A, "fader_2", 0.75), vec![Act::RequestTempo { bpm: 175.0, bars: TEMPO_RAMP_BARS }]);
         assert_eq!(r.abs(A, "fader_2", 0.751), vec![], "same whole bpm");
-        // The engine adopting our target keeps the pickup ...
+        // The engine adopting our target, then an external tempo change:
+        // the fader still acts at once.
         r.sync([[0.5; 4]; 4], 175.0);
         assert_eq!(r.abs(A, "fader_2", 1.0), vec![Act::RequestTempo { bpm: 180.0, bars: TEMPO_RAMP_BARS }]);
-        // ... an external tempo change re-arms it.
         r.sync([[0.5; 4]; 4], 165.0);
-        assert_eq!(r.abs(A, "fader_2", 0.9), vec![]);
         assert_eq!(r.abs(A, "fader_2", 0.2), vec![Act::RequestTempo { bpm: 164.0, bars: TEMPO_RAMP_BARS }]);
 
         assert_eq!(r.press(A, "encoder_push"), vec![Act::CommitKey]);
@@ -1287,9 +1214,11 @@ mod tests {
             assert_eq!(r.release(dev, "sync"), vec![]);
         }
         assert_eq!(r.press(A, "reverse"), vec![Act::ToggleHalfTime]);
-        for unassigned in ["type_btn"] {
-            assert_eq!(r.press(A, unassigned), vec![]);
-        }
+        assert_eq!(r.press(A, "type_btn"), vec![Act::ToggleMinor]);
+        assert_eq!(r.release(A, "type_btn"), vec![]);
+        r.press(A, "shift");
+        assert_eq!(r.press(A, "type_btn"), vec![Act::RandomizeHarmony]);
+        r.release(A, "shift");
     }
 
     #[test]
@@ -1401,8 +1330,9 @@ mod tests {
     fn lane_pads_show_mutes_octave_rate_and_pending() {
         let mut r = Rig::new(None).both();
         let mut inp = input();
-        inp.lanes[0].mutes = DrumVoice::Hats.bit() | DrumVoice::Ride.bit();
-        inp.lanes[0].mutes_playing = DrumVoice::Hats.bit();
+        inp.lanes[0].voice_overrides = ((DrumVoice::Hats.bit() | DrumVoice::Ride.bit()) as u16) << 8;
+        inp.lanes[0].voice_overrides_playing = (DrumVoice::Hats.bit() as u16) << 8;
+        inp.lanes[0].voices_on = 0xFF & !DrumVoice::Hats.bit();
         inp.lanes[1].octave = 2;
         inp.lanes[1].rate = Rate::Double;
         inp.lanes[1].form_pending = Some(3);
@@ -1417,9 +1347,9 @@ mod tests {
                 })
                 .unwrap()
         };
-        assert_eq!(pad(&leds, "grid_1"), scale(LANE_RGB[0], pads::PAD_ON), "kick plays");
-        assert_eq!(pad(&leds, "grid_5"), scale(LANE_RGB[0], pads::PAD_MUTED), "hats muted");
-        assert_eq!(pad(&leds, "grid_6"), scale(LANE_RGB[0], pads::PAD_MUTED), "ride mute queued, blink on");
+        assert_eq!(pad(&leds, "grid_13"), scale(LANE_RGB[0], pads::PAD_ON), "kick plays");
+        assert_eq!(pad(&leds, "grid_5"), scale(LANE_RGB[0], pads::PAD_MUTED), "hats off");
+        assert_eq!(pad(&leds, "grid_6"), scale(LANE_RGB[0], pads::PAD_ON), "ride still on, its flip queued (blink on)");
         assert_eq!(pad(&leds, "grid_3"), scale(LANE_RGB[1], pads::PAD_IDLE), "no octave down");
         assert_eq!(pad(&leds, "grid_4"), scale(LANE_RGB[1], pads::PAD_ON), "two octaves up");
         assert_eq!(pad(&leds, "grid_8"), scale(LANE_RGB[1], pads::PAD_ON), "double rate");
@@ -1428,7 +1358,7 @@ mod tests {
         leds.clear();
         inp.clock.step = 2;
         r.s.render_feedback(&inp, &mut leds, &mut displays);
-        assert_ne!(pad(&leds, "grid_6"), scale(LANE_RGB[0], pads::PAD_MUTED));
+        assert_ne!(pad(&leds, "grid_6"), scale(LANE_RGB[0], pads::PAD_ON));
         assert!(leds.iter().any(|(d, c)| d == A && matches!(c, FeedbackCommand::SetRgb { control, .. } if control == "grid_11")));
     }
 

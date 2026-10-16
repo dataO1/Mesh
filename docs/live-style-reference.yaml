@@ -5,7 +5,8 @@
 #
 #   <collection>/styles/<name>/
 #   ├── style.yaml      (this file)
-#   └── assets/         samples, breaks, stem phrases, CLAP presets
+#   ├── assets/         samples, breaks, stem phrases, CLAP presets
+#   └── motifs/         bass/*.mid, lead/*.mid motif clips (optional)
 #
 # A style holds prepared sound design only: instruments, FX chains, control
 # mappings, ranges, archetype order, progressions, glue parameters, LUFS trims.
@@ -58,15 +59,18 @@ default_progression: 0
 # Optional. Lane forms: which letter seed plays in which bar. Each lane has a
 # master seed; letters A and B are main seeds (repetitive, mostly on the grid),
 # C and D filler seeds (triplets, swing, busier). A form is segments of a
-# letter and a bar count, 4 to 64 bars in total, repeating and aligned to the
-# global bar. A' plays A with a different second half. Pads step through the
-# list, so order it from simple to detailed. Default: the built-in list
-# (crates/mesh-core/src/live/form.rs, DEFAULT_FORMS).
+# letter and a length in bars, in quarters down to one beat (A7, C*.5, D*.25),
+# up to 64 bars. A shorter pattern repeats to 64 bars
+# with breaks over its main bars at the structure points (C at bar 16 and 48,
+# D over bars 31-32, C then D* over bars 61-64). Every form then plays a
+# second time as a seeded variation, so the cycle is 128 bars, aligned to
+# the global bar. A' plays A with a different second half. A* (or A'*) plays
+# the lane on another of its sounds (instrument option or drum kit, seeded).
+# Pads step through the list, so order it from simple to detailed. Default:
+# the built-in list (crates/mesh-core/src/live/form.rs, DEFAULT_FORMS).
 forms:
-  - "A3 B1"
-  - "A7 C1"
-  - "A7 B1 A'7 C1"
-  - "A15 C1 A'15 C1 B15 D1 A14 C2"
+  - "A15 C1 A'7 A'*.25 A'.75 A7 D1 B15 C*1 A'7 B1 A6 C*1 D*1"
+  - "A4 A'4 A4 A'3 C1 B4 B'4 B3 B*1 B'3 D1 A4 A'3.5 C*.5 A4 A'3 C.5 C*.5 B4 A4 B'3.5 D*.5 A'2 C1 D*1"
 
 # Optional. Index into `forms` every lane starts on (default 0).
 default_form: 0
@@ -114,6 +118,20 @@ glue:
       kick_db: 2
       snare_db: 4
       release_ms: 120
+  # Band duck: the last stage of the bass lane. Lead + extra (after their glue)
+  # key it band by band: where the synths are loud in a band, the bass gives
+  # way there only. Low bands time slower than high bands; the release
+  # stretches while a synth note is held. All optional.
+  band_duck:
+    enabled: true
+    splits_hz: [80, 400, 2000, 5000, 8000]   # ascending, 10..=20000
+    threshold_db: -40                         # key band level, -80..=0
+    ratio: 4                                  # 1..=100
+    max_db: [3, 4, 4, 4, 4, 4]                # deepest cut per band, 0..=30
+    attack_ms: [20, 10, 5, 3, 2, 1.5]         # per band, 0..=200
+    release_ms: [250, 180, 120, 90, 70, 60]   # per band, 1..=2000
+    adaptive_release: 2                       # held notes release up to 3x slower, 0..=10
+    adapt_ms: 400                             # time held until fully stretched, 1..=5000
   # Drum bus: compressor, then saturation.
   drum_bus:
     comp:
@@ -259,7 +277,10 @@ lanes:
     #             native effect id, or Airwindows algorithm name ("Pop2")
     #   source    native | clap | pd | airwindows
     #             native ids: filter, delay, reverb, gain, drive, compressor,
-    #             eq, transient, multiband (6-band up/down compressor).
+    #             eq (low cut, two bells, low shelf), transient, multiband
+    #             (6-band up/down compressor), room
+    #             (drum room: decay s, pre_delay ms, low_cut / high_cut Hz on
+    #             the tail only, damping, size, mix).
     #             Parameters and ranges: crates/mesh-core/src/live/fx.rs.
     #             airwindows: an algorithm of the Airwindows Consolidated
     #             CLAP plugin, starting from that algorithm's defaults.
@@ -288,6 +309,13 @@ lanes:
     break_fx:
       - { id: eq, source: native, settings: { low_cut: 120, bell_1_gain: -3 } }
       - { id: transient, source: native, settings: { attack: 4 } }
+    # Drum lane only: a chain per drum voice (kick, snare, hats, ride, shaker,
+    # perc, top), each on its own bus before `fx`, like `break_fx`. Same entries.
+    voice_fx:
+      kick:
+        - { id: compressor, source: native, settings: { threshold: -14, ratio: 4, attack: 5, release: 60 } }
+      hats:
+        - { id: eq, source: native, settings: { low_cut: 350 } }
     # Output trim per option (drum lane: per kit) in dB, applied after the
     # lane's processing. Written by style-calibrate; missing entries are 0.
     output_trims_db: [0.0]
@@ -310,6 +338,10 @@ lanes:
     #   curve    linear (default) | exp (fine at the low end) |
     #            log (fine at the high end) | s (fine at both ends)
     #   default  control position at load, 0..=1 (default 0.5)
+    #   also     optional list of more targets the same control moves, each
+    #            with its own target, min, max and curve:
+    #              also:
+    #                - { target: { type: fx, slot: 2, param: 6 }, min: 0.22, max: 0.08 }
     controls:
       - label: style
         target: { type: generator, param: style }
@@ -320,6 +352,11 @@ lanes:
       - { label: dens, target: { type: generator, param: density }, default: 0.5 }
       - { label: cutoff, target: { type: fx, slot: 0, param: 0 }, min: 0.2, max: 1.0, curve: exp, default: 1.0 }
       - { label: verb, target: { type: send, bus: reverb }, min: 0.0, max: 0.6, default: 0.0 }
+
+    # Optional, pitched lanes. Centre speed: normal (default) | half | double.
+    # The half / double pads go one step slower / faster from it (base half:
+    # the pads give quarter and normal speed).
+    # base_rate: half
 
     # Optional. Up to 4 controls on the Shift layer (Shift + the same knob or
     # fader), same format and order. `null` leaves a slot empty. On the left
@@ -338,10 +375,50 @@ lanes:
     generator:
       family: procedural
       name: drums
-      # Drum lane: overlay_hats / _ghost / _perc / _ride / _shaker / _top set
-      # each voice's amount, enter_<voice> the density where it starts (one
-      # density control brings the voices in, in that order).
-      params: { style: 0.4, density: 0.5, swing: 0.0, enter_ride: 0.5, enter_top: 0.6 }
+      # Drum lane: the seed's recipe picks the voices, their patterns and the
+      # order density brings them in. overlay_hats / _ghost / _perc / _ride /
+      # _shaker / _top scale each voice; 0 removes it from every recipe.
+      # Lead (name lead): follow: 1 plays with the bass lane in motif mode
+      # (complexity: unison with the bass .. counter-rhythm in its rests;
+      # spread: home degree and chord stacks). melody: 1 plays seeded
+      # melodic cells instead (when follow is 0). Lead, stab and pad also
+      # take `stack` (chord tones added one by one, each fading in).
+      # Motif clips (bass and lead lanes): see the `motifs` field at the end of
+      # a lane. With clips, `motifs: 0` here turns motif mode off.
+      params: { style: 0.4, density: 0.5, swing: 0.0, overlay_top: 0.6 }
+
+    # Optional, bass and lead lanes. MIDI motif clips, style-relative paths,
+    # added to every `motifs/bass/*.mid` (bass lane) or `motifs/lead/*.mid`
+    # (lead lane) in the style folder. A clip is 1, 2 or 4 bars of 4/4 (longer
+    # tails are ignored), type 0 or 1, any resolution; tempo is ignored. Chords
+    # keep the lowest (bass) or highest (lead) note. The loader detects each
+    # clip's key and mode (Krumhansl-Schmuckler on the note lengths) and turns
+    # its notes into scale degrees, so the live key, mode and chord re-pitch
+    # it. The lane's seed picks a clip and its notes and rhythm play as written;
+    # density thins or repeats notes and sets their length, spread lifts bass
+    # notes an octave or doubles lead notes, variation changes the phrase's
+    # last bar. The lead plays a clip as call and response against the bass
+    # clip. Without clips the lanes use their procedural generators. The
+    # starter builder writes ten clips per lane (names start with `starter-`).
+    # motifs: [clips/my-bass-riff.mid]
+
+    # Optional, non-drum lanes. Sound packs (docs/plans/2026-10-16-live-sound-packs.md):
+    # every sub-folder of this style-relative folder that holds an instrument
+    # (`sound.sf2`, `sound.sfz`, or the one *.sf2 / *.sfz) becomes an option
+    # after `options`. A single pack can also be an option: `- name: reese,
+    # pack: packs/bass/reese`. A pack folder:
+    #   <name>.sf2 | <name>.sfz   zones, envelopes, filter, vibrato, mod env,
+    #                             mod LFO and CC modulators (CC -> cutoff,
+    #                             volume, vibrato depth, sample start)
+    #   phrases/*.mid             up to 64 bars each, any key (moved to the
+    #                             lane's key), pitch bend and CC curves kept
+    #   pack.yaml                 optional: name, sound, glide (s), tone_cc,
+    #                             mono, gain_db
+    # Packs play with `generator: { name: phrase }` (params density, length,
+    # expression, tone; 0.5 = as written). Instrument params 7 (Tone: writes
+    # the pack's tone CC) and 8 (Expression: scales bends, vibrato and glide)
+    # pair with them. SF2 values must sit on the instrument, not the preset.
+    # pack_dir: packs/bass
 
     # Optional. Default send levels of the lane, 0..=1 (default 0).
     sends: { delay: 0.0, reverb: 0.0 }
@@ -366,6 +443,18 @@ lanes:
               root_key: A1
               # A choke group of its own makes the lane monophonic.
               choke: 1
+              # Optional. A long stream of rendered audio (a mudpie): each
+              # note starts at a seeded position in it and moves a little per
+              # note; a new seed moves the region (default false).
+              # stream: true
+              # Optional. Level of this sample in dB on top of its loudness
+              # normalization (a snare under its kick, default 0).
+              # gain_db: -2.0
+              # Optional. The sample's measured loudness in LUFS (hits shorter
+              # than 400 ms over their own length). Written by
+              # `style-calibrate --analyse`; the loader brings every sample to
+              # -12 LUFS from it and measures at load only when it is missing.
+              # lufs: -9.4
       # A CLAP synth as the instrument.
       - name: surge-reese
         lufs_trim_db: -4.5

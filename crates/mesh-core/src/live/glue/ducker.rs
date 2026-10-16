@@ -194,9 +194,56 @@ pub fn duck_full_band(buf: &mut [StereoSample], kick: &[f32], snare: &[f32], kic
     }
 }
 
+/// [`duck_full_band`] inside a band: the band (an SVF band-pass around its
+/// centre) is cut by the duck gain, the rest passes, like a dynamic bell.
+pub fn duck_band(
+    buf: &mut [StereoSample],
+    kick: &[f32],
+    snare: &[f32],
+    kick_db: f32,
+    snare_db: f32,
+    band: &mut crate::effect::native::SvfFilter,
+    q: f32,
+) {
+    if kick_db <= 0.0 && snare_db <= 0.0 {
+        return;
+    }
+    let k = -std::f32::consts::LN_10 / 20.0;
+    for ((s, &a), &b) in buf.iter_mut().zip(kick).zip(snare) {
+        let g = (k * (kick_db * a + snare_db * b)).exp();
+        let o = band.process(s.left, s.right);
+        // The SVF band output peaks at `q`; scale it to unity.
+        let cut = (g - 1.0) / q;
+        s.left += cut * o.band_l;
+        s.right += cut * o.band_r;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_duck_cuts_the_mids_and_keeps_the_top() {
+        let sr = 48_000.0;
+        let level = |freq: f32| {
+            let mut band = crate::effect::native::SvfFilter::new();
+            band.set_params(900.0, 0.6);
+            let n = 9600;
+            let mut buf: Vec<StereoSample> = (0..n)
+                .map(|i| {
+                    let v = (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin() * 0.5;
+                    StereoSample::new(v, v)
+                })
+                .collect();
+            let full = vec![1.0f32; n];
+            duck_band(&mut buf, &full, &full, 6.0, 0.0, &mut band, 0.6);
+            let rms = (buf[n / 2..].iter().map(|s| s.left * s.left).sum::<f32>() / (n / 2) as f32).sqrt();
+            20.0 * (rms / (0.5 / std::f32::consts::SQRT_2)).log10()
+        };
+        assert!((level(900.0) + 6.0).abs() < 0.7, "900 Hz: {}", level(900.0));
+        assert!(level(8000.0) > -1.0, "8 kHz kept: {}", level(8000.0));
+    }
 
     fn render_trigger_at_zero(attack_ms: f32, release_ms: f32, n: usize) -> Vec<f32> {
         let mut env = DuckEnvelope::new();

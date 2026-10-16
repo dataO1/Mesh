@@ -48,6 +48,13 @@
 //!   envelope takes to fall 30 dB below its peak: under 0.25 s closed,
 //!   under 0.8 s open, longer crash.
 //!
+//! **Mudpies** (`Mudpies/`): long rendered streams of a sound. Each one
+//! becomes a stream sampler option of the bass and the lead lane (each note
+//! plays from a seeded position in the file). Its root is the median YIN
+//! pitch of voiced windows spread over the whole file ([`stream_root`]),
+//! checked against the spectral estimate, so a single detuned passage does
+//! not set the octave.
+//!
 //! `sample-overrides.yaml` in the library folder corrects the result, by
 //! file name: `"Perc_118.wav": shaker`, `"Loop 3.wav": { kind: top, bars: 2 }`,
 //! `"bad.wav": skip`. Each pool keeps at most its block size, spread evenly
@@ -90,7 +97,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use mesh_core::live::sampler::SampleData;
-use mesh_core::live::style::{Style, STYLE_FILE};
+use std::sync::Mutex;
+
+use mesh_core::live::style::{Style, StyleSpec, STYLE_FILE};
 
 const USAGE: &str = "usage: live-starter-style --out DIR --breaks DIR --dirt DIR --surge DIR [--kicks DIR --snares DIR] [--library DIR] [--force]\n       \
 live-starter-style --inspect FILE...";
@@ -155,8 +164,9 @@ const MB_BASS: &str = "      - id: multiband
           split_3: 2000
           split_4: 5000
           split_5: 10000
-          band_1_down_threshold: -16
-          band_1_down_ratio: 2
+          band_1_down_threshold: -20
+          band_1_down_ratio: 3
+          band_1_gain: -1.5
           band_1_attack: 20
           band_1_release: 150
           band_2_down_threshold: -24
@@ -165,38 +175,95 @@ const MB_BASS: &str = "      - id: multiband
           band_2_up_ratio: 1.5
           band_2_attack: 8
           band_2_release: 100
-          band_3_down_threshold: -30
+          band_2_gain: -1
+          band_3_down_threshold: -34
           band_3_down_ratio: 8
-          band_3_up_threshold: -50
-          band_3_up_ratio: 2
+          band_3_up_threshold: -44
+          band_3_up_ratio: 3
           band_3_attack: 4
           band_3_release: 80
-          band_3_gain: -3
-          band_4_down_threshold: -26
-          band_4_down_ratio: 2
-          band_4_up_threshold: -48
-          band_4_up_ratio: 3
+          band_3_gain: 1.5
+          band_4_down_threshold: -30
+          band_4_down_ratio: 4
+          band_4_up_threshold: -42
+          band_4_up_ratio: 4
           band_4_attack: 2
           band_4_release: 60
-          band_4_gain: 1
-          band_5_down_threshold: -26
-          band_5_down_ratio: 1.5
-          band_5_up_threshold: -52
-          band_5_up_ratio: 3
+          band_4_gain: 5
+          band_5_down_threshold: -30
+          band_5_down_ratio: 4
+          band_5_up_threshold: -44
+          band_5_up_ratio: 4
           band_5_attack: 1
           band_5_release: 50
-          band_5_gain: 1.5
-          band_6_down_threshold: -26
-          band_6_down_ratio: 1.5
-          band_6_up_threshold: -52
-          band_6_up_ratio: 3
+          band_5_gain: 5
+          band_6_down_threshold: -30
+          band_6_down_ratio: 4
+          band_6_up_threshold: -44
+          band_6_up_ratio: 4
           band_6_attack: 1
           band_6_release: 50
-          band_6_gain: 1.5
+          band_6_gain: 4
           up_max: 10
           up_gate: -65
 ";
 /// Lead: lighter, same shape.
+/// OTT-style squash for the synths (user: slight OTT at 30 % mix): every
+/// band pushed down hard above -30 dB and lifted below -45 dB, short
+/// attack, then blended in at 30 % with `dry_wet`.
+// MUSICAL: tune by ear.
+// MUSICAL: tune by ear (user: the snare 2 dB down against its kick).
+/// Level of each pair's snare against its kick, in dB.
+const SNARE_GAIN_DB: f32 = -2.0;
+
+const MB_OTT: &str = "      - id: multiband
+        source: native
+        dry_wet: 0.3
+        settings:
+          split_1: 90
+          split_2: 300
+          split_3: 1200
+          split_4: 2500
+          split_5: 8000
+          band_1_down_threshold: -30
+          band_1_down_ratio: 8
+          band_1_up_threshold: -45
+          band_1_up_ratio: 4
+          band_1_attack: 4
+          band_1_release: 90
+          band_2_down_threshold: -30
+          band_2_down_ratio: 8
+          band_2_up_threshold: -45
+          band_2_up_ratio: 4
+          band_2_attack: 4
+          band_2_release: 90
+          band_3_down_threshold: -30
+          band_3_down_ratio: 8
+          band_3_up_threshold: -45
+          band_3_up_ratio: 4
+          band_3_attack: 4
+          band_3_release: 90
+          band_4_down_threshold: -30
+          band_4_down_ratio: 8
+          band_4_up_threshold: -45
+          band_4_up_ratio: 4
+          band_4_attack: 4
+          band_4_release: 90
+          band_5_down_threshold: -30
+          band_5_down_ratio: 8
+          band_5_up_threshold: -45
+          band_5_up_ratio: 4
+          band_5_attack: 4
+          band_5_release: 90
+          band_6_down_threshold: -30
+          band_6_down_ratio: 8
+          band_6_up_threshold: -45
+          band_6_up_ratio: 4
+          band_6_attack: 4
+          band_6_release: 90
+          up_max: 12
+          up_gate: -70
+";
 const MB_LEAD: &str = "      - id: multiband
         source: native
         settings:
@@ -904,17 +971,174 @@ fn decodable(files: Vec<PathBuf>, report: &mut String) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Copy `src` to `<out>/assets/<asset>`; returns the style-relative path.
+/// Assets handled in this run: a repeated pair partner is not copied twice.
+static HANDLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Assets written (new or changed) in this run: their stored loudness is stale.
+static REWRITTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Copy `src` to `<out>/assets/<asset>`; returns the style-relative path. A
+/// copy that is already there with the same size and no older than the source
+/// is kept.
 fn copy_asset(paths: &Paths, src: &Path, asset: &str) -> String {
     let rel = format!("assets/{asset}");
     let dst = paths.out.join(&rel);
     std::fs::create_dir_all(dst.parent().unwrap()).unwrap_or_else(|e| fail(format!("{}: {e}", dst.display())));
-    // A repeated pair partner is already there (and may be read-only).
-    if dst.exists() {
+    if HANDLED.lock().unwrap().contains(&rel) {
         return rel;
     }
+    HANDLED.lock().unwrap().push(rel.clone());
+    let unchanged = match (std::fs::metadata(src), std::fs::metadata(&dst)) {
+        (Ok(s), Ok(d)) => s.len() == d.len() && matches!((s.modified(), d.modified()), (Ok(sm), Ok(dm)) if sm <= dm),
+        _ => false,
+    };
+    if unchanged {
+        return rel;
+    }
+    // The old copy may be read-only (copied from the Nix store).
+    let _ = std::fs::remove_file(&dst);
     std::fs::copy(src, &dst).unwrap_or_else(|e| fail(format!("copy {} -> {}: {e}", src.display(), dst.display())));
+    REWRITTEN.lock().unwrap().push(rel.clone());
     rel
+}
+
+/// Every sampler sample of a style spec.
+fn spec_samples(spec: &mut StyleSpec) -> impl Iterator<Item = &mut mesh_core::live::style::SampleSpec> {
+    spec.lanes
+        .iter_mut()
+        .flat_map(|lane| {
+            let sub = lane.sub_voices.iter_mut().flat_map(|sv| sv.options.iter_mut());
+            lane.options.iter_mut().chain(sub)
+        })
+        .filter_map(|o| o.sampler.as_mut())
+        .flat_map(|s| s.samples.iter_mut())
+}
+
+/// Carry the stored sample loudness (`lufs`) of the previous style over to the
+/// new one for assets that were not rewritten. Trims are not carried (the
+/// options and FX may have changed): run `style-calibrate` after a build.
+fn carry_loudness(paths: &Paths, old: &StyleSpec, report: &mut String) {
+    let mut old = old.clone();
+    let stored: Vec<(PathBuf, f32)> = spec_samples(&mut old).filter_map(|s| s.lufs.map(|l| (s.file.clone(), l))).collect();
+    if stored.is_empty() {
+        return;
+    }
+    let path = paths.out.join(STYLE_FILE);
+    let Ok(mut spec) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| StyleSpec::from_yaml(&t).map_err(|e| e.to_string())) else {
+        return;
+    };
+    let rewritten = REWRITTEN.lock().unwrap().clone();
+    let mut carried = 0;
+    for s in spec_samples(&mut spec) {
+        if rewritten.iter().any(|r| Path::new(r) == s.file) {
+            continue;
+        }
+        if let Some((_, l)) = stored.iter().find(|(f, _)| *f == s.file) {
+            s.lufs = Some(*l);
+            carried += 1;
+        }
+    }
+    if carried == 0 {
+        return;
+    }
+    // Writing through the schema drops the comments of the generated file.
+    match spec.to_yaml() {
+        Ok(y) => {
+            let _ = std::fs::write(&path, y);
+            let _ = writeln!(report, "kept the stored loudness of {carried} samples (assets unchanged)");
+        }
+        Err(e) => {
+            let _ = writeln!(report, "could not carry the stored loudness: {e}");
+        }
+    }
+}
+
+/// Remove assets the new style no longer references (left over from a
+/// previous build). LICENSE files stay.
+fn prune_assets(paths: &Paths, style: &Style) {
+    let keep: Vec<PathBuf> = style.asset_files();
+    let mut stack = vec![paths.out.join("assets")];
+    let mut removed = 0;
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if !keep.contains(&p) && !e.file_name().to_string_lossy().starts_with("LICENSE") && std::fs::remove_file(&p).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        println!("removed {removed} assets the style no longer uses");
+    }
+}
+
+// MUSICAL: analysis windows of a mudpie.
+/// Windows spread over a stream for its root, and their length.
+const STREAM_WINDOWS: usize = 16;
+const STREAM_WINDOW_SECS: f32 = 1.5;
+
+/// Root of a long stream: the median MIDI note of the YIN estimates of
+/// windows spread over the file (voiced ones only). Falls back to the
+/// spectral estimate of the whole file.
+fn stream_root(data: &SampleData) -> Option<Root> {
+    let x = mono(data);
+    let sr = data.sample_rate() as f32;
+    let win = (STREAM_WINDOW_SECS * sr) as usize;
+    let mut notes: Vec<(u8, f32)> = Vec::new();
+    if x.len() > win {
+        for i in 0..STREAM_WINDOWS {
+            let start = (x.len() - win) * i / (STREAM_WINDOWS - 1).max(1);
+            if let Some(p) = yin(&x[start..start + win], sr).filter(|p| p.voiced >= 0.5) {
+                notes.push((p.midi, p.cents));
+            }
+        }
+    }
+    let spectral = spectral_root(&x, sr);
+    if notes.is_empty() {
+        let (midi, _) = spectral?;
+        return Some(Root { midi, detail: "spectral (no voiced window)".into() });
+    }
+    notes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let (midi, cents) = notes[notes.len() / 2];
+    let agree = notes.iter().filter(|n| n.0 == midi).count();
+    let spectral_note = spectral.map_or("none".to_string(), |(m, _)| note_name(m));
+    Some(Root {
+        midi,
+        detail: format!(
+            "median of {} voiced windows ({agree} agree, {cents:+.0} ct), spectral {spectral_note}",
+            notes.len()
+        ),
+    })
+}
+
+/// Stream sampler options (one per mudpie) for the bass and lead lanes.
+fn mudpie_options(paths: &Paths, report: &mut String) -> String {
+    let Some(dir) = paths.library.as_ref().map(|l| l.join("Mudpies")).filter(|d| d.is_dir()) else {
+        return String::new();
+    };
+    let mut y = String::new();
+    let _ = writeln!(report, "Mudpies:");
+    for src in decodable(audio_files(&dir), report) {
+        let data = decode(&src);
+        let Some(root) = stream_root(&data) else {
+            let _ = writeln!(report, "  skipped {}: no pitch", file_name(&src));
+            continue;
+        };
+        let name = format!("mudpie-{}", stem(&src).to_ascii_lowercase().replace(' ', "-"));
+        let rel = copy_asset(paths, &src, &format!("mudpies/{}", file_name(&src)));
+        let secs = data.len() as f32 / data.sample_rate() as f32;
+        let _ = writeln!(report, "  {name:<28} root {:<4} {secs:.1} s  {}", note_name(root.midi), root.detail);
+        let _ = write!(
+            y,
+            "      - name: {name}   # stream sampler, root {} measured\n        sampler:\n          samples:\n            - {{ file: {}, root_key: {}, stream: true }}\n",
+            note_name(root.midi),
+            q(&rel),
+            root.midi
+        );
+    }
+    y
 }
 
 /// Root key of a pitched sample and how it was found.
@@ -979,7 +1203,7 @@ fn build(paths: &Paths) -> String {
                 let _ = writeln!(report, "  {name}  {} + {}", file_name(k), file_name(s));
                 let _ = write!(
                     backbone,
-                    "          - name: {name}   # {} + {}\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {} }}\n",
+                    "          - name: {name}   # {} + {}\n            sampler:\n              samples:\n                - {{ file: {} }}\n                - {{ file: {}, gain_db: {SNARE_GAIN_DB} }}\n",
                     stem(k),
                     stem(s),
                     q(&kf),
@@ -1074,6 +1298,7 @@ fn build(paths: &Paths) -> String {
     let leads: Vec<(String, u8)> = LEADS.iter().map(|p| pitched(paths, p, &mut report)).collect();
     let reeses = surge_options(paths, &SURGE_BASSES, "synth/bass");
     let pads = surge_options(paths, &SURGE_PADS, "synth/pad");
+    let mudpies = mudpie_options(paths, &mut report);
     let _ = writeln!(report, "Surge XT patches: {} bass, {} pad", SURGE_BASSES.len(), SURGE_PADS.len());
     let _ = std::fs::copy(paths.breaks.join("LICENSE"), paths.out.join("assets/breaks/LICENSE-breaks.txt"));
     let _ = writeln!(report, "Forms: built-in list ({} forms)", mesh_core::live::form::DEFAULT_FORMS.len());
@@ -1088,7 +1313,7 @@ fn build(paths: &Paths) -> String {
 name: starter-breaks
 version: 1
 tempo: {{ default: 172, min: 160, max: 178 }}
-default_key: Am
+default_key: Fm   # user: F (minor) is the most common key in DnB
 
 progressions:
   - name: i-VI-iv-v
@@ -1101,24 +1326,47 @@ default_progression: 0
 # Input targets: the level every option feeds into its lane processing.
 loudness: {{ drums: -12, bass: -14, lead: -16, extra: -18 }}
 # Output targets: the processed lanes (mix balance). MUSICAL: the first
-# balance by ear, then drums +1 dB and bass -1.5 dB (by ear).
-output_loudness: {{ drums: -5, bass: -9, lead: -14, extra: -24.5 }}
+# balance by ear, then drums +1 dB and bass -1.5 dB, then bass -2 dB and both
+# synths +2 dB (by ear).
+output_loudness: {{ drums: -5, bass: -12, lead: -6, extra: -21.5 }}
 
 glue:
   role_hpf: {{ lead: 500, extra: 300 }}
   bass_mono_hz: 120
   drum_bus:
-    # MUSICAL: threshold for about 3.5 dB peak reduction on this kit (live-render).
-    comp: {{ threshold_db: -4 }}
-    comp2: {{ threshold_db: -11 }}
-    drive: 0.2
+    # MUSICAL: more reduction than before (user, 2026-10-15), tune by ear.
+    # First a fast compressor tames the peaks (3:1, 3 ms, release an 8th
+    # note), then a slow one glues, only slightly (user); light saturation.
+    comp: {{ threshold_db: -7, ratio: 3, attack_ms: 3, release_ms: 175 }}
+    comp2: {{ threshold_db: -8, ratio: 2, attack_ms: 30, release_ms: 100 }}
+    drive: 0.06
   shared_drive: {{ enabled: false }}
-  master: {{ threshold_db: -8, ratio: 4, attack_ms: 25, release_ms: 10 }}
-  # Drum bus inserts, after its compressors and saturation: Airwindows Pop2
-  # (punchy, 76-style character) into ButterComp2 (smooth, 2A-style).
+  # Slight glue only; a release long enough not to ride the sub's cycles.
+  master: {{ threshold_db: -9, ratio: 2, attack_ms: 30, release_ms: 150 }}
+  # Drum bus inserts, after its compressors and saturation: parallel
+  # compression for body (8:1, 2 ms, 100 ms, heavy, a quarter wet), then
+  # Airwindows ButterComp2 (smooth, 2A-style), lightly.
   drum_bus_fx:
-    - {{ id: Pop2, source: airwindows }}
-    - {{ id: ButterComp2, source: airwindows, settings: {{ compress: 0.3 }} }}
+    - {{ id: compressor, source: native, settings: {{ threshold: -30, ratio: 8, attack: 2, release: 100, knee: 3, makeup: 8 }}, dry_wet: 0.35 }}
+    - {{ id: ButterComp2, source: airwindows, settings: {{ compress: 0.2 }} }}
+    # Then (user): gentle low shelves for the kick (+2 dB,
+    # corner 200 Hz, so most of it below 100 Hz) and the snare body (+1.5 dB,
+    # corner 500 Hz, up to about 300 Hz). They act on the whole drum bus;
+    # below 300 Hz that is mostly kick, snare and the break's low end.
+    - {{ id: eq, source: native, settings: {{ low_shelf_freq: 200, low_shelf_gain: 2 }} }}
+    - {{ id: eq, source: native, settings: {{ low_shelf_freq: 500, low_shelf_gain: 1.5 }} }}
+    # Last: an API 550B style colour EQ (user): +2 dB around 100 Hz and
+    # +1.5 dB around 250 Hz (body), broad bells; no top lift (the mix is
+    # bright already).
+    - {{ id: eq, source: native, settings: {{ bell_1_freq: 100, bell_1_gain: 2, bell_1_q: 0.8, bell_2_freq: 250, bell_2_gain: 1.5, bell_2_q: 0.8 }} }}
+    # Some air back (user: not enough high end): +1.5 dB around 10 kHz.
+    - {{ id: eq, source: native, settings: {{ bell_2_freq: 10000, bell_2_gain: 1.5, bell_2_q: 0.6 }} }}
+  # Master inserts, before the limiter: a soft-knee clipper shaves the
+  # highest peaks, so the limiter has little left to do (user).
+  master_fx:
+    # A little air (+1 dB around 12 kHz), then the clipper.
+    - {{ id: eq, source: native, settings: {{ bell_2_freq: 12000, bell_2_gain: 1, bell_2_q: 0.5 }} }}
+    - {{ id: clipper, source: native, settings: {{ threshold: 0, knee: 3 }} }}
 
 send_fx:
   delay: {{ id: delay, source: native, params: {{ 0: 0.375, 1: 0.4 }} }}
@@ -1139,8 +1387,17 @@ lanes:
         options:
 {breaks}{pools}    fx:
       - {{ id: filter, source: native, settings: {{ filter: 0.0 }} }}
-      # Whole kit: low cut 40 Hz, +1.5 dB at 100 Hz, -2 dB around 200-500 Hz.
-      - {{ id: eq, source: native, settings: {{ low_cut: 40, bell_1_freq: 100, bell_1_gain: 1.5, bell_1_q: 1.0, bell_2_freq: 320, bell_2_gain: -2, bell_2_q: 0.7 }} }}
+      # Whole kit: low cut 40 Hz, +1.5 dB at 100 Hz (the body around 300 Hz
+      # stays, user: fuller drums).
+      - {{ id: eq, source: native, settings: {{ low_cut: 40, bell_1_freq: 100, bell_1_gain: 1.5, bell_1_q: 1.0 }} }}
+      # Drum room (fx slot 2), before the lane and bus compressors: a short,
+      # dark, small room, 15 ms pre-delay, the tail kept between 400 Hz and
+      # 6 kHz, ducked 15 dB under every kick and snare (back over 180 ms).
+      # Density sets mix and decay (controls below). MUSICAL: tune by ear.
+      - {{ id: room, source: native, settings: {{ decay: 0.4, pre_delay: 15, low_cut: 400, high_cut: 6000, damping: 0.6, size: 0.7, mix: 0.08, duck: 15, duck_release: 180 }} }}
+      # Last, before the drum bus compressors: a soft-knee clipper (4x
+      # oversampled) shaves only the highest peaks (user).
+      - {{ id: clipper, source: native, settings: {{ threshold: 3, knee: 3 }} }}
     # Break bus, before the lane FX (effects: crates/mesh-core/src/live/fx.rs).
     # MUSICAL: user spec, tune by ear.
     break_fx:
@@ -1151,39 +1408,85 @@ lanes:
       - {{ id: compressor, source: native, settings: {{ threshold: -18, ratio: 4, attack: 50, release: 50, knee: 0, makeup: 0 }} }}
       # Transient shaper: +4 dB attack, sustain unchanged.
       - {{ id: transient, source: native, settings: {{ attack: 4, sustain: 0 }} }}
+      # The break sits 5 dB under the kit (user).
+      - {{ id: gain, source: native, settings: {{ gain: 0.562 }} }}
+    # Drum voice chains, each on its own bus before the lane FX (user).
+    # MUSICAL: first draft, tune by ear.
+    voice_fx:
+      # Kick, hats (and the bass lane): a fast compressor tames the peaks
+      # (the click), then a slow one glues, only slightly (user). No drive.
+      # Kick EQ: +6 dB low shelf (corner 150 Hz).
+      kick:
+        - {{ id: compressor, source: native, settings: {{ threshold: -14, ratio: 4, attack: 2, release: 80, knee: 3, makeup: 2 }} }}
+        - {{ id: compressor, source: native, settings: {{ threshold: -10, ratio: 2, attack: 30, release: 60, knee: 6, makeup: 0 }} }}
+        - {{ id: eq, source: native, settings: {{ low_cut: 30, low_shelf_freq: 150, low_shelf_gain: 6 }} }}
+      hats:
+        - {{ id: eq, source: native, settings: {{ low_cut: 350 }} }}
+        - {{ id: compressor, source: native, settings: {{ threshold: -20, ratio: 4, attack: 1, release: 50, knee: 3, makeup: 1 }} }}
+        - {{ id: compressor, source: native, settings: {{ threshold: -16, ratio: 2, attack: 30, release: 60, knee: 6, makeup: 0 }} }}
+      # The voices in the middle keep their dynamics: a high pass, and for
+      # the snare a gentle 76-style compressor for its tail.
+      snare:
+        - {{ id: eq, source: native, settings: {{ low_cut: 80 }} }}
+        - {{ id: compressor, source: native, settings: {{ threshold: -14, ratio: 2.5, attack: 2, release: 250, knee: 3, makeup: 1.5 }} }}
+      ride:
+        - {{ id: eq, source: native, settings: {{ low_cut: 300 }} }}
+      shaker:
+        - {{ id: eq, source: native, settings: {{ low_cut: 400 }} }}
+      perc:
+        - {{ id: eq, source: native, settings: {{ low_cut: 120 }} }}
+      top:
+        - {{ id: eq, source: native, settings: {{ low_cut: 200 }} }}
     controls:
       - {{ label: style, target: {{ type: generator, param: style }}, default: 0.4 }}
-      - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
+      # Density also sets the room: sparse = more mix (12 %) and a longer tail
+      # (0.7 s), dense = 7 % and 0.4 s. Room values are the effect's normalized
+      # parameters (mix 0..1, decay 0.1..4 s).
+      - label: dens
+        target: {{ type: generator, param: density }}
+        default: 0.5
+        also:
+          - {{ target: {{ type: fx, slot: 2, param: 6 }}, min: 0.12, max: 0.07 }}
+          - {{ target: {{ type: fx, slot: 2, param: 0 }}, min: 0.154, max: 0.077 }}
       - {{ label: mutate, target: {{ type: generator, param: mutate }}, default: 0.0 }}
-      - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.6, default: 0.0 }}
+      # Knob B: room size (0.5 .. 1.0).
+      - {{ label: room, target: {{ type: fx, slot: 2, param: 5 }}, min: 0.167, max: 0.583, default: 0.4 }}
     generator:
       family: procedural
       name: drums
-      # One density brings the voices in (Q5): hats, ghosts and percussion
-      # from the bottom, the shaker from 0.35, the ride from 0.5, the top
-      # loop from 0.6. MUSICAL: amounts and entry points to tune by ear.
+      # The seed's recipe picks the voices, their patterns and the order the
+      # density brings them in. overlay_* scale each voice (0 = never).
+      # MUSICAL: amounts to tune by ear.
       params:
-        {{ style: 0.4, density: 0.5, swing: 0.0, overlay_ride: 0.6, overlay_shaker: 0.5, overlay_top: 0.8,
-          enter_shaker: 0.35, enter_ride: 0.5, enter_top: 0.6 }}
+        {{ style: 0.4, density: 0.5, swing: 0.0, overlay_ride: 0.5, overlay_shaker: 0.5, overlay_top: 0.6 }}
 
   - name: bass
     role: bass
     default_option: 0
+    # Quarter speed is the bass's centre (user): the double pad gives half
+    # speed, the half pad stays at quarter; form blocks move it too.
+    base_rate: quarter
     options:
       - name: {bass_opt}
         sampler:
           samples:
             - {{ file: {bass_file}, root_key: {bass_root}, choke: 1 }}   # {bass_note}, measured
       # Surge XT reese patches. Need the CLAP bundle discoverable (~/.clap).
-{reeses}    # Multiband first, then the drive (the glue adds compression and saturation).
+      # Mudpies: long rendered streams, each note from a seeded position.
+{mudpies}{reeses}    # A fast compressor tames the peaks, then the multiband and a light
+    # drive, then the mud cut (the glue adds a slight glue compressor).
     fx:
-{mb_bass}      - {{ id: drive, source: native, settings: {{ drive: 7 }}, dry_wet: 0.8 }}
+      - {{ id: compressor, source: native, settings: {{ threshold: -14, ratio: 4, attack: 2, release: 80, knee: 3, makeup: 2 }} }}
+{mb_bass}      - {{ id: drive, source: native, settings: {{ drive: 3 }}, dry_wet: 0.3 }}
+      # After the processing (user): a narrow -4 dB bell at 315 Hz (Q 2.2,
+      # about 250-400 Hz).
+      - {{ id: eq, source: native, settings: {{ bell_1_freq: 315, bell_1_gain: -4, bell_1_q: 2.2 }} }}
     controls:
       - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.3 }}
-      # Fader B: note length (legato and glide at the top, Q13).
-      - {{ label: len, target: {{ type: generator, param: gate }}, default: 0.6 }}
+      # Fader B: slides between notes. Note length follows the density.
+      - {{ label: slide, target: {{ type: generator, param: slide }}, default: 0.5 }}
     generator:
       family: procedural
       name: bass
@@ -1200,23 +1503,23 @@ lanes:
         sampler:
           samples:
             - {{ file: {l1_file}, root_key: {l1_root} }}   # {l1_note}, measured
-    fx:
-{mb_lead}    controls:
+{mudpies}    fx:
+{mb_lead}{mb_ott}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.4 }}
-      - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
+      - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
       - {{ label: cutoff, target: {{ type: instrument, param: 0 }}, default: 1.0 }}
-      # Fader B: note length (legato and glide at the top, Q13).
-      - {{ label: len, target: {{ type: generator, param: gate }}, default: 0.5 }}
-    # Shift + fader B: the delay send that fader B held before.
-    shift_controls:
-      - null
-      - null
-      - null
-      - {{ label: delay, target: {{ type: send, bus: delay }}, min: 0.0, max: 0.7, curve: s, default: 0.29 }}
+      # Fader B: cx, from playing with the bass (0) to a counter-rhythm in
+      # its rests (1). Note length and attack follow the density.
+      - {{ label: cx, target: {{ type: generator, param: complexity }}, default: 0.4 }}
     generator:
       family: procedural
       name: lead
-      params: {{ complexity: 0.2, density: 0.3 }}
+      # With motif clips in motifs/lead (the bass: motifs/bass), the motif
+      # mode plays those instead of follow / melody; `motifs: 0` turns that off.
+      # follow: 1 = plays with the bass lane (rhythm by cx, home degree and
+      # chord stacks by spread). melody: 1 = seeded melodic cells (used
+      # when follow is 0); 0 = the classic motif.
+      params: {{ complexity: 0.4, density: 0.5, melody: 1, follow: 1 }}
     sends: {{ delay: 0.2, reverb: 0.1 }}
 
   - name: extra
@@ -1224,12 +1527,13 @@ lanes:
     options:
       # Surge XT pad patches.
 {pads}    fx:
-{mb_pad}    controls:
+{mb_pad}{mb_ott}    controls:
       - {{ label: spread, target: {{ type: generator, param: spread }}, default: 0.2 }}
       - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.3 }}
-      # Knob B: reverb send. Fader B: note length (Q13).
+      # Note length and attack follow the density. Knob B reverb, fader B
+      # stack: more chord tones, each fading in (root, 5th, 3rd, octave, 7th, 9th).
       - {{ label: verb, target: {{ type: send, bus: reverb }}, min: 0.0, max: 0.8 }}
-      - {{ label: len, target: {{ type: generator, param: gate }}, default: 1.0 }}
+      - {{ label: stack, target: {{ type: generator, param: stack }}, default: 0.4 }}
     generator:
       family: idiom
       name: pad
@@ -1253,10 +1557,122 @@ lanes:
         l1_note = note_name(leads[1].1),
         mb_bass = MB_BASS,
         mb_lead = MB_LEAD,
+        mb_ott = MB_OTT,
         mb_pad = MB_PAD,
     );
+    let y = use_packs(paths, y, &mut report);
     std::fs::write(paths.out.join(STYLE_FILE), y).unwrap_or_else(|e| fail(format!("write style.yaml: {e}")));
     report
+}
+
+/// The lane block of a sound-pack lane (docs/plans/2026-10-16-live-sound-packs.md).
+// MUSICAL: control defaults are "as written" (0.5).
+const PACK_LANE: &str = r#"    # Sound packs: every folder in {dir} with an SF2 / SFZ and MIDI phrases.
+    # The phrases play as written at 0.5; the knobs remix them.
+    pack_dir: {dir}
+    controls:
+      # Knob A: fewer notes (the least important first) .. repeats into the gaps.
+      - { label: dens, target: { type: generator, param: density }, default: 0.5 }
+      # Fader A: shape, stabby, accented and moving (short gates, filter
+      # bite, the tone CC low) .. sustained and calm (long notes, little
+      # modulation, the tone CC open). The phrase's CC curves follow.
+      - label: shape
+        target: { type: instrument, param: 9 }
+        default: 0.5
+        also:
+          - { target: { type: generator, param: length }, min: 0.3, max: 0.9 }
+          - { target: { type: generator, param: expression }, min: 1.0, max: 0.15 }
+      # Knob B: morph, the pack's morph CC (a layer crossfade, a mudpie scrub).
+      - { label: morph, target: { type: instrument, param: 10 }, default: 0.0 }
+      {fader_b}
+    generator:
+      family: procedural
+      name: phrase
+"#;
+
+/// Lanes whose `packs/<role>` folder holds a sound pack with phrases play the
+/// packs: their options, rate, controls and generator give way to
+/// [`PACK_LANE`]. FX and sends stay. Without phrases a lane keeps its
+/// generated material (a pack without MIDI would play nothing).
+fn use_packs(paths: &Paths, yaml: String, report: &mut String) -> String {
+    use mesh_core::live::pack;
+    const REPLACED: [&str; 6] = ["options", "default_option", "base_rate", "controls", "generator", "motifs"];
+    let mut out = String::new();
+    let mut role: Option<String> = None;
+    let mut pending_comments = String::new();
+    let mut skipping = false;
+    for line in yaml.split_inclusive('\n') {
+        if let Some(r) = line.strip_prefix("    role: ") {
+            let r = r.trim().to_string();
+            let dir = paths.out.join("packs").join(&r);
+            let packs: Vec<_> = pack::scan(&dir).into_iter().filter(|p| !pack::phrase_files(p).is_empty()).collect();
+            out.push_str(line);
+            if packs.is_empty() {
+                role = None;
+            } else {
+                let names: Vec<String> = packs.iter().map(|p| file_name(p)).collect();
+                let _ = writeln!(report, "Sound packs on the {r} lane: {}", names.join(", "));
+                // Fader B: spread (the arrangement varies it by section); the
+                // bass starts with some.
+                let fader_b = if r == "bass" {
+                    "# Fader B: spread, odd-block jumps, octave lifts and turnarounds.\n      - { label: spread, target: { type: generator, param: spread }, default: 0.15 }"
+                } else {
+                    "# Fader B: spread, the same on a lead's written notes.\n      - { label: spread, target: { type: generator, param: spread }, default: 0.0 }"
+                };
+                out.push_str(&PACK_LANE.replace("{dir}", &format!("packs/{r}")).replace("{fader_b}", fader_b));
+                role = Some(r);
+            }
+            skipping = false;
+            continue;
+        }
+        if line.starts_with("  - ") || !line.starts_with("  ") && !line.trim().is_empty() {
+            // The next lane, or the end of the lanes.
+            role = None;
+        }
+        if role.is_none() {
+            out.push_str(&pending_comments);
+            pending_comments.clear();
+            out.push_str(line);
+            continue;
+        }
+        let body = line.strip_prefix("    ").filter(|b| !b.starts_with(' '));
+        match body {
+            // A comment at key level belongs to the key below it.
+            Some(b) if b.starts_with('#') => pending_comments.push_str(line),
+            Some(b) if !b.trim().is_empty() => {
+                let key = b.split(':').next().unwrap_or("");
+                skipping = REPLACED.contains(&key);
+                if !skipping {
+                    out.push_str(&pending_comments);
+                    out.push_str(line);
+                }
+                pending_comments.clear();
+            }
+            _ => {
+                if !skipping {
+                    out.push_str(line);
+                }
+            }
+        }
+    }
+    out.push_str(&pending_comments);
+    out
+}
+
+/// Write the starter motif clips as `.mid` files into `motifs/bass` and
+/// `motifs/lead` (the live loader reads those folders). Only the starter
+/// files are replaced: clips the user dropped in stay untouched.
+fn write_motifs(paths: &Paths, report: &mut String) {
+    use mesh_core::live::motif::{midi, starter, Voice};
+    for (folder, clips, voice) in [("bass", &starter::BASS, Voice::Lowest), ("lead", &starter::LEAD, Voice::Highest)] {
+        let dir = paths.out.join("motifs").join(folder);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
+        for c in clips.iter() {
+            let file = dir.join(format!("starter-{}.mid", c.name));
+            std::fs::write(&file, midi::write(&c.clip(voice), c.name)).unwrap_or_else(|e| fail(format!("{}: {e}", file.display())));
+        }
+        let _ = writeln!(report, "Motifs: {} starter {folder} clips written to {}", clips.len(), dir.display());
+    }
 }
 
 fn inspect(files: &[PathBuf]) {
@@ -1323,18 +1739,94 @@ fn main() {
     if paths.out.join(STYLE_FILE).exists() && !force {
         fail(format!("{} already holds a style (use --force)", paths.out.display()));
     }
-    if force {
-        let _ = std::fs::remove_dir_all(paths.out.join("assets"));
-    }
+    // The previous style: its stored sample loudness is carried over for assets that stay the same.
+    let old_spec = std::fs::read_to_string(paths.out.join(STYLE_FILE)).ok().and_then(|t| StyleSpec::from_yaml(&t).ok());
     std::fs::create_dir_all(&paths.out).unwrap_or_else(|e| fail(format!("{}: {e}", paths.out.display())));
 
-    let report = build(&paths);
+    let mut report = build(&paths);
+    write_motifs(&paths, &mut report);
+    if let Some(old) = old_spec {
+        carry_loudness(&paths, &old, &mut report);
+    }
     print!("{report}");
     match Style::load(&paths.out) {
-        Ok(style) => println!("Style '{}' written to {} and validated.", style.spec.name, paths.out.display()),
+        Ok(style) => {
+            prune_assets(&paths, &style);
+            println!("Style '{}' written to {} and validated.", style.spec.name, paths.out.display());
+        }
         Err(e) => {
             eprintln!("live-starter-style: generated style does not validate:\n{e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_lanes_replace_generated_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("packs/bass/reese");
+        std::fs::create_dir_all(pack.join("phrases")).unwrap();
+        std::fs::write(pack.join("sound.sfz"), "<region> sample=a.wav").unwrap();
+        std::fs::write(pack.join("phrases/a.mid"), b"").unwrap();
+        // A lead pack without phrases changes nothing.
+        std::fs::create_dir_all(dir.path().join("packs/lead/quiet")).unwrap();
+        std::fs::write(dir.path().join("packs/lead/quiet/sound.sfz"), "<region> sample=a.wav").unwrap();
+        let paths = Paths {
+            out: dir.path().to_path_buf(),
+            breaks: PathBuf::new(),
+            dirt: PathBuf::new(),
+            surge: PathBuf::new(),
+            pairs: None,
+            library: None,
+        };
+        let yaml = "lanes:
+  - name: bass
+    role: bass
+    default_option: 0
+    base_rate: quarter
+    options:
+      - name: sub
+        sampler:
+          samples:
+            - { file: a.wav }
+      # mudpies
+    # The bass chain.
+    fx:
+      - { id: drive, source: native }
+    # Controls.
+    controls:
+      - { label: cx, target: { type: generator, param: complexity } }
+    generator:
+      family: procedural
+      name: bass
+      params: { complexity: 0.4 }
+
+  - name: lead
+    role: lead
+    options:
+      - name: juno
+    controls:
+      - { label: dens, target: { type: generator, param: density } }
+    generator:
+      name: lead
+    sends: { delay: 0.2 }
+glue:
+  x: 1
+";
+        let mut report = String::new();
+        let out = use_packs(&paths, yaml.to_string(), &mut report);
+        let (bass, lead) = out.split_once("  - name: lead").unwrap();
+        for gone in ["options:", "base_rate", "default_option", "complexity", "# Controls.", "name: bass\n      params"] {
+            assert!(!bass.contains(gone), "{gone} left in:\n{bass}");
+        }
+        for kept in ["pack_dir: packs/bass", "name: phrase", "# The bass chain.\n    fx:\n      - { id: drive", "param: length", "param: spread"] {
+            assert!(bass.contains(kept), "{kept} missing in:\n{bass}");
+        }
+        assert!(lead.contains("name: juno") && lead.contains("name: lead") && lead.contains("glue:\n  x: 1"), "{lead}");
+        assert!(report.contains("reese"));
     }
 }

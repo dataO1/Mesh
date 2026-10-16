@@ -7,7 +7,8 @@
 //! ```text
 //! <collection>/styles/<name>/
 //! ├── style.yaml
-//! └── assets/        samples, breaks, stem phrases, CLAP presets
+//! ├── assets/        samples, breaks, stem phrases, CLAP presets
+//! └── motifs/        bass/*.mid, lead/*.mid motif clips (optional)
 //! ```
 //!
 //! Every asset path in `style.yaml` is relative to the style folder and may not
@@ -140,6 +141,9 @@ pub struct LaneSpec {
     /// Drum lane only: FX chain of the break sub-voice, before `fx`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub break_fx: Vec<FxSpec>,
+    /// Drum lane only: FX chains per drum voice, before `fx` (like `break_fx`).
+    #[serde(default, skip_serializing_if = "VoiceFxSpec::is_empty")]
+    pub voice_fx: VoiceFxSpec,
     /// Output trim per option (drum lane: per kit) in dB, applied after the
     /// lane's processing (lane FX and glue dynamics), before the duck.
     /// Written by `style-calibrate` from the processed loudness. Missing = 0.
@@ -147,6 +151,11 @@ pub struct LaneSpec {
     pub output_trims_db: Vec<f32>,
     /// Exactly [`CONTROLS_PER_LANE`] performance controls.
     pub controls: Vec<ControlSpec>,
+    /// A pitched lane's centre speed: the half / double pads go one step
+    /// slower / faster from it (base `half`: the pads give quarter and
+    /// normal speed).
+    #[serde(default, skip_serializing_if = "is_normal_rate")]
+    pub base_rate: RateSpec,
     /// Up to [`CONTROLS_PER_LANE`] controls on the Shift layer, same order
     /// (knob A, fader A, knob B, fader B). `null` and missing entries do
     /// nothing.
@@ -159,9 +168,19 @@ pub struct LaneSpec {
     /// Drum lane only: backbone archetypes in major-style control order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archetypes: Vec<String>,
+    /// Bass and lead lanes: MIDI motif clips (style-relative paths) the
+    /// generator plays, on top of the `motifs/bass/*.mid` or
+    /// `motifs/lead/*.mid` files in the style folder (read at load).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub motifs: Vec<PathBuf>,
+    /// Non-drum lanes: a folder of sound packs (style-relative). Every
+    /// sub-folder holding a pack becomes an option after `options`
+    /// ([`super::pack`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_dir: Option<PathBuf>,
 }
 
-/// One selectable instrument. Exactly one of `sampler` / `clap` is set.
+/// One selectable instrument. Exactly one of `sampler` / `clap` / `pack` is set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstrumentOption {
@@ -173,6 +192,10 @@ pub struct InstrumentOption {
     pub sampler: Option<SamplerSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clap: Option<ClapSpec>,
+    /// A sound pack folder (style-relative): its SF2 / SFZ instrument plays
+    /// its MIDI phrases with the `phrase` generator ([`super::pack`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PathBuf>,
 }
 
 /// Borrowed view of an option's instrument source.
@@ -180,15 +203,17 @@ pub struct InstrumentOption {
 pub enum InstrumentSource<'a> {
     Sampler(&'a SamplerSpec),
     Clap(&'a ClapSpec),
+    Pack(&'a Path),
 }
 
 impl InstrumentOption {
-    /// The instrument source, or `None` if the option is invalid (neither or
-    /// both set; validation reports it).
+    /// The instrument source, or `None` if the option is invalid (none or
+    /// several set; validation reports it).
     pub fn source(&self) -> Option<InstrumentSource<'_>> {
-        match (&self.sampler, &self.clap) {
-            (Some(s), None) => Some(InstrumentSource::Sampler(s)),
-            (None, Some(c)) => Some(InstrumentSource::Clap(c)),
+        match (&self.sampler, &self.clap, &self.pack) {
+            (Some(s), None, None) => Some(InstrumentSource::Sampler(s)),
+            (None, Some(c), None) => Some(InstrumentSource::Clap(c)),
+            (None, None, Some(p)) => Some(InstrumentSource::Pack(p)),
             _ => None,
         }
     }
@@ -225,6 +250,101 @@ pub struct SampleSpec {
     /// Top loops: length in bars at the style tempo (1, 2, 4 or 8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bars: Option<u8>,
+    /// A long stream of rendered audio (a mudpie) played as a pitched
+    /// instrument: each note starts at a seeded position in it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
+    /// Level of this sample in dB, on top of its loudness normalization
+    /// (a snare under its kick, for example).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gain_db: f32,
+    /// Measured integrated loudness of the decoded sample in LUFS, written by
+    /// `style-calibrate --analyse`. The loader uses it instead of measuring
+    /// the sample at every load. Unset = measured at load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lufs: Option<f32>,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// FX chains of the drum voices (drum lane only), each before the lane FX.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceFxSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kick: Vec<FxSpec>,
+    /// Snare and ghosts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snare: Vec<FxSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hats: Vec<FxSpec>,
+    /// Ride and crashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ride: Vec<FxSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shaker: Vec<FxSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub perc: Vec<FxSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top: Vec<FxSpec>,
+}
+
+impl VoiceFxSpec {
+    pub fn is_empty(&self) -> bool {
+        self.chains().iter().all(|(_, c)| c.is_empty())
+    }
+
+    /// Each voice with its chain.
+    pub fn chains(&self) -> [(crate::live::generator::layout::DrumVoice, &[FxSpec]); 7] {
+        use crate::live::generator::layout::DrumVoice;
+        [
+            (DrumVoice::Kick, &self.kick),
+            (DrumVoice::Snare, &self.snare),
+            (DrumVoice::Hats, &self.hats),
+            (DrumVoice::Ride, &self.ride),
+            (DrumVoice::Shaker, &self.shaker),
+            (DrumVoice::Perc, &self.perc),
+            (DrumVoice::Top, &self.top),
+        ]
+    }
+}
+
+/// Note rate of a pitched lane, as the style names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateSpec {
+    #[default]
+    Normal,
+    Half,
+    Double,
+    /// A quarter of the speed (a base rate only).
+    Quarter,
+}
+
+impl RateSpec {
+    /// Speed as a power of two: quarter −2, half −1, normal 0, double +1.
+    pub fn exponent(self) -> i8 {
+        match self {
+            RateSpec::Quarter => -2,
+            RateSpec::Half => -1,
+            RateSpec::Normal => 0,
+            RateSpec::Double => 1,
+        }
+    }
+
+    pub fn rate(self) -> super::state::Rate {
+        match self {
+            RateSpec::Normal => super::state::Rate::Normal,
+            RateSpec::Half | RateSpec::Quarter => super::state::Rate::Half,
+            RateSpec::Double => super::state::Rate::Double,
+        }
+    }
+}
+
+fn is_normal_rate(r: &RateSpec) -> bool {
+    *r == RateSpec::Normal
 }
 
 /// Kind of a drum pool sample.
@@ -279,6 +399,10 @@ pub struct ClapSpec {
     /// Optional preset / state file, relative to the style folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<PathBuf>,
+    /// The preset owns its amp envelope: the lane does not set Surge's "Amp EG
+    /// Attack" from the notes nor raise the bass release (designed sounds).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_envelope: bool,
 }
 
 /// Drum lane sub-voice kind (design §5.1).
@@ -430,6 +554,11 @@ pub struct ControlSpec {
     /// Control position at load, `0..=1`.
     #[serde(default = "half")]
     pub default: f32,
+    /// More targets the same control moves, each with its own range and
+    /// curve (their `label`, `default` and `also` are ignored). One fader
+    /// can drive a generator parameter and an effect at once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<ControlSpec>,
 }
 
 impl ControlSpec {
@@ -578,6 +707,8 @@ pub struct GlueSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duck: Option<DuckSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band_duck: Option<BandDuckSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drum_bus: Option<DrumBusSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_drive: Option<SharedDriveSpec>,
@@ -617,6 +748,36 @@ pub struct DuckSpec {
     /// Lead and extra.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub others: Option<DuckGroupSpec>,
+}
+
+/// Band duck: the bass lane ducked band by band by lead + extra, as its last
+/// stage. Unset fields keep the glue defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BandDuckSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Five ascending split frequencies in Hz.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splits_hz: Option<[f32; 5]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_db: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratio: Option<f32>,
+    /// Deepest cut per band in dB, six bands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_db: Option<[f32; 6]>,
+    /// Attack per band in ms, six bands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack_ms: Option<[f32; 6]>,
+    /// Base release per band in ms, six bands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_ms: Option<[f32; 6]>,
+    /// Release stretch for held notes (0 = fixed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive_release: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapt_ms: Option<f32>,
 }
 
 /// Duck of one group of lanes: cut in dB on a main-kit kick and snare.
@@ -794,11 +955,11 @@ pub enum Problem {
     OptionsOnDrumLane,
     #[error("only the drum lane has sub_voices")]
     SubVoicesOnInstrumentLane,
-    #[error("only the drum lane has a break_fx chain")]
+    #[error("only the drum lane has break_fx and voice_fx chains")]
     BreakFxOnInstrumentLane,
     #[error("index {index} out of range (len {len})")]
     IndexOutOfRange { index: usize, len: usize },
-    #[error("exactly one of sampler / clap must be set")]
+    #[error("exactly one of sampler / clap / pack must be set")]
     SourceCount,
     #[error("asset not found: {0}")]
     AssetMissing(PathBuf),
@@ -808,6 +969,8 @@ pub enum Problem {
     AssetPathEscapes(PathBuf),
     #[error("slice starts must be strictly ascending")]
     SlicesUnordered,
+    #[error("split frequencies must be strictly ascending")]
+    SplitsUnordered,
     #[error("range [{lo}, {hi}] must satisfy lo <= hi <= 127")]
     BadRange { lo: u8, hi: u8 },
     #[error("expected exactly {expected} controls, found {found}")]
@@ -954,9 +1117,20 @@ impl StyleSpec {
         for (li, lane) in self.lanes.iter().enumerate() {
             fx_assets(format!("lanes[{li}].fx"), &lane.fx);
             fx_assets(format!("lanes[{li}].break_fx"), &lane.break_fx);
+            for (voice, chain) in lane.voice_fx.chains() {
+                fx_assets(format!("lanes[{li}].voice_fx.{}", voice.name()), chain);
+            }
         }
         fx_assets("glue.drum_bus_fx".into(), &self.glue.drum_bus_fx);
         fx_assets("glue.master_fx".into(), &self.glue.master_fx);
+        for (li, lane) in self.lanes.iter().enumerate() {
+            for (mi, motif) in lane.motifs.iter().enumerate() {
+                f(format!("lanes[{li}].motifs[{mi}]"), motif);
+            }
+            if let Some(dir) = &lane.pack_dir {
+                f(format!("lanes[{li}].pack_dir"), dir);
+            }
+        }
         for (li, lane) in self.lanes.iter().enumerate() {
             for (oi, opt) in lane.options.iter().enumerate() {
                 option_assets(&format!("lanes[{li}].options[{oi}]"), opt, f);
@@ -981,6 +1155,11 @@ impl StyleSpec {
                 v.push(at, Problem::AssetPathAbsolute(rel.to_path_buf()));
             } else if rel.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
                 v.push(at, Problem::AssetPathEscapes(rel.to_path_buf()));
+            } else if at.ends_with(".pack") || at.ends_with(".pack_dir") {
+                // Folders, not files.
+                if !dir.join(rel).is_dir() {
+                    v.push(at, Problem::AssetMissing(rel.to_path_buf()));
+                }
             } else if !exists(&dir.join(rel)) {
                 v.push(at, Problem::AssetMissing(rel.to_path_buf()));
             }
@@ -999,6 +1178,9 @@ fn option_assets(at: &str, opt: &InstrumentOption, f: &mut dyn FnMut(String, &Pa
         if let Some(p) = &c.preset {
             f(format!("{at}.clap.preset"), p);
         }
+    }
+    if let Some(p) = &opt.pack {
+        f(format!("{at}.pack"), p);
     }
 }
 
@@ -1143,6 +1325,9 @@ impl Validator {
             if !lane.options.is_empty() {
                 self.push(format!("{at}.options"), Problem::OptionsOnDrumLane);
             }
+            if lane.pack_dir.is_some() {
+                self.push(format!("{at}.pack_dir"), Problem::OptionsOnDrumLane);
+            }
             if lane.sub_voices.is_empty() {
                 self.push(format!("{at}.sub_voices"), Problem::Empty);
             }
@@ -1170,9 +1355,10 @@ impl Validator {
             if !lane.archetypes.is_empty() {
                 self.push(format!("{at}.archetypes"), Problem::ArchetypesOnInstrumentLane);
             }
-            if lane.options.is_empty() {
+            // Packs from `pack_dir` extend the list at load.
+            if lane.options.is_empty() && lane.pack_dir.is_none() {
                 self.push(format!("{at}.options"), Problem::Empty);
-            } else {
+            } else if lane.pack_dir.is_none() {
                 self.index(format!("{at}.default_option"), lane.default_option, lane.options.len());
             }
             for (oi, opt) in lane.options.iter().enumerate() {
@@ -1191,6 +1377,14 @@ impl Validator {
         }
         if !lane.break_fx.is_empty() && lane.role != Role::Drums {
             self.push(format!("{at}.break_fx"), Problem::BreakFxOnInstrumentLane);
+        }
+        for (voice, chain) in lane.voice_fx.chains() {
+            for (i, fx) in chain.iter().enumerate() {
+                self.fx(&format!("{at}.voice_fx.{}[{i}]", voice.name()), fx);
+            }
+        }
+        if !lane.voice_fx.is_empty() && lane.role != Role::Drums {
+            self.push(format!("{at}.voice_fx"), Problem::BreakFxOnInstrumentLane);
         }
         if lane.controls.len() != CONTROLS_PER_LANE {
             self.push(
@@ -1223,6 +1417,7 @@ impl Validator {
         match opt.source() {
             None => self.push(at.to_string(), Problem::SourceCount),
             Some(InstrumentSource::Clap(c)) => self.non_empty(format!("{at}.clap.plugin_id"), &c.plugin_id),
+            Some(InstrumentSource::Pack(_)) => {}
             Some(InstrumentSource::Sampler(s)) => {
                 if s.samples.is_empty() {
                     self.push(format!("{at}.sampler.samples"), Problem::Empty);
@@ -1272,6 +1467,9 @@ impl Validator {
                 self.in_range(format!("{at}.max"), c.max, 0.0, 1.0);
             }
         }
+        for (i, extra) in c.also.iter().enumerate() {
+            self.control(&format!("{at}.also[{i}]"), extra, fx_len);
+        }
     }
 
     fn generator(&mut self, at: &str, g: &GeneratorSpec) {
@@ -1313,6 +1511,30 @@ impl Validator {
                     self.opt_range(&format!("glue.duck.{name}.release_ms"), g.release_ms, 1.0, 2000.0);
                 }
             }
+        }
+        if let Some(b) = &g.band_duck {
+            if let Some(s) = b.splits_hz {
+                for (i, hz) in s.iter().enumerate() {
+                    self.in_range(format!("glue.band_duck.splits_hz[{i}]"), *hz, HZ.0, HZ.1);
+                }
+                if s.windows(2).any(|w| w[0] >= w[1]) {
+                    self.push("glue.band_duck.splits_hz", Problem::SplitsUnordered);
+                }
+            }
+            self.opt_range("glue.band_duck.threshold_db", b.threshold_db, -80.0, 0.0);
+            self.opt_range("glue.band_duck.ratio", b.ratio, 1.0, 100.0);
+            if let Some(m) = b.max_db {
+                for (i, db) in m.iter().enumerate() {
+                    self.in_range(format!("glue.band_duck.max_db[{i}]"), *db, 0.0, 30.0);
+                }
+            }
+            for (name, times, lo, hi) in [("attack_ms", b.attack_ms, 0.0, 200.0), ("release_ms", b.release_ms, 1.0, 2000.0)] {
+                for (i, ms) in times.iter().flatten().enumerate() {
+                    self.in_range(format!("glue.band_duck.{name}[{i}]"), *ms, lo, hi);
+                }
+            }
+            self.opt_range("glue.band_duck.adaptive_release", b.adaptive_release, 0.0, 10.0);
+            self.opt_range("glue.band_duck.adapt_ms", b.adapt_ms, 1.0, 5000.0);
         }
         if let Some(b) = &g.drum_bus {
             if let Some(c) = &b.comp {
@@ -1494,7 +1716,7 @@ mod tests {
     #[test]
     fn option_and_control_rules() {
         let mut s = fixture_spec();
-        let clap = ClapSpec { plugin_id: "x".into(), preset: None };
+        let clap = ClapSpec { plugin_id: "x".into(), preset: None, own_envelope: false };
         s.lanes[1].options[0].clap = Some(clap);
         assert!(problems(&s).contains(&Problem::SourceCount));
 
@@ -1640,6 +1862,7 @@ mod tests {
             max: 0.0,
             curve: Curve::Linear,
             default: 0.5,
+            also: Vec::new(),
         };
         assert_eq!(ctl.map(0.25), 0.75);
     }

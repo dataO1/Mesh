@@ -135,7 +135,7 @@ pub enum AppRunMode {
 }
 
 /// Live mode configuration
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LiveConfig {
     /// Style folder name under `<collection>/styles/` to load at startup
@@ -143,6 +143,15 @@ pub struct LiveConfig {
     /// USB serial of the Kontrol F1 used as the left unit.
     /// When unset, the first unit whose Shift is pressed becomes left.
     pub f1_left_serial: Option<String>,
+    /// Start the set recording (master mix plus a per-bar state log) as
+    /// soon as live mode runs.
+    pub auto_record: bool,
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        Self { style: None, f1_left_serial: None, auto_record: true }
+    }
 }
 
 impl Default for PlayerConfig {
@@ -436,6 +445,7 @@ mod tests {
             live: LiveConfig {
                 style: Some("jungle".to_string()),
                 f1_left_serial: Some("ABC123".to_string()),
+                auto_record: false,
             },
             ..Default::default()
         };
@@ -446,6 +456,13 @@ mod tests {
 
         assert_eq!(parsed.mode, AppRunMode::Live);
         assert_eq!(parsed.live, config.live);
+    }
+
+    #[test]
+    fn live_records_from_the_start_by_default() {
+        assert!(LiveConfig::default().auto_record);
+        let parsed: LiveConfig = serde_yaml::from_str("style: breaks").unwrap();
+        assert!(parsed.auto_record, "older configs record too");
     }
 
     #[test]

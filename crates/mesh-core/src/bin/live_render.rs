@@ -13,6 +13,7 @@
 //!   --lane-seed L=S      master seed of lane L (repeatable)
 //!   --form L=N           form N of lane L, from bar 0 (repeatable)
 //!   --control L.C=V      performance control C (0..3) of lane L to V (0..1) (repeatable)
+//!   --sweep L.C=A:B@S-E  move control C of lane L from A to B over bars S..E (16th steps; repeatable)
 //!   --option L=N         instrument option / kit of lane L (repeatable)
 //!   --mute L[,L]         lanes switched off
 //!   --tempo BPM          tempo from bar 0 (clamped to the style's range)
@@ -40,7 +41,7 @@ use mesh_core::live::NUM_LANES;
 use mesh_core::types::{StereoBuffer, StereoSample};
 
 const USAGE: &str = "usage: live-render --style DIR --out FILE.wav [--bars N] [--fixed] [--seed N] \
-[--seeds L=A,B,C,D] [--control L.C=V] [--option L=N] [--mute L,L] [--tempo BPM] [--key KEY] \
+[--seeds L=A,B,C,D] [--control L.C=V] [--sweep L.C=A:B@S-E] [--option L=N] [--mute L,L] [--tempo BPM] [--key KEY] \
 [--key-at BAR=KEY] [--half-time] [--stems] [--clap] [--rate HZ] [--block N] [--interp MODE]";
 
 fn fail(msg: impl AsRef<str>) -> ! {
@@ -76,6 +77,8 @@ fn main() {
     let mut clap = false;
     let mut interp = Interpolation::default();
     let mut commands: Vec<LiveCommand> = Vec::new();
+    // (lane, control, from, to, start bar, end bar)
+    let mut sweeps: Vec<(u8, u8, f32, f32, f64, f64)> = Vec::new();
     let mut key_changes: Vec<(u64, mesh_core::music::MusicalKey)> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -123,6 +126,15 @@ fn main() {
                     control: parse("control", control),
                     value: parse("control value", val),
                 });
+            }
+            "--sweep" => {
+                let v = value("--sweep");
+                let (target, rest) = split("--sweep", &v, '=');
+                let (lane, control) = split("--sweep", target, '.');
+                let (values, bars) = split("--sweep", rest, '@');
+                let (a, b) = split("--sweep", values, ':');
+                let (s, e) = split("--sweep", bars, '-');
+                sweeps.push((parse("lane", lane), parse("control", control), parse("from", a), parse("to", b), parse("start bar", s), parse("end bar", e)));
             }
             "--option" => {
                 let v = value("--option");
@@ -192,11 +204,24 @@ fn main() {
     let mut tap: [StereoBuffer; NUM_LANES] = std::array::from_fn(|_| StereoBuffer::silence(block));
     key_changes.sort_by_key(|k| k.0);
     let mut next_key = 0;
+    let mut swept: Vec<f32> = vec![f32::NAN; sweeps.len()];
     while sys.shared.clock().bar < bars {
         let bar = sys.shared.clock().bar;
         while next_key < key_changes.len() && key_changes[next_key].0 <= bar {
             sys.controller.send(LiveCommand::SetKey(key_changes[next_key].1));
             next_key += 1;
+        }
+        let pos = bar as f64 + sys.shared.clock().step as f64 / 16.0;
+        for (k, &(lane, control, a, b, s, e)) in sweeps.iter().enumerate() {
+            if pos < s {
+                continue;
+            }
+            let t = if e > s { ((pos - s) / (e - s)).clamp(0.0, 1.0) } else { 1.0 } as f32;
+            let v = a + (b - a) * t;
+            if (v - swept[k]).abs() > 0.002 {
+                swept[k] = v;
+                sys.controller.send(LiveCommand::SetControl { lane, control, value: v });
+            }
         }
         sys.engine.process(&mut buf, Some(&mut tap));
         master.extend_from_slice(buf.as_slice());

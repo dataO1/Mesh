@@ -571,3 +571,247 @@ fn bus_range_targets_render_into_the_second_output() {
     s.process(&mut both, 100.0);
     assert!((both[100].left - 0.75).abs() < 1e-3, "{}", both[100].left);
 }
+
+#[test]
+fn notes_start_at_the_slot_start_except_on_streams() {
+    let at_start = |slot: SlotDef| {
+        let mut s = sampler(vec![(0, slot)], 4);
+        let mut ev = note_on(60, 1);
+        ev.start = u16::MAX / 2;
+        s.handle_event(&ev, 0);
+        render(&mut s, 64, 100.0)[32].left
+    };
+    // The ramp's value is the read position: 0 at the start, 0.5 halfway.
+    let plain = at_start(SlotDef::whole(ramp(48_000)));
+    let stream = at_start(SlotDef::whole(ramp(48_000)).streamed());
+    assert!(plain < 0.01, "ordinary pitched slot ignores start: {plain}");
+    assert!((stream - 0.5).abs() < 0.01, "stream starts halfway: {stream}");
+}
+
+#[test]
+fn event_attack_overrides_the_lane_and_rises_round() {
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(1.0, 48_000)))], 4);
+    let mut ev = trig(0);
+    ev.attack = attack_byte(0.08);
+    s.handle_event(&ev, 0);
+    let out = render(&mut s, 4800, 100.0);
+    let at = |secs: f32| out[(secs * SR as f32) as usize].left;
+    // Quarter-sine attack: about 0.71 at half the attack time (linear: 0.5).
+    let half = at(0.04);
+    assert!((half - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.05, "half-way level {half}");
+    assert!(at(0.09) > 0.98, "full after the attack");
+    assert!(at(0.005) < 0.2, "slow start");
+}
+
+#[test]
+fn short_notes_get_a_pitch_envelope() {
+    // 100 samples per tick at 48 kHz: 24 ticks = 50 ms (stab), 480 ticks = 1 s.
+    let stab = |gate| LiveEvent { gate, ..note_on(60, 1) };
+    let mut s = sampler(vec![(0, SlotDef::whole(sine(441.0, 4.0, 60)))], 4);
+    s.handle_event(&stab(24), 0);
+    render(&mut s, 192, 100.0); // 4 ms: the rise peaks
+    let peak = s.newest_voice_pitch().unwrap();
+    assert!(peak > 1.05 && peak < 2f64.powf(1.6 / 12.0), "peak {peak}");
+    render(&mut s, 600, 100.0); // into the fall (35 ms for a 50 ms note)
+    let fallen = s.newest_voice_pitch().unwrap();
+    assert!(fallen < peak && fallen > 1.0, "{fallen}");
+    assert_eq!(s.newest_voice_rate().unwrap(), 1.0, "the note pitch itself is untouched");
+
+    // Long and held notes play straight.
+    for gate in [480, 0] {
+        let mut s = sampler(vec![(0, SlotDef::whole(sine(441.0, 4.0, 60)))], 4);
+        s.handle_event(&stab(gate), 0);
+        render(&mut s, 192, 100.0);
+        assert_eq!(s.newest_voice_pitch().unwrap(), 1.0, "gate {gate}");
+    }
+    // Unpitched triggers (drums) never.
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(0.25, 96_000)))], 4);
+    s.handle_event(&LiveEvent { gate: 24, ..trig(0) }, 0);
+    render(&mut s, 192, 100.0);
+    assert_eq!(s.newest_voice_pitch().unwrap(), 1.0);
+}
+
+#[test]
+fn pitch_env_scales_with_note_length() {
+    use super::engine::pitch_env;
+    let (short, fall_short) = pitch_env(0.05).unwrap();
+    let (mid, fall_mid) = pitch_env(0.3).unwrap();
+    assert!(short > mid && mid > 0.0);
+    assert!(fall_short < fall_mid && fall_mid <= 0.1 + 1e-6);
+    assert!(pitch_env(0.7).is_none() && pitch_env(f64::INFINITY).is_none());
+}
+
+#[test]
+fn filter_slope_morphs_with_the_cutoff() {
+    // Gain of a tone two octaves above the cutoff, in dB.
+    let gain_db = |cutoff_hz: f32, morph: Option<(f32, f32)>| {
+        let mut s = sampler(vec![(0, SlotDef::whole(sine(cutoff_hz * 4.0, 1.0, 60)))], 4);
+        s.set_params(LaneSamplerParams { cutoff_hz, filter_morph: morph, ..flat_params() });
+        s.handle_event(&trig(0), 0);
+        let out = render(&mut s, 8192, 100.0);
+        let rms = (out[2000..8000].iter().map(|x| x.left * x.left).sum::<f32>() / 6000.0).sqrt();
+        20.0 * (rms / std::f32::consts::FRAC_1_SQRT_2).log10()
+    };
+    let range = Some((700.0, 15_000.0));
+    let plain = gain_db(700.0, None);
+    let low = gain_db(700.0, range);
+    let high = gain_db(3000.0, Some((700.0, 3000.0)));
+    let plain_high = gain_db(3000.0, None);
+    // 6 dB/oct at the low end: about -12 dB two octaves up, against -24 for 12 dB/oct.
+    assert!(low > plain + 6.0, "gentle at the bottom: {low} vs {plain}");
+    // 24 dB/oct at the top: steeper than the plain 12 dB/oct.
+    assert!(high < plain_high - 6.0, "steep at the top: {high} vs {plain_high}");
+}
+
+#[test]
+fn cutoff_glides_from_the_previous_note() {
+    let mut s = sampler(vec![(0, SlotDef::whole(sine(441.0, 4.0, 60)))], 4);
+    s.set_params(LaneSamplerParams { cutoff_hz: 2000.0, cutoff_glide: 0.05, ..flat_params() });
+    s.handle_event(&LiveEvent { cutoff: -60, gate: 48, ..note_on(60, 1) }, 0);
+    render(&mut s, 4096, 100.0);
+    s.handle_event(&LiveEvent { cutoff: 60, ..note_on(60, 2) }, 0);
+    render(&mut s, BLOCK, 100.0);
+    let newest = s.newest_voice_cutoff().unwrap();
+    assert!(newest < 0.0, "starts near the previous cutoff: {newest}");
+    render(&mut s, 12_000, 100.0);
+    let settled = s.newest_voice_cutoff().unwrap();
+    assert!((settled - 60.0 / 127.0).abs() < 0.02, "{settled}");
+}
+
+#[test]
+fn stealing_fades_instead_of_clicking() {
+    // Two voices allowed; a third hit steals the oldest without a jump.
+    let mut s = sampler(
+        vec![(0, SlotDef::whole(dc(0.5, 96_000))), (1, SlotDef::whole(dc(0.3, 96_000))), (2, SlotDef::whole(dc(0.2, 96_000)))],
+        2,
+    );
+    s.handle_event(&trig(0), 0);
+    s.handle_event(&trig(1), 0);
+    render(&mut s, 2048, 100.0);
+    s.handle_event(&trig(2), 100);
+    let out = render(&mut s, 2048, 100.0);
+    let jump = out.windows(2).skip(110).map(|w| (w[1].left - w[0].left).abs()).fold(0.0f32, f32::max);
+    // The new voice starts with its attack ramp; the stolen one fades over 5 ms.
+    assert!(jump < 0.05, "largest step after the steal {jump}");
+    assert!((out[2000].left - 0.5).abs() < 0.01, "the oldest (0.5) faded out: {}", out[2000].left);
+}
+
+#[test]
+fn reset_voices_silences_at_once() {
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(0.5, 96_000)))], 4);
+    s.handle_event(&trig(0), 0);
+    render(&mut s, 512, 100.0);
+    s.handle_event(&trig(0), 10);
+    s.reset_voices();
+    let out = render(&mut s, 512, 100.0);
+    assert_eq!(s.voices_active(), 0);
+    assert!(out.iter().all(|x| x.left == 0.0), "no voice and no queued hit left");
+}
+
+#[test]
+fn tone_knob_drives_the_cutoff_cc_map() {
+    use super::params::{CcMap, ModConfig};
+    // A bright tone (6 kHz) under a 500 Hz lowpass; Tone maps CC74 to +4 octaves.
+    let hf = |tone: f32| {
+        let mut s = sampler(vec![(0, SlotDef::whole(sine(6000.0, 1.0, 60)))], 4);
+        let mut m = ModConfig::default();
+        m.cutoff_cc[0] = CcMap::new(74, 4800.0);
+        s.set_params(LaneSamplerParams { cutoff_hz: 500.0, tone, modulation: m, ..flat_params() });
+        s.handle_event(&note_on(60, 1), 0);
+        let out = render(&mut s, 4800, 100.0);
+        out[2400..].iter().map(|x| x.left.abs()).fold(0.0f32, f32::max)
+    };
+    let (closed, open) = (hf(0.0), hf(1.0));
+    assert!(open > closed * 4.0, "tone opens the filter: {closed} -> {open}");
+}
+
+#[test]
+fn tone_knob_moves_the_start_offset() {
+    use super::params::{CcMap, ModConfig};
+    // A ramp sample: the first output value shows where the note started.
+    let start = |tone: f32| {
+        let mut s = sampler(vec![(0, SlotDef::whole(ramp(48_000)))], 4);
+        let mut m = ModConfig::default();
+        m.offset_cc[0] = CcMap::new(74, 40_000.0);
+        s.set_params(LaneSamplerParams { tone, modulation: m, ..flat_params() });
+        s.handle_event(&note_on(60, 1), 0);
+        render(&mut s, 64, 100.0)[32].left
+    };
+    assert!(start(1.0) > start(0.0) + 0.5, "{} vs {}", start(0.0), start(1.0));
+}
+
+#[test]
+fn zone_modulators_crossfade_two_layers() {
+    use super::params::{CcCurve, CcMap, ZoneMod, ZoneTarget};
+    // Layer A (DC 0.25) fades out as CC74 rises, layer B (DC 0.5) fades in:
+    // SF2 style, CC74 -> attenuation on A and reversed CC74 -> attenuation on B.
+    let layer = |level: f32, reversed: bool| {
+        let mut slot = SlotDef::whole(dc(level, 48_000));
+        slot.zone_mods[0] = ZoneMod {
+            src: CcMap { cc: 74, amount: -96.0, reversed, curve: CcCurve::Concave },
+            target: ZoneTarget::Volume,
+        };
+        slot
+    };
+    let level = |tone: f32| {
+        let mut b = SampleBank::new();
+        b.add_zone(0, layer(0.25, false));
+        b.add_zone(0, layer(0.5, true));
+        let mut s = Sampler::new(SR, 4);
+        s.set_bank(shared(b));
+        s.set_params(LaneSamplerParams { tone, ..flat_params() });
+        s.handle_event(&note_on(60, 1), 0);
+        render(&mut s, 2048, 100.0)[1500].left
+    };
+    let (a, b) = (level(0.0), level(1.0));
+    assert!((a - 0.25).abs() < 0.02, "Tone 0: only layer A ({a})");
+    assert!((b - 0.5).abs() < 0.02, "Tone 1: only layer B ({b})");
+    let mid = level(0.5);
+    assert!(mid > 0.1 && mid < 0.75, "Tone 0.5: both layers, no hole ({mid})");
+}
+
+#[test]
+fn sfz_style_fades_are_equal_power() {
+    use super::params::{CcMap, ZoneMod, ZoneTarget, MAX_ZONE_MODS};
+    let mut mods = [ZoneMod::NONE; MAX_ZONE_MODS];
+    mods[0] = ZoneMod { src: CcMap::new(1, 1.0), target: ZoneTarget::Fade { lo: 0, hi: 127, out: false } };
+    let mut cc = [0u8; 128];
+    assert_eq!(ZoneMod::gain(&mods, &cc), 0.0);
+    cc[1] = 127;
+    assert!((ZoneMod::gain(&mods, &cc) - 1.0).abs() < 1e-6);
+    cc[1] = 64;
+    let g = ZoneMod::gain(&mods, &cc);
+    assert!((g - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01, "half way is -3 dB: {g}");
+}
+
+#[test]
+fn tone_shifts_a_phrase_curve_and_expression_scales_the_envelope() {
+    use super::params::{CcMap, ModConfig, ModEnv};
+    // Tone alone sets the CC; with the phrase drawing it, Tone shifts the curve.
+    let cutoff_cc = |tone: f32, phrase: Option<u8>| {
+        let mut s = sampler(vec![(0, SlotDef::whole(dc(0.5, 48_000)))], 4);
+        let mut m = ModConfig::default();
+        m.cutoff_cc[0] = CcMap::new(74, 1200.0);
+        s.set_params(LaneSamplerParams { tone, modulation: m, ..flat_params() });
+        if let Some(v) = phrase {
+            s.handle_event(&LiveEvent { kind: EventKind::Cc, target: 74, vel: v, ..Default::default() }, 0);
+            render(&mut s, 64, 100.0);
+        }
+        s.cc_now()[74]
+    };
+    assert_eq!(cutoff_cc(1.0, None), 127);
+    assert_eq!(cutoff_cc(0.5, Some(40)), 40, "centre = as written");
+    assert_eq!(cutoff_cc(0.75, Some(40)), 104);
+    assert_eq!(cutoff_cc(0.0, Some(40)), 0);
+
+    // Expression 0 removes the envelope's sweep; 1 (knob 0.5) plays it as set.
+    let sweep = |expression: f32| {
+        let mut s = sampler(vec![(0, SlotDef::whole(sine(6000.0, 1.0, 60)))], 4);
+        let mut m = ModConfig::default();
+        m.env = ModEnv { decay: 5.0, sustain: 1.0, to_cutoff: 4800.0, ..ModEnv::default() };
+        s.set_params(LaneSamplerParams { cutoff_hz: 400.0, expression, modulation: m, ..flat_params() });
+        s.handle_event(&note_on(60, 1), 0);
+        render(&mut s, 4800, 100.0)[2400..].iter().map(|x| x.left.abs()).fold(0.0f32, f32::max)
+    };
+    assert!(sweep(1.0) > sweep(0.0) * 4.0, "{} vs {}", sweep(0.0), sweep(1.0));
+}

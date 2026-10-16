@@ -17,6 +17,10 @@
 //!
 //! # Loudness
 //!
+//! Every sample is first normalized to [`SAMPLE_LOUDNESS_TARGET`] integrated
+//! LUFS when it loads, so samples of one pool (hats, perc, ...) and the kick
+//! and snare of a pair sit at the same level.
+//!
 //! An option's `lufs_trim_db` is applied at the instrument output, before the
 //! lane FX: as the sampler's lane gain (instrument lanes), as each slot's
 //! gain (drum kits, one trim per sub-voice option) or as the CLAP output
@@ -31,6 +35,7 @@
 //! sub-voices (hats, ride, shaker, perc, top) always load their default
 //! option; the seed picks samples inside it (Q4).
 
+use crate::live::generator::layout::DrumVoice;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,22 +50,27 @@ use crate::types::StereoBuffer;
 
 use super::command::{drive_db, GlueControl};
 use super::generator::{self, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
+use super::glue::loudness::{measure_hit_lufs, measure_lufs};
 use super::glue::{db_to_lin, GlueParams, Role};
 use super::form::Form;
 use super::harmony::Progression;
 use super::fx::{airwindows_state, setting_key, setting_param, AIRWINDOWS_ID};
 use super::lane::{
-    drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption,
+    drum_target_range, native_effect, ClapCell, FxSlot, Lane, LaneFx, LaneInit, LaneOption, OptionFamily,
 };
-use super::sampler::{Interpolation, SampleBank, SampleData, Slice, SliceType, SlotDef};
+use super::pack::{self, Pack};
+use super::sampler::{Interpolation, SampleBank, SampleData, Slice, SliceType, SlotDef, SoundShape, ZoneTarget};
+use super::sfz::{LoopMode, Source};
 use super::style::{
     self, ControlSpec, ControlTarget, FxSource, FxSpec, GlueSpec, InstrumentOption, InstrumentSource, SampleSpec,
     SendBus, SendFxSpec, SendLevels, Style, TempoSpec, CONTROLS_PER_LANE,
 };
 use super::NUM_LANES;
 
-/// Lanes that may host CLAP instruments (D32).
-pub const MAX_CLAP_LANES: usize = 2;
+/// Lanes that may host CLAP instruments. D32 capped this at 2 for the board;
+/// user (2026-10-16): develop on the host without the cap, trim if the CPU
+/// cannot hold it.
+pub const MAX_CLAP_LANES: usize = NUM_LANES;
 /// Voice pool size per lane.
 // MUSICAL: starting budgets, to be fixed from the board benchmark (D32).
 pub const DEFAULT_VOICES: [usize; NUM_LANES] = [24, 8, 12, 12];
@@ -138,9 +148,12 @@ pub struct ResolvedControl {
     pub label: String,
     pub spec: ControlSpec,
     pub route: ControlRoute,
+    /// The `also` targets, resolved.
+    pub also: Vec<(ControlSpec, ControlRoute)>,
 }
 
-/// One drum kit as the generator sees it.
+/// One drum kit as the generator sees it (on a pack lane: one option and
+/// its phrase generator).
 pub struct DrumKit {
     /// Which targets exist in this kit (`generator::layout`).
     pub layout: DrumLayout,
@@ -156,10 +169,15 @@ pub struct LaneMeta {
     /// Display name per option / kit.
     pub option_names: Vec<String>,
     pub option_available: Vec<bool>,
+    /// Kind of sound per option; a form swap (`*`) stays inside one kind.
+    pub option_family: Vec<OptionFamily>,
     pub default_option: usize,
     pub controls: [ResolvedControl; CONTROLS_PER_LANE],
     /// Shift-layer controls (up to [`CONTROLS_PER_LANE`]).
     pub shift_controls: Vec<ResolvedControl>,
+    /// The lane's centre speed (the rate pads go from here).
+    /// Centre speed as a power of two (see [`super::style::RateSpec::exponent`]).
+    pub base_rate: i8,
     pub sends: SendLevels,
     pub generator: Box<dyn LaneGenerator>,
     /// Generator parameters after the style's defaults.
@@ -195,11 +213,56 @@ pub struct LoadedStyle {
     pub sample_bytes: usize,
 }
 
+// MUSICAL: tune by ear (user: every sound and lane at a consistent level).
+/// Every sample is brought to this integrated loudness (LUFS) when the style
+/// loads. Hits shorter than one 400 ms gating block are measured over their
+/// own length ([`measure_hit_lufs`]). Option trims and the lane
+/// calibration then set the balance on top, so a pool of hats plays every
+/// hat at the same level.
+pub const SAMPLE_LOUDNESS_TARGET: f64 = -12.0;
+/// Largest normalization cut and boost in dB (a quiet file with a loud
+/// click must not come up so far that the click dominates).
+const SAMPLE_CUT_MAX_DB: f64 = 24.0;
+const SAMPLE_BOOST_MAX_DB: f64 = 12.0;
+
+/// Integrated loudness of a decoded sample (LUFS). Hits shorter than one
+/// gating block are measured over their own length. `-inf` for silence.
+pub fn measure_sample_lufs(data: &SampleData) -> f64 {
+    let rate = data.sample_rate() as f64;
+    let block = (rate * 0.4).ceil() as usize;
+    let frames: Vec<crate::types::StereoSample> = (0..data.len()).map(|i| data.frame(i)).collect();
+    // Short hits over their own length (padding would read them as quiet).
+    if frames.len() < block { measure_hit_lufs(&frames, rate) } else { measure_lufs(&frames, rate) }
+}
+
+/// Loudness of a file as the loader sees it: decoded and resampled to `rate`.
+pub fn analyse_sample_file(path: &std::path::Path, rate: u32) -> Result<f64, crate::audio_file::AudioFileError> {
+    let data = SampleData::decode(path, UNPITCHED_ROOT)?.resampled_to(rate)?;
+    Ok(measure_sample_lufs(&data))
+}
+
+/// Gain that brings a sample of loudness `measured` to [`SAMPLE_LOUDNESS_TARGET`].
+fn gain_for_lufs(measured: f64) -> f32 {
+    if !measured.is_finite() {
+        return 1.0;
+    }
+    let db = (SAMPLE_LOUDNESS_TARGET - measured).clamp(-SAMPLE_CUT_MAX_DB, SAMPLE_BOOST_MAX_DB);
+    10f64.powf(db / 20.0) as f32
+}
+
+/// Gain that brings `data` to [`SAMPLE_LOUDNESS_TARGET`] LUFS.
+fn sample_gain(data: &SampleData) -> f32 {
+    gain_for_lufs(measure_sample_lufs(data))
+}
+
 struct Ctx<'a> {
     style: &'a Style,
     rate: u32,
     max_block: usize,
-    cache: Vec<(PathBuf, u8, Vec<style::SliceSpec>, Shared<SampleData>)>,
+    /// Decoded samples with their loudness gain.
+    cache: Vec<(PathBuf, u8, Vec<style::SliceSpec>, Shared<SampleData>, f32)>,
+    /// Normalize every sample to [`SAMPLE_LOUDNESS_TARGET`].
+    normalize: bool,
     sample_bytes: usize,
     clap: Option<ClapManager>,
     clap_mode: ClapMode,
@@ -214,13 +277,39 @@ impl Ctx<'_> {
         self.warnings.push(msg);
     }
 
-    /// Decoded, resampled sample with its slice table. Cached per
+    /// The lane's motif clips: the files its `motifs` field lists plus the
+    /// style folder's `motifs/bass/*.mid` (bass lane) or `motifs/lead/*.mid`
+    /// (lead lane). Unreadable files are warnings.
+    fn motifs(&mut self, lane: &style::LaneSpec) -> Vec<crate::live::motif::Motif> {
+        use crate::live::motif::{self, Voice};
+        let folder = match lane.role {
+            Role::Bass => Some("bass"),
+            Role::Lead => Some("lead"),
+            _ => None,
+        };
+        let mut paths: Vec<PathBuf> = lane.motifs.iter().map(|p| self.style.asset_path(p)).collect();
+        if let Some(folder) = folder {
+            paths.extend(motif::scan_dir(&self.style.dir.join("motifs").join(folder)));
+        }
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let voice = if lane.role == Role::Bass { Voice::Lowest } else { Voice::Highest };
+        let (motifs, warnings) = motif::load_files(&paths, voice);
+        for w in warnings {
+            self.warn(format!("lane '{}': {w}", lane.name));
+        }
+        motifs
+    }
+
+    /// Decoded, resampled sample with its slice table and the gain that
+    /// brings it to [`SAMPLE_LOUDNESS_TARGET`]. Cached per
     /// `(file, root key, slices)`.
-    fn sample(&mut self, spec: &SampleSpec) -> Result<Shared<SampleData>, LoadError> {
+    fn sample(&mut self, spec: &SampleSpec) -> Result<(Shared<SampleData>, f32), LoadError> {
         let path = self.style.asset_path(&spec.file);
         let root = spec.root_key.map(|n| n.0).unwrap_or(UNPITCHED_ROOT);
         if let Some(hit) = self.cache.iter().find(|c| c.0 == path && c.1 == root && c.2 == spec.slices) {
-            return Ok(hit.3.clone());
+            return Ok((hit.3.clone(), hit.4));
         }
         let fail = |e: crate::audio_file::AudioFileError| LoadError::Sample { path: path.clone(), reason: e.to_string() };
         let data = SampleData::decode(&path, root).map_err(fail)?;
@@ -239,8 +328,14 @@ impl Ctx<'_> {
         let data = data.with_slices(slices).resampled_to(self.rate).map_err(fail)?;
         self.sample_bytes += data.len() * std::mem::size_of::<crate::types::StereoSample>();
         let shared = Shared::new(&gc_handle(), data);
-        self.cache.push((path, root, spec.slices.clone(), shared.clone()));
-        Ok(shared)
+        // A stored measurement (style-calibrate --analyse) saves measuring at every load.
+        let gain = match (self.normalize, spec.lufs) {
+            (false, _) => 1.0,
+            (true, Some(lufs)) => gain_for_lufs(lufs as f64),
+            (true, None) => sample_gain(&shared),
+        };
+        self.cache.push((path, root, spec.slices.clone(), shared.clone(), gain));
+        Ok((shared, gain))
     }
 
     /// Map an option's samples to consecutive targets from `first`. Returns
@@ -260,13 +355,15 @@ impl Ctx<'_> {
         let mut next = first as usize;
         let mut prev_zoned = false;
         for spec in samples {
-            let data = self.sample(spec)?;
+            let (data, norm) = self.sample(spec)?;
+            let gain = gain * norm * db_to_lin(spec.gain_db);
             let choke = if spec.choke != 0 { spec.choke } else { default_choke };
             if choke != 0 && mono_groups {
                 bank.set_mono(choke, true);
             }
             let finish = |slot: SlotDef| {
                 let slot = slot.with_choke(choke).with_gain(gain);
+                let slot = if spec.stream { slot.streamed() } else { slot };
                 if spec.root_key.is_some() { slot } else { slot.unpitched() }
             };
             if !spec.slices.is_empty() {
@@ -303,6 +400,141 @@ impl Ctx<'_> {
             self.warn(format!("more samples than the {capacity} targets available from target {first}"));
         }
         Ok(next as u8)
+    }
+
+    /// A sound pack as a lane option: one bank target holding every zone
+    /// (keys, velocity layers, round robin, loops, tune, pan), one loudness
+    /// gain for the whole pack (so velocity layers keep their balance), the
+    /// instrument's shape, and a `phrase` generator over the pack's phrases.
+    fn pack_option(
+        &mut self,
+        lane: &style::LaneSpec,
+        dir: &std::path::Path,
+    ) -> Result<(Pack, Shared<SampleBank>, SoundShape, generator::phrase::PhraseGenerator), String> {
+        let pack = Pack::load(dir)?;
+        for w in &pack.warnings {
+            self.warn(format!("pack '{}': {w}", pack.name));
+        }
+        let rate = self.rate;
+        // Decoded sources at the engine rate, with their frame scale.
+        let mut files: Vec<(PathBuf, Shared<SampleData>, f64)> = Vec::new();
+        let mut embedded: Vec<Option<(Shared<SampleData>, f64)>> = vec![None; pack.instrument.embedded.len()];
+        let mut loudest = f64::NEG_INFINITY;
+        let mut slots: Vec<SlotDef> = Vec::new();
+        let mut release_zones = 0usize;
+        let mut frame_scale = None;
+        let mono = pack.spec.mono.unwrap_or(lane.role == Role::Bass);
+        for region in &pack.instrument.regions {
+            if region.release_trigger {
+                release_zones += 1;
+                continue;
+            }
+            let decoded: Result<(Shared<SampleData>, f64), String> = match &region.source {
+                Source::File(path) => match files.iter().find(|f| &f.0 == path) {
+                    Some(f) => Ok((f.1.clone(), f.2)),
+                    None => SampleData::decode(path, UNPITCHED_ROOT)
+                        .and_then(|d| {
+                            let ratio = rate as f64 / d.sample_rate().max(1) as f64;
+                            d.resampled_to(rate).map(|d| (d, ratio))
+                        })
+                        .map_err(|e| format!("{}: {e}", path.display()))
+                        .map(|(d, ratio)| {
+                            loudest = loudest.max(measure_sample_lufs(&d));
+                            self.sample_bytes += d.len() * std::mem::size_of::<crate::types::StereoSample>();
+                            let shared = Shared::new(&gc_handle(), d);
+                            files.push((path.clone(), shared.clone(), ratio));
+                            (shared, ratio)
+                        }),
+                },
+                Source::Embedded(i) => match (embedded.get(*i).cloned().flatten(), pack.instrument.embedded.get(*i)) {
+                    (Some(hit), _) => Ok(hit),
+                    (None, Some(e)) => {
+                        let right = e.right.as_deref().unwrap_or(&[]);
+                        let ratio = rate as f64 / e.rate.max(1) as f64;
+                        SampleData::from_channels(&e.left, right, e.rate.max(1), UNPITCHED_ROOT)
+                            .resampled_to(rate)
+                            .map_err(|err| format!("sample '{}': {err}", e.name))
+                            .map(|d| {
+                                loudest = loudest.max(measure_sample_lufs(&d));
+                                self.sample_bytes += d.len() * std::mem::size_of::<crate::types::StereoSample>();
+                                let shared = Shared::new(&gc_handle(), d);
+                                embedded[*i] = Some((shared.clone(), ratio));
+                                (shared, ratio)
+                            })
+                    }
+                    (None, None) => Err(format!("zone points at missing sample {i}")),
+                },
+            };
+            let (data, ratio) = match decoded {
+                Ok(d) => d,
+                Err(e) => {
+                    self.warn(format!("pack '{}': {e}", pack.name));
+                    continue;
+                }
+            };
+            frame_scale.get_or_insert(ratio);
+            let len = data.len();
+            let at = |frames: u32| ((frames as f64 * ratio).round() as usize).min(len);
+            let mut slot = SlotDef::whole(data);
+            slot.root_key = region.keycenter;
+            slot.root_cents = (-region.tune).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            slot.key_lo = region.lokey;
+            slot.key_hi = region.hikey;
+            slot.vel_lo = region.lovel;
+            slot.vel_hi = region.hivel;
+            slot.seq_len = region.seq_length.max(1);
+            slot.seq_pos = region.seq_position.clamp(1, slot.seq_len);
+            match region.loop_mode {
+                LoopMode::Continuous | LoopMode::Sustain => {
+                    let lo = at(region.loop_start.unwrap_or(0));
+                    let hi = region.loop_end.map_or(len, |e| at(e.saturating_add(1)));
+                    if hi > lo + 1 {
+                        slot.loop_range = Some((lo, hi));
+                        slot.loop_sustain = region.loop_mode == LoopMode::Sustain;
+                    }
+                }
+                LoopMode::OneShot => slot.one_shot = true,
+                LoopMode::NoLoop => {}
+            }
+            slot.start_offset = at(region.offset);
+            slot.pan = (region.pan / 100.0).clamp(-1.0, 1.0);
+            for (dst, m) in slot.zone_mods.iter_mut().zip(&region.mods) {
+                *dst = *m;
+                // Start offsets are in the file's frames.
+                if m.target == ZoneTarget::Offset {
+                    dst.src.amount = (m.src.amount as f64 * ratio) as f32;
+                }
+            }
+            slot.gain = db_to_lin(region.volume);
+            if mono {
+                slot.choke = 1;
+            }
+            slots.push(slot);
+        }
+        if release_zones > 0 {
+            self.warn(format!("pack '{}': {release_zones} release-trigger zones skipped", pack.name));
+        }
+        if slots.is_empty() {
+            return Err(format!("pack '{}': no zone could be loaded", pack.name));
+        }
+        let gain = if self.normalize { gain_for_lufs(loudest) } else { 1.0 } * db_to_lin(pack.spec.gain_db);
+        let mut bank = SampleBank::new();
+        if mono {
+            bank.set_mono(1, true);
+        }
+        for mut slot in slots {
+            slot.gain *= gain;
+            bank.add_zone(0, slot);
+        }
+        let shape = pack::sound_shape(
+            &pack.instrument.shape,
+            pack.tone_cc(),
+            pack.spec.morph_cc.unwrap_or(20),
+            frame_scale.unwrap_or(1.0),
+        );
+        let phrases = pack.phrases.clone();
+        let gen = generator::registry::build_phrase(&lane.generator, phrases, pack.spec.glide);
+        Ok((pack, Shared::new(&gc_handle(), bank), shape, gen))
     }
 
     fn clap_manager(&mut self) -> Option<&mut ClapManager> {
@@ -486,6 +718,18 @@ pub fn glue_params(spec: &GlueSpec, send_fx: &SendFxSpec, bpm: f64) -> (GluePara
             }
         }
     }
+    if let Some(b) = &spec.band_duck {
+        let o = &mut p.band_duck;
+        o.enabled = b.enabled.unwrap_or(o.enabled);
+        o.splits_hz = b.splits_hz.unwrap_or(o.splits_hz);
+        o.threshold_db = b.threshold_db.unwrap_or(o.threshold_db);
+        o.ratio = b.ratio.unwrap_or(o.ratio);
+        o.max_db = b.max_db.unwrap_or(o.max_db);
+        o.attack_ms = b.attack_ms.unwrap_or(o.attack_ms);
+        o.release_ms = b.release_ms.unwrap_or(o.release_ms);
+        o.adaptive_release = b.adaptive_release.unwrap_or(o.adaptive_release);
+        o.adapt_ms = b.adapt_ms.unwrap_or(o.adapt_ms);
+    }
     let comp = |c: &style::CompSpec, out: &mut super::glue::CompressorParams| {
         out.threshold_db = c.threshold_db.unwrap_or(out.threshold_db);
         out.ratio = c.ratio.unwrap_or(out.ratio);
@@ -589,7 +833,15 @@ fn resolve_control(spec: &ControlSpec, generator: &dyn LaneGenerator, fx_len: us
         ),
     };
     let label = spec.label.clone().unwrap_or(name);
-    (ResolvedControl { label, spec: spec.clone(), route }, problem)
+    let mut also = Vec::new();
+    for extra in &spec.also {
+        let (r, p) = resolve_control(&ControlSpec { also: Vec::new(), ..extra.clone() }, generator, fx_len);
+        if p.is_some() && problem.is_none() {
+            problem = p.map(|p| format!("also: {p}"));
+        }
+        also.push((extra.clone(), r.route));
+    }
+    (ResolvedControl { label, spec: spec.clone(), route, also }, problem)
 }
 
 /// Load a style into RAM. Non-RT; decodes every sample and instantiates
@@ -604,6 +856,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         rate: opts.sample_rate,
         max_block: opts.max_block.max(1),
         cache: Vec::new(),
+        normalize: true,
         sample_bytes: 0,
         clap: None,
         clap_mode: opts.clap,
@@ -623,7 +876,9 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         let mut drum_kits: Vec<DrumKit> = Vec::new();
         let overridden = generators[li].is_some();
         let mut option_names: Vec<String> = Vec::new();
+        let mut option_family: Vec<OptionFamily> = Vec::new();
         let mut claps: Vec<Arc<ClapCell>> = Vec::new();
+        let mut clap_own_envelope: Vec<bool> = Vec::new();
         let default_option;
 
         if lane.role == Role::Drums {
@@ -663,7 +918,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                         _ => ctx.warn(format!("drum sub-voice option '{}' is not a sampler; skipped", opt.name)),
                     }
                 }
-                options.push(LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain: 1.0 });
+                options.push(LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain: 1.0, shape: None });
                 option_names.push(names.join("+"));
                 // The generator follows the kit: sample and slice counts differ per kit.
                 let layout = DrumLayout::from_sub_voices(&lane.sub_voices, |sv| pick_for(sv, kit));
@@ -673,7 +928,30 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             }
             default_option = 0;
         } else {
-            let wants_clap = lane.options.iter().any(|o| o.clap.is_some());
+            // The style's options, then every pack in `pack_dir`.
+            let mut lane_options: Vec<InstrumentOption> = lane.options.clone();
+            if let Some(dir) = &lane.pack_dir {
+                let found = pack::scan(&style.asset_path(dir));
+                if found.is_empty() {
+                    ctx.warn(format!("lane '{}': no sound packs in {}", lane.name, dir.display()));
+                }
+                for p in found {
+                    lane_options.push(InstrumentOption {
+                        name: String::new(),
+                        lufs_trim_db: 0.0,
+                        sampler: None,
+                        clap: None,
+                        pack: Some(p),
+                    });
+                }
+            }
+            let is_phrase = generator::registry::GeneratorKind::from_name(&lane.generator.name)
+                == Some(generator::registry::GeneratorKind::Phrase);
+            if lane_options.iter().any(|o| o.pack.is_some()) && !is_phrase {
+                ctx.warn(format!("lane '{}': sound packs play with `generator: phrase`", lane.name));
+            }
+            let mut pack_gens: Vec<Option<Box<dyn LaneGenerator>>> = Vec::new();
+            let wants_clap = lane_options.iter().any(|o| o.clap.is_some());
             let clap_allowed = wants_clap && clap_lanes < MAX_CLAP_LANES;
             if wants_clap {
                 if clap_allowed {
@@ -682,16 +960,34 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                     ctx.warn(format!("lane '{}': only {MAX_CLAP_LANES} lanes may host CLAP instruments", lane.name));
                 }
             }
-            for opt in &lane.options {
+            for opt in &lane_options {
                 let gain = if calibration { 1.0 } else { db_to_lin(opt.lufs_trim_db) };
+                let mut name = opt.name.clone();
+                let mut pack_gen: Option<Box<dyn LaneGenerator>> = None;
                 let loaded = match opt.source() {
+                    Some(InstrumentSource::Pack(dir)) => match ctx.pack_option(lane, &style.asset_path(dir)) {
+                        Ok((pack, bank, shape, gen)) => {
+                            if name.is_empty() {
+                                name = pack.name;
+                            }
+                            pack_gen = Some(Box::new(gen));
+                            LaneOption::Sampler { bank, gain, shape: Some(shape) }
+                        }
+                        Err(e) => {
+                            ctx.warn(format!("lane '{}': pack {} not loaded: {e}", lane.name, dir.display()));
+                            if name.is_empty() {
+                                name = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                            }
+                            LaneOption::Unavailable
+                        }
+                    },
                     Some(InstrumentSource::Sampler(s)) => {
                         let mut bank = SampleBank::new();
                         // MUSICAL: a bass choke group is mono, so overlapping
                         // notes slide instead of stacking.
                         let mono = lane.role == Role::Bass;
                         ctx.fill_bank(&mut bank, 0, u8::MAX, &s.samples, 0, 1.0, mono)?;
-                        LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain }
+                        LaneOption::Sampler { bank: Shared::new(&gc_handle(), bank), gain, shape: None }
                     }
                     Some(InstrumentSource::Clap(c)) if clap_allowed => {
                         let rate = ctx.rate;
@@ -707,6 +1003,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                                     }
                                 }
                                 claps.push(ClapCell::new(inst));
+                                clap_own_envelope.push(c.own_envelope);
                                 LaneOption::Clap { slot: claps.len() - 1, gain }
                             }
                             Err(e) => {
@@ -718,7 +1015,14 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                     _ => LaneOption::Unavailable,
                 };
                 options.push(loaded);
-                option_names.push(opt.name.clone());
+                option_names.push(name);
+                pack_gens.push(pack_gen);
+                option_family.push(match opt.source() {
+                    Some(InstrumentSource::Pack(_)) => OptionFamily::Pack,
+                    Some(InstrumentSource::Clap(_)) => OptionFamily::Synth,
+                    Some(InstrumentSource::Sampler(s)) if s.samples.iter().any(|x| x.stream) => OptionFamily::Stream,
+                    _ => OptionFamily::Sampler,
+                });
             }
             // Start on the style's default, or the first option that loaded.
             let usable = |o: &LaneOption| !matches!(o, LaneOption::Unavailable);
@@ -727,15 +1031,37 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             } else {
                 options.iter().position(usable).unwrap_or(0)
             };
+            // Each pack plays its own phrases (per-option generators, like drum kits).
+            if !overridden && pack_gens.iter().any(Option::is_some) {
+                drum_kits = pack_gens
+                    .into_iter()
+                    .map(|generator| DrumKit { layout: DrumLayout::standard(), generator })
+                    .collect();
+            }
         }
 
         let fx_specs: &[FxSpec] = if calibration { &[] } else { &lane.fx };
         let fx = ctx.build_fx(&lane.name, fx_specs);
         let break_specs: &[FxSpec] = if calibration { &[] } else { &lane.break_fx };
         let break_fx = ctx.build_fx(&format!("{} break", lane.name), break_specs);
+        // Drum voice chains, then the break's: each gets a bus.
+        let mut voice_fx: Vec<(DrumVoice, LaneFx)> = Vec::new();
+        if !calibration {
+            for (voice, specs) in lane.voice_fx.chains() {
+                if !specs.is_empty() {
+                    voice_fx.push((voice, ctx.build_fx(&format!("{} {}", lane.name, voice.name()), specs)));
+                }
+            }
+        }
+        if !break_fx.is_empty() {
+            voice_fx.push((DrumVoice::Break, break_fx));
+        }
         // Resolve against the style's chain (calibration loads it empty; unknown slots are ignored).
         let fx_len = lane.fx.len();
-        let generator = generators[li].take().unwrap_or_else(|| generator::build_lane(lane));
+        let generator = generators[li].take().unwrap_or_else(|| {
+            let motifs = ctx.motifs(lane);
+            generator::build_lane_motifs(lane, motifs)
+        });
 
         let mut gen_params = generator.param_defaults();
         for (name, &value) in &lane.generator.params {
@@ -754,6 +1080,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                 max: 1.0,
                 curve: style::Curve::Linear,
                 default: 0.5,
+                also: Vec::new(),
             };
             let spec = lane.controls.get(ci).unwrap_or(&fallback);
             let (control, problem) = resolve_control(spec, generator.as_ref(), fx_len);
@@ -785,8 +1112,10 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                         max: 1.0,
                         curve: style::Curve::Linear,
                         default: 0.5,
+                        also: Vec::new(),
                     },
                     route: ControlRoute::Unresolved,
+                    also: Vec::new(),
                 },
             })
             .collect();
@@ -804,20 +1133,23 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             interpolation: opts.interpolation,
             options,
             claps,
+            clap_own_envelope,
             fx,
-            break_fx,
+            voice_fx,
             output_gains: if calibration { Vec::new() } else { lane.output_trims_db.iter().map(|&db| super::glue::db_to_lin(db)).collect() },
             default_option,
-            kit_layouts: drum_kits.iter().map(|k| k.layout).collect(),
+            kit_layouts: if lane.role == Role::Drums { drum_kits.iter().map(|k| k.layout).collect() } else { Vec::new() },
         }));
         meta.push(LaneMeta {
             name: lane.name.clone(),
             role: lane.role,
             option_names,
             option_available,
+            option_family,
             default_option,
             controls,
             shift_controls,
+            base_rate: if lane.role == Role::Drums { 0 } else { lane.base_rate.exponent() },
             sends: lane.sends,
             generator,
             gen_params,
@@ -967,6 +1299,125 @@ mod tests {
     }
 
     #[test]
+    fn motif_clips_load_from_the_folder_and_the_lane_list() {
+        use crate::live::motif::{midi, starter, Voice};
+        let dir = tempfile::tempdir().unwrap();
+        for e in walkdir::WalkDir::new(fixture_dir()).into_iter().filter_map(|e| e.ok()) {
+            let rel = e.path().strip_prefix(fixture_dir()).unwrap();
+            if e.file_type().is_dir() {
+                std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+            } else {
+                std::fs::copy(e.path(), dir.path().join(rel)).unwrap();
+            }
+        }
+        let write = |rel: &str, bytes: &[u8]| {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, bytes).unwrap();
+        };
+        let clip = |c: &starter::StarterClip, v| midi::write(&c.clip(v), c.name);
+        write("motifs/bass/a.mid", &clip(&starter::BASS[0], Voice::Lowest));
+        write("motifs/bass/b.mid", &clip(&starter::BASS[1], Voice::Lowest));
+        write("motifs/lead/broken.mid", b"not midi");
+        write("listed/lead.mid", &clip(&starter::LEAD[0], Voice::Highest));
+        let yaml = std::fs::read_to_string(dir.path().join("style.yaml")).unwrap();
+        let yaml = yaml.replace("  - name: lead\n    role: lead\n", "  - name: lead\n    role: lead\n    motifs: [listed/lead.mid]\n");
+        assert!(yaml.contains("listed/lead.mid"));
+        std::fs::write(dir.path().join("style.yaml"), yaml).unwrap();
+
+        let style = Style::load(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+        let loaded = load_style(&style, LoadOptions::new(48_000)).unwrap_or_else(|e| panic!("{e}"));
+        // Bass: the folder's two clips (one of them is a 2-bar clip).
+        let phrase = loaded.meta[1].generator.motif_phrase(1, 1);
+        assert!(phrase.is_some(), "the bass lane has clips");
+        // Lead: the listed clip loads, the broken file is a warning.
+        assert!(loaded.warnings.iter().any(|w| w.contains("broken.mid")), "{:?}", loaded.warnings);
+        assert!(loaded.meta[2].generator.param_names().len() > 0);
+        // A missing listed file fails validation.
+        let missing = std::fs::read_to_string(dir.path().join("style.yaml")).unwrap().replace("listed/lead.mid", "listed/gone.mid");
+        std::fs::write(dir.path().join("style.yaml"), missing).unwrap();
+        assert!(Style::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn sound_packs_load_as_options_with_their_own_phrases() {
+        use crate::live::event::EventKind;
+        use crate::live::motif::{midi, Clip, RawNote};
+        let dir = tempfile::tempdir().unwrap();
+        for e in walkdir::WalkDir::new(fixture_dir()).into_iter().filter_map(|e| e.ok()) {
+            let rel = e.path().strip_prefix(fixture_dir()).unwrap();
+            if e.file_type().is_dir() {
+                std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+            } else {
+                std::fs::copy(e.path(), dir.path().join(rel)).unwrap();
+            }
+        }
+        let pack = dir.path().join("packs/tiny");
+        std::fs::create_dir_all(pack.join("phrases")).unwrap();
+        std::fs::write(pack.join("sound.sf2"), crate::live::sf2::tests::tiny_sf2()).unwrap();
+        let step = crate::live::TICKS_PER_STEP as u32;
+        let clip = Clip { bars: 1, notes: vec![RawNote { start: 0, len: 8 * step, pitch: 48, vel: 100 }, RawNote { start: 8 * step, len: 8 * step, pitch: 51, vel: 100 }] };
+        std::fs::write(pack.join("phrases/riff.mid"), midi::write(&clip, "riff")).unwrap();
+        // A folder without an instrument is not a pack.
+        std::fs::create_dir_all(dir.path().join("packs/notes")).unwrap();
+        let yaml = std::fs::read_to_string(dir.path().join("style.yaml")).unwrap();
+        let yaml = yaml.replace(
+            "  - name: lead\n    role: lead\n",
+            "  - name: lead\n    role: lead\n    pack_dir: packs\n",
+        );
+        let yaml = yaml.replace("      family: procedural\n      name: lead\n", "      family: procedural\n      name: phrase\n");
+        assert!(yaml.contains("pack_dir: packs") && yaml.contains("name: phrase"));
+        std::fs::write(dir.path().join("style.yaml"), yaml).unwrap();
+
+        let style = Style::load(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+        let loaded = load_style(&style, LoadOptions::new(48_000)).unwrap_or_else(|e| panic!("{e}"));
+        let lead = &loaded.meta[2];
+        assert_eq!(lead.option_names.len(), 3, "two style options and one pack: {:?}", lead.option_names);
+        assert_eq!(lead.option_names[2], "tiny");
+        assert!(lead.option_available[2]);
+        assert_eq!(lead.option_family[2], OptionFamily::Pack);
+        assert_eq!(lead.drum_kits.len(), 3);
+        assert!(lead.drum_kits[0].generator.is_none() && lead.drum_kits[2].generator.is_some());
+        // The pack's generator plays its phrase.
+        let params = [0.5; MAX_GEN_PARAMS];
+        let mask = [0u8; crate::live::STEPS_PER_BAR];
+        let ctx = crate::live::generator::test_util::ctx(1, 0, &params, &mask);
+        let mut out = crate::live::event::BarEvents::default();
+        lead.drum_kits[2].generator.as_deref().unwrap().render_bar(&ctx, &mut out);
+        assert_eq!(out.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).count(), 2);
+        // The style's own generator has no phrases.
+        let mut silent = crate::live::event::BarEvents::default();
+        lead.generator.render_bar(&ctx, &mut silent);
+        assert!(silent.as_slice().is_empty());
+    }
+
+    #[test]
+    fn samples_are_normalized_to_one_loudness() {
+        let tone = |amp: f32, secs: f32| {
+            let n = (48_000.0 * secs) as usize;
+            let x: Vec<f32> = (0..n).map(|i| amp * (i as f32 * 0.0577).sin()).collect();
+            SampleData::from_channels(&x, &x, 48_000, 60)
+        };
+        // A loud short hit and a quiet long loop end at the same LUFS.
+        for (amp, secs) in [(0.9, 0.15), (0.15, 2.0), (0.3, 0.6)] {
+            let data = tone(amp, secs);
+            let g = sample_gain(&data);
+            let frames: Vec<crate::types::StereoSample> = (0..data.len()).map(|i| data.frame(i) * g).collect();
+            // Short hits are measured over their own length.
+            let got = if frames.len() < 19_200 { measure_hit_lufs(&frames, 48_000.0) } else { measure_lufs(&frames, 48_000.0) };
+            assert!((got - SAMPLE_LOUDNESS_TARGET).abs() < 0.5, "amp {amp}: {got}");
+        }
+        // Silence keeps unity gain; a very quiet file comes up at most 12 dB.
+        assert_eq!(sample_gain(&tone(0.0, 0.5)), 1.0);
+        let quiet = sample_gain(&tone(0.001, 0.05));
+        assert!((20.0 * quiet.log10() - SAMPLE_BOOST_MAX_DB as f32).abs() < 0.01, "{quiet}");
+        // A 50 ms hit reads as loud as it sounds, not 9 dB quieter.
+        let hit = 20.0 * sample_gain(&tone(0.3, 0.05)).log10();
+        let held = 20.0 * sample_gain(&tone(0.3, 0.6)).log10();
+        assert!((hit - held).abs() < 1.0, "hit {hit} dB vs held {held} dB");
+    }
+
+    #[test]
     fn drum_bank_follows_the_target_layout() {
         let style = Style::load(&fixture_dir()).unwrap();
         let mut ctx = Ctx {
@@ -974,6 +1425,7 @@ mod tests {
             rate: 48_000,
             max_block: 64,
             cache: Vec::new(),
+            normalize: false,
             sample_bytes: 0,
             clap: None,
             clap_mode: ClapMode::Disabled,
@@ -1009,6 +1461,36 @@ mod tests {
     }
 
     #[test]
+    fn stored_loudness_replaces_the_load_time_measurement() {
+        let style = Style::load(&fixture_dir()).unwrap();
+        let Some(InstrumentSource::Sampler(s)) = style.spec.lanes[2].options[0].source() else { panic!() };
+        let spec = s.samples[0].clone();
+        let ctx = || Ctx {
+            style: &style,
+            rate: 48_000,
+            max_block: 64,
+            cache: Vec::new(),
+            normalize: true,
+            sample_bytes: 0,
+            clap: None,
+            clap_mode: ClapMode::Disabled,
+            pd: None,
+            collection: None,
+            warnings: Vec::new(),
+        };
+        // No stored value: measured at load.
+        let (data, measured_gain) = ctx().sample(&SampleSpec { lufs: None, ..spec.clone() }).unwrap();
+        assert_eq!(measured_gain, sample_gain(&data));
+        // The stored value decides the gain without measuring.
+        let stored = -20.0f32;
+        let (_, gain) = ctx().sample(&SampleSpec { lufs: Some(stored), ..spec.clone() }).unwrap();
+        assert_eq!(gain, gain_for_lufs(stored as f64));
+        assert!((20.0 * gain.log10() - (SAMPLE_LOUDNESS_TARGET as f32 - stored)).abs() < 0.01);
+        // The file analysis gives the load-time measurement.
+        let analysed = analyse_sample_file(&style.asset_path(&spec.file), 48_000).unwrap();
+        assert_eq!(gain_for_lufs(analysed), measured_gain);
+    }
+    #[test]
     fn multisample_zones_share_one_target() {
         let style = Style::load(&fixture_dir()).unwrap();
         let mut ctx = Ctx {
@@ -1016,6 +1498,7 @@ mod tests {
             rate: 48_000,
             max_block: 64,
             cache: Vec::new(),
+            normalize: false,
             sample_bytes: 0,
             clap: None,
             clap_mode: ClapMode::Disabled,
@@ -1048,5 +1531,71 @@ mod tests {
         assert_eq!(loaded.meta[0].controls[1].route, ControlRoute::Generator(1), "drums: density");
         assert!(matches!(loaded.meta[1].controls[0].route, ControlRoute::Generator(_)), "bass: complexity");
         assert_eq!(loaded.meta[0].drum_kits.len(), 1);
+    }
+
+    #[test]
+    fn a_control_drives_its_also_targets() {
+        use crate::live::style::{ControlSpec, ControlTarget, Curve};
+        let style = Style::load(&fixture_dir()).unwrap();
+        let generator = crate::live::generator::build_lane(&style.spec.lanes[0]);
+        let spec = ControlSpec {
+            label: None,
+            target: ControlTarget::Generator { param: "density".into() },
+            min: 0.0,
+            max: 1.0,
+            curve: Curve::Linear,
+            default: 0.5,
+            also: vec![
+                ControlSpec {
+                    label: None,
+                    target: ControlTarget::Fx { slot: 0, param: 6 },
+                    min: 0.22,
+                    max: 0.08,
+                    curve: Curve::Linear,
+                    default: 0.5,
+                    also: Vec::new(),
+                },
+                ControlSpec {
+                    label: None,
+                    target: ControlTarget::Fx { slot: 9, param: 0 },
+                    min: 0.0,
+                    max: 1.0,
+                    curve: Curve::Linear,
+                    default: 0.5,
+                    also: Vec::new(),
+                },
+            ],
+        };
+        let (c, problem) = resolve_control(&spec, generator.as_ref(), 1);
+        assert!(matches!(c.route, ControlRoute::Generator(_)));
+        assert_eq!(c.also.len(), 2);
+        assert_eq!(c.also[0].1, ControlRoute::Fx { slot: 0, param: 6 });
+        assert!((c.also[0].0.map(1.0) - 0.08).abs() < 1e-6, "its own range");
+        assert_eq!(c.also[1].1, ControlRoute::Unresolved);
+        assert!(problem.is_some_and(|p| p.contains("also")), "a bad extra target is reported");
+    }
+}
+
+#[cfg(test)]
+mod user_style_probe {
+    /// `MESH_STYLE=dir cargo test -p mesh-core --lib probe_style -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_style() {
+        let dir = std::path::PathBuf::from(std::env::var("MESH_STYLE").expect("MESH_STYLE"));
+        let style = super::Style::load(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let loaded = super::load_style(&style, super::LoadOptions::new(48_000)).unwrap_or_else(|e| panic!("{e}"));
+        for w in &loaded.warnings {
+            println!("warning: {w}");
+        }
+        for (i, m) in loaded.meta.iter().enumerate() {
+            println!("lane {i} {} options {:?} families {:?}", m.name, m.option_names, m.option_family);
+            for c in &m.controls {
+                println!("  {} -> {:?} also {:?}", c.label, c.route, c.also.iter().map(|a| a.1).collect::<Vec<_>>());
+            }
+        }
+        for (i, o) in loaded.lanes[1].options_debug().iter().enumerate() {
+            println!("bass option {i}: {o}");
+        }
     }
 }

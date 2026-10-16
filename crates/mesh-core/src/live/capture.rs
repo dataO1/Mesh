@@ -2,7 +2,7 @@
 //!
 //! A capture stores what is needed to reproduce the current state from seeds:
 //! per lane the master seed, the form, the control positions (main and Shift
-//! layer), the octave, the drum mutes, the selected instrument option and the
+//! layer), the octave, the drum voice overrides, the selected instrument option and the
 //! on/off state, plus the global key, progression, tempo and half-time flag. Generators are pure functions of these, so a capture
 //! reproduces the same bars.
 //!
@@ -26,7 +26,7 @@ use super::NUM_LANES;
 /// Folder under the collection root holding all captures.
 pub const CAPTURES_FOLDER: &str = "captures";
 /// Capture file format version. 3: one master seed and a form per lane,
-/// Shift-layer controls, octave and drum mutes. Version 1 and 2 files (slot
+/// Shift-layer controls, octave and drum voice overrides. Version 1 and 2 files (slot
 /// seeds, loop length) still load: the first slot seed becomes the master
 /// seed, everything new starts at its default.
 pub const CAPTURE_VERSION: u32 = 3;
@@ -63,8 +63,9 @@ pub struct LaneCapture {
     pub on: bool,
     /// Octave offset of pitched notes.
     pub octave: i8,
-    /// Drum lane: muted voices.
-    pub mutes: u8,
+    /// Drum lane: pad overrides
+    /// ([`voice_override`](super::generator::layout::voice_override)).
+    pub voice_overrides: u16,
 }
 
 impl Default for LaneCapture {
@@ -77,7 +78,7 @@ impl Default for LaneCapture {
             option: 0,
             on: true,
             octave: 0,
-            mutes: 0,
+            voice_overrides: 0,
         }
     }
 }
@@ -104,6 +105,9 @@ struct LaneCaptureFile {
     #[serde(default)]
     octave: i8,
     #[serde(default)]
+    voice_overrides: u16,
+    /// Early version-3 files: muted drum voices (forced off).
+    #[serde(default)]
     mutes: u8,
 }
 
@@ -122,7 +126,7 @@ impl From<LaneCaptureFile> for LaneCapture {
             option: f.option,
             on: f.on,
             octave: f.octave,
-            mutes: f.mutes,
+            voice_overrides: f.voice_overrides | (f.mutes as u16) << 8,
         }
     }
 }
@@ -317,7 +321,7 @@ mod tests {
     fn sample(ts: &str) -> Capture {
         let mut lanes = [LaneCapture::default(); NUM_LANES];
         lanes[0].seed = 77;
-        lanes[0].mutes = 0b1010_0001;
+        lanes[0].voice_overrides = 0b0000_0100_1010_0001;
         lanes[1] = LaneCapture {
             seed: u32::MAX,
             form: 3,
@@ -326,7 +330,7 @@ mod tests {
             option: 1,
             on: false,
             octave: -2,
-            mutes: 0,
+            voice_overrides: 0,
         };
         Capture::with_timestamp(
             "fixture-breaks",
@@ -471,7 +475,7 @@ mod tests {
             let c = Capture::load(&path).unwrap();
             assert_eq!(c.version, version);
             assert_eq!(c.lanes[0].seed, 10, "first slot seed becomes the master seed");
-            assert_eq!((c.lanes[1].form, c.lanes[1].octave, c.lanes[0].mutes), (0, 0, 0));
+            assert_eq!((c.lanes[1].form, c.lanes[1].octave, c.lanes[0].voice_overrides), (0, 0, 0));
             assert_eq!(c.lanes[1].shift_controls, [0.5; CONTROLS_PER_LANE]);
             assert!(!c.lanes[2].on);
         }

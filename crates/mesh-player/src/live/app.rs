@@ -84,6 +84,8 @@ pub enum LiveBoot {
         collection: PathBuf,
         theme: MeshTheme,
         left_serial: Option<String>,
+        /// Start the set recording right away.
+        auto_record: bool,
     },
     Failed { problem: StyleProblem, collection: PathBuf, theme: MeshTheme },
 }
@@ -132,6 +134,8 @@ struct Recording {
     _handles: Vec<RecordingHandle>,
     events: std::sync::mpsc::Receiver<RecordingEvent>,
     _tx: std::sync::mpsc::Sender<RecordingEvent>,
+    /// Per-bar state next to the first recording file (`<name>.state.tsv`).
+    log: Option<super::statelog::StateLog>,
 }
 
 struct Running {
@@ -234,9 +238,9 @@ fn empty_frame() -> Frame {
 
 impl LiveApp {
     pub fn new(boot: LiveBoot) -> (Self, Task<Message>) {
-        let (screen, theme, collection) = match boot {
-            LiveBoot::Failed { problem, collection, theme } => (Screen::Failed(problem), theme, collection),
-            LiveBoot::Running { style, handles, sample_rate, audio_error, collection, theme, left_serial } => {
+        let (screen, theme, collection, auto_record) = match boot {
+            LiveBoot::Failed { problem, collection, theme } => (Screen::Failed(problem), theme, collection, false),
+            LiveBoot::Running { style, handles, sample_rate, audio_error, collection, theme, left_serial, auto_record } => {
                 let lanes = lane_infos(&style, &handles);
                 let LiveHandles { mut controller, shared, renderer, warnings } = handles;
                 controller.set_capture_collection(Some(collection.clone()));
@@ -280,11 +284,14 @@ impl LiveApp {
                     kb_lane: 0,
                     intent: 0.0,
                 }));
-                (screen, theme, collection)
+                (screen, theme, collection, auto_record)
             }
         };
         let iced_theme = theme.iced_theme();
-        let app = Self { theme, iced_theme, collection, width: 1920.0, screen, toast: None };
+        let mut app = Self { theme, iced_theme, collection, width: 1920.0, screen, toast: None };
+        if auto_record {
+            app.toggle_recording();
+        }
         let monitor = window::oldest().then(|id| match id {
             Some(id) => window::monitor_size(id).map(Message::GotMonitorSize),
             None => Task::done(Message::GotMonitorSize(None)),
@@ -354,18 +361,29 @@ impl LiveApp {
         let surface = ctl.surface.view();
         drop(ctl);
 
-        if let Some(rec) = &run.recording {
+        if let Some(rec) = &mut run.recording {
             while let Ok(ev) = rec.events.try_recv() {
                 match ev {
                     RecordingEvent::Error { path, message } => {
                         toasts.push(format!("Recording error ({}): {message}", path.display()))
                     }
-                    RecordingEvent::Started { path } => log::info!("[LIVE] recording to {}", path.display()),
+                    RecordingEvent::Started { path } => {
+                        log::info!("[LIVE] recording to {}", path.display());
+                        if rec.log.is_none() {
+                            rec.log = super::statelog::StateLog::create(&path, &run.lanes);
+                        }
+                    }
                     RecordingEvent::Stopped { path, .. } => log::info!("[LIVE] recording saved {}", path.display()),
                 }
             }
         }
 
+        if let Some(rec) = &mut run.recording {
+            let elapsed = rec.started.elapsed();
+            if let Some(log) = rec.log.as_mut() {
+                log.bar(&run.shared, &run.lanes, elapsed);
+            }
+        }
         run.build_frame(now, surface);
         for t in toasts {
             self.toast(t);
@@ -395,7 +413,7 @@ impl LiveApp {
             }
             KeyAction::Pad(f) => {
                 let cmd = match f {
-                    PadFn::Mute(voice) => LiveCommand::ToggleDrumVoice { voice },
+                    PadFn::Voice(voice) => LiveCommand::ToggleDrumVoice { voice },
                     PadFn::OctaveDown => LiveCommand::OctaveDelta { lane, delta: -1 },
                     PadFn::OctaveUp => LiveCommand::OctaveDelta { lane, delta: 1 },
                     PadFn::Rate(rate) => {
@@ -469,7 +487,7 @@ impl LiveApp {
         } else {
             format!("Recording to {} USB stick(s)", handles.len())
         };
-        run.recording = Some(Recording { started: Instant::now(), _handles: handles, events: rx, _tx: tx });
+        run.recording = Some(Recording { started: Instant::now(), _handles: handles, events: rx, _tx: tx, log: None });
         self.toast(msg);
     }
 
@@ -645,7 +663,7 @@ impl LiveApp {
                 s
             })
             .collect();
-        let code = rich_text(spans).size(size).wrapping(text::Wrapping::None);
+        let code = rich_text(spans).size(size).wrapping(text::Wrapping::Word).width(Length::Fill);
 
         // Scope.
         let scope_style = ScopeStyle {
@@ -748,7 +766,7 @@ impl Running {
         let key = shared.key();
         let pending = shared.pending_key();
         let f = &mut self.frame;
-        f.key = header::key_text(key, pending);
+        f.key = header::key_text(key, pending, mesh_core::live::harmony::mode_name(key, shared.mode()), shared.mode_pending());
         f.intent = header::intent_text(key, pending, shared.intent_key());
         f.bpm = header::bpm_text(&clock);
         f.half_time = header::half_time_text(shared.half_time(), shared.half_time_target());

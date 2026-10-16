@@ -9,7 +9,7 @@ use crate::music::MusicalKey;
 
 /// A minor, chord on the root.
 pub(crate) fn a_minor() -> HarmonyCtx {
-    HarmonyCtx { key: MusicalKey::new(9, true), chord_degree: 0, progression: 0 }
+    HarmonyCtx { key: MusicalKey::new(9, true), chord_degree: 0, progression: 0, mode: 0 }
 }
 
 /// Context for lane 0 in A minor. Tests edit the fields they vary.
@@ -32,6 +32,10 @@ pub(crate) fn ctx<'a>(
         params,
         harmony: a_minor(),
         drum_mask,
+        jitter: [0.0; MAX_GEN_PARAMS],
+        bass_onsets: 0,
+        bass_phrase: [0; 4],
+        drum_fill: false,
     }
 }
 
@@ -88,4 +92,12 @@ pub(crate) fn notes(events: &[LiveEvent]) -> String {
         .map(|e| format!("{}:{}", e.tick / TICKS_PER_STEP, e.key))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Every starter motif (bass clips read as bass, lead clips as lead).
+pub(crate) fn starter_motifs() -> Vec<crate::live::motif::Motif> {
+    use crate::live::motif::{starter, Motif, Voice};
+    let bass = starter::BASS.iter().map(|c| (c, Voice::Lowest));
+    let lead = starter::LEAD.iter().map(|c| (c, Voice::Highest));
+    bass.chain(lead).map(|(c, v)| Motif::from_clip(c.name, &c.clip(v), v).unwrap()).collect()
 }

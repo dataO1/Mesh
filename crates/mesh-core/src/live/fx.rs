@@ -1,5 +1,5 @@
-//! Native mix effects for live-mode FX slots: compressor, EQ and transient
-//! shaper. Each is an [`Effect`], so it can sit anywhere in a lane, break,
+//! Native mix effects for live-mode FX slots: compressor, EQ, transient
+//! shaper, multiband and a drum room reverb. Each is an [`Effect`], so it can sit anywhere in a lane, break,
 //! drum-bus or master FX chain next to CLAP plugins.
 //!
 //! Parameters are normalized like every [`Effect`]: a style writes 0..1 per
@@ -160,22 +160,29 @@ impl Effect for CompressorEffect {
 
 // ─── EQ (`id: eq`) ────────────────────────────────────────────────────
 
-/// Parameter ranges: low cut Hz (12 dB/oct), bell 1 Hz / dB / Q, bell 2 Hz / dB / Q.
-pub const EQ_RANGES: [(f32, f32); 7] =
-    [(20.0, 500.0), (50.0, 1000.0), (-12.0, 12.0), (0.3, 4.0), (200.0, 12000.0), (-12.0, 12.0), (0.3, 4.0)];
+/// Parameter ranges: low cut Hz (12 dB/oct), bell 1 Hz / dB / Q, bell 2 Hz / dB / Q,
+/// low shelf Hz / dB (gentle slope, Q 0.5).
+pub const EQ_RANGES: [(f32, f32); 9] = [
+    (20.0, 500.0), (50.0, 1000.0), (-12.0, 12.0), (0.3, 4.0), (200.0, 12000.0), (-12.0, 12.0), (0.3, 4.0),
+    (20.0, 1000.0),
+    (-12.0, 12.0),
+];
 
-/// Low cut plus two bells (constant-Q, Simper SVF).
+/// Low cut, two bells (constant-Q, Simper SVF) and a low shelf.
 pub struct EqEffect {
     base: EffectBase,
     low_cut: SvfFilter,
     bells: [SvfFilter; 2],
     /// `k × (gain − 1)` per bell: the band-pass amount added to the input.
     bell_amount: [f32; 2],
+    /// Low shelf: SVF lowpass at Q 0.5 and the gain added through it (`A − 1`).
+    shelf: SvfFilter,
+    shelf_amount: f32,
 }
 
 impl EqEffect {
     pub fn new() -> Self {
-        let d = [20.0, 200.0, 0.0, 1.0, 3500.0, 0.0, 0.8];
+        let d = [20.0, 200.0, 0.0, 1.0, 3500.0, 0.0, 0.8, 100.0, 0.0];
         let names = [
             ("Low cut", "Hz"),
             ("Bell 1 freq", "Hz"),
@@ -184,6 +191,8 @@ impl EqEffect {
             ("Bell 2 freq", "Hz"),
             ("Bell 2 gain", "dB"),
             ("Bell 2 Q", ""),
+            ("Low shelf freq", "Hz"),
+            ("Low shelf gain", "dB"),
         ];
         let mut info = EffectInfo::new("EQ", "Filter");
         for (i, ((name, unit), (lo, hi))) in names.iter().zip(EQ_RANGES).enumerate() {
@@ -194,6 +203,8 @@ impl EqEffect {
             low_cut: SvfFilter::new(),
             bells: [SvfFilter::new(), SvfFilter::new()],
             bell_amount: [0.0; 2],
+            shelf: SvfFilter::new(),
+            shelf_amount: 0.0,
         };
         fx.configure();
         fx
@@ -207,8 +218,13 @@ impl EqEffect {
             self.bells[b].set_params(a(base), q);
             self.bell_amount[b] = (db_to_lin(a(base + 1)) - 1.0) / q;
         }
+        self.shelf.set_params(a(7), SHELF_Q);
+        self.shelf_amount = db_to_lin(a(8)) - 1.0;
     }
 }
+
+/// Low shelf Q: two gentle first-order slopes.
+const SHELF_Q: f32 = 0.5;
 
 impl Default for EqEffect {
     fn default() -> Self {
@@ -222,6 +238,7 @@ impl Effect for EqEffect {
             return;
         }
         let cut = self.base.param_actual(0) > EQ_RANGES[0].0;
+        let shelf = self.shelf_amount != 0.0;
         for s in buffer.as_mut_slice() {
             let (mut l, mut r) = (s.left, s.right);
             if cut {
@@ -233,6 +250,11 @@ impl Effect for EqEffect {
                 l += amount * o.band_l;
                 r += amount * o.band_r;
             }
+            if shelf {
+                let o = self.shelf.process(l, r);
+                l += self.shelf_amount * o.low_l;
+                r += self.shelf_amount * o.low_r;
+            }
             s.left = l;
             s.right = r;
         }
@@ -243,6 +265,142 @@ impl Effect for EqEffect {
         for b in &mut self.bells {
             b.reset();
         }
+        self.shelf.reset();
+    }
+
+    effect_boilerplate!();
+}
+
+// ─── Peak clipper (`id: clipper`) ─────────────────────────────────────
+
+/// Parameter ranges: threshold dBFS, knee dB (how far under the threshold
+/// the curve starts to bend).
+pub const CLIPPER_RANGES: [(f32, f32); 2] = [(-24.0, 12.0), (0.0, 12.0)];
+
+/// Oversampling factor and FIR taps (per phase: `CLIP_TAPS / CLIP_OS`).
+const CLIP_OS: usize = 4;
+const CLIP_TAPS: usize = 96;
+const CLIP_PHASE_TAPS: usize = CLIP_TAPS / CLIP_OS;
+/// FIR cutoff as a share of the base-rate Nyquist.
+const CLIP_PASSBAND: f64 = 0.95;
+
+/// Soft-knee peak clipper, 4x oversampled: the signal passes untouched below
+/// the knee, and only peaks above it bend smoothly into the threshold. For
+/// shaving the rare highest peaks before compressors and the limiter.
+pub struct ClipperEffect {
+    base: EffectBase,
+    /// Knee start and width (linear): `x` up to `a` passes, above it the
+    /// curve approaches `a + b` (the threshold).
+    a: f32,
+    b: f32,
+    /// Windowed-sinc lowpass at the 4x rate (unity DC gain).
+    fir: [f32; CLIP_TAPS],
+    /// Per channel: recent base-rate inputs (newest first) and a ring of
+    /// clipped 4x samples.
+    hist: [[f32; CLIP_PHASE_TAPS]; 2],
+    ring: [[f32; CLIP_TAPS]; 2],
+    pos: usize,
+}
+
+impl ClipperEffect {
+    pub fn new() -> Self {
+        let d = [0.0, 3.0];
+        let names = [("Threshold", "dB"), ("Knee", "dB")];
+        let mut info = EffectInfo::new("Clipper", "Dynamics");
+        for (i, ((name, unit), (lo, hi))) in names.iter().zip(CLIPPER_RANGES).enumerate() {
+            info = info.with_param(ParamInfo::new(*name, norm(d[i], lo, hi)).with_range(lo, hi).with_unit(*unit));
+        }
+        let fc = CLIP_PASSBAND * 0.5 / CLIP_OS as f64;
+        let mid = (CLIP_TAPS - 1) as f64 / 2.0;
+        let mut fir = [0.0f32; CLIP_TAPS];
+        let mut sum = 0.0;
+        for (i, h) in fir.iter_mut().enumerate() {
+            let t = i as f64 - mid;
+            let sinc = if t == 0.0 { 2.0 * fc } else { (2.0 * std::f64::consts::PI * fc * t).sin() / (std::f64::consts::PI * t) };
+            let w = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (CLIP_TAPS - 1) as f64).cos()
+                + 0.08 * (4.0 * std::f64::consts::PI * i as f64 / (CLIP_TAPS - 1) as f64).cos();
+            *h = (sinc * w) as f32;
+            sum += sinc * w;
+        }
+        for h in &mut fir {
+            *h /= sum as f32;
+        }
+        let mut fx = Self {
+            base: EffectBase::new(info),
+            a: 1.0,
+            b: 0.0,
+            fir,
+            hist: [[0.0; CLIP_PHASE_TAPS]; 2],
+            ring: [[0.0; CLIP_TAPS]; 2],
+            pos: 0,
+        };
+        fx.configure();
+        fx
+    }
+
+    fn configure(&mut self) {
+        let threshold = db_to_lin(self.base.param_actual(0));
+        self.a = threshold * db_to_lin(-self.base.param_actual(1));
+        self.b = threshold - self.a;
+    }
+
+    #[inline(always)]
+    fn curve(&self, x: f32) -> f32 {
+        let m = x.abs();
+        if m <= self.a {
+            x
+        } else if self.b <= 1e-9 {
+            self.a.copysign(x)
+        } else {
+            (self.a + self.b * ((m - self.a) / self.b).tanh()).copysign(x)
+        }
+    }
+}
+
+impl Default for ClipperEffect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Effect for ClipperEffect {
+    fn process(&mut self, buffer: &mut StereoBuffer) {
+        if self.base.is_bypassed() {
+            return;
+        }
+        for s in buffer.as_mut_slice() {
+            let mut out = [0.0f32; 2];
+            for (c, x) in [s.left, s.right].into_iter().enumerate() {
+                self.hist[c].copy_within(0..CLIP_PHASE_TAPS - 1, 1);
+                self.hist[c][0] = x;
+                let hist = self.hist[c];
+                // Upsample (polyphase, gain 4), clip, push into the ring.
+                for p in 0..CLIP_OS {
+                    let mut u = 0.0;
+                    for (k, &h) in hist.iter().enumerate() {
+                        u += self.fir[p + CLIP_OS * k] * h;
+                    }
+                    let y = self.curve(u * CLIP_OS as f32);
+                    self.ring[c][(self.pos + p) % CLIP_TAPS] = y;
+                }
+                // Decimate: lowpass at the newest 4x sample.
+                let newest = self.pos + CLIP_OS - 1;
+                let mut y = 0.0;
+                for (j, &h) in self.fir.iter().enumerate() {
+                    y += h * self.ring[c][(newest + CLIP_TAPS - j) % CLIP_TAPS];
+                }
+                out[c] = y;
+            }
+            self.pos = (self.pos + CLIP_OS) % CLIP_TAPS;
+            s.left = out[0];
+            s.right = out[1];
+        }
+    }
+
+    fn reset(&mut self) {
+        self.hist = [[0.0; CLIP_PHASE_TAPS]; 2];
+        self.ring = [[0.0; CLIP_TAPS]; 2];
+        self.pos = 0;
     }
 
     effect_boilerplate!();
@@ -383,20 +541,20 @@ const MB_GLOBAL_PARAMS: [(&str, &str, f32, f32, f32); 3] =
 const MB_GLOBAL_BASE: usize = MB_SPLITS + MB_BANDS * MB_BAND_PARAMS.len();
 
 /// One Linkwitz-Riley 4th-order split (two cascaded Butterworth stages).
-struct Lr4 {
+pub(crate) struct Lr4 {
     first: SvfFilter,
     low: SvfFilter,
     high: SvfFilter,
 }
 
 impl Lr4 {
-    fn new(hz: f32) -> Self {
+    pub(crate) fn new(hz: f32) -> Self {
         let mut s = Self { first: SvfFilter::new(), low: SvfFilter::new(), high: SvfFilter::new() };
         s.set(hz);
         s
     }
 
-    fn set(&mut self, hz: f32) {
+    pub(crate) fn set(&mut self, hz: f32) {
         self.first.set_frequency(hz);
         self.low.set_frequency(hz);
         self.high.set_frequency(hz);
@@ -404,14 +562,14 @@ impl Lr4 {
 
     /// `(low, high)`; their sum is an allpass of the input.
     #[inline]
-    fn split(&mut self, l: f32, r: f32) -> ([f32; 2], [f32; 2]) {
+    pub(crate) fn split(&mut self, l: f32, r: f32) -> ([f32; 2], [f32; 2]) {
         let a = self.first.process(l, r);
         let lo = self.low.process(a.low_l, a.low_r);
         let hi = self.high.process(a.high_l, a.high_r);
         ([lo.low_l, lo.low_r], [hi.high_l, hi.high_r])
     }
 
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.first.reset();
         self.low.reset();
         self.high.reset();
@@ -595,6 +753,30 @@ mod tests {
     }
 
     #[test]
+    fn clipper_passes_low_levels_and_shaves_peaks() {
+        let n = 48_000;
+        let run = |amp: f32, freq: f32| {
+            let mut c = ClipperEffect::new();
+            set(&mut c, 0, -6.0, CLIPPER_RANGES[0]);
+            set(&mut c, 1, 3.0, CLIPPER_RANGES[1]);
+            let mut b = sine(freq, amp, n);
+            let dry = rms_db(&b, n / 2);
+            c.process(&mut b);
+            let peak = b.as_slice()[n / 2..].iter().map(|s| s.left.abs()).fold(0.0f32, f32::max);
+            (rms_db(&b, n / 2) - dry, 20.0 * peak.log10())
+        };
+        // Below the knee (-9 dBFS): untouched, in level, up to 15 kHz.
+        for f in [100.0, 1000.0, 15_000.0] {
+            let (gain, _) = run(0.25, f);
+            assert!(gain.abs() < 0.2, "{f} Hz: {gain} dB");
+        }
+        // A peak well over the threshold ends at it (a little overshoot
+        // from the oversampling filter).
+        let (_, peak) = run(1.0, 200.0);
+        assert!(peak < -5.3 && peak > -7.0, "peak {peak} dBFS");
+    }
+
+    #[test]
     fn eq_low_cut_and_bells() {
         let n = 48_000;
         let gain = |freq: f32, setup: &dyn Fn(&mut EqEffect)| {
@@ -616,6 +798,14 @@ mod tests {
         };
         assert!((gain(200.0, &bells) + 4.0).abs() < 0.3, "cut at 200 Hz: {}", gain(200.0, &bells));
         assert!((gain(3500.0, &bells) - 3.0).abs() < 0.3, "boost at 3.5 kHz: {}", gain(3500.0, &bells));
+        let shelf = |eq: &mut EqEffect| {
+            set(eq, 7, 100.0, EQ_RANGES[7]);
+            set(eq, 8, 3.0, EQ_RANGES[8]);
+        };
+        assert!((gain(25.0, &shelf) - 3.0).abs() < 0.5, "shelf at 25 Hz: {}", gain(25.0, &shelf));
+        assert!(gain(1000.0, &shelf).abs() < 0.2, "flat above: {}", gain(1000.0, &shelf));
+        let mid = gain(100.0, &shelf);
+        assert!(mid > 0.0 && mid < 3.0, "gentle slope: {mid}");
     }
 
     #[test]
@@ -707,5 +897,262 @@ mod tests {
         assert!((v - norm(120.0, EQ_RANGES[0].0, EQ_RANGES[0].1)).abs() < 1e-6);
         assert_eq!(setting_param(eq.info(), "low_cut", 1e6).unwrap().1, 1.0, "clamped");
         assert!(setting_param(eq.info(), "nope", 1.0).is_none());
+    }
+}
+
+// ─── Room reverb (`id: room`) ─────────────────────────────────────────
+
+/// Parameter ranges: decay s (RT60), pre-delay ms, low cut Hz, high cut Hz,
+/// damping, size, mix, duck dB, duck release ms, key.
+pub const ROOM_RANGES: [(f32, f32); 10] = [
+    (0.1, 4.0),
+    (0.0, 80.0),
+    (50.0, 1000.0),
+    (2000.0, 16000.0),
+    (0.0, 1.0),
+    (0.3, 1.5),
+    (0.0, 1.0),
+    (0.0, 24.0),
+    (10.0, 500.0),
+    (0.0, 1.0),
+];
+/// Index of the room's `Key` parameter: writing 1 ducks the tail now. The
+/// drum lane writes it on every kick and snare it fires (sidechain).
+pub const ROOM_KEY_PARAM: usize = 9;
+
+/// Delay line lengths in ms at size 1 (mutually prime in samples, spread so
+/// the echoes do not line up).
+const ROOM_LINES_MS: [f32; 8] = [11.3, 13.7, 17.1, 19.9, 23.3, 27.1, 31.7, 37.9];
+/// Longest pre-delay and line, for the buffers.
+const ROOM_MAX_PREDELAY_MS: f32 = 80.0;
+const ROOM_MAX_LINE_MS: f32 = 37.9 * 1.5;
+
+/// Drum room reverb: pre-delay, low cut and high cut on the reverb path
+/// only, then an 8-line feedback delay network (Householder mixing, a
+/// damping low-pass in every line) whose feedback sets the decay time
+/// directly in seconds. The dry signal passes untouched; `mix` adds the wet.
+/// Buffers are sized for the longest settings at construction (RT-safe).
+pub struct RoomEffect {
+    base: EffectBase,
+    predelay: Vec<f32>,
+    pre_pos: usize,
+    pre_len: usize,
+    lines: [Vec<f32>; 8],
+    pos: [usize; 8],
+    len: [usize; 8],
+    gain: [f32; 8],
+    damp_state: [f32; 8],
+    damp: f32,
+    low_cut: SvfFilter,
+    high_cut: SvfFilter,
+    mix: f32,
+    /// Duck depth (dB at the key) and envelope release coefficient.
+    duck_db: f32,
+    duck_release: f32,
+    /// Duck envelope: 1 right at a key, decaying to 0.
+    duck_env: f32,
+}
+
+impl RoomEffect {
+    pub fn new() -> Self {
+        // MUSICAL: DnB drum room (short decay, 20 ms pre-delay, the low end
+        // and the fizz kept out of the tail). Tune by ear.
+        let d = [0.8, 20.0, 300.0, 7000.0, 0.4, 1.0, 0.15, 12.0, 150.0, 0.0];
+        let names = [
+            ("Decay", "s"),
+            ("Pre-delay", "ms"),
+            ("Low cut", "Hz"),
+            ("High cut", "Hz"),
+            ("Damping", ""),
+            ("Size", ""),
+            ("Mix", ""),
+            ("Duck", "dB"),
+            ("Duck release", "ms"),
+            ("Key", ""),
+        ];
+        let mut info = EffectInfo::new("Room", "Reverb");
+        for (i, ((name, unit), (lo, hi))) in names.iter().zip(ROOM_RANGES).enumerate() {
+            info = info.with_param(ParamInfo::new(*name, norm(d[i], lo, hi)).with_range(lo, hi).with_unit(*unit));
+        }
+        let sr = SAMPLE_RATE as f32;
+        let line_cap = (ROOM_MAX_LINE_MS * 0.001 * sr) as usize + 2;
+        let mut fx = Self {
+            base: EffectBase::new(info),
+            predelay: vec![0.0; (ROOM_MAX_PREDELAY_MS * 0.001 * sr) as usize + 2],
+            pre_pos: 0,
+            pre_len: 1,
+            lines: std::array::from_fn(|_| vec![0.0; line_cap]),
+            pos: [0; 8],
+            len: [1; 8],
+            gain: [0.0; 8],
+            damp_state: [0.0; 8],
+            damp: 0.0,
+            low_cut: SvfFilter::new(),
+            high_cut: SvfFilter::new(),
+            mix: 0.0,
+            duck_db: 0.0,
+            duck_release: 0.0,
+            duck_env: 0.0,
+        };
+        fx.configure();
+        fx
+    }
+
+    fn configure(&mut self) {
+        let a = |i| self.base.param_actual(i);
+        let sr = SAMPLE_RATE as f32;
+        let (decay, size) = (a(0).max(0.05), a(5));
+        self.pre_len = ((a(1) * 0.001 * sr) as usize).clamp(1, self.predelay.len() - 1);
+        for i in 0..8 {
+            let n = ((ROOM_LINES_MS[i] * size * 0.001 * sr) as usize).clamp(2, self.lines[i].len() - 1);
+            self.len[i] = n;
+            // RT60: -60 dB after `decay` seconds, i.e. per trip through the line.
+            self.gain[i] = 10f32.powf(-3.0 * n as f32 / (decay * sr));
+        }
+        self.low_cut.set_frequency(a(2));
+        self.high_cut.set_frequency(a(3));
+        self.damp = a(4) * 0.7;
+        self.mix = a(6);
+        self.duck_db = a(7);
+        self.duck_release = coeff(a(8));
+        // A key: duck from now on, and clear it for the next one.
+        if a(ROOM_KEY_PARAM) >= 0.5 {
+            self.duck_env = 1.0;
+            self.base.set_param(ROOM_KEY_PARAM, 0.0);
+        }
+    }
+}
+
+impl Default for RoomEffect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Effect for RoomEffect {
+    fn process(&mut self, buffer: &mut StereoBuffer) {
+        if self.base.is_bypassed() || self.mix <= 0.0 {
+            return;
+        }
+        for s in buffer.as_mut_slice() {
+            // Pre-delay, then the reverb-path filters.
+            let input = 0.5 * (s.left + s.right);
+            let read = (self.pre_pos + self.predelay.len() - self.pre_len) % self.predelay.len();
+            let delayed = self.predelay[read];
+            self.predelay[self.pre_pos] = input;
+            self.pre_pos = (self.pre_pos + 1) % self.predelay.len();
+            let hp = self.low_cut.process(delayed, delayed).high_l;
+            let x = self.high_cut.process(hp, hp).low_l;
+
+            // Line outputs, damped.
+            let mut out = [0.0f32; 8];
+            let mut sum = 0.0;
+            for i in 0..8 {
+                let cap = self.lines[i].len();
+                let r = (self.pos[i] + cap - self.len[i]) % cap;
+                let y = self.lines[i][r];
+                self.damp_state[i] = y + self.damp * (self.damp_state[i] - y);
+                out[i] = self.damp_state[i] * self.gain[i];
+                sum += out[i];
+            }
+            // Householder feedback (I - 2/N): energy-preserving, dense mixing.
+            let k = sum * (2.0 / 8.0);
+            for i in 0..8 {
+                let cap = self.lines[i].len();
+                self.lines[i][self.pos[i]] = x + out[i] - k;
+                self.pos[i] = (self.pos[i] + 1) % cap;
+            }
+            let wet_l = out[0] - out[2] + out[4] - out[6];
+            let wet_r = out[1] - out[3] + out[5] - out[7];
+            // Sidechain: the tail ducks under each kick and snare and comes back.
+            let duck = if self.duck_env > 1e-4 { db_to_lin(-self.duck_db * self.duck_env) } else { 1.0 };
+            self.duck_env *= self.duck_release;
+            let g = self.mix * 0.5 * duck;
+            s.left += g * wet_l;
+            s.right += g * wet_r;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.predelay.fill(0.0);
+        for l in &mut self.lines {
+            l.fill(0.0);
+        }
+        self.damp_state = [0.0; 8];
+        self.low_cut.reset();
+        self.high_cut.reset();
+    }
+
+    effect_boilerplate!();
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+    use crate::types::StereoSample;
+
+    fn impulse_energy(fx: &mut RoomEffect, from_s: f32, to_s: f32) -> f32 {
+        let sr = SAMPLE_RATE as f32;
+        let n = (to_s * sr) as usize;
+        let mut buf = StereoBuffer::silence(n);
+        buf.as_mut_slice()[0] = StereoSample { left: 1.0, right: 1.0 };
+        fx.process(&mut buf);
+        buf.as_slice()[(from_s * sr) as usize..].iter().map(|s| s.left * s.left + s.right * s.right).sum()
+    }
+
+    fn room(settings: &[(&str, f32)]) -> RoomEffect {
+        let mut fx = RoomEffect::new();
+        for (name, value) in settings {
+            let (i, v) = setting_param(fx.info(), name, *value).unwrap();
+            fx.set_param(i, v);
+        }
+        fx
+    }
+
+    #[test]
+    fn longer_decay_rings_longer_and_mix_zero_is_dry() {
+        let short = impulse_energy(&mut room(&[("decay", 0.3), ("mix", 1.0)]), 0.5, 1.5);
+        let long = impulse_energy(&mut room(&[("decay", 2.0), ("mix", 1.0)]), 0.5, 1.5);
+        assert!(long > 20.0 * short, "tail {short} vs {long}");
+        let mut dry = room(&[("mix", 0.0)]);
+        let mut buf = StereoBuffer::silence(64);
+        buf.as_mut_slice()[3] = StereoSample { left: 0.7, right: -0.2 };
+        dry.process(&mut buf);
+        assert_eq!(buf.as_slice()[3], StereoSample { left: 0.7, right: -0.2 });
+        assert!(buf.as_slice().iter().enumerate().all(|(i, s)| i == 3 || s.left == 0.0));
+    }
+
+    #[test]
+    fn predelay_holds_the_tail_back_and_it_stays_finite() {
+        let mut fx = room(&[("pre_delay", 40.0), ("mix", 1.0), ("decay", 4.0)]);
+        let sr = SAMPLE_RATE as f32;
+        let mut buf = StereoBuffer::silence((sr * 3.0) as usize);
+        buf.as_mut_slice()[0] = StereoSample { left: 1.0, right: 1.0 };
+        fx.process(&mut buf);
+        let early: f32 = buf.as_slice()[1..(0.04 * sr) as usize].iter().map(|s| s.left.abs()).sum();
+        assert!(early < 1e-6, "nothing before the pre-delay: {early}");
+        assert!(buf.as_slice().iter().all(|s| s.left.is_finite() && s.left.abs() < 4.0));
+    }
+
+    #[test]
+    fn a_key_ducks_the_tail_and_it_comes_back() {
+        let sr = SAMPLE_RATE as f32;
+        let tail = |key: bool| {
+            let mut fx = room(&[("decay", 1.0), ("mix", 1.0), ("pre_delay", 0.0), ("duck", 18.0), ("duck_release", 100.0)]);
+            let mut buf = StereoBuffer::silence((sr * 0.6) as usize);
+            buf.as_mut_slice()[0] = StereoSample { left: 1.0, right: 1.0 };
+            fx.process(&mut buf);
+            if key {
+                fx.set_param(ROOM_KEY_PARAM, 1.0);
+            }
+            let mut next = StereoBuffer::silence((sr * 0.6) as usize);
+            fx.process(&mut next);
+            let energy = |b: &[StereoSample]| b.iter().map(|s| s.left * s.left).sum::<f32>();
+            (energy(&next.as_slice()[..(0.02 * sr) as usize]), energy(&next.as_slice()[(0.4 * sr) as usize..]))
+        };
+        let (plain_now, plain_late) = (tail(false).0, tail(false).1);
+        let (keyed_now, keyed_late) = tail(true);
+        assert!(keyed_now < plain_now * 0.1, "ducked right after the key: {keyed_now} vs {plain_now}");
+        assert!(keyed_late > plain_late * 0.8, "back after the release: {keyed_late} vs {plain_late}");
     }
 }

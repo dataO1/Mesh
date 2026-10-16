@@ -129,6 +129,26 @@ pub fn measure_lufs(stereo: &[StereoSample], sample_rate: f64) -> f64 {
     }
 }
 
+/// Loudness in LUFS of a hit shorter than one 400 ms gating block: the
+/// K-weighted mean power over the hit's own length (no gating). Padding a
+/// short hit with silence instead reads it as quiet and over-boosts it.
+/// `f64::NEG_INFINITY` for silence.
+pub fn measure_hit_lufs(stereo: &[StereoSample], sample_rate: f64) -> f64 {
+    if stereo.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let [mut shelf_l, mut hp_l] = k_weighting(sample_rate);
+    let [mut shelf_r, mut hp_r] = k_weighting(sample_rate);
+    let mut acc = 0.0;
+    for s in stereo {
+        let l = hp_l.process(shelf_l.process(s.left as f64));
+        let r = hp_r.process(shelf_r.process(s.right as f64));
+        acc += l * l + r * r;
+    }
+    let p = acc / stereo.len() as f64;
+    if p > 0.0 { power_to_lufs(p) } else { f64::NEG_INFINITY }
+}
+
 /// Static trim in dB that brings `measured` LUFS to `target` LUFS.
 /// Unmeasurable input (silence) gets no trim.
 pub fn trim_db(measured: f64, target: f64) -> f64 {

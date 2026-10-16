@@ -9,6 +9,7 @@
 //!          ─► mono-below crossover  (bass only)
 //!          ─► compressor → saturation (bass / lead / extra)
 //!          ─► full-band duck        (bass / lead / extra, keyed by the main kit)
+//!          ─► band duck             (bass only, keyed by lead + extra, per band)
 //!          ├─► delay send ─┐  (post-lane taps, per-lane levels)
 //!          ├─► reverb send ┤
 //!          │               │
@@ -32,6 +33,7 @@
 //! [`loudness`] holds the offline BS.1770 meter used by the style tool to
 //! compute the per-option trims.
 
+mod bandduck;
 mod chain;
 mod dynamics;
 mod filter;
@@ -49,8 +51,9 @@ pub use dynamics::{static_curve_db, Compressor};
 pub use ducker::{duck_full_band, DuckEnvelope};
 pub use filter::{MonoBelow, RoleHighPass};
 pub use loudness::{measure_lufs, trim_db};
+pub use bandduck::BandDuck;
 pub use params::{
-    CompressorParams, DelayParams, DrumBusParams, DriveParams, DuckParams, GlueParams,
+    BandDuckParams, CompressorParams, DelayParams, DrumBusParams, DriveParams, DuckParams, GlueParams,
     HighPassParams, LaneDynamicsParams, MasterParams, MonoBelowParams, ReverbParams,
     RoleDynamicsParams, RoleHighPassParams, SaturationParams, Slope,
 };

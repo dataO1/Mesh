@@ -22,7 +22,9 @@ crates/mesh-core/src/bin/history_stats.rs
 .cache
 
 # Claude Code session metadata (locks, scheduled tasks, etc.)
-.claude/
+.claude/*
+# Repo skills are versioned (synth-design).
+!.claude/skills/
 
 # Python bytecode anywhere in the tree
 __pycache__/

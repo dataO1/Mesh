@@ -27,10 +27,10 @@ use crate::types::{StereoBuffer, StereoSample};
 use super::clock::ClockSegment;
 use super::command::SamplerParam;
 use super::event::{flags, EventKind, LiveEvent};
-use super::generator::layout::{self, DrumLayout, DrumVoice};
+use super::generator::layout::{self, voice_override, DrumLayout, DrumVoice};
 use super::glue::{Role, SaturationParams, Saturator};
 use super::player::EventSink;
-use super::sampler::{Interpolation, LaneSamplerParams, SampleBank, Sampler};
+use super::sampler::{attack_secs, Interpolation, LaneSamplerParams, SampleBank, Sampler, SoundShape};
 use super::state::SpanTag;
 use super::style::{SubVoiceKind, CONTROLS_PER_LANE};
 use super::TICKS_PER_STEP;
@@ -46,6 +46,33 @@ pub const DRUM_TARGET_BREAK: u8 = layout::BREAK_BASE;
 /// `(first target, target count)` of a drum sub-voice.
 pub fn drum_target_range(kind: SubVoiceKind) -> (u8, u8) {
     layout::target_range(kind)
+}
+
+/// Surge XT's envelope time on its normalized 0..1 parameter: log2 seconds
+/// from −8 to 5.
+pub fn surge_env_time(secs: f32) -> f64 {
+    ((secs.max(1e-4).log2() as f64 + 8.0) / 13.0).clamp(0.0, 1.0)
+}
+
+// MUSICAL: first draft, tune by ear (user: longer bass release).
+/// Release of bass notes: the sampler's, and the least a Surge bass preset
+/// keeps ("Amp EG Release" of both scenes).
+pub const BASS_RELEASE_SECS: f32 = 0.15;
+/// Bass lowpass range in Hz: 6 dB/oct at the low end, 24 dB/oct at the top
+/// (user: about 700 Hz to 15 kHz).
+pub const BASS_FILTER: (f32, f32) = (700.0, 15_000.0);
+/// Seconds a bass note's cutoff glides from the previous note's.
+pub const BASS_CUTOFF_GLIDE_SECS: f32 = 0.06;
+
+/// Indices of a CLAP instrument's parameters whose name ends in `suffix`
+/// (both Surge scenes). Non-RT, at lane construction.
+fn clap_params_named(cell: &Arc<ClapCell>, suffix: &str) -> [Option<usize>; 2] {
+    let mut out = [None; 2];
+    if let Some(inst) = cell.try_lock() {
+        let mut found = inst.params().iter().enumerate().filter(|(_, p)| p.name.ends_with(suffix)).map(|(i, _)| i);
+        out = [found.next(), found.next()];
+    }
+    out
 }
 
 /// Highlight tag of a fired event (see [`SpanTag`]).
@@ -166,7 +193,8 @@ impl Effect for DriveEffect {
 }
 
 /// Native effect ids accepted by `FxSource::Native`.
-pub const NATIVE_EFFECT_IDS: [&str; 9] = ["filter", "delay", "reverb", "gain", "drive", "compressor", "eq", "transient", "multiband"];
+pub const NATIVE_EFFECT_IDS: [&str; 11] =
+    ["filter", "delay", "reverb", "gain", "drive", "compressor", "eq", "transient", "multiband", "room", "clipper"];
 
 /// Build a native effect by id.
 pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
@@ -180,6 +208,8 @@ pub fn native_effect(id: &str) -> Option<Box<dyn Effect>> {
         "eq" => Box::new(super::fx::EqEffect::new()),
         "transient" => Box::new(super::fx::TransientEffect::new()),
         "multiband" => Box::new(super::fx::MultibandEffect::new()),
+        "room" => Box::new(super::fx::RoomEffect::new()),
+        "clipper" => Box::new(super::fx::ClipperEffect::new()),
         _ => return None,
     })
 }
@@ -209,6 +239,18 @@ impl LaneFx {
 
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    /// Key every room reverb of the chain (sidechain from the lane's kicks
+    /// and snares, see [`super::fx::ROOM_KEY_PARAM`]).
+    pub fn key_rooms(&mut self) {
+        for slot in &mut self.slots {
+            if let Some(fx) = slot.effect.as_mut() {
+                if fx.info().name == "Room" {
+                    fx.set_param(super::fx::ROOM_KEY_PARAM, 1.0);
+                }
+            }
+        }
     }
 
     /// Process `buf` in place. RT-safe for blocks up to `max_block`.
@@ -521,6 +563,8 @@ impl NoteTracker {
                     self.push(InstrumentNote::choke(offset, old.key, Some(old.clap_id)));
                 }
             }
+            // Pack modulation drives the sampler; CLAP synths take their own.
+            EventKind::Bend | EventKind::Cc => {}
         }
     }
 
@@ -535,11 +579,26 @@ impl NoteTracker {
 
 // ─── Lane ──────────────────────────────────────────────────────────────
 
+/// What kind of sound an option is. A form swap (`*`) stays inside one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptionFamily {
+    /// A sampled instrument (drum kits too).
+    #[default]
+    Sampler,
+    /// A CLAP synth.
+    Synth,
+    /// A long stream sample (mudpie) played as an instrument.
+    Stream,
+    /// A sound pack: its SF2 / SFZ instrument plays its own MIDI phrases.
+    Pack,
+}
+
 /// One preloaded instrument option of a lane.
 pub enum LaneOption {
     /// Sample bank and the option's LUFS trim as a linear gain. Drum kits
-    /// carry their trims per slot, so their `gain` is 1.
-    Sampler { bank: Shared<SampleBank>, gain: f32 },
+    /// carry their trims per slot, so their `gain` is 1. A sound pack's
+    /// `shape` (envelope, filter, modulation) applies while it plays.
+    Sampler { bank: Shared<SampleBank>, gain: f32, shape: Option<SoundShape> },
     /// Index into the lane's CLAP instruments, plus the trim gain.
     Clap { slot: usize, gain: f32 },
     /// Could not be loaded; selecting it keeps the current instrument.
@@ -555,9 +614,13 @@ pub struct LaneInit {
     pub interpolation: Interpolation,
     pub options: Vec<LaneOption>,
     pub claps: Vec<Arc<ClapCell>>,
+    /// Per CLAP instrument: the preset owns its amp envelope
+    /// ([`crate::live::style::ClapSpec::own_envelope`]).
+    pub clap_own_envelope: Vec<bool>,
     pub fx: LaneFx,
-    /// Drum lane: FX chain of the break sub-voice (empty = no break bus).
-    pub break_fx: LaneFx,
+    /// Drum lane: FX chains of drum voices (break included), each on its
+    /// own bus before `fx`. Empty = no buses.
+    pub voice_fx: Vec<(DrumVoice, LaneFx)>,
     /// Linear output gain per option (drum lane: per kit), applied by the
     /// glue after the lane's dynamics. Missing entries are unity.
     pub output_gains: Vec<f32>,
@@ -572,10 +635,26 @@ pub struct Lane {
     sr: f32,
     sampler: Sampler,
     sampler_params: LaneSamplerParams,
+    /// The lane's own sampler params; an option's pack shape goes on top.
+    base_params: LaneSamplerParams,
     options: Vec<LaneOption>,
     claps: Vec<Arc<ClapCell>>,
+    /// Per CLAP instrument: its amp-envelope attack parameters (Surge XT's
+    /// "Amp EG Attack" of both scenes), driven by the notes' `attack`.
+    clap_attack: Vec<[Option<usize>; 2]>,
+    /// Attack byte last sent, and the normalized value waiting for the plugin.
+    attack_sent: u8,
+    attack_pending: Option<f64>,
+    /// Bass: per CLAP option, the amp release parameters raised to
+    /// [`BASS_RELEASE_SECS`] once the option plays.
+    clap_release: Vec<[Option<usize>; 2]>,
+    release_pending: bool,
     option: usize,
     pending_option: Option<usize>,
+    /// The option the player chose; form swaps return to it.
+    base_option: usize,
+    /// Form swap switches inside the bar: tick and option.
+    swap_plan: [Option<(u16, usize)>; 2],
     active_clap: Option<usize>,
     clap_gain: f32,
     /// Swapped-out CLAP instrument still rendering its release, frames left.
@@ -586,8 +665,10 @@ pub struct Lane {
     fx: LaneFx,
     /// Break bus (drum lane with a break FX chain): break slices render here,
     /// run through `break_fx`, then join the lane before `fx`.
-    break_fx: LaneFx,
-    break_buf: StereoBuffer,
+    voice_fx: Vec<LaneFx>,
+    bus_bufs: Vec<StereoBuffer>,
+    /// The sampler's bus output, one block per bus.
+    bus_scratch: Vec<StereoSample>,
     output_gains: Vec<f32>,
     scratch: StereoBuffer,
     /// Events fire while on.
@@ -603,9 +684,12 @@ pub struct Lane {
     inst_controls: [Option<(u32, f32)>; 2 * CONTROLS_PER_LANE],
     /// Octave offset added to pitched notes, −2..=2.
     octave: i8,
-    /// Drum voices muted now / at the next bar (bit per [`DrumVoice`]).
-    mutes: u8,
-    pending_mutes: Option<u8>,
+    /// Pad overrides of the drum voices, now / at the next bar
+    /// ([`voice_override`]).
+    overrides: u16,
+    pending_overrides: Option<u16>,
+    /// Drum voices the playing bar's arrangement turns on.
+    voice_default: u8,
     /// Drum lane: layout of each kit option (choke groups to fade on a mute).
     kit_layouts: Vec<DrumLayout>,
     kick_triggers: [u32; MAX_KICK_TRIGGERS],
@@ -620,26 +704,57 @@ pub struct Lane {
 impl Lane {
     /// Build a lane. Off-RT.
     pub fn new(init: LaneInit) -> Self {
+        let (bus_voices, chains): (Vec<DrumVoice>, Vec<LaneFx>) = init.voice_fx.into_iter().unzip();
         let mut sampler = Sampler::new(init.sample_rate, init.max_voices);
-        let sampler_params = LaneSamplerParams { interpolation: init.interpolation, ..Default::default() };
+        let mut sampler_params = LaneSamplerParams { interpolation: init.interpolation, ..Default::default() };
+        if init.role == Role::Bass {
+            sampler_params.release = BASS_RELEASE_SECS;
+            sampler_params.designed_env = (sampler_params.decay, sampler_params.sustain);
+            // Seeded per-note lowpass (the generator sets each note's cutoff):
+            // centred in the range, its slope morphing with the cutoff, and
+            // gliding from note to note.
+            sampler_params.cutoff_hz = (BASS_FILTER.0 * BASS_FILTER.1).sqrt();
+            sampler_params.filter_morph = Some(BASS_FILTER);
+            sampler_params.cutoff_glide = BASS_CUTOFF_GLIDE_SECS;
+        }
+        let own = |i: usize| init.clap_own_envelope.get(i).copied().unwrap_or(false);
         sampler.set_params(sampler_params);
         let mut lane = Self {
             role: init.role,
             sr: init.sample_rate as f32,
             sampler,
             sampler_params,
+            base_params: sampler_params,
             options: init.options,
+            clap_attack: init
+                .claps
+                .iter()
+                .enumerate()
+                .map(|(i, c)| if own(i) { [None; 2] } else { clap_params_named(c, "Amp EG Attack") })
+                .collect(),
+            attack_sent: 0,
+            attack_pending: None,
+            clap_release: init
+                .claps
+                .iter()
+                .enumerate()
+                .map(|(i, c)| if init.role == Role::Bass && !own(i) { clap_params_named(c, "Amp EG Release") } else { [None; 2] })
+                .collect(),
+            release_pending: true,
             claps: init.claps,
             option: init.default_option,
             pending_option: None,
+            base_option: init.default_option,
+            swap_plan: [None; 2],
             active_clap: None,
             clap_gain: 1.0,
             releasing_clap: None,
             clap_params_dirty: false,
             tracker: NoteTracker::new(),
             fx: init.fx,
-            break_buf: StereoBuffer::silence(if init.break_fx.is_empty() { 0 } else { init.max_block }),
-            break_fx: init.break_fx,
+            bus_bufs: chains.iter().map(|_| StereoBuffer::silence(init.max_block)).collect(),
+            bus_scratch: vec![StereoSample::default(); init.max_block * chains.len()],
+            voice_fx: chains,
             output_gains: init.output_gains,
             scratch: StereoBuffer::silence(init.max_block),
             on: true,
@@ -650,8 +765,9 @@ impl Lane {
             tail_left: 0,
             inst_controls: [None; 2 * CONTROLS_PER_LANE],
             octave: 0,
-            mutes: 0,
-            pending_mutes: None,
+            overrides: 0,
+            pending_overrides: None,
+            voice_default: 0xFF,
             kit_layouts: init.kit_layouts,
             kick_triggers: [0; MAX_KICK_TRIGGERS],
             kick_len: 0,
@@ -660,9 +776,16 @@ impl Lane {
             last_fired: None,
             fired_count: 0,
         };
-        if !lane.break_fx.is_empty() {
-            let (first, count) = drum_target_range(SubVoiceKind::Break);
-            lane.sampler.set_bus_range(Some((first, first.saturating_add(count))));
+        if !bus_voices.is_empty() {
+            let mut map = [0u8; 256];
+            for (t, bus) in map.iter_mut().enumerate() {
+                if let Some(v) = DrumVoice::of_target(t as u8) {
+                    if let Some(i) = bus_voices.iter().position(|&b| b == v) {
+                        *bus = i as u8 + 1;
+                    }
+                }
+            }
+            lane.sampler.set_bus_map(map);
         }
         lane.apply_option(init.default_option, 0);
         lane.tracker.out_len = 0;
@@ -768,24 +891,43 @@ impl Lane {
         self.octave = octave.clamp(-2, 2);
     }
 
-    /// Drum voices to mute, at the next bar (`quantized`) or now.
-    pub fn set_mutes(&mut self, mutes: u8, quantized: bool) {
+    /// Pad overrides of the drum voices, at the next bar (`quantized`) or now.
+    pub fn set_overrides(&mut self, overrides: u16, quantized: bool) {
         if quantized {
-            self.pending_mutes = (mutes != self.mutes).then_some(mutes);
+            self.pending_overrides = (overrides != self.overrides).then_some(overrides);
         } else {
-            self.pending_mutes = None;
-            self.apply_mutes(mutes, 0);
+            self.pending_overrides = None;
+            let on = voice_override::apply(self.voice_default, overrides);
+            self.apply_voices(on, 0);
+            self.overrides = overrides;
         }
     }
 
-    /// Muted drum voices of the playing bar.
-    pub fn mutes(&self) -> u8 {
-        self.mutes
+    /// Overrides applied in the playing bar.
+    pub fn overrides(&self) -> u16 {
+        self.overrides
     }
 
-    fn apply_mutes(&mut self, mutes: u8, offset: u32) {
-        let newly = mutes & !self.mutes;
-        self.mutes = mutes;
+    /// The playing bar's arrangement.
+    pub fn voice_default(&self) -> u8 {
+        self.voice_default
+    }
+
+    /// Drum voices playing (the arrangement's, with the pad overrides).
+    pub fn voices_on(&self) -> u8 {
+        voice_override::apply(self.voice_default, self.overrides)
+    }
+
+    /// The next bar's arrangement (from its packet), before [`Self::begin_bar`].
+    pub fn set_voice_default(&mut self, voices: u8) {
+        let on = voice_override::apply(voices, self.pending_overrides.unwrap_or(self.overrides));
+        self.apply_voices(on, 0);
+        self.voice_default = voices;
+    }
+
+    /// Fade the loops and slices of voices that just went off.
+    fn apply_voices(&mut self, on: u8, offset: u32) {
+        let newly = self.voices_on() & !on;
         // Loops and slices ring on; fade their choke group.
         if let Some(layout) = self.kit_layouts.get(self.option).copied() {
             for v in DrumVoice::ALL {
@@ -798,10 +940,44 @@ impl Lane {
         }
     }
 
-    /// Queue an option swap for the next bar.
+    /// Silence the lane at once: sampler voices, lane FX and voice-bus FX
+    /// state (off-RT: calibration measures each option from silence).
+    pub fn reset_sound(&mut self) {
+        self.sampler.reset_voices();
+        self.fx.reset();
+        for fx in &mut self.voice_fx {
+            fx.reset();
+        }
+    }
+
+    /// Queue an option swap for the next bar (the player's choice).
     pub fn queue_option(&mut self, option: usize) {
         if option < self.options.len() {
+            self.base_option = option;
             self.pending_option = Some(option);
+        }
+    }
+
+    /// The bar's form swap (`*`): play `option` over ticks `from..to`, and
+    /// the player's option elsewhere. Call before [`Self::begin_bar`]; the
+    /// switches inside the bar land in [`Self::begin_segment`].
+    pub fn set_form_swap(&mut self, swap: Option<(usize, u16, u16)>) {
+        self.swap_plan = [None; 2];
+        let base = self.base_option;
+        let start = match swap.filter(|s| s.0 < self.options.len()) {
+            Some((option, from, to)) => {
+                if from > 0 {
+                    self.swap_plan[0] = Some((from, option));
+                }
+                if to < super::TICKS_PER_BAR {
+                    self.swap_plan[1] = Some((to, base));
+                }
+                if from == 0 { option } else { base }
+            }
+            None => base,
+        };
+        if self.pending_option.is_none() && start != self.option {
+            self.pending_option = Some(start);
         }
     }
 
@@ -813,16 +989,22 @@ impl Lane {
         if let Some(on) = self.pending_on.take() {
             self.switch(on, QUANTIZED_FADE_SECS, offset);
         }
-        if let Some(mutes) = self.pending_mutes.take() {
-            self.apply_mutes(mutes, offset);
+        if let Some(overrides) = self.pending_overrides.take() {
+            let on = voice_override::apply(self.voice_default, overrides);
+            self.apply_voices(on, offset);
+            self.overrides = overrides;
         }
     }
 
     fn apply_option(&mut self, option: usize, offset: u32) {
         let (new_clap, gain) = match self.options.get(option) {
-            Some(LaneOption::Sampler { bank, gain }) => {
+            Some(LaneOption::Sampler { bank, gain, shape }) => {
                 // Playing voices keep their own sample handles and ring out.
                 self.sampler.set_bank(bank.clone());
+                self.sampler_params = self.base_params;
+                if let Some(shape) = shape {
+                    shape.apply(&mut self.sampler_params);
+                }
                 self.sampler_params.gain = *gain;
                 self.sampler.set_params(self.sampler_params);
                 (None, 1.0)
@@ -843,6 +1025,9 @@ impl Lane {
         }
         self.clap_gain = gain;
         self.clap_params_dirty = new_clap.is_some();
+        // A new instrument has not seen the attack yet.
+        self.attack_sent = 0;
+        self.release_pending = true;
         // Sampler controls follow the lane, not the option.
         for c in self.inst_controls.into_iter().flatten() {
             self.apply_sampler_control(c.0, c.1);
@@ -871,6 +1056,19 @@ impl Lane {
     }
 
     /// Start a chunk: clear the per-chunk note and trigger lists.
+    /// One line per option (tests and probes): kind and the pack shape.
+    #[cfg(test)]
+    pub(crate) fn options_debug(&self) -> Vec<String> {
+        self.options
+            .iter()
+            .map(|o| match o {
+                LaneOption::Sampler { gain, shape, .. } => format!("sampler gain {gain} shape {shape:?}"),
+                LaneOption::Clap { slot, .. } => format!("clap {slot}"),
+                LaneOption::Unavailable => "unavailable".into(),
+            })
+            .collect()
+    }
+
     pub fn begin_chunk(&mut self) {
         // Notes queued before the chunk (all-notes-off from a command) stay.
         self.kick_len = 0;
@@ -879,6 +1077,16 @@ impl Lane {
 
     pub fn begin_segment(&mut self, seg: &ClockSegment) {
         self.tracker.begin_segment(seg);
+        for i in 0..self.swap_plan.len() {
+            if let Some((tick, option)) = self.swap_plan[i] {
+                if let Some(offset) = seg.offset_for_tick(tick) {
+                    self.swap_plan[i] = None;
+                    if option != self.option {
+                        self.apply_option(option, offset);
+                    }
+                }
+            }
+        }
     }
 
     pub fn end_segment(&mut self) {
@@ -904,17 +1112,27 @@ impl Lane {
             self.tail_left = (TAIL_SECS * self.sr) as u32;
         }
 
-        if self.break_fx.is_empty() {
+        if self.voice_fx.is_empty() {
             self.sampler.process(out.as_mut_slice(), samples_per_tick);
         } else {
-            self.break_buf.set_len_from_capacity(n);
-            self.sampler.process_split(out.as_mut_slice(), Some(self.break_buf.as_mut_slice()), samples_per_tick);
-            self.break_fx.process(&mut self.break_buf);
-            for (o, b) in out.as_mut_slice().iter_mut().zip(self.break_buf.as_slice()) {
-                *o += *b;
+            // Voice buses: each through its chain, then into the lane.
+            let buses = self.voice_fx.len();
+            self.sampler.process_split(out.as_mut_slice(), Some(&mut self.bus_scratch[..n * buses]), samples_per_tick);
+            for (i, fx) in self.voice_fx.iter_mut().enumerate() {
+                let buf = &mut self.bus_bufs[i];
+                buf.set_len_from_capacity(n);
+                buf.as_mut_slice().copy_from_slice(&self.bus_scratch[i * n..(i + 1) * n]);
+                fx.process(buf);
+                for (o, b) in out.as_mut_slice().iter_mut().zip(buf.as_slice()) {
+                    *o += *b;
+                }
             }
         }
         self.render_claps(out, transport);
+        // The drum room ducks under the kicks and snares this chunk fired.
+        if self.role == Role::Drums && self.kick_len + self.snare_len > 0 {
+            self.fx.key_rooms();
+        }
         self.fx.process(out);
 
         // On/off gain ramp.
@@ -941,6 +1159,22 @@ impl Lane {
                         inst.set_param_normalized(param as usize, value as f64);
                     }
                     self.clap_params_dirty = false;
+                }
+                if std::mem::take(&mut self.release_pending) {
+                    let least = surge_env_time(BASS_RELEASE_SECS);
+                    for &index in self.clap_release.get(slot).into_iter().flatten().flatten() {
+                        let range = inst.params().get(index).map(|p| (p.min, p.max));
+                        if let (Some((lo, hi)), Some(v)) = (range, inst.param_value(index)) {
+                            if hi > lo && (v - lo) / (hi - lo) < least {
+                                inst.set_param_normalized(index, least);
+                            }
+                        }
+                    }
+                }
+                if let Some(v) = self.attack_pending.take() {
+                    for index in self.clap_attack.get(slot).into_iter().flatten().flatten() {
+                        inst.set_param_normalized(*index, v);
+                    }
                 }
                 self.scratch.set_len_from_capacity(n);
                 if inst.process(&mut self.scratch, &self.tracker.out[..notes_len], transport).is_ok() {
@@ -989,9 +1223,8 @@ impl EventSink for Lane {
         }
         let onset = matches!(ev.kind, EventKind::Trigger | EventKind::NoteOn);
         if self.role == Role::Drums
-            && self.mutes != 0
             && onset
-            && DrumVoice::of_target(ev.target).is_some_and(|v| self.mutes & v.bit() != 0)
+            && DrumVoice::of_target(ev.target).is_some_and(|v| self.voices_on() & v.bit() == 0)
         {
             return;
         }
@@ -1019,6 +1252,10 @@ impl EventSink for Lane {
             }
         }
         if self.active_clap.is_some() {
+            if ev.kind == EventKind::NoteOn && ev.attack != 0 && ev.attack != self.attack_sent {
+                self.attack_sent = ev.attack;
+                self.attack_pending = Some(surge_env_time(attack_secs(ev.attack)));
+            }
             self.tracker.fire(ev, offset);
         } else {
             self.sampler.handle_event(ev, offset);
@@ -1116,6 +1353,15 @@ mod tests {
         tracker.all_notes_off(10);
         assert_eq!(tracker.len, 0);
         assert_eq!(tracker.out_len, 4);
+    }
+
+    #[test]
+    fn surge_attack_follows_its_log2_time_scale() {
+        // Surge XT envelope times: log2 seconds from -8 to 5 on 0..1.
+        assert!((surge_env_time(0.01) - 0.1042).abs() < 0.001);
+        assert!((surge_env_time(0.08) - 0.3350).abs() < 0.001);
+        assert_eq!(surge_env_time(1e-9), 0.0);
+        assert_eq!(surge_env_time(1000.0), 1.0);
     }
 
     #[test]

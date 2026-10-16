@@ -9,7 +9,10 @@
 //! and compares zero-crossing rates (≈2× means the expression was applied).
 //! `--probe` also confirms the plugin makes sound and reports NOTE_END.
 //!
-//! Usage: cargo run -p mesh-core --bin clap-scan -- [--probe] [-v] [PATH ...]
+//! `--params` lists every parameter as index, name, min, max, default (the
+//! index is what a style's `instrument` control target takes).
+//!
+//! Usage: cargo run -p mesh-core --bin clap-scan -- [--probe] [-v] [--params] [PATH ...]
 //!
 //! PATH may be a directory of `.clap` bundles or a single bundle. Without
 //! paths, the standard CLAP directories are scanned (~/.clap, /usr/lib/clap, ...).
@@ -27,13 +30,15 @@ const BLOCK: usize = 256;
 fn main() {
     let mut probe = false;
     let mut verbose = false;
+    let mut list_params = false;
     let mut paths = Vec::new();
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--probe" => probe = true,
             "-v" | "--verbose" => verbose = true,
+            "--params" => list_params = true,
             "-h" | "--help" => {
-                eprintln!("usage: clap-scan [--probe] [-v] [PATH ...]");
+                eprintln!("usage: clap-scan [--probe] [-v] [--params] [PATH ...]");
                 return;
             }
             _ => paths.push(PathBuf::from(arg)),
@@ -54,7 +59,7 @@ fn main() {
         println!("{} ({}) v{} by {}", p.name, p.id, p.version, p.vendor);
         println!("  bundle:   {}", p.bundle_path.display());
         println!("  features: {}", p.features.join(", "));
-        report(p, probe, verbose);
+        report(p, probe, verbose, list_params);
     }
 }
 
@@ -82,7 +87,7 @@ fn is_bundle(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "clap")
 }
 
-fn report(p: &DiscoveredClapPlugin, probe: bool, verbose: bool) {
+fn report(p: &DiscoveredClapPlugin, probe: bool, verbose: bool, list_params: bool) {
     let mut inst = match ClapInstrument::open_for_inspection(&p.bundle_path, Some(&p.id), SAMPLE_RATE) {
         Ok(i) => i,
         Err(e) => {
@@ -90,6 +95,11 @@ fn report(p: &DiscoveredClapPlugin, probe: bool, verbose: bool) {
             return;
         }
     };
+    if list_params {
+        for (i, prm) in inst.params().iter().enumerate() {
+            println!("  param {i}\t{}\t{} .. {} (default {})", prm.name, prm.min, prm.max, prm.default);
+        }
+    }
     let caps = inst.capabilities();
 
     if caps.note_inputs.is_empty() {

@@ -9,6 +9,10 @@
 //! | `bass` | [`BassGenerator`] | `density`, `complexity`, `variation`, `kick_mode`, `register`, `slide`, `accent`, `gate` |
 //! | `lead` (alias `motif`), `arp`, `stab`, `pad` | [`LeadGenerator`] presets | `density`, `complexity`, `variation`, `mode`, `register`, `rate`, `gate` |
 //! | `fixed` | empty [`FixedPattern`] | none |
+//! | `phrase` | [`PhraseGenerator`] (a sound pack's MIDI phrases) | `density`, `length`, `expression`, `tone` |
+//!
+//! `phrase` built here has no phrases and stays silent; the loader gives each
+//! sound-pack option its own generator with the pack's phrases.
 //!
 //! `generator.params` sets the default of any performance parameter and the
 //! construction options each generator documents (`blend`, `break_layer`,
@@ -29,8 +33,10 @@ use super::fixed::FixedPattern;
 use super::idiom;
 use super::layout::DrumLayout;
 use super::lead::{self, LeadGenerator, LeadKind, LeadRules};
+use super::phrase::{self, PhraseGenerator};
 use super::LaneGenerator;
 use crate::live::glue::Role;
+use crate::live::motif::Motif;
 use crate::live::style::{GeneratorFamily, GeneratorSpec, IdiomSpec, LaneSpec};
 
 /// Which implementation a generator name selects.
@@ -40,6 +46,7 @@ pub enum GeneratorKind {
     Bass,
     Lead(LeadKind),
     Fixed,
+    Phrase,
 }
 
 impl GeneratorKind {
@@ -53,6 +60,7 @@ impl GeneratorKind {
             "stab" => GeneratorKind::Lead(LeadKind::Stab),
             "pad" => GeneratorKind::Lead(LeadKind::Pad),
             "fixed" => GeneratorKind::Fixed,
+            "phrase" => GeneratorKind::Phrase,
             _ => return None,
         })
     }
@@ -111,6 +119,22 @@ pub fn build_with(
     layout: &DrumLayout,
     archetypes: &[String],
 ) -> Box<dyn LaneGenerator> {
+    build_with_motifs(spec, role, layout, archetypes, Vec::new())
+}
+
+/// [`build_lane`] with the lane's motif clips (bass and lead lanes play them).
+pub fn build_lane_motifs(lane: &LaneSpec, motifs: Vec<Motif>) -> Box<dyn LaneGenerator> {
+    build_with_motifs(&lane.generator, lane.role, &DrumLayout::from_lane(lane), &lane.archetypes, motifs)
+}
+
+/// [`build_with`] with motif clips for the bass and lead generators.
+pub fn build_with_motifs(
+    spec: &GeneratorSpec,
+    role: Role,
+    layout: &DrumLayout,
+    archetypes: &[String],
+    motifs: Vec<Motif>,
+) -> Box<dyn LaneGenerator> {
     match GeneratorKind::resolve(&spec.name, role) {
         GeneratorKind::Drums => Box::new(build_drums(spec, layout, archetypes)),
         GeneratorKind::Bass => {
@@ -119,7 +143,7 @@ pub fn build_with(
                 defaults_from_spec(&bass::PARAM_NAMES, &bass::PARAM_DEFAULTS, &spec.params),
                 BassRules::from_spec(&spec.params),
                 cells,
-            ))
+            ).with_motifs(motifs))
         }
         GeneratorKind::Lead(kind) => {
             let cells = idiom_data(spec).map(|i| idiom::cells(i, kind.voices())).unwrap_or_default();
@@ -128,9 +152,20 @@ pub fn build_with(
                 defaults_from_spec(&lead::PARAM_NAMES, &kind.defaults(), &spec.params),
                 LeadRules::from_spec(&spec.params),
                 cells,
-            ))
+            ).with_motifs(motifs))
         }
         GeneratorKind::Fixed => Box::new(FixedPattern::default()),
+        GeneratorKind::Phrase => Box::new(build_phrase(spec, Vec::new(), None)),
+    }
+}
+
+/// A `phrase` generator over `phrases`, with the spec's parameter defaults
+/// and the pack's glide time.
+pub fn build_phrase(spec: &GeneratorSpec, phrases: Vec<crate::live::phrase::Phrase>, glide: Option<f32>) -> PhraseGenerator {
+    let g = PhraseGenerator::new(phrases).with_defaults(defaults_from_spec(&phrase::PARAM_NAMES, &phrase::PARAM_DEFAULTS, &spec.params));
+    match glide {
+        Some(secs) => g.with_glide(secs),
+        None => g,
     }
 }
 
@@ -328,13 +363,17 @@ mod tests {
 
     #[test]
     fn rules_come_from_the_spec() {
-        let layout = DrumLayout::empty().with_backbone(2).with_hats(1, 0);
-        let hats_on_kick = |params: &[(&str, f32)]| {
+        // Rule A2 (the backbone lock) keeps percussion off the kick.
+        let layout = DrumLayout::empty().with_backbone(2).with_perc(2);
+        let perc_on_kick = |params: &[(&str, f32)]| {
             let g = build_with(&spec(GeneratorFamily::Procedural, "drums", params), Role::Drums, &layout, &[]);
-            default_bar(g.as_ref(), 0, &EMPTY).as_slice().iter().any(|e| e.target == 8 && e.tick == 0)
+            (0..40).any(|seed| {
+                let ev = default_bar(g.as_ref(), seed, &EMPTY);
+                ev.as_slice().iter().any(|e| e.target >= crate::live::generator::layout::PERC_BASE && e.tick == 0)
+            })
         };
-        assert!(!hats_on_kick(&[("overlay_hats", 1.0)]));
-        assert!(hats_on_kick(&[("overlay_hats", 1.0), ("rule_a2", 0.0)]));
+        assert!(!perc_on_kick(&[("density", 1.0)]));
+        assert!(perc_on_kick(&[("density", 1.0), ("rule_a2", 0.0)]));
     }
 
     /// One generator of every kind.
@@ -349,7 +388,19 @@ mod tests {
         ]
         .into_iter()
         .map(|(name, role)| (role, build(&spec(GeneratorFamily::Procedural, name, &[]), role)))
+        .chain(motif_generators())
         .collect()
+    }
+
+    /// A bass and a lead that play the starter motif clips.
+    fn motif_generators() -> Vec<(Role, Box<dyn LaneGenerator>)> {
+        use crate::live::generator::test_util::starter_motifs;
+        let (bass, lead): (Vec<_>, Vec<_>) = starter_motifs().into_iter().partition(|m| m.name.starts_with("bass-"));
+        let layout = DrumLayout::standard();
+        vec![
+            (Role::Bass, build_with_motifs(&spec(GeneratorFamily::Procedural, "bass", &[]), Role::Bass, &layout, &[], bass)),
+            (Role::Lead, build_with_motifs(&spec(GeneratorFamily::Procedural, "lead", &[]), Role::Lead, &layout, &[], lead)),
+        ]
     }
 
     /// Render a phrase (normal and fill bars) of every generator with a busy
@@ -387,6 +438,35 @@ mod tests {
         });
         assert!(events > 1000);
         assert_eq!(allocs, 0, "render_bar allocated");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn motif_render_does_not_allocate() {
+        // Motif clips are built at load time; rendering only reads them.
+        let generators = motif_generators();
+        let mut out = crate::live::event::BarEvents::default();
+        let mut params = [0.7f32; MAX_GEN_PARAMS];
+        params[3] = 0.0; // the lead's motif mode
+        let (events, allocs) = crate::live::test_support::count_allocs(|| {
+            let mut events = 0;
+            for seed in 0..60u32 {
+                for (lane, (_, g)) in generators.iter().enumerate() {
+                    for bar in 0..4u8 {
+                        let mut c = ctx(seed, bar, &params, &[0; 16]);
+                        c.lane = lane as u8 + 1;
+                        c.bass_phrase = [0x1111, 0x0101, 0x4444, 0x1001];
+                        c.bass_onsets = 0x1111;
+                        out.clear();
+                        g.render_bar(&c, &mut out);
+                        events += out.len();
+                    }
+                }
+            }
+            events
+        });
+        assert!(events > 500, "{events}");
+        assert_eq!(allocs, 0, "motif render_bar allocated");
     }
 
     #[test]

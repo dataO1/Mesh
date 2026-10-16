@@ -7,24 +7,40 @@
 //! ```text
 //!  drums            drums + Shift     bass / lead / extra
 //!  ┌──────┬──────┐  ┌──────┬──────┐   ┌──────┬──────┐
-//!  │ kick │snare │  │      │      │   │ oct− │ oct+ │
+//!  │ top  │shaker│  │      │      │   │ oct− │ oct+ │
 //!  │ hats │ ride │  │      │      │   │ half │ dbl  │
-//!  │shaker│ perc │  │      │      │   │form◀ │form▶ │
-//!  │ top  │break │  │form◀ │form▶ │   │      │      │
+//!  │break │ perc │  │      │      │   │form◀ │form▶ │
+//!  │ kick │snare │  │form◀ │form▶ │   │      │      │
 //!  └──────┴──────┘  └──────┴──────┘   └──────┴──────┘
 //! ```
+//!
+//! Drum pads run from the bottom left (kick) to the top right (shaker) and
+//! turn a voice on or off against the seed's arrangement.
 
-use mesh_core::live::generator::layout::DrumVoice;
+use mesh_core::live::generator::layout::{voice_override, DrumVoice};
 use mesh_core::live::state::{LaneView, Rate};
 
 /// Pads per lane half.
 pub const PADS: usize = 8;
 
+/// Drum voice of each pad, row-major from the top left (user order: bottom
+/// left to top right kick, snare, break, perc, hats, ride, top, shaker).
+pub const DRUM_PADS: [DrumVoice; PADS] = [
+    DrumVoice::Top,
+    DrumVoice::Shaker,
+    DrumVoice::Hats,
+    DrumVoice::Ride,
+    DrumVoice::Break,
+    DrumVoice::Perc,
+    DrumVoice::Kick,
+    DrumVoice::Snare,
+];
+
 /// The function of one lane pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadFn {
-    /// Drum lane: mute toggle of one voice.
-    Mute(DrumVoice),
+    /// Drum lane: turn one voice on or off against the seed's arrangement.
+    Voice(DrumVoice),
     OctaveDown,
     OctaveUp,
     /// Latched rate toggle (half or double).
@@ -45,7 +61,7 @@ pub const fn pad_fn(drums: bool, pad: usize, shift: bool) -> PadFn {
             };
         }
         if pad < PADS {
-            return PadFn::Mute(DrumVoice::ALL[pad]);
+            return PadFn::Voice(DRUM_PADS[pad]);
         }
         return PadFn::None;
     }
@@ -63,7 +79,7 @@ pub const fn pad_fn(drums: bool, pad: usize, shift: bool) -> PadFn {
 /// Short label for the screen.
 pub fn label(f: PadFn) -> &'static str {
     match f {
-        PadFn::Mute(v) => v.name(),
+        PadFn::Voice(v) => v.name(),
         PadFn::OctaveDown => "oct−",
         PadFn::OctaveUp => "oct+",
         PadFn::Rate(Rate::Half) => "half",
@@ -92,10 +108,12 @@ pub const PAD_MUTED: f32 = 0.04;
 /// State of a pad's function on a lane.
 pub fn look(view: &LaneView, f: PadFn) -> PadLook {
     match f {
-        PadFn::Mute(v) => {
-            let requested = view.mutes & v.bit() != 0;
-            let playing = view.mutes_playing & v.bit() != 0;
-            PadLook { level: if requested { PAD_MUTED } else { PAD_ON }, pending: requested != playing }
+        PadFn::Voice(v) => {
+            let on = view.voices_on & v.bit() != 0;
+            // Queued: the requested overrides would play this voice differently.
+            let requested = voice_override::apply(view.voice_default, view.voice_overrides) & v.bit() != 0;
+            let pending = requested != on;
+            PadLook { level: if on { PAD_ON } else { PAD_MUTED }, pending }
         }
         PadFn::OctaveDown => PadLook { level: octave_level(-view.octave), pending: false },
         PadFn::OctaveUp => PadLook { level: octave_level(view.octave), pending: false },
@@ -131,7 +149,11 @@ mod tests {
     #[test]
     fn drum_pads_follow_the_voice_order() {
         let fns: Vec<PadFn> = (0..PADS).map(|p| pad_fn(true, p, false)).collect();
-        assert_eq!(fns, DrumVoice::ALL.map(PadFn::Mute).to_vec());
+        assert_eq!(fns, DRUM_PADS.map(PadFn::Voice).to_vec());
+        assert_eq!(pad_fn(true, 6, false), PadFn::Voice(DrumVoice::Kick), "kick bottom left");
+        let mut all: Vec<u8> = DRUM_PADS.iter().map(|v| v.bit()).collect();
+        all.sort();
+        assert_eq!(all, DrumVoice::ALL.map(|v| v.bit()).to_vec(), "every voice once");
         assert_eq!(pad_fn(true, 6, true), PadFn::FormPrev);
         assert_eq!(pad_fn(true, 7, true), PadFn::FormNext);
         assert_eq!(pad_fn(true, 0, true), PadFn::None, "Shift leaves the mutes alone");

@@ -269,7 +269,7 @@ fn main() {
     for bar in 0..args.bars {
         let bar_in_phrase = bar % 4;
         let degree = args.degrees[bar as usize % args.degrees.len()];
-        let harmony = HarmonyCtx { key: args.key, chord_degree: degree - 1, progression: 0 };
+        let harmony = HarmonyCtx { key: args.key, chord_degree: degree - 1, progression: 0, mode: 0 };
         println!(
             "\n── bar {bar} (phrase bar {}) seed {} key {} degree {degree}{}{} ──",
             bar_in_phrase + 1,
@@ -294,6 +294,10 @@ fn main() {
                 params: &params,
                 harmony,
                 drum_mask: mask,
+                jitter: [0.0; mesh_core::live::generator::MAX_GEN_PARAMS],
+                bass_onsets: 0,
+                bass_phrase: [0; 4],
+                drum_fill: false,
             };
             let mut out = BarEvents::default();
             lane.generator.render_bar(&ctx, &mut out);

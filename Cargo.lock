@@ -4286,6 +4286,7 @@ dependencies = [
  "libc",
  "libpd-rs",
  "log",
+ "midly",
  "ndarray 0.17.2",
  "notify",
  "pathdiff",

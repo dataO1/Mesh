@@ -45,6 +45,21 @@ Engine.Track.filename minus extension  ==  mesh.tracks.original_name
 - 3 files exist on disk but not in the Engine DB (`Dimension - Offender`, `Sub Focus - Siren`,
   `Sub Focus - Solar System`). They import fine, they just belong to no playlist.
 
+**Caveat — audio-separator normalises the base name (found 2026-07-31 during output verification).**
+It strips trailing whitespace and trailing dots from the filename stem, so the resulting
+`original_name` does **not** always equal the Engine `filename` minus extension:
+
+| Engine `filename` | resulting `original_name` |
+|---|---|
+| `Andy C - Haunting myfreemp3.vip .mp3` | `Andy C - Haunting myfreemp3.vip` |
+| `Benny Page - Turn Down the Lights myfreemp3..mp3` | `Benny Page - Turn Down the Lights myfreemp3` |
+
+**23 of 945 tracks are affected** (21 trailing space, 2 trailing dot). An exact-equality join
+would silently drop them. The importer must compare on a normalised key —
+`trim_end_matches([' ', '.'])` on both sides — and should report any unmatched rows rather than
+skipping them quietly. Import itself is unaffected: all four stems of a track share the same
+normalised base, so the stem group is complete and mesh pairs them correctly.
+
 **Caveat (verified in code, not yet measured on live data):** `original_name` was added by a
 schema migration (`db/schema.rs:659-714`) that back-fills existing rows with `''`. Any track
 imported before that migration has an empty `original_name` and will not join. This does not

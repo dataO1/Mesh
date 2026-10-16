@@ -31,6 +31,53 @@ pub fn scale_for(key: MusicalKey) -> &'static [u8; 7] {
     if key.minor { &MINOR_SCALE } else { &MAJOR_SCALE }
 }
 
+// MUSICAL: tune by ear (user: minor by default, the harmony seed picks the
+// mode). Modes of the minor and the major family: scale, weight, name.
+/// Minor family: natural minor (most), dorian, phrygian, harmonic minor.
+pub const MINOR_MODES: [([u8; 7], f32, &str); 4] = [
+    (MINOR_SCALE, 0.5, "aeolian"),
+    ([0, 2, 3, 5, 7, 9, 10], 0.2, "dorian"),
+    ([0, 1, 3, 5, 7, 8, 10], 0.15, "phrygian"),
+    ([0, 2, 3, 5, 7, 8, 11], 0.15, "harmonic"),
+];
+/// Major family: major (most), mixolydian, lydian.
+pub const MAJOR_MODES: [([u8; 7], f32, &str); 3] =
+    [(MAJOR_SCALE, 0.5, "ionian"), ([0, 2, 4, 5, 7, 9, 10], 0.3, "mixolydian"), ([0, 2, 4, 6, 7, 9, 11], 0.2, "lydian")];
+const S_MODE: u32 = 0xE10;
+
+/// Mode a harmony seed picks in the key's family (index into
+/// [`MINOR_MODES`] or [`MAJOR_MODES`]). Seed 0 is the plain minor / major.
+pub fn mode_for(seed: u32, minor: bool) -> u8 {
+    if seed == 0 {
+        return 0;
+    }
+    let h = crate::live::rng::hash(seed, 0, 0, 0, S_MODE);
+    let pick = |w: &[f32]| crate::live::rng::weighted_pick(h, w).unwrap_or(0) as u8;
+    if minor {
+        pick(&MINOR_MODES.map(|m| m.1))
+    } else {
+        pick(&MAJOR_MODES.map(|m| m.1))
+    }
+}
+
+/// Scale of `mode` in the key's family.
+pub fn scale_of(key: MusicalKey, mode: u8) -> &'static [u8; 7] {
+    if key.minor {
+        &MINOR_MODES[(mode as usize).min(MINOR_MODES.len() - 1)].0
+    } else {
+        &MAJOR_MODES[(mode as usize).min(MAJOR_MODES.len() - 1)].0
+    }
+}
+
+/// Name of `mode` in the key's family.
+pub fn mode_name(key: MusicalKey, mode: u8) -> &'static str {
+    if key.minor {
+        MINOR_MODES[(mode as usize).min(MINOR_MODES.len() - 1)].2
+    } else {
+        MAJOR_MODES[(mode as usize).min(MAJOR_MODES.len() - 1)].2
+    }
+}
+
 /// Resolve a scale degree to a MIDI key in `key`.
 ///
 /// - `degree`: 0-based scale degree (0 = root). Values outside 0..7 wrap into
@@ -42,10 +89,15 @@ pub fn scale_for(key: MusicalKey) -> &'static [u8; 7] {
 ///
 /// Result is clamped to 0..=127. Pure and RT-safe.
 pub fn resolve_degree(key: MusicalKey, degree: i32, octave: i32, chord_offset: i32) -> u8 {
+    resolve_in_scale(key, scale_for(key), degree, octave, chord_offset)
+}
+
+/// [`resolve_degree`] in a given scale of the key (a mode).
+pub fn resolve_in_scale(key: MusicalKey, scale: &[u8; 7], degree: i32, octave: i32, chord_offset: i32) -> u8 {
     let d = degree + chord_offset;
     let oct_shift = d.div_euclid(SCALE_LEN);
     let idx = d.rem_euclid(SCALE_LEN) as usize;
-    let midi = (octave + 1 + oct_shift) * 12 + key.root as i32 + scale_for(key)[idx] as i32;
+    let midi = (octave + 1 + oct_shift) * 12 + key.root as i32 + scale[idx] as i32;
     midi.clamp(0, 127) as u8
 }
 
@@ -125,21 +177,23 @@ pub struct HarmonyCtx {
     pub chord_degree: u8,
     /// Index of the active progression in the style.
     pub progression: usize,
+    /// Mode in the key's family ([`mode_for`]), 0 = plain minor / major.
+    pub mode: u8,
 }
 
 impl HarmonyCtx {
     pub fn scale(&self) -> &'static [u8; 7] {
-        scale_for(self.key)
+        scale_of(self.key, self.mode)
     }
 
     /// Resolve a chord-relative degree to a MIDI key.
     pub fn resolve(&self, degree: i32, octave: i32) -> u8 {
-        resolve_degree(self.key, degree, octave, self.chord_degree as i32)
+        resolve_in_scale(self.key, self.scale(), degree, octave, self.chord_degree as i32)
     }
 
     /// Resolve a key-relative degree (ignores the chord).
     pub fn resolve_in_key(&self, degree: i32, octave: i32) -> u8 {
-        resolve_degree(self.key, degree, octave, 0)
+        resolve_in_scale(self.key, self.scale(), degree, octave, 0)
     }
 }
 
@@ -165,6 +219,9 @@ pub struct HarmonyState {
     progression_start_bar: u64,
     pending_key: Option<MusicalKey>,
     pending_progression: Option<usize>,
+    /// Harmony seed: picks the mode ([`mode_for`]).
+    mode_seed: u32,
+    pending_mode_seed: Option<u32>,
 }
 
 impl HarmonyState {
@@ -175,7 +232,22 @@ impl HarmonyState {
             progression_start_bar: 0,
             pending_key: None,
             pending_progression: None,
+            mode_seed: 0,
+            pending_mode_seed: None,
         }
+    }
+
+    pub fn mode_seed(&self) -> u32 {
+        self.mode_seed
+    }
+
+    pub fn pending_mode_seed(&self) -> Option<u32> {
+        self.pending_mode_seed
+    }
+
+    /// Arm a harmony seed for the next phrase.
+    pub fn request_mode_seed(&mut self, seed: u32) {
+        self.pending_mode_seed = if seed == self.mode_seed { None } else { Some(seed) };
     }
 
     pub fn key(&self) -> MusicalKey {
@@ -225,6 +297,9 @@ impl HarmonyState {
             self.progression = p;
             self.progression_start_bar = bar;
         }
+        if let Some(seed) = self.pending_mode_seed.take() {
+            self.mode_seed = seed;
+        }
         change
     }
 
@@ -233,7 +308,12 @@ impl HarmonyState {
     pub fn ctx(&self, bar: u64, progressions: &[Progression]) -> HarmonyCtx {
         let prog = progressions.get(self.progression).copied().unwrap_or_default();
         let since = bar.saturating_sub(self.progression_start_bar);
-        HarmonyCtx { key: self.key, chord_degree: prog.degree_at(since), progression: self.progression }
+        HarmonyCtx {
+            key: self.key,
+            chord_degree: prog.degree_at(since),
+            progression: self.progression,
+            mode: mode_for(self.mode_seed, self.key.minor),
+        }
     }
 }
 
@@ -241,7 +321,9 @@ impl HarmonyState {
 
 // MUSICAL: first draft, tune by ear. Chord-root weights per 0-based scale
 // degree. The diminished chord (ii° in minor, vii° in major) never comes up.
-const MINOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 0.0, 2.0, 3.0, 2.0, 3.0, 3.0];
+// Minor: the minor chords (i, iv, v) carry most bars, so the key reads as
+// minor (user: it sounded major).
+const MINOR_CHORD_WEIGHTS: [f32; 7] = [4.0, 0.0, 1.0, 3.0, 3.0, 2.0, 2.0];
 const MAJOR_CHORD_WEIGHTS: [f32; 7] = [3.0, 2.0, 1.0, 3.0, 3.0, 3.0, 0.0];
 /// Extra weight of the tonic on a progression's first chord, so it mostly starts home.
 const FIRST_SLOT_TONIC_BOOST: f32 = 12.0;
@@ -409,6 +491,25 @@ pub mod serde_key {
 mod tests {
     use super::*;
 
+    #[test]
+    fn harmony_seed_picks_the_mode_on_the_phrase() {
+        let am = MusicalKey::new(9, true);
+        assert_eq!(mode_for(0, true), 0, "a fresh session plays natural minor");
+        let modes: std::collections::BTreeSet<u8> = (1..200).map(|s| mode_for(s, true)).collect();
+        assert_eq!(modes.len(), MINOR_MODES.len(), "seeds reach every minor mode");
+        assert!((1..200).all(|s| (mode_for(s, false) as usize) < MAJOR_MODES.len()));
+        // Dorian raises the 6th: F# over A.
+        let dorian = (1..200).find(|&s| mode_for(s, true) == 1).unwrap();
+        let mut h = HarmonyState::new(am, 0);
+        h.request_mode_seed(dorian);
+        h.begin_bar(1);
+        assert_eq!(h.ctx(1, &[]).mode, 0, "waits for the phrase");
+        h.begin_bar(4);
+        let ctx = h.ctx(4, &[]);
+        assert_eq!((ctx.mode, mode_name(am, ctx.mode)), (1, "dorian"));
+        assert_eq!(ctx.resolve_in_key(5, 4) % 12, 6, "F#");
+    }
+
     fn all_keys() -> impl Iterator<Item = MusicalKey> {
         (0..24u8).map(|i| MusicalKey::new(i % 12, i >= 12))
     }
@@ -554,7 +655,7 @@ mod tests {
 
     #[test]
     fn harmony_ctx_resolves_against_chord() {
-        let ctx = HarmonyCtx { key: MusicalKey::new(9, true), chord_degree: 5, progression: 0 };
+        let ctx = HarmonyCtx { key: MusicalKey::new(9, true), chord_degree: 5, progression: 0, mode: 0 };
         assert_eq!(ctx.resolve(0, 2), resolve_degree(ctx.key, 5, 2, 0));
         assert_eq!(ctx.resolve_in_key(0, 2), 45);
     }

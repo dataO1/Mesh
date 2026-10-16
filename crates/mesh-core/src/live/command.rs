@@ -59,8 +59,10 @@ pub enum LiveCommand {
     SeedDelta { lane: u8, delta: i32 },
     /// The seed edit is over (Play B released): the next step starts a new one.
     EndSeedEdit { lane: u8 },
-    /// Swap the master seed with the previous one (Play B tap).
+    /// Swap the master seed with the previous one (keyboard Backspace).
     SwapSeed { lane: u8 },
+    /// A random new master seed (Play B). Lands on the next bar.
+    RandomizeSeed { lane: u8 },
     /// Select a form. Lands on the next phrase boundary.
     SetForm { lane: u8, form: u16 },
     /// Step through the style's forms (pads 5/6, Shift + drum pads 7/8).
@@ -71,8 +73,8 @@ pub enum LiveCommand {
     ResetOctave { lane: u8 },
     /// Note rate of a pitched lane. Lands on the next bar.
     SetRate { lane: u8, rate: Rate },
-    /// Mute or unmute one drum voice. Lands on the next bar (immediately
-    /// when Quant is off).
+    /// Turn one drum voice on or off against the seed's arrangement. Lands on
+    /// the next bar (immediately when Quant is off).
     ToggleDrumVoice { voice: DrumVoice },
     /// Move performance control `control` to `value` (0..=1). `0..4` is the
     /// main layer, `4..8` the Shift layer. Routed through the style's
@@ -98,6 +100,10 @@ pub enum LiveCommand {
     SetKeyIntent(f32),
     /// Arm the intent target for the next phrase.
     CommitKey,
+    /// Flip the key between minor and major (same root), for the next phrase.
+    ToggleMinor,
+    /// A random new harmony seed: picks the mode, for the next phrase.
+    RandomizeHarmony,
     /// Arm a key directly for the next phrase.
     SetKey(MusicalKey),
     /// Arm a progression for the next phrase.
@@ -216,6 +222,20 @@ pub enum SamplerParam {
     Release = 5,
     /// 0..1 → left..right.
     Pan = 6,
+    /// A sound pack's Tone knob: the value of its tone CC, 0..1.
+    Tone = 7,
+    /// A sound pack's Expression knob: bends, vibrato and glide, 0..1 →
+    /// none..as written (0.5)..double.
+    Expression = 8,
+    /// A sound pack's shape macro, 0..1: stabby, accented and heavily
+    /// modulated (half decay, 60 % sustain, double modulation, tone CC
+    /// nearly closed) .. sustained and calm (double decay, full sustain,
+    /// little modulation, tone CC open). The middle plays the pack as
+    /// designed. Pair it with the generator's `length` on the same control.
+    Character = 9,
+    /// A sound pack's Morph knob: the value of its morph CC, 0..1 (a
+    /// layer crossfade, a mudpie scrub; whatever the pack maps the CC to).
+    Morph = 10,
 }
 
 impl SamplerParam {
@@ -228,6 +248,10 @@ impl SamplerParam {
             4 => Self::Sustain,
             5 => Self::Release,
             6 => Self::Pan,
+            7 => Self::Tone,
+            8 => Self::Expression,
+            9 => Self::Character,
+            10 => Self::Morph,
             _ => return None,
         })
     }
@@ -244,6 +268,23 @@ impl SamplerParam {
             Self::Sustain => p.sustain = v,
             Self::Release => p.release = log(0.005, 10.0),
             Self::Pan => p.pan = v * 2.0 - 1.0,
+            Self::Tone => p.tone = v,
+            Self::Expression => p.expression = v * 2.0,
+            Self::Character => {
+                // MUSICAL: first draft, tune by ear. The envelope never loses
+                // its body: stabs come from the gate (the generator's length
+                // on the same control) and the filter bite, not from silence.
+                let (decay, sustain) = p.designed_env;
+                p.decay = decay * if v < 0.5 { 0.5 + v } else { 2.0 * v };
+                p.sustain = if v < 0.5 { sustain * (0.45 + 1.1 * v) } else { sustain + (1.0 - sustain) * (2.0 * v - 1.0) };
+                // Accented and moving .. calm.
+                p.expression = 2.0 - 1.7 * v;
+                // Tone CC: low but open enough to bite (user) .. open.
+                p.tone = 0.35 + 0.65 * v;
+                // Resonance up on the stabby half (user: more pronounced).
+                p.resonance = (p.designed_res + 0.12 * (1.0 - 2.0 * v).max(0.0)).min(0.95);
+            }
+            Self::Morph => p.morph = v,
         }
     }
 }
@@ -259,9 +300,10 @@ pub enum RtMsg {
     InstrumentParam { lane: u8, control: u8, param: u32, value: f32 },
     /// Octave offset of a pitched lane's notes.
     Octave { lane: u8, octave: i8 },
-    /// Drum voices to mute (bit per [`DrumVoice`]), at the next bar
-    /// (`quantized`) or now.
-    DrumMutes { mutes: u8, quantized: bool },
+    /// Pad overrides of the drum voices
+    /// ([`voice_override`](super::generator::layout::voice_override)), at the
+    /// next bar (`quantized`) or now.
+    DrumOverrides { overrides: u16, quantized: bool },
     FxParam { lane: u8, slot: u8, param: u32, value: f32 },
     Glue { lane: u8, control: GlueControl, value: f32 },
     Send { lane: u8, bus: SendBus, level: f32 },
@@ -303,6 +345,19 @@ mod tests {
         SamplerParam::Sustain.apply(&mut p, f32::NAN);
         assert_eq!(p.sustain, 0.0);
         assert_eq!(SamplerParam::from_index(6), Some(SamplerParam::Pan));
-        assert_eq!(SamplerParam::from_index(7), None);
+        assert_eq!(SamplerParam::from_index(7), Some(SamplerParam::Tone));
+        assert_eq!(SamplerParam::from_index(9), Some(SamplerParam::Character));
+        assert_eq!(SamplerParam::from_index(10), Some(SamplerParam::Morph));
+        assert_eq!(SamplerParam::from_index(11), None);
+        SamplerParam::Expression.apply(&mut p, 0.5);
+        assert_eq!(p.expression, 1.0, "the middle plays as written");
+        p.designed_env = (2.0, 0.5);
+        SamplerParam::Character.apply(&mut p, 0.5);
+        assert_eq!((p.decay, p.sustain, p.expression), (2.0, 0.5, 1.15), "the middle is the design envelope");
+        SamplerParam::Character.apply(&mut p, 0.0);
+        assert!(p.decay == 1.0 && (p.sustain - 0.225).abs() < 1e-6 && p.expression == 2.0, "stab keeps a body: {p:?}");
+        assert!(p.resonance > p.designed_res, "the stab end resonates more");
+        SamplerParam::Character.apply(&mut p, 1.0);
+        assert!(p.decay == 4.0 && p.sustain == 1.0 && p.tone == 1.0, "sustained: {p:?}");
     }
 }

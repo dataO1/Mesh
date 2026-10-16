@@ -161,6 +161,39 @@ impl DrumVoice {
     }
 }
 
+/// Pad overrides of the drum voices, packed in a `u16`: the low byte forces
+/// voices on, the high byte forces them off (bits per [`DrumVoice`]). The
+/// voices playing are the bar's arrangement with the overrides applied.
+pub mod voice_override {
+    /// Voices forced on.
+    pub const fn on(o: u16) -> u8 {
+        o as u8
+    }
+
+    /// Voices forced off.
+    pub const fn off(o: u16) -> u8 {
+        (o >> 8) as u8
+    }
+
+    /// The voices playing for an arrangement `default`.
+    pub const fn apply(default: u8, o: u16) -> u8 {
+        (default | on(o)) & !off(o)
+    }
+
+    /// Turn voice `bit` off if it plays (`playing`), else on.
+    pub const fn toggle(o: u16, bit: u8, playing: bool) -> u16 {
+        let (mut on, mut off) = (on(o), off(o));
+        if playing {
+            off |= bit;
+            on &= !bit;
+        } else {
+            on |= bit;
+            off &= !bit;
+        }
+        on as u16 | (off as u16) << 8
+    }
+}
+
 /// What a drum-lane target is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrumClass {
@@ -324,7 +357,7 @@ impl DrumLayout {
             let sv = subs.iter().find(|sv| sv.voice == kind)?;
             match sv.options.get(select(sv))?.source()? {
                 InstrumentSource::Sampler(s) => Some((sv, &s.samples)),
-                InstrumentSource::Clap(_) => None,
+                InstrumentSource::Clap(_) | InstrumentSource::Pack(_) => None,
             }
         };
         let tagged = |s: &[SampleSpec], len: u8, tag: SampleTag| {
@@ -596,6 +629,9 @@ mod tests {
             zone: None,
             tag,
             bars,
+            stream: false,
+            gain_db: 0.0,
+            lufs: None,
         };
         let sub = |voice, samples| SubVoiceSpec {
             voice,
@@ -605,6 +641,7 @@ mod tests {
                 lufs_trim_db: 0.0,
                 sampler: Some(SamplerSpec { samples }),
                 clap: None,
+                pack: None,
             }],
             default_option: 0,
         };

@@ -4,12 +4,19 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::engine::{MasterClipper, MasterLimiter};
+
+// MUSICAL: the master limiter holds sample peaks 1.5 dB under full scale, so
+// the peaks between samples stay under it too (a recording went 0.4 dB over).
+const LIMITER_THRESHOLD_DB: f32 = -1.5;
+/// Q of the lead's ducked band (about 300 Hz to 2.5 kHz around 900 Hz).
+const LEAD_DUCK_Q: f32 = 0.6;
 use crate::live::NUM_LANES;
 use crate::types::{StereoBuffer, StereoSample};
 
 use super::db_to_lin;
 use super::dynamics::Compressor;
-use super::ducker::{duck_full_band, DuckEnvelope};
+use super::bandduck::BandDuck;
+use super::ducker::{duck_band, duck_full_band, DuckEnvelope};
 use super::filter::{MonoBelow, RoleHighPass};
 use super::params::GlueParams;
 use super::saturation::Saturator;
@@ -78,6 +85,8 @@ pub struct GlueChain {
     out_gain: [f32; NUM_LANES],
     out_gain_now: [f32; NUM_LANES],
     lane_sat: [Saturator; NUM_LANES],
+    /// Band duck per lane (used on bass lanes only).
+    band_duck: [BandDuck; NUM_LANES],
 
     drum_comp: Compressor,
     drum_comp2: Compressor,
@@ -92,11 +101,15 @@ pub struct GlueChain {
 
     // Scratch, sized to `max_block` at construction.
     duck_amount: [Vec<f32>; DUCK_ENVS],
+    /// Band of the lead's band duck (a constant-skirt band-pass).
+    lead_band: crate::effect::native::SvfFilter,
     drum_bus: StereoBuffer,
     /// Insert chains (native or CLAP effects in style order).
     drum_bus_fx: LaneFx,
     master_fx: LaneFx,
     low_bus: Vec<StereoSample>,
+    /// Band duck key: lead + extra after their glue.
+    band_key: Vec<StereoSample>,
     mix: StereoBuffer,
     max_block: usize,
 }
@@ -117,6 +130,7 @@ impl GlueChain {
             out_gain: [1.0; NUM_LANES],
             out_gain_now: [1.0; NUM_LANES],
             lane_sat: std::array::from_fn(|_| Saturator::new()),
+            band_duck: std::array::from_fn(|_| BandDuck::new()),
             drum_comp: Compressor::new(),
             drum_comp2: Compressor::new(),
             drum_sat: Saturator::new(),
@@ -124,14 +138,16 @@ impl GlueChain {
             master_comp: Compressor::new(),
             master_gain: 1.0,
             master_sat: Saturator::new(),
-            limiter: MasterLimiter::new(),
+            limiter: MasterLimiter::with_threshold_db(LIMITER_THRESHOLD_DB),
             clipper: MasterClipper::new(),
             sends: SharedSends::new(max_block),
             duck_amount: std::array::from_fn(|_| vec![0.0; max_block]),
+            lead_band: crate::effect::native::SvfFilter::new(),
             drum_bus: StereoBuffer::silence(max_block),
             drum_bus_fx: LaneFx::new(Vec::new(), max_block),
             master_fx: LaneFx::new(Vec::new(), max_block),
             low_bus: vec![StereoSample::default(); max_block],
+            band_key: vec![StereoSample::default(); max_block],
             mix: StereoBuffer::silence(max_block),
             max_block,
         };
@@ -150,6 +166,9 @@ impl GlueChain {
             self.configure_lane(i);
         }
         let d = &p.duck;
+        if d.lead_band_hz > 0.0 {
+            self.lead_band.set_params(d.lead_band_hz, LEAD_DUCK_Q);
+        }
         for (i, env) in self.duck_env.iter_mut().enumerate() {
             let group = if i < DUCK_KICK_OTHERS { &d.bass } else { &d.others };
             env.configure(d.attack_ms, 0.0, group.release_ms, d.key_threshold_db);
@@ -185,6 +204,7 @@ impl GlueChain {
         self.trim[i] = db_to_lin(self.lanes[i].trim_db);
         self.high_pass[i].configure(&self.params.high_pass.for_role(role));
         self.mono_below[i].configure(&self.params.mono_below);
+        self.band_duck[i].configure(&self.params.band_duck);
         if let Some(d) = self.params.lane_dynamics.for_role(role) {
             self.lane_comp[i].configure(&d.compressor);
             self.lane_sat[i].configure(&d.saturation);
@@ -328,7 +348,16 @@ impl GlueChain {
                 } else {
                     (DUCK_KICK_OTHERS, DUCK_SNARE_OTHERS)
                 };
-                duck_full_band(lane, &self.duck_amount[k][..m], &self.duck_amount[s][..m], d.kick_db, d.snare_db);
+                let (ka, sa) = (&self.duck_amount[k][..m], &self.duck_amount[s][..m]);
+                if setup.role == Role::Lead && p.duck.lead_band_hz > 0.0 {
+                    duck_band(lane, ka, sa, d.kick_db, d.snare_db, &mut self.lead_band, LEAD_DUCK_Q);
+                } else {
+                    duck_full_band(lane, ka, sa, d.kick_db, d.snare_db);
+                }
+            }
+            // Bass lanes finish after the loop: their band duck needs the synth lanes.
+            if setup.role == Role::Bass && p.band_duck.enabled {
+                continue;
             }
             // 6. Post-lane send taps.
             self.sends.accumulate(lane, setup.delay_send, setup.reverb_send);
@@ -340,6 +369,32 @@ impl GlueChain {
             };
             for (d, s) in dst.iter_mut().zip(lane.iter()) {
                 *d += *s;
+            }
+        }
+
+        // 5b. Band duck, the last stage of a bass lane: it gives way band by
+        // band to lead + extra (after their glue). Then its sends and bus.
+        if p.band_duck.enabled {
+            let key = &mut self.band_key[..m];
+            key.fill(StereoSample::default());
+            for i in 0..NUM_LANES {
+                if matches!(self.lanes[i].role, Role::Lead | Role::Extra) {
+                    for (k, s) in key.iter_mut().zip(&lanes[i].as_slice()[start..end]) {
+                        *k += *s;
+                    }
+                }
+            }
+            for i in 0..NUM_LANES {
+                let setup = self.lanes[i];
+                if setup.role != Role::Bass {
+                    continue;
+                }
+                let lane = &mut lanes[i].as_mut_slice()[start..end];
+                self.band_duck[i].process(lane, key);
+                self.sends.accumulate(lane, setup.delay_send, setup.reverb_send);
+                for (d, s) in low_bus.iter_mut().zip(lane.iter()) {
+                    *d += *s;
+                }
             }
         }
 
@@ -392,6 +447,7 @@ impl GlueChain {
         for i in 0..NUM_LANES {
             self.high_pass[i].reset();
             self.mono_below[i].reset();
+            self.band_duck[i].reset();
         }
         for env in &mut self.duck_env {
             env.reset();
@@ -573,6 +629,10 @@ mod tests {
             ..Default::default()
         };
         params.lane_dynamics.lead = params.lane_dynamics.bass;
+        // Full-band lead duck here (a constant signal has nothing in a band).
+        params.duck.lead_band_hz = 0.0;
+        // Bass gain from the kit duck alone (the band duck is tested on its own).
+        params.band_duck.enabled = false;
         params.lane_dynamics.extra = params.lane_dynamics.bass;
         let mut chain = GlueChain::new(block);
         chain.set_params(&params);
@@ -586,7 +646,7 @@ mod tests {
         let d = DuckParams::default();
         let full = 30; // just past the 0.5 ms attack
         assert!((db(1, kick + full) + d.bass.kick_db).abs() < 0.5, "bass on the kick: {}", db(1, kick + full));
-        assert!((db(2, kick + full) + d.others.kick_db).abs() < 0.5, "lead on the kick: {}", db(2, kick + full));
+        assert!((db(2, kick + full) + d.lead.kick_db).abs() < 0.5, "lead on the kick: {}", db(2, kick + full));
         assert!((db(1, snare + full) + d.bass.snare_db).abs() < 0.5, "bass on the snare: {}", db(1, snare + full));
         assert!((db(3, snare + full) + d.others.snare_db).abs() < 0.5, "extra on the snare: {}", db(3, snare + full));
         // Bass recovers after 50 ms, lead and extra are still releasing.

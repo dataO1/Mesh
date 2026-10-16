@@ -1,0 +1,354 @@
+name: pendulum-p1-scream
+style: pendulum
+role: lead
+articulation:
+  kind: sustained
+  attack_ms: 1
+  register:
+  - 53
+  - 77
+  length_16ths:
+  - 1
+  - 20
+notes: "P1 v3, Pendulum drop riff voice: aggressive, thick, wide, never static.\nUser, round 1b: \"static, relatively\
+  \ mono, no depth, not enough stacking, not enough\ndetune, not enough macro or micro modulation, no nice timbre,\
+  \ not distorted enough,\nthe fundamental sounds almost like a violin, not aggressive at all.\"\nScene A (core,\
+  \ centred): a 9-voice detuned saw (Modern osc) at the played octave, a\nformant saw table one octave up (5 voices,\
+  \ wide detune, morph moving per note), a\nsquare one octave down for a hollow, hard fundamental (not a violin),\
+  \ ring mod 1x2 for\nmetallic edge. Ladder filter with a punchy envelope, a westfold waveshaper whose\ndrive moves\
+  \ per note. Insert: heavy fuzz waveshaper with a post high cut, then an EQ\nthat fills 250 Hz and adds a little\
+  \ 800 Hz bite (round 2: the 300 Hz scoop left a hole).\nScene B (width): a 16-voice saw stack an octave up, high-passed,\
+  \ through Ensemble;\nonly the top is wide, the core stays mono.\nMicro modulation: random (noise LFO) per note\
+  \ on the formant morph, the fold drive and\nthe pan; a 30 ms pitch blip on every note; delayed vibrato on long\
+  \ notes; velocity on\ncutoff.\nMacros: Morph (M1, dark -> screaming: cutoff, fold, fuzz, formant, ring, width\
+  \ layer),\nLength (M2, stab -> held), Rhythm (M3, 1/16 gate on the filter, faster random),\nBite (M4, width layer\
+  \ and detune).\nCPU: 9 + 5 + 1 + 16 unison voices; trim for the board if needed.\n\n  v4 (round 2 feedback: \"\
+  an octave too low or just too dull\"; \"i dont hear any modulation\n  over time at all\"): register up an octave,\
+  \ brighter filter, and modulation that moves\n  over bars, not only per note: FM (osc 2 -> osc 1) with its depth\
+  \ on a dotted-8th LFO,\n  the filter envelope and the morph macro; scene LFOs free-running over 2 bars (filter,\n\
+  \  formant morph, width layer) and 8 bars (fold and fuzz drive); slow random drift on the\n  unison detune; a\
+  \ 1/16 filter pulse always a little on (more with Rhythm); chorus on the\n  core, phaser on the width layer; deeper\
+  \ vibrato.\n\n  v4.1 (round 3: \"much much much better ... maybe a little too much distortion, but the\n  general\
+  \ pocket it sits in is correct\"): fold drive 8 -> 5 dB, fuzz drive 12 -> 8 dB.\n\n  v5 (round 4: \"distortion\
+  \ algorithm ... too much like static\", \"too much still\",\n  \"leads into heavy distortion often benefit from\
+  \ a high feedback filter\", \"release ...\n  sounds cut off\", \"final eq ... brings up the highs around 3-8k\
+  \ ... and a steep low cut\n  just under the fundamental after the distortion\"): filter config Serial 1 (ladder\
+  \ ->\n  waveshaper -> filter 2). Ladder resonance 65 % drives the waveshaper (now zamsat, a smooth\n  tape-like\
+  \ saturation, 3 dB instead of westfold 5 dB). Filter 2 is a 24 dB high-pass that\n  follows the played note (keytrack\
+  \ 100 %), just under the fundamental, after the\n  saturation. Inserts: EQ lifting 3-8 kHz before the distortion,\
+  \ then OJD overdrive\n  (smooth, 5 dB, instead of fuzz 8 dB) with its post low cut at 80 Hz, then chorus.\n  Amp\
+  \ release 50 -> 250 ms (Length adds up to x4). Final lane EQ: +2.5 dB shelf-like\n  bell at 5 kHz.\n\n  v5.1 (round\
+  \ 5: \"an obnoxious 8k or lasery sound, probably the feedback filter, it also\n  sounds a little like delay ...\
+  \ overall the sound sounds much better and not so broken\"):\n  ladder resonance 65 -> 35 % (Morph adds up to\
+  \ +15 %), filter envelope 30 -> 16 st so the\n  resonant peak no longer zaps up to ~11 kHz on every note; chorus\
+  \ feedback 50 -> 0 %,\n  mix 35 -> 25 % (the delay-like smear).\n\n  v5.2 (round 6: \"still this delayish kind\
+  \ of sound ... washy ... chorus usually 10 ms or so,\n  very very low feedback and 20 % mix\"): chorus time 10\
+  \ ms, rate 0.8 Hz, depth 25 %,\n  feedback 5 %, mix 20 %; the width layer's Ensemble (slow BBD at 100 % depth,\
+  \ also washy)\n  down to 30 / 20 % depth.\n\n  v5.3 (round 7: \"theres still this lasery sound, its probably the\
+  \ ensemble\"): Ensemble removed\n  from the width layer.\n"
+surge:
+  set:
+    Scene Mode: dual
+    A Play Mode: mono_st
+    A Portamento: 15 ms
+    A Osc 1 Type: modern
+    A Osc 2 Type: wavetable
+    A Osc 3 Type: modern
+    A Osc 1 Unison Voices: 9
+    A Osc 1 Unison Detune: 0.22
+    A Osc 2 Octave: 1
+    A Osc 2 Unison Voices: 5
+    A Osc 2 Unison Detune: 0.35
+    A Osc 2 Morph: 0.35
+    A Osc 2 Volume: -2 dB
+    A Osc 2 Mute: 0
+    A Osc 3 Octave: -1
+    A Osc 3 Volume: -6 dB
+    A Osc 3 Mute: 0
+    A Ring Modulation 1x2 Mute: 0
+    A Ring Modulation 1x2 Volume: -14 dB
+    A Filter 1 Type: vintageladder
+    A Filter 1 Cutoff: 2000 Hz
+    A Filter 1 Resonance: 35 %
+    A Filter 1 FEG Mod Amount: 16 st
+    A Filter 1 Keytrack: 50 %
+    A Waveshaper Type: zamsat
+    A Waveshaper Drive: 3 dB
+    A Filter EG Attack: 0 ms
+    A Filter EG Decay: 180 ms
+    A Filter EG Sustain: 35 %
+    A Filter EG Release: 120 ms
+    A Amp EG Attack: 1 ms
+    A Amp EG Decay: 400 ms
+    A Amp EG Sustain: 40 %
+    A Amp EG Release: 250 ms
+    A LFO 1 Type: sine
+    A LFO 1 Rate: 5.5 Hz
+    A LFO 1 Delay: 350 ms
+    A LFO 1 Attack: 250 ms
+    A LFO 2 Type: noise
+    A LFO 2 Rate: 3 Hz
+    A LFO 3 Type: square
+    A LFO 3 Rate: 11.6 Hz
+    A LFO 3 Amplitude: 25 %
+    A LFO 4 Type: envelope
+    A LFO 4 Decay: 30 ms
+    A LFO 4 Sustain: 0 %
+    FX A1 FX Type: eq
+    FX A2 FX Type: waveshaper
+    B Play Mode: mono_st
+    B Portamento: 15 ms
+    B Osc 1 Type: modern
+    B Osc 1 Octave: 1
+    B Osc 1 Unison Voices: 16
+    B Osc 1 Unison Detune: 0.4
+    B Filter 1 Type: hp12
+    B Filter 1 Cutoff: 500 Hz
+    B Amp EG Attack: 4 ms
+    B Amp EG Sustain: 40 %
+    B Amp EG Release: 250 ms
+    B Volume: -10 dB
+    A FM Routing: 2to1
+    A FM Depth: -10
+    A LFO 5 Type: tri
+    A LFO 5 Rate: 3.87 Hz
+    A Scene LFO 1 Type: sine
+    A Scene LFO 1 Rate: 0.36 Hz
+    A Scene LFO 2 Type: tri
+    A Scene LFO 2 Rate: 0.09 Hz
+    A Scene LFO 3 Type: noise
+    A Scene LFO 3 Rate: 0.5 Hz
+    FX A3 FX Type: chorus4
+    FX B2 FX Type: phaser
+    A Filter Configuration: 0
+    A Filter 2 Type: hp24
+    A Filter 2 Cutoff: 220 Hz
+    A Filter 2 Keytrack: 100 %
+    B Filter Configuration: 0
+    B Filter 2 Type: lp24
+    B Filter 2 Cutoff: 4500 Hz
+  set_after_types:
+    A Osc 1 Sawtooth: 100 %
+    A Osc 1 Pulse: 0 %
+    A Osc 3 Sawtooth: 0 %
+    A Osc 3 Pulse: 100 %
+    B Osc 1 Sawtooth: 100 %
+    FX A3 Mix: 20 %
+    FX A3 Depth: 25 %
+    FX B2 Mix: 50 %
+    FX A1 Gain 1: -1 dB
+    FX A1 Frequency 1: 300 Hz
+    FX A1 Gain 2: 2.5 dB
+    FX A1 Frequency 2: 4500 Hz
+    FX A1 Bandwidth 2: 1.5
+    FX A1 Gain 3: -12 dB
+    FX A1 Frequency 3: 12000 Hz
+    FX A2 Shape: ojd
+    FX A2 Drive: 5 dB
+    FX A2 Bias: 5 %
+    FX A2 Low Cut (2): 80 Hz
+    FX A2 High Cut (2): 9000 Hz
+    FX A3 Feedback: 5 %
+    FX A3 Time: 10 ms
+    FX A3 Rate: 0.8 Hz
+  wavetables:
+    A2: Waldorf/Fmt Saw 3.wt
+  macros:
+  - Morph
+  - Length
+  - Rhythm
+  - Bite
+  mod:
+  - - lfo2
+    - A Osc 2 Morph
+    - 0.25
+  - - lfo2
+    - A Waveshaper Drive
+    - 0.12
+  - - lfo2
+    - A Pan
+    - 0.15
+  - - lfo4
+    - A Pitch
+    - 0.85
+  - - velocity
+    - A Filter 1 Cutoff
+    - 0.08
+  - - lfo3
+    - A Filter 1 Cutoff
+    - 0.15
+  - - macro1
+    - A Filter 1 Cutoff
+    - 0.25
+  - - macro1
+    - A Waveshaper Drive
+    - 0.3
+  - - macro1
+    - FX A2 Drive
+    - 0.25
+  - - macro1
+    - A Osc 2 Morph
+    - 0.4
+  - - macro1
+    - A Ring Modulation 1x2 Volume
+    - 0.4
+  - - macro2
+    - A Amp EG Sustain
+    - 0.6
+  - - macro2
+    - A Amp EG Release
+    - 0.15
+  - - macro2
+    - B Amp EG Sustain
+    - 0.6
+  - - macro2
+    - B Amp EG Release
+    - 0.15
+  - - macro3
+    - A LFO 3 Amplitude
+    - 1.0
+  - - macro3
+    - A LFO 2 Rate
+    - 0.15
+  - - macro4
+    - B Volume
+    - 0.35
+  - - macro4
+    - A Osc 1 Unison Detune
+    - 0.2
+  - - macro4
+    - A Osc 2 Unison Detune
+    - 0.2
+  - - lfo1
+    - A Pitch
+    - 0.035
+  - - lfo5
+    - A FM Depth
+    - 0.25
+  - - filtereg
+    - A FM Depth
+    - 0.2
+  - - macro1
+    - A FM Depth
+    - 0.25
+  - - slfo1
+    - A Filter 1 Cutoff
+    - 0.12
+  - - slfo1
+    - A Osc 2 Morph
+    - 0.35
+  - - slfo1
+    - B Volume
+    - 0.15
+  - - slfo2
+    - A Waveshaper Drive
+    - 0.25
+  - - slfo2
+    - FX A2 Drive
+    - 0.15
+  - - slfo3
+    - A Osc 1 Unison Detune
+    - 0.15
+  - - slfo3
+    - A Osc 2 Unison Detune
+    - 0.15
+  - - macro1
+    - A Filter 1 Resonance
+    - 0.15
+lane:
+  hpf: 80
+  generator:
+    register: 0.5
+    density: 0.5
+    complexity: 0.0
+    variation: 0.0
+    spread: 0.0
+    motif_chords: 0
+    motif_exact: 1
+  fx:
+  - id: multiband
+    source: native
+    dry_wet: 0.5
+    settings:
+      split_1: 120
+      split_2: 400
+      split_3: 2000
+      split_4: 5000
+      split_5: 9000
+      band_2_down_ratio: 1.5
+      band_2_down_threshold: -18
+      band_2_up_ratio: 3
+      band_2_up_threshold: -45
+      band_3_down_ratio: 4
+      band_3_down_threshold: -28
+      band_3_up_ratio: 4
+      band_3_up_threshold: -45
+      band_4_down_ratio: 4
+      band_4_down_threshold: -28
+      band_4_up_ratio: 4
+      band_4_up_threshold: -45
+      band_5_down_ratio: 4
+      band_5_down_threshold: -34
+      band_5_up_ratio: 1.0
+      band_5_up_threshold: -50
+      up_gate: -65
+      up_max: 8
+      band_6_down_ratio: 4
+      band_6_down_threshold: -36
+  - id: compressor
+    source: native
+    settings:
+      threshold: -18
+      ratio: 8
+      attack: 0.3
+      release: 50
+      knee: 2
+      makeup: 4
+  - id: eq
+    source: native
+    settings:
+      low_cut: 80
+      bell_1_freq: 1000
+      bell_1_gain: -4
+      bell_1_q: 1.2
+      bell_2_freq: 5000
+      bell_2_gain: 1.0
+      bell_2_q: 0.7
+  - id: clipper
+    source: native
+    settings:
+      threshold: 0
+      knee: 3
+  controls:
+  - label: dens
+    target:
+      type: generator
+      param: density
+    default: 0.5
+    also:
+    - target:
+        type: instrument
+        param: 3
+      min: 0
+      max: 0.8
+  - label: len
+    target:
+      type: instrument
+      param: 1
+    default: 0.6
+  - label: rhy
+    target:
+      type: generator
+      param: complexity
+    default: 0.0
+    also:
+    - target:
+        type: instrument
+        param: 2
+      min: 0
+      max: 0.7
+  - label: morph
+    target:
+      type: instrument
+      param: 0
+    default: 0.4

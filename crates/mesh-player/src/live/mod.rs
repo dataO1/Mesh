@@ -7,6 +7,7 @@
 //! live:
 //!   style: breaks          # folder under <collection>/styles/
 //!   f1_left_serial: null   # optional, USB serial of the left Kontrol F1
+//!   auto_record: true      # record the set (and a state log) from the start
 //! ```
 //!
 //! or for one run with `mesh-player --live [STYLE]`, where STYLE is a style
@@ -17,6 +18,7 @@
 //! - [`controls`]: the two Kontrol F1s mapped onto live commands (§7).
 //! - [`input`]: controller polling and LED feedback thread.
 //! - [`keys`]: keyboard fallback for development without F1s.
+//! - [`statelog`]: the per-bar state log written next to a set recording.
 //! - [`pads`]: what the 8 pads of each lane do.
 //! - [`readout`], [`header`]: pure text formatting of the screen.
 //! - [`startup`]: style resolution and its error report.
@@ -30,5 +32,6 @@ pub mod keys;
 pub mod pads;
 pub mod readout;
 pub mod startup;
+pub mod statelog;
 
 pub use boot::run;

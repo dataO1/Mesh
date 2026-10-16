@@ -18,7 +18,7 @@
 use std::ops::Range;
 
 use mesh_core::live::glue::Role;
-use mesh_core::live::generator::layout::DrumVoice;
+use mesh_core::live::generator::layout::{voice_override, DrumVoice};
 use mesh_core::live::state::{move_bits, LaneView, Rate, SpanTag};
 use mesh_core::live::style::{ControlSpec, ControlTarget, CONTROLS_PER_LANE};
 
@@ -86,7 +86,22 @@ pub struct LaneInfo {
 impl LaneInfo {
     /// Width of the form token, so form changes keep the layout.
     fn form_width(&self) -> usize {
-        self.forms.iter().map(|f| f.chars().count() + 9).max().unwrap_or(0)
+        self.forms
+            .iter()
+            .map(|f| {
+                let segs: Vec<&str> = f.split_whitespace().collect();
+                (0..segs.len().max(1))
+                    .map(|p| {
+                        let (from, to) = form_window(segs.len(), p);
+                        let marks = ELLIPSIS_CHARS * ((from > 0) as usize + (to < segs.len()) as usize);
+                        segs[from..to].iter().map(|s| s.chars().count() + 1).sum::<usize>().saturating_sub(1) + marks
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    + 9
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Width of the instrument token, so option changes keep the layout.
@@ -94,7 +109,7 @@ impl LaneInfo {
         self.option_names
             .iter()
             .zip(self.option_kinds.iter().chain(std::iter::repeat(&InstrumentKind::Sampler)))
-            .map(|(n, k)| k.method().len() + n.chars().count() + 5)
+            .map(|(n, k)| k.method().len() + short_name(n).chars().count() + 5)
             .max()
             .unwrap_or(0)
     }
@@ -213,7 +228,7 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
     // Instrument option: the browsed / queued one while pending.
     let shown = v.option_pending.unwrap_or(v.option) as usize;
     let kind = info.option_kinds.get(shown).copied().unwrap_or(InstrumentKind::Sampler);
-    let name = info.option_names.get(shown).map(String::as_str).unwrap_or("?");
+    let name = info.option_names.get(shown).map(|n| short_name(n)).unwrap_or_else(|| "?".into());
     let start = line.text.len();
     let mut flags = 0;
     if v.option_pending.is_some() {
@@ -234,12 +249,12 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
             }
             let bit = voice.bit();
             let mut flags = 0;
-            if v.mutes_playing & bit != 0 {
+            if v.voices_on & bit == 0 {
                 flags |= mark::MUTED;
             } else if f.firing == Some(*tag) {
                 flags |= mark::FIRING;
             }
-            if (v.mutes ^ v.mutes_playing) & bit != 0 {
+            if (voice_override::apply(v.voice_default, v.voice_overrides) ^ v.voices_on) & bit != 0 {
                 flags |= mark::PENDING;
             }
             line.push(word, flags);
@@ -270,13 +285,23 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
     let shown = v.form_pending.unwrap_or(v.form) as usize;
     line.push(".form(\"", if pending { mark::PENDING } else { 0 });
     if let Some(form) = info.forms.get(shown) {
-        for (i, segment) in form.split_whitespace().enumerate() {
-            if i > 0 {
+        // Long forms show a window of segments around the playing one.
+        let segs: Vec<&str> = form.split_whitespace().collect();
+        let playing_at = if pending { 0 } else { v.pos.segment as usize };
+        let (from, to) = form_window(segs.len(), playing_at);
+        if from > 0 {
+            line.push("… ", 0);
+        }
+        for (i, segment) in segs.iter().enumerate().take(to).skip(from) {
+            if i > from {
                 line.push(" ", 0);
             }
             let playing = !pending && v.on && i == v.pos.segment as usize;
             let flags = if pending { mark::PENDING } else if playing { mark::PLAYING } else { 0 };
             line.push(segment, flags);
+        }
+        if to < segs.len() {
+            line.push(" …", 0);
         }
     }
     line.push("\")", if pending { mark::PENDING } else { 0 });
@@ -305,6 +330,44 @@ pub fn format_lane(info: &LaneInfo, f: &LaneFrame) -> CodeLine {
     line
 }
 
+/// Longest option name shown before it is cut with an ellipsis.
+const NAME_MAX_CHARS: usize = 24;
+
+/// Option name for the line: a `+`-joined set (the folder pairs of a kit)
+/// shows its first member and `+N` for the rest, and no name is longer than
+/// [`NAME_MAX_CHARS`], so the line can wrap between tokens only.
+fn short_name(name: &str) -> String {
+    let mut parts = name.split('+');
+    let first = parts.next().unwrap_or("");
+    let rest = parts.count();
+    let mut out: String = if first.chars().count() > NAME_MAX_CHARS {
+        first.chars().take(NAME_MAX_CHARS - 1).chain(std::iter::once('…')).collect()
+    } else {
+        first.to_string()
+    };
+    if rest > 0 {
+        out.push_str(&format!("+{rest}"));
+    }
+    out
+}
+
+/// Segments a long form shows at once, and how many before the playing one.
+const FORM_WINDOW: usize = 10;
+const FORM_WINDOW_BEFORE: usize = 2;
+/// Characters of a window's "… " / " …" marks.
+const ELLIPSIS_CHARS: usize = 2;
+
+/// Segments `from..to` of a form of `len` segments shown while segment
+/// `playing` plays (an inserted break, out of range, shows the start).
+fn form_window(len: usize, playing: usize) -> (usize, usize) {
+    if len <= FORM_WINDOW {
+        return (0, len);
+    }
+    let playing = if playing < len { playing } else { 0 };
+    let from = playing.saturating_sub(FORM_WINDOW_BEFORE).min(len - FORM_WINDOW);
+    (from, from + FORM_WINDOW)
+}
+
 /// Readout description of a control, with archetype names for the drum
 /// lane's `style` generator parameter.
 pub fn control_info(label: &str, spec: &ControlSpec, role: Role, archetypes: &[String]) -> ControlInfo {
@@ -320,7 +383,7 @@ mod tests {
     use mesh_core::live::style::Curve;
 
     fn spec(target: ControlTarget) -> ControlSpec {
-        ControlSpec { label: None, target, min: 0.0, max: 1.0, curve: Curve::default(), default: 0.5 }
+        ControlSpec { label: None, target, min: 0.0, max: 1.0, curve: Curve::default(), default: 0.5, also: Vec::new() }
     }
 
     fn generator(param: &str) -> ControlTarget {
@@ -358,6 +421,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn short_name_keeps_first_member_and_counts_rest() {
+        assert_eq!(short_name("clean-kit"), "clean-kit");
+        assert_eq!(short_name("pair-18+ES_31s_05(C#)_175+library+library"), "pair-18+3");
+        let s = short_name(&format!("{}+b", "x".repeat(40)));
+        assert_eq!(s.chars().count(), NAME_MAX_CHARS + 2);
+        assert!(s.contains('…') && s.ends_with("+1"));
+    }
+
+    #[test]
+    fn long_kit_name_is_shortened_in_line() {
+        let mut info = drums();
+        info.option_names[1] = "pair-18+ES_31s_05(C#)_175+library+library+library".into();
+        let line = format_lane(&info, &frame(LaneView { option: 1, ..view() }));
+        assert!(line.text.contains(".kit(\"pair-18+4\")"), "{}", line.text);
+    }
+
     fn forms() -> Vec<String> {
         vec!["A3 B1".into(), "A7 B1 A'7 C1".into()]
     }
@@ -373,8 +453,10 @@ mod tests {
             pos: FormView { segment: 1, letter: 1, prime: false, chord: 0 },
             octave: 0,
             rate: Rate::Normal,
-            mutes: 0,
-            mutes_playing: 0,
+            voice_overrides: 0,
+            voice_overrides_playing: 0,
+            voice_default: 0xFF,
+            voices_on: 0xFF,
             controls: [0.5, 0.62, 0.0, 0.25],
             shift_controls: [0.5; 4],
             option: 0,
@@ -470,8 +552,10 @@ mod tests {
     #[test]
     fn mutes_pending_forms_octave_and_rate() {
         let mut v = view();
-        v.mutes = DrumVoice::Hats.bit() | DrumVoice::Top.bit();
-        v.mutes_playing = DrumVoice::Hats.bit();
+        // Hats off now, the top loop's override lands on the next bar.
+        v.voice_overrides = ((DrumVoice::Hats.bit() | DrumVoice::Top.bit()) as u16) << 8;
+        v.voice_overrides_playing = (DrumVoice::Hats.bit() as u16) << 8;
+        v.voices_on = 0xFF & !DrumVoice::Hats.bit();
         let line = format_lane(&drums(), &frame(v));
         assert_eq!(marked(&line, mark::MUTED), vec!["hats"]);
         assert_eq!(marked(&line, mark::PENDING), vec!["top"], "mute lands on the next bar");
@@ -487,6 +571,15 @@ mod tests {
         assert!(line.text.ends_with(".oct(-2).rate(\"dbl \")"), "{}", line.text);
         let base = format_lane(&bass(), &frame(view()));
         assert_eq!(base.text.chars().count(), line.text.chars().count(), "form and rate keep the layout");
+    }
+
+    #[test]
+    fn long_forms_show_a_window_around_the_playing_segment() {
+        assert_eq!(form_window(4, 3), (0, 4), "short forms show whole");
+        assert_eq!(form_window(30, 0), (0, FORM_WINDOW));
+        assert_eq!(form_window(30, 12), (10, 10 + FORM_WINDOW));
+        assert_eq!(form_window(30, 29), (30 - FORM_WINDOW, 30), "stays inside the form");
+        assert_eq!(form_window(30, 255), (0, FORM_WINDOW), "an inserted break shows the start");
     }
 
     #[test]

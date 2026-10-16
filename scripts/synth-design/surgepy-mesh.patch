@@ -1,0 +1,40 @@
+--- a/src/surge-python/surgepy.cpp	1970-01-01 01:00:01.000000000 +0100
++++ b/src/surge-python/surgepy.cpp	2026-10-16 11:12:51.439487923 +0200
+@@ -639,6 +639,26 @@
+ 
+     void savePatchPy(const std::string &s) { savePatchToPath(string_to_path(s)); }
+ 
++    // Mesh: load a .wt or .wav wavetable into scene/osc (no surgepy API for it).
++    bool loadWavetablePy(int scene, int osc, const std::string &path)
++    {
++        if (scene < 0 || scene >= n_scenes || osc < 0 || osc >= n_oscs)
++            return false;
++        auto *os = &storage.getPatch().scene[scene].osc[osc];
++        storage.load_wt(path, &os->wt, os);
++        os->wt.refresh_display = true;
++        return os->wt.n_tables > 0;
++    }
++
++    // Mesh: name a macro (ctrl 0..7) and set its bipolar flag.
++    void setMacroPy(int idx, const std::string &name, bool bipolar)
++    {
++        if (idx < 0 || idx >= n_customcontrollers)
++            return;
++        strncpy(storage.getPatch().CustomControllerLabel[idx], name.c_str(), CUSTOM_CONTROLLER_LABEL_SIZE - 1);
++        storage.getPatch().scene[0].modsources[ms_ctrl1 + idx]->set_bipolar(bipolar);
++    }
++
+     std::string factoryDataPath() const { return storage.datapath.u8string(); }
+ 
+     std::string userDataPath() const { return storage.userDataPath.u8string(); }
+@@ -1110,6 +1130,10 @@
+              "Load a Surge XT .fxp patch from the file system.", py::arg("path"))
+         .def("savePatch", &SurgeSynthesizerWithPythonExtensions::savePatchPy,
+              "Save the current state of Surge XT to an .fxp file.", py::arg("path"))
++        .def("loadWavetable", &SurgeSynthesizerWithPythonExtensions::loadWavetablePy,
++             "Load a .wt or .wav wavetable into an oscillator.", py::arg("scene"), py::arg("osc"), py::arg("path"))
++        .def("setMacro", &SurgeSynthesizerWithPythonExtensions::setMacroPy,
++             "Name a macro and set its bipolar flag.", py::arg("index"), py::arg("name"), py::arg("bipolar"))
+ 
+         .def("getModSource", &SurgeSynthesizerWithPythonExtensions::getModSource,
+              "Given a constant from surge.constants.ms_*, provide a modulator object",

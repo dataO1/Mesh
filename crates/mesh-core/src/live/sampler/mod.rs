@@ -24,10 +24,10 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
-pub use data::{SampleBank, SampleData, Slice, SliceType, SlotDef};
+pub use data::{SampleBank, SampleData, Slice, SliceType, SlotDef, MAX_LAYERS};
 pub use engine::{Sampler, SamplerMeters};
 pub use interp::{sinc_tables, Interpolation, SincTables};
 pub use params::{
-    decay_secs, glide_secs, LaneSamplerParams, CHOKE_FADE_SECS, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ,
-    CUTOFF_OFFSET_OCTAVES, EDGE_FADE_SECS,
+    attack_byte, attack_secs, decay_secs, glide_secs, LaneSamplerParams, ModConfig, CHOKE_FADE_SECS, CUTOFF_MAX_HZ,
+    CUTOFF_MIN_HZ, CUTOFF_OFFSET_OCTAVES, EDGE_FADE_SECS, MAX_CC_MAPS, MAX_ZONE_MODS, CcCurve, CcMap, ModEnv, ModLfo, NO_CC, SoundShape, ZoneMod, ZoneTarget,
 };

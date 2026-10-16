@@ -33,6 +33,19 @@ pub fn param(ctx: &BarCtx, index: usize) -> f32 {
     if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
 }
 
+/// Parameter `index` as note `n` reads it: the value moved by up to the
+/// parameter's jitter ([`BarCtx::jitter`]), seeded per seed, note and bar
+/// of the phrase, so notes within a block differ and a phrase repeats.
+pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
+    let v = param(ctx, index);
+    let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
+    if amp <= 0.0 {
+        return v;
+    }
+    let h = rng::hash(ctx.seed, ctx.lane, n, ctx.bar_in_phrase.wrapping_mul(16).wrapping_add(index as u8), S_NOTE_PARAM);
+    (v + amp * (2.0 * rng::unit_f32(h) - 1.0)).clamp(0.0, 1.0)
+}
+
 /// Defaults for `names`, taken from the style's `generator.params` where
 /// present and from `builtin` otherwise.
 pub fn defaults_from_spec(
@@ -438,7 +451,74 @@ pub fn trigger(tick: u16, target: u8, vel: u8) -> LiveEvent {
     LiveEvent { tick, kind: EventKind::Trigger, target, vel, ..LiveEvent::default() }
 }
 
+// MUSICAL: first draft, tune by ear (user). Pitched lanes: note attack
+// follows the density, slow and soft when sparse, sharp when dense.
+/// Attack at density 0 and 1, in seconds.
+pub const ATTACK_BY_DENSITY: (f32, f32) = (0.08, 0.01);
+/// Note length as a share of the gap to the next note at density 0 and 1.
+/// Bass attack at density 0 and 1 (user: longer than the synths).
+pub const BASS_ATTACK_BY_DENSITY: (f32, f32) = (0.12, 0.02);
+pub const LENGTH_BY_DENSITY: (f32, f32) = (1.0, 0.3);
+
+/// The event `attack` byte for a pitched lane at `density`.
+pub fn density_attack(density: f32) -> u8 {
+    density_attack_in(density, ATTACK_BY_DENSITY)
+}
+
+/// [`density_attack`] over an attack `range` (seconds at density 0 and 1).
+pub fn density_attack_in(density: f32, range: (f32, f32)) -> u8 {
+    crate::live::sampler::attack_byte(lerp(range.0, range.1, density.clamp(0.0, 1.0)))
+}
+
+// MUSICAL: first draft, tune by ear. Streams (mudpies).
+/// Share of a stream (mudpie) note starts may use; the rest is left for the
+/// last note to play on.
+const STREAM_USABLE: f32 = 0.9;
+/// Each note's start varies by up to this share of the file.
+const STREAM_JITTER: f32 = 0.004;
+/// A letter seed's playhead anchors: 2 to 4 positions spread over the whole
+/// file, one per equal part of it. The step motif picks one per note.
+const STREAM_ANCHORS_MAX: u32 = 4;
+/// Stacked tones of one hit start this share of the file apart.
+const STREAM_TONE_STEP: f32 = 0.003;
+const S_STREAM_ANCHORS: u32 = 0x7F3;
+const S_STREAM_MOTIF: u32 = 0x7F4;
+const S_MOTIF_LEN: u32 = 0x7F5;
+const S_STREAM_NOTE: u32 = 0x7F1;
+const S_NOTE_PARAM: u32 = 0x7F2;
+
+// MUSICAL: first draft, tune by ear (user: motifs, not one sound over and over).
+/// Lengths of a seeded step motif, in 8ths (it repeats through the bar).
+const MOTIF_LENGTHS: [u8; 5] = [2, 3, 4, 6, 8];
+
+/// A seeded value 0..1 per 8th of the bar that repeats in a short cycle
+/// (2 to 8 8ths): the same on the same step of every bar of a letter seed.
+/// `stream` keeps motifs apart.
+pub fn step_motif(ctx: &BarCtx, step: u8, stream: u32) -> f32 {
+    let len = MOTIF_LENGTHS[rng::below(rng::hash(ctx.seed, ctx.lane, 0, 0, stream ^ S_MOTIF_LEN), MOTIF_LENGTHS.len() as u32) as usize];
+    let slot = (step / 2) % len;
+    rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, slot + 1, stream))
+}
+
+/// Event `start` of a note on `step` (tone `tone` of a stack) on a stream
+/// sample (mudpie). Each letter seed spreads 2 to 4 playhead anchors over the
+/// whole file (one in each equal part, at a seeded place in it) and a step
+/// motif walks between them, so seeds and blocks play different parts of the
+/// file and a bar repeats with intent. Each note moves a little around its
+/// anchor. Samplers ignore it on ordinary samples.
+pub fn stream_start(ctx: &BarCtx, step: u8, tone: u8) -> u16 {
+    let anchors = 2 + rng::below(rng::hash(ctx.seed, ctx.lane, 0, 0, S_STREAM_ANCHORS), STREAM_ANCHORS_MAX - 1);
+    let k = ((step_motif(ctx, step, S_STREAM_MOTIF) * anchors as f32) as u32).min(anchors - 1);
+    let place = rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 1, k as u8, S_STREAM_ANCHORS));
+    let anchor = (k as f32 + place) / anchors as f32 * STREAM_USABLE;
+    let h = rng::hash(ctx.seed, ctx.lane, ctx.bar_in_phrase, step.wrapping_mul(8).wrapping_add(tone), S_STREAM_NOTE);
+    let jitter = (rng::unit_f32(h) * 2.0 - 1.0) * STREAM_JITTER + tone as f32 * STREAM_TONE_STEP;
+    ((anchor + jitter).clamp(0.0, 1.0) * u16::MAX as f32) as u16
+}
+
 /// Pitched note with a gate, clamped to end inside the bar.
+///
+/// Callers set `attack` ([`density_attack`]) and `start` ([`stream_start`]).
 #[inline]
 pub fn note(tick: u16, key: u8, vel: u8, gate: u16, note_id: u16) -> LiveEvent {
     let gate = gate.clamp(1, TICKS_PER_BAR - tick.min(TICKS_PER_BAR - 1));
@@ -710,5 +790,36 @@ mod tests {
         let n = note(380, 60, 100, 100, 1);
         assert_eq!(n.tick + n.gate, TICKS_PER_BAR);
         assert_eq!(note(0, 60, 100, 0, 1).gate, 1);
+    }
+
+    #[test]
+    fn density_sets_attack_and_streams_spread_over_the_file() {
+        use crate::live::sampler::attack_secs;
+        assert!((attack_secs(density_attack(0.0)) - 0.08).abs() < 0.004);
+        assert!((attack_secs(density_attack(1.0)) - 0.01).abs() < 0.001);
+        let p = [0.5; MAX_GEN_PARAMS];
+        let mask = [0u8; STEPS_PER_BAR];
+        let mut c = crate::live::generator::test_util::ctx(3, 0, &p, &mask);
+        let starts: Vec<u16> = (0..16).map(|n| stream_start(&c, n, 0)).collect();
+        assert!(starts.iter().any(|&s| s != starts[0]), "notes vary");
+        // The motif repeats: a step lands on the same anchor in the next bar.
+        let mut next = c;
+        next.bar_in_phrase = 1;
+        for n in 0..16 {
+            let d = stream_start(&next, n, 0).abs_diff(starts[n as usize]) as f32;
+            assert!(d <= 2.0 * STREAM_JITTER * u16::MAX as f32 + 1.0, "step {n}");
+        }
+        // Over many seeds the anchors cover the whole usable file evenly.
+        let mut quarters = [0usize; 4];
+        for seed in 0..200 {
+            let mut c = c;
+            c.seed = seed;
+            for n in (0..16).step_by(2) {
+                let at = stream_start(&c, n, 0) as f32 / u16::MAX as f32 / STREAM_USABLE;
+                quarters[((at * 4.0) as usize).min(3)] += 1;
+            }
+        }
+        let (lo, hi) = (*quarters.iter().min().unwrap(), *quarters.iter().max().unwrap());
+        assert!(lo * 2 > hi, "even spread: {quarters:?}");
     }
 }

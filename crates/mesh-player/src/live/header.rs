@@ -14,11 +14,15 @@ pub fn key_label(key: MusicalKey) -> String {
     format!("{:>3} {}", camelot_label(key), key)
 }
 
-/// Current key, plus the key armed for the next phrase.
-pub fn key_text(current: MusicalKey, pending: Option<MusicalKey>) -> String {
+/// Current key and mode, plus what is armed for the next phrase.
+pub fn key_text(current: MusicalKey, pending: Option<MusicalKey>, mode: &str, mode_pending: bool) -> String {
+    let new_mode = if mode_pending { " → new mode" } else { "" };
     match pending {
-        Some(p) if p != current => format!("KEY {} → {} (next phrase)", key_label(current), key_label(p)),
-        _ => format!("KEY {}", key_label(current)),
+        Some(p) if p != current => {
+            format!("KEY {} {mode} → {}{new_mode} (next phrase)", key_label(current), key_label(p))
+        }
+        _ if mode_pending => format!("KEY {} {mode}{new_mode} (next phrase)", key_label(current)),
+        _ => format!("KEY {} {mode}", key_label(current)),
     }
 }
 
@@ -95,9 +99,10 @@ mod tests {
     fn key_labels_and_pending_key() {
         assert_eq!(key_label(AM), " 8A Am");
         assert_eq!(key_label(MusicalKey::new(4, false)), "12B E");
-        assert_eq!(key_text(AM, None), "KEY  8A Am");
-        assert_eq!(key_text(AM, Some(AM)), "KEY  8A Am");
-        assert_eq!(key_text(AM, Some(EM)), "KEY  8A Am →  9A Em (next phrase)");
+        assert_eq!(key_text(AM, None, "aeolian", false), "KEY  8A Am aeolian");
+        assert_eq!(key_text(AM, Some(AM), "aeolian", false), "KEY  8A Am aeolian");
+        assert_eq!(key_text(AM, Some(EM), "dorian", false), "KEY  8A Am dorian →  9A Em (next phrase)");
+        assert_eq!(key_text(AM, None, "dorian", true), "KEY  8A Am dorian → new mode (next phrase)");
     }
 
     #[test]

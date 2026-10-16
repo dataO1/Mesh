@@ -1,0 +1,191 @@
+# Surge XT factory wavetables (relative to wavetables/)
+
+- Basic/Sine HQ.wav
+- Basic/Sine Octaves HQ.wav
+- Basic/Sine Octaves.wt
+- Basic/Sine To Sawtooth HQ.wav
+- Basic/Sine To Sawtooth.wt
+- Basic/Sine To Square HQ.wav
+- Basic/Sine To Square.wt
+- Basic/Sine.wt
+- Basic/Triangle HQ.wav
+- Basic/Triangle NES.wav
+- Basic/Triangle.wt
+- Basic/Tri-Saw HQ.wav
+- Basic/Tri-Saw.wt
+- Generated/Circle.wt
+- Generated/Cosine Inverse Power.wt
+- Generated/Cosine Octaves.wt
+- Generated/Cosine.wt
+- Generated/Emphasis.wt
+- Generated/Flangy.wt
+- Generated/Formants.wt
+- Generated/Impulse.wt
+- Generated/Multi Bandpass Sweep.wt
+- Generated/Noise.wt
+- Generated/Phasey 1.wt
+- Generated/Phasey 2.wt
+- Generated/PM16x.wt
+- Generated/PM Comp.wt
+- Generated/PM Freq.wt
+- Generated/Primes.wt
+- Generated/Pulse Synced 25%.wt
+- Generated/Pulse Synced 50%.wt
+- Generated/Pulse Windowed.wt
+- Generated/PWM.wt
+- Generated/Ripple.wt
+- Generated/Saw Asymmetric.wt
+- Generated/Saw ATC.wav
+- Generated/Saw CS-80.wt
+- Generated/Saw Detuned.wt
+- Generated/Saw Havoc.wt
+- Generated/Saw Primary.wt
+- Generated/Saw Sync.wt
+- Generated/Sawtooth Reso.wt
+- Generated/Sawtooth Window.wt
+- Generated/Several Formants.wt
+- Generated/Sine FB.wt
+- Generated/Sine FM 2x HQ.wt
+- Generated/Sine FM 2x.wt
+- Generated/Sine FM 3x HQ.wt
+- Generated/Sine FM 3x.wt
+- Generated/Sine Half HQ.wt
+- Generated/Sine Half.wt
+- Generated/Sine Inverse Power HQ.wt
+- Generated/Sine Inverse Power.wt
+- Generated/Sine One Harmonic.wt
+- Generated/Sine PD HQ.wt
+- Generated/Sine PD.wt
+- Generated/Sine Power HQ.wt
+- Generated/Sine Power.wt
+- Generated/Sine Quantitized 1.wt
+- Generated/Sine Quantitized 2.wt
+- Generated/Sine Quantitized 3.wt
+- Generated/Sine Sync Windowed.wt
+- Generated/Sine Two Harmonics.wt
+- Generated/Sine Windowed FM.wt
+- Generated/Sine Windowed HQ.wt
+- Generated/Sine Windowed Octaves.wt
+- Generated/Sine Windowed Primes.wt
+- Generated/Sine Windowed.wt
+- Generated/Square ATC.wav
+- Generated/Square Windowed HQ.wt
+- Generated/Square Windowed.wt
+- Generated/Sweepy.wt
+- Generated/Triangle Primary.wt
+- Generated/Triangle Sine Shape.wt
+- Oneshot/Blip 1.wt
+- Oneshot/Blip 2.wt
+- Oneshot/Blip 3.wt
+- Oneshot/Pulse.wt
+- Rhythmic/Bata.wt
+- Rhythmic/Bells.wt
+- Rhythmic/Bloop.wt
+- Rhythmic/Computer 1.wt
+- Rhythmic/Computer 2.wt
+- Rhythmic/Computer 3.wt
+- Rhythmic/Drumbeat 1.wt
+- Rhythmic/Drumbeat 2.wt
+- Rhythmic/Laser.wt
+- Rhythmic/Rim.wt
+- Rhythmic/Scrape.wt
+- Rhythmic/Sparkly 1.wt
+- Rhythmic/Sparkly 2.wt
+- Rhythmic/Sparkly 3.wt
+- Rhythmic/Sprinkles 1.wt
+- Rhythmic/Sprinkles 2.wt
+- Rhythmic/Wool Bow.wt
+- Sampled/Banjo 1.wt
+- Sampled/Banjo 2.wt
+- Sampled/Cello.wt
+- Sampled/Choir Formant.wt
+- Sampled/Cluster.wt
+- Sampled/Digi Organ 1.wt
+- Sampled/Digi Organ 2.wt
+- Sampled/Glissy.wt
+- Sampled/Guitar Acoustic 1.wt
+- Sampled/Guitar Acoustic 2.wt
+- Sampled/Guitar Electric 1.wt
+- Sampled/Guitar Electric 2.wt
+- Sampled/Guitar High.wt
+- Sampled/Guitar Mid.wt
+- Sampled/Guitar Steel.wt
+- Sampled/Guitar.wt
+- Sampled/Harp 1.wt
+- Sampled/Harp 2.wt
+- Sampled/Harpsi.wav
+- Sampled/Koto 1.wt
+- Sampled/Koto 2.wt
+- Sampled/Koto 3.wt
+- Sampled/Mallets 1.wt
+- Sampled/Mallets 2.wt
+- Sampled/Mod Perc.wt
+- Sampled/Music Box 1.wt
+- Sampled/Music Box 2.wt
+- Sampled/Mystic.wt
+- Sampled/New Bell.wt
+- Sampled/Piano 1.wt
+- Sampled/Piano 2.wt
+- Sampled/Piano Dark.wt
+- Sampled/Piano Low.wt
+- Sampled/Pizz 1.wt
+- Sampled/Pizz 2.wt
+- Sampled/Vocal Ah 1.wt
+- Sampled/Vocal Ah 2.wt
+- Sampled/Vocal Choir 1.wt
+- Sampled/Vocal Choir 2.wt
+- Sampled/Vocal O Formant 1.wt
+- Sampled/Vocal O Formant 2.wt
+- Sampled/Vocal O.wt
+- Sampled/Wonky.wt
+- Waldorf/B3Waves.wt
+- Waldorf/Beat.wt
+- Waldorf/BELLTR.wt
+- Waldorf/BELTREE2.wt
+- Waldorf/CARDBORD.wt
+- Waldorf/CELLIH1.wt
+- Waldorf/CELLIPG.wt
+- Waldorf/CELO.wt
+- Waldorf/Chaosweep.wt
+- Waldorf/Chorus 2.wt
+- Waldorf/Diff. MKs.wt
+- Waldorf/DIGDU.wt
+- Waldorf/DRAIN.wt
+- Waldorf/DXBASS.wt
+- Waldorf/ELECTRIC.wt
+- Waldorf/FMBell WM.wt
+- Waldorf/FMGlock.wt
+- Waldorf/FMP.wt
+- Waldorf/FMT Pulse.wt
+- Waldorf/Fmt Saw 3.wt
+- Waldorf/FORMsaw2.wt
+- Waldorf/Hype    P.wt
+- Waldorf/Jamming.wt
+- Waldorf/JSMITH.wt
+- Waldorf/KlingKlan.wt
+- Waldorf/Male AhPG.wt
+- Waldorf/microwave1.wt
+- Waldorf/microwave4.wt
+- Waldorf/mw1.wt
+- Waldorf/MW E-Pian.wt
+- Waldorf/Ord. FM.wt
+- Waldorf/Organs.wt
+- Waldorf/PrfctPWM.wt
+- Waldorf/RACHEL.wt
+- Waldorf/Saw Arp.wt
+- Waldorf/SawOctave.wt
+- Waldorf/sine swee.wt
+- Waldorf/SLAPE2.wt
+- Waldorf/SoftSync.wt
+- Waldorf/SomeOrgan.wt
+- Waldorf/STRHMX.wt
+- Waldorf/StringHit.wt
+- Waldorf/TSITAR3.wt
+- Waldorf/TS.wt
+- Waldorf/Tubular.wt
+- Waldorf/VeryHi WM.wt
+- Waldorf/ViceVersa.wt
+- Waldorf/vs1.wt
+- Waldorf/vs2.wt
+- Waldorf/WATER4.wt
+- Waldorf/WETFONE.wt

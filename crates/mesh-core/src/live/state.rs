@@ -5,10 +5,10 @@
 //! without locks or allocation. Each field has exactly one writer:
 //!
 //! - **RT thread**: clock position, played harmony, per-lane on/off, option,
-//!   form position and chord of the playing bar, sounding drum mutes, active
+//!   form position and chord of the playing bar, sounding drum voices, active
 //!   step, fired tag, voices, peak, moves, scope.
 //! - **Controller** (UI / HID thread): master seed, form, control positions,
-//!   octave, rate, drum mutes, key intent, pending option, half-time target,
+//!   octave, rate, drum voice flips, key intent, pending option, half-time target,
 //!   quantize.
 //! - **Bar renderer**: pending key and progression (set when armed, cleared
 //!   when the RT thread has played the bar that applied them).
@@ -98,6 +98,15 @@ pub enum Rate {
 }
 
 impl Rate {
+    /// Speed as a power of two: half −1, normal 0, double +1.
+    pub fn exponent(self) -> i8 {
+        match self {
+            Rate::Normal => 0,
+            Rate::Half => -1,
+            Rate::Double => 1,
+        }
+    }
+
     pub fn from_u8(v: u8) -> Self {
         match v {
             1 => Self::Half,
@@ -176,10 +185,16 @@ pub struct LaneView {
     /// Octave offset of pitched notes, −2..=2.
     pub octave: i8,
     pub rate: Rate,
-    /// Drum lane: voices muted as requested (bit = [`DrumVoice`](super::generator::layout::DrumVoice)).
-    pub mutes: u8,
-    /// Drum lane: voices muted in the playing bar.
-    pub mutes_playing: u8,
+    /// Drum lane: pad overrides as requested
+    /// ([`voice_override`](super::generator::layout::voice_override)).
+    pub voice_overrides: u16,
+    /// Drum lane: overrides applied in the playing bar.
+    pub voice_overrides_playing: u16,
+    /// Drum lane: the playing bar's arrangement (bit per
+    /// [`DrumVoice`](super::generator::layout::DrumVoice)).
+    pub voice_default: u8,
+    /// Drum lane: voices playing in this bar (arrangement with overrides).
+    pub voices_on: u8,
     pub controls: [f32; CONTROLS_PER_LANE],
     /// Shift-layer control positions.
     pub shift_controls: [f32; CONTROLS_PER_LANE],
@@ -207,8 +222,10 @@ pub struct LaneShared {
     pos: AtomicU32,
     octave: AtomicI8,
     rate: AtomicU8,
-    mutes: AtomicU8,
-    mutes_playing: AtomicU8,
+    voice_overrides: AtomicU16,
+    voice_overrides_playing: AtomicU16,
+    voice_default: AtomicU8,
+    voices_on: AtomicU8,
     controls: [AtomicU32; CONTROLS_PER_LANE],
     shift_controls: [AtomicU32; CONTROLS_PER_LANE],
     option: AtomicU16,
@@ -234,8 +251,10 @@ impl LaneShared {
             pos: AtomicU32::new(0),
             octave: AtomicI8::new(0),
             rate: AtomicU8::new(0),
-            mutes: AtomicU8::new(0),
-            mutes_playing: AtomicU8::new(0),
+            voice_overrides: AtomicU16::new(0),
+            voice_overrides_playing: AtomicU16::new(0),
+            voice_default: AtomicU8::new(0xFF),
+            voices_on: AtomicU8::new(0xFF),
             controls: std::array::from_fn(|_| AtomicU32::new(0.5f32.to_bits())),
             shift_controls: std::array::from_fn(|_| AtomicU32::new(0.5f32.to_bits())),
             option: AtomicU16::new(0),
@@ -265,8 +284,10 @@ impl LaneShared {
             pos: FormView::unpack(self.pos.load(ORD)),
             octave: self.octave.load(ORD),
             rate: Rate::from_u8(self.rate.load(ORD)),
-            mutes: self.mutes.load(ORD),
-            mutes_playing: self.mutes_playing.load(ORD),
+            voice_overrides: self.voice_overrides.load(ORD),
+            voice_overrides_playing: self.voice_overrides_playing.load(ORD),
+            voice_default: self.voice_default.load(ORD),
+            voices_on: self.voices_on.load(ORD),
             controls: std::array::from_fn(|i| f32::from_bits(self.controls[i].load(ORD))),
             shift_controls: std::array::from_fn(|i| f32::from_bits(self.shift_controls[i].load(ORD))),
             option: self.option.load(ORD),
@@ -333,8 +354,10 @@ impl LaneShared {
         self.form.store(form, ORD);
     }
 
-    pub(crate) fn set_mutes_playing(&self, mutes: u8) {
-        self.mutes_playing.store(mutes, ORD);
+    pub(crate) fn set_voices_playing(&self, overrides: u16, default: u8, on: u8) {
+        self.voice_overrides_playing.store(overrides, ORD);
+        self.voice_default.store(default, ORD);
+        self.voices_on.store(on, ORD);
     }
 
     // ── Controller writers ──
@@ -356,8 +379,8 @@ impl LaneShared {
         self.rate.store(rate as u8, ORD);
     }
 
-    pub(crate) fn set_mutes(&self, mutes: u8) {
-        self.mutes.store(mutes, ORD);
+    pub(crate) fn set_voice_overrides(&self, overrides: u16) {
+        self.voice_overrides.store(overrides, ORD);
     }
 
     pub(crate) fn set_control(&self, control: usize, position: f32) {
@@ -392,6 +415,9 @@ pub struct LiveShared {
     progression: AtomicU16,
     progression_pending: AtomicU16,
     half_time: AtomicBool,
+    /// Mode of the key's family playing, and a new harmony seed armed.
+    mode: AtomicU8,
+    mode_pending: AtomicBool,
     half_time_target: AtomicBool,
     quantize: AtomicBool,
     lanes: [LaneShared; NUM_LANES],
@@ -414,6 +440,8 @@ impl LiveShared {
             progression: AtomicU16::new(progression as u16),
             progression_pending: AtomicU16::new(NO_INDEX),
             half_time: AtomicBool::new(false),
+            mode: AtomicU8::new(0),
+            mode_pending: AtomicBool::new(false),
             half_time_target: AtomicBool::new(false),
             quantize: AtomicBool::new(false),
             lanes: std::array::from_fn(|_| LaneShared::new()),
@@ -437,6 +465,20 @@ impl LiveShared {
     /// Key of the bar that is playing.
     pub fn key(&self) -> MusicalKey {
         decode_key(self.key.load(ORD)).unwrap_or(MusicalKey::new(0, true))
+    }
+
+    /// Mode playing in the key's family (see [`crate::live::harmony::mode_name`]).
+    pub fn mode(&self) -> u8 {
+        self.mode.load(ORD)
+    }
+
+    /// A new harmony seed waits for the next phrase.
+    pub fn mode_pending(&self) -> bool {
+        self.mode_pending.load(ORD)
+    }
+
+    pub(crate) fn set_mode_pending(&self, pending: bool) {
+        self.mode_pending.store(pending, ORD);
     }
 
     /// Key armed for the next phrase.
@@ -513,7 +555,8 @@ impl LiveShared {
         (v != u64::MAX).then_some((v >> 32, v as u32))
     }
 
-    pub(crate) fn set_harmony(&self, key: MusicalKey, chord_degree: u8, progression: usize, half_time: bool) {
+    pub(crate) fn set_harmony(&self, key: MusicalKey, chord_degree: u8, progression: usize, half_time: bool, mode: u8) {
+        self.mode.store(mode, ORD);
         self.key.store(encode_key(key), ORD);
         self.chord_degree.store(chord_degree, ORD);
         self.progression.store(progression as u16, ORD);

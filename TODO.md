@@ -235,6 +235,79 @@ These features would make clusters queryable and actionable:
 
 # Bugs
 
+- [ ] **USB export has no free-space gate and destroys the stick's DB when it
+  runs out.** Audited 2026-07-31 (90 GB playlist → 64 GB exFAT stick). Deferred,
+  not implemented.
+
+  *Why nothing stops you:* the only space check lives in `view_ready_to_sync`
+  (`mesh-cue/src/ui/export_modal.rs:405-421,474-493`), but `ExportPhase::ReadyToSync`
+  is **never constructed** — the live path stays in `SelectDevice`, gated by
+  `can_start_export()` (`ui/state/export.rs:304-310`), which compares no bytes.
+  `SyncPlan::validate_space` (`mesh-core/src/usb/sync.rs:146-154`) has zero callers.
+
+  *What breaks, in order:*
+  1. Copy loop hits ENOSPC and **continues** (`export/service.rs:248-257`); the
+     partial file is never removed, so it eats the last free bytes and every
+     remaining track leaves a 0-byte/truncated stub.
+  2. Phase 3a syncs metadata for **all** of `tracks_to_copy` regardless of what
+     landed (`service.rs:340-371`); Phase 3c then adds playlist links for those
+     ghosts (`service.rs:418-425`).
+  3. **The killer:** Phase 3g writes the staging DB back via `copy_large_file`,
+     whose `File::create` (`usb/sync.rs:887`) **truncates the stick's existing
+     working `mesh.db` to zero** before attempting a ~45 MB write onto a full
+     disk. Result: unreadable DB — `UsbStorage::build_tree_from_db`
+     (`usb/storage.rs:119-151`) falls into the `None` branch and mesh-player /
+     mesh-embedded show an empty root. The library that was on the stick before
+     the export is gone, not merely partial.
+  4. Obsolete-file deletion runs *after* the writeback (`service.rs:537-553`),
+     so the space it frees is useless.
+
+  *Aggravating:* cancel is non-functional during export (`usb/manager.rs:255-264`
+  — the manager thread is blocked in the forwarding loop at `manager.rs:598-661`),
+  and `copy_large_file`'s doc claims a destination fsync the code doesn't do
+  (`usb/sync.rs:908-911`); the real flush is one batch `syncfs` whose return is
+  only `log::warn!`ed (`service.rs:260-291`), so deferred ENOSPC is swallowed and
+  the file counts as exported.
+
+  *Fix (9 parts, agreed shape):*
+  1. Running byte budget in `start_export` from a **fresh** statvfs/`sysinfo`
+     read of the mount point — `device.available_bytes` is captured at
+     enumeration (`usb/detection.rs:139`) and never refreshed. Reserve
+     `usb_db_len + 64 MB`, growing by `per_track_db = usb_db_len / usb_track_count`
+     per accepted track (self-correcting).
+  2. Move file deletions ahead of the copy phase.
+  3. Gate Phase 3a on a `copied_ok: HashSet<String>` and Phase 3c on
+     `on_stick = surviving_usb_tracks ∪ copied_ok`. Playlists come out
+     truncated but internally consistent. **This is the correctness core.**
+  4. Transactional copy: write `dest.part` → `rename`; remove `.part` on any
+     error; sweep stale `*.part` at export start.
+  5. Non-destructive writeback: `mesh.db.new` → `sync_all` → `rename` over
+     `mesh.db`. If it still fails, the old DB survives and we report it.
+  6. Move `clear_usb_database` (`service.rs:532`) to *before* the Phase 1
+     staging copy — today a live Cozo/SQLite connection from
+     `scan_usb_collection` holds the file being overwritten underneath. Sweep
+     `mesh.db-wal`/`-shm`/`-journal` after replacement.
+  7. Check the `syncfs` return; on non-zero, re-`stat` copied files and demote
+     size mismatches to failures before Phase 3.
+  8. Add `tracks_skipped` to `ExportProgress::Complete` → `UsbMessage::ExportComplete`
+     → `ExportPhase::Complete`, show it in `view_complete`; pre-flight banner in
+     `view_device_selection` ("90.4 GB needed, 59.9 GB free — 412 of 690 fit")
+     with the button reading **"Export what fits"**. Either delete
+     `ReadyToSync`/`view_ready_to_sync` or actually route through them.
+  9. Unblock cancel: forward progress on a spawned thread, keep the
+     `ExportService` cancel flag in the manager.
+
+  *Open decision (blocks implementation):* `tracks_to_copy` is built from a
+  `HashMap` iteration (`usb/sync.rs:739`), so its order is **arbitrary** —
+  truncating it yields a random ~65% of the playlist. Pick one: fill in
+  playlist order (recommended — predictable, re-runnable), complete whole
+  playlists in selection order, or smallest-first (max track count).
+
+  *Proving it:* small loopback exFAT image mounted at a temp path + synthetic
+  collection, driving `ExportService::start_export` directly (bypasses device
+  detection; needs one `sudo mount`). Doubles as the regression test, alongside
+  unit tests for the budget arithmetic and the Phase-3 filtering.
+
 - [ ] **`database is locked (code 5)` during reanalysis.** Tracks intermittently
   fail to write during the dual-store (`ml_embeddings` 512-d + `ml_intensity_embeddings`
   1024-d) reanalysis pass. Affected tracks silently skip the write and need a

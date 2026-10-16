@@ -215,8 +215,12 @@ mod tests {
             fill,
             half_time: false,
             params: &params,
-            harmony: HarmonyCtx { key, chord_degree: chord, progression: 0 },
+            harmony: HarmonyCtx { key, chord_degree: chord, progression: 0, mode: 0 },
             drum_mask: &[0; STEPS_PER_BAR],
+            jitter: [0.0; crate::live::generator::MAX_GEN_PARAMS],
+            bass_onsets: 0,
+            bass_phrase: [0; 4],
+            drum_fill: false,
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

@@ -39,6 +39,7 @@ rubato = "0.16"   # High-quality sample rate conversion
 symphonia = { version = "0.5", features = ["flac"] }  # FLAC audio decoding
 log = "0.4"
 thiserror.workspace = true
+midly = "0.5"     # Standard MIDI Files for live-mode motif clips
 
 # CLAP plugin hosting
 clack-host = { git = "https://github.com/prokopyl/clack.git" }

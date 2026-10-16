@@ -11,6 +11,11 @@ use basedrop::Shared;
 use crate::audio_file::AudioFileError;
 use crate::types::{StereoBuffer, StereoSample};
 
+use super::params::{ZoneMod, MAX_ZONE_MODS};
+
+/// Most zones one note plays at once (layers of a sound pack).
+pub const MAX_LAYERS: usize = 4;
+
 /// Zero frames stored before and after the audio so every interpolation tap
 /// (at most 4 behind and 5 ahead of the read position) stays in bounds without
 /// per-tap clamping.
@@ -284,6 +289,29 @@ pub struct SlotDef {
     pub gain: f32,
     /// `false` ignores the event key (drum hits): only `cents` retunes.
     pub pitched: bool,
+    /// A long stream of audio (a mudpie): notes start at the event's
+    /// `start` position. Other pitched slots start notes at the slot start.
+    pub stream: bool,
+    /// Velocity range this zone answers (SFZ `lovel` / `hivel`).
+    pub vel_lo: u8,
+    pub vel_hi: u8,
+    /// Round robin: this zone plays as position `seq_pos` (1-based) of
+    /// `seq_len` (SFZ `seq_length` / `seq_position`); 1 / 1 = always.
+    pub seq_len: u8,
+    pub seq_pos: u8,
+    /// Loop points in frames of the sample (absolute), looped while the
+    /// note is held; `loop_sustain` stops looping on release.
+    pub loop_range: Option<(usize, usize)>,
+    pub loop_sustain: bool,
+    /// Plays to the end, ignoring the note-off (SFZ `one_shot`).
+    pub one_shot: bool,
+    /// Where notes start, in frames after `start` (SFZ `offset`).
+    pub start_offset: usize,
+    /// Pan of the zone, -1..1.
+    pub pan: f32,
+    /// The zone's own CC modulators (crossfades, per-layer volume, cutoff
+    /// and start); unused entries are [`ZoneMod::NONE`].
+    pub zone_mods: [ZoneMod; MAX_ZONE_MODS],
 }
 
 impl SlotDef {
@@ -314,7 +342,24 @@ impl SlotDef {
             choke: 0,
             gain: 1.0,
             pitched: true,
+            stream: false,
+            vel_lo: 0,
+            vel_hi: 127,
+            seq_len: 1,
+            seq_pos: 1,
+            loop_range: None,
+            loop_sustain: false,
+            one_shot: false,
+            start_offset: 0,
+            pan: 0.0,
+            zone_mods: [ZoneMod::NONE; MAX_ZONE_MODS],
         }
+    }
+
+    /// Mark the slot as a stream (see [`Self::stream`]).
+    pub fn streamed(mut self) -> Self {
+        self.stream = true;
+        self
     }
 
     pub fn with_choke(mut self, group: u8) -> Self {
@@ -406,6 +451,54 @@ impl SampleBank {
     #[inline]
     pub fn is_mono(&self, group: u8) -> bool {
         group != 0 && self.mono[group as usize]
+    }
+
+    /// Zone for `target` at `key`, velocity `vel` and round-robin counter
+    /// `rr`: among the zones whose key and velocity ranges hold the note, a
+    /// round-robin group plays position `rr % seq_len + 1`. Without a match
+    /// it falls back to [`Self::resolve`]. Returns the zone and whether it is
+    /// part of a round robin (the caller then advances its counter).
+    #[inline]
+    pub fn resolve_note(&self, target: u8, key: u8, vel: u8, rr: u32) -> Option<(&SlotDef, bool)> {
+        let zones = &self.targets[target as usize];
+        let fits = |z: &&SlotDef| (z.key_lo..=z.key_hi).contains(&key) && (z.vel_lo..=z.vel_hi).contains(&vel);
+        let mut seq = None;
+        let mut plain = None;
+        for z in zones.iter().filter(fits) {
+            if z.seq_len > 1 {
+                if seq.is_none() && (rr % z.seq_len as u32) + 1 == z.seq_pos as u32 {
+                    seq = Some(z);
+                }
+            } else if plain.is_none() {
+                plain = Some(z);
+            }
+        }
+        match (seq, plain) {
+            (Some(z), _) => Some((z, true)),
+            (None, Some(z)) => Some((z, false)),
+            (None, None) => self.resolve(target, key).map(|z| (z, false)),
+        }
+    }
+
+    /// Every zone a note plays (layers): the one [`Self::resolve_note`] picks,
+    /// plus the other zones (outside round robins) whose key and velocity
+    /// ranges hold the note, up to [`MAX_LAYERS`].
+    pub fn resolve_layers(&self, target: u8, key: u8, vel: u8, rr: u32) -> ([Option<&SlotDef>; MAX_LAYERS], bool) {
+        let mut out = [None; MAX_LAYERS];
+        let Some((first, in_rr)) = self.resolve_note(target, key, vel, rr) else { return (out, false) };
+        out[0] = Some(first);
+        let mut n = 1;
+        for z in &self.targets[target as usize] {
+            if n >= MAX_LAYERS {
+                break;
+            }
+            let holds = (z.key_lo..=z.key_hi).contains(&key) && (z.vel_lo..=z.vel_hi).contains(&vel);
+            if holds && z.seq_len <= 1 && !std::ptr::eq(z, first) {
+                out[n] = Some(z);
+                n += 1;
+            }
+        }
+        (out, in_rr)
     }
 
     /// Zone for `target` at `key`. Key 0 (no pitch) or a key outside every

@@ -16,6 +16,14 @@
 //! the letter's timing feel. Pitched lanes take their chord from the form.
 //! A form change lands on the next phrase boundary ([`FORM_CHANGE_BARS`]).
 //!
+//! # Live parameter moves
+//!
+//! A generator parameter move (density, mutate, …) also re-renders the bar
+//! that is playing, in the harmony it is playing in, and ships it as a
+//! replacement ([`BarPacket::replace`]). The RT player swaps it in on its next
+//! block and reads on from where it is, so a fader acts within a block
+//! instead of on the next bar.
+//!
 //! # Harmony and the bar boundary
 //!
 //! Key and progression changes are edge-triggered (they land on a phrase
@@ -44,18 +52,23 @@ use crate::music::MusicalKey;
 use crate::types::StereoSample;
 
 use super::clock::BARS_PER_PHRASE;
-use super::event::{flags, BarEvents, EventKind};
+use super::event::{flags, BarEvents, EventKind, LiveEvent};
 use super::form::{
-    form_chord, letter_seed, prime_seed, splice_second_half, Feel, Form, SeedClass, FILLER_BOOSTS, FORM_CHANGE_BARS,
+    form_chord, letter_offset, letter_seed, prime_seed, splice_second_half, Feel, Form, FormPos, Letter, Play, SeedClass,
+    FILLER_BOOSTS, FORM_CHANGE_BARS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
+use super::rng;
+
+/// RNG stream of the form's sound swaps.
+const S_SWAP: u32 = 0xF50;
 use super::generator::{BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use super::glue::Role;
-use super::harmony::{HarmonyState, Progression};
-use super::lane::ClapCell;
+use super::harmony::{HarmonyCtx, HarmonyState, Progression};
+use super::lane::{ClapCell, OptionFamily};
 use super::player::{BarPacket, BAR_POOL_SIZE};
 use super::state::{FormView, LiveShared, Rate};
 use super::loader::DrumKit;
-use super::{NUM_LANES, STEPS_PER_BAR, TICKS_PER_BAR};
+use super::{NUM_LANES, STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
 /// How often the renderer thread looks for work. A structural change made
 /// later than this before a bar boundary may land one bar late.
@@ -63,14 +76,6 @@ pub const RENDER_POLL: Duration = Duration::from_millis(2);
 /// Shipped epochs remembered for the pending bar.
 const SHIPPED_HISTORY: usize = 2 * BAR_POOL_SIZE;
 
-// MUSICAL: first draft, tune by ear (Q13).
-/// A pitched lane's `gate` parameter at or above this ties every note into
-/// the next one, and the next one glides.
-pub const LEGATO_FROM: f32 = 0.9;
-/// Glide of a legato tie (log scale, as the bass slide).
-const LEGATO_GLIDE: u8 = 138;
-/// Ticks a tied note overlaps the next one.
-const LEGATO_OVERLAP: u16 = 2;
 
 /// Structural input change, from the controller.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,6 +91,8 @@ pub enum RenderMsg {
     Key(MusicalKey),
     /// Arm a progression for the next phrase.
     Progression(usize),
+    /// Arm a harmony seed (the mode) for the next phrase.
+    ModeSeed(u32),
     HalfTime(bool),
     /// The drum lane switched kit: use that kit's generator and layout.
     Kit { lane: u8, kit: u16 },
@@ -99,12 +106,20 @@ pub struct RenderLane {
     pub seed: u32,
     /// Form index into the renderer's forms.
     pub form: usize,
+    /// The pads' rate, on top of `base_rate`.
     pub rate: Rate,
+    /// The lane's centre speed.
+    pub base_rate: i8,
     pub params: [f32; MAX_GEN_PARAMS],
-    /// Drum lane: layout and generator per kit. Empty on other lanes.
+    /// Drum lane: layout and generator per kit. Pack lanes: the generator
+    /// per option (each pack plays its phrases). Empty on other lanes.
     pub kits: Vec<DrumKit>,
-    /// Selected kit.
+    /// Selected option (the drum lane: its kit).
     pub kit: usize,
+    /// Options that loaded, for the form's sound swaps (`*`).
+    pub available: Vec<bool>,
+    /// Kind of sound per option (missing = sampler); a swap stays inside one kind.
+    pub families: Vec<OptionFamily>,
 }
 
 /// A form change waiting for its phrase boundary.
@@ -116,13 +131,28 @@ struct FormSwitch {
 }
 
 impl RenderLane {
-    fn active_generator(&self) -> &dyn LaneGenerator {
-        self.kits.get(self.kit).and_then(|k| k.generator.as_deref()).unwrap_or(self.generator.as_ref())
+    fn generator_for(&self, kit: usize) -> &dyn LaneGenerator {
+        self.kits.get(kit).and_then(|k| k.generator.as_deref()).unwrap_or(self.generator.as_ref())
     }
 
-    /// Target layout of the selected kit, for the onset mask.
-    fn layout(&self) -> DrumLayout {
-        self.kits.get(self.kit).map(|k| k.layout).unwrap_or_else(DrumLayout::standard)
+    /// Target layout of a kit, for the onset mask.
+    fn layout_for(&self, kit: usize) -> DrumLayout {
+        self.kits.get(kit).map(|k| k.layout).unwrap_or_else(DrumLayout::standard)
+    }
+
+    /// The option a form swap (`*`) plays: the lane's one swap partner, picked
+    /// by its master seed among the other loaded options of the same kind
+    /// (sampler, CLAP synth or stream sampler; any kit on the drum lane), so
+    /// the swap always fits the lane. `None` without such an option.
+    fn swap_option(&self, lane: u8) -> Option<usize> {
+        let family = |i: usize| self.families.get(i).copied().unwrap_or_default();
+        let fits = |i: &usize| *i != self.kit && self.available[*i] && family(*i) == family(self.kit);
+        let count = (0..self.available.len()).filter(fits).count() as u32;
+        if count == 0 {
+            return None;
+        }
+        let pick = rng::below(rng::hash(self.seed, lane, 0, 0, S_SWAP), count) as usize;
+        (0..self.available.len()).filter(fits).nth(pick)
     }
 }
 
@@ -148,6 +178,7 @@ pub struct BarRenderer {
     /// Harmony as the RT thread has played it.
     played: HarmonyState,
     want_key: Option<MusicalKey>,
+    want_mode_seed: Option<u32>,
     want_progression: Option<usize>,
     half_time: bool,
     epoch: u32,
@@ -157,6 +188,8 @@ pub struct BarRenderer {
     pending_bar: u64,
     last_played: Option<(u64, u32)>,
     dirty: bool,
+    /// A parameter moved: re-render the playing bar too.
+    dirty_current: bool,
     claps: Vec<Arc<ClapCell>>,
 }
 
@@ -191,6 +224,7 @@ impl BarRenderer {
             progressions,
             played: HarmonyState::new(key, progression),
             want_key: None,
+            want_mode_seed: None,
             want_progression: None,
             half_time: false,
             epoch: 0,
@@ -198,6 +232,7 @@ impl BarRenderer {
             pending_bar: 0,
             last_played: None,
             dirty: true,
+            dirty_current: false,
             claps,
         };
         (renderer, tx, BarRings { rx: bars_rx, ret: ret_tx })
@@ -235,6 +270,7 @@ impl BarRenderer {
                 if let Some(p) = self.lanes.get_mut(lane as usize).and_then(|l| l.params.get_mut(index as usize)) {
                     *p = value;
                 }
+                self.dirty_current = true;
             }
             RenderMsg::Key(key) => {
                 self.want_key = (key != self.played.key()).then_some(key);
@@ -244,6 +280,10 @@ impl BarRenderer {
                 self.want_progression =
                     (index != self.played.progression() && index < self.progressions.len()).then_some(index);
                 self.shared.set_pending_progression(self.want_progression);
+            }
+            RenderMsg::ModeSeed(seed) => {
+                self.want_mode_seed = (seed != self.played.mode_seed()).then_some(seed);
+                self.shared.set_mode_pending(self.want_mode_seed.is_some());
             }
             RenderMsg::HalfTime(on) => self.half_time = on,
             RenderMsg::Kit { lane, kit } => {
@@ -278,16 +318,35 @@ impl BarRenderer {
             }
         }
 
-        if !self.dirty || self.bars_tx.is_full() {
+        let mut shipped = false;
+        // The playing bar first, so a fader move is heard at once.
+        if self.dirty_current {
+            match self.last_played {
+                Some((bar, _)) => {
+                    if self.ship(bar, true) {
+                        self.dirty_current = false;
+                        shipped = true;
+                    }
+                }
+                None => self.dirty_current = false,
+            }
+        }
+        if self.dirty && self.ship(self.pending_bar, false) {
+            self.dirty = false;
+            shipped = true;
+        }
+        shipped
+    }
+
+    /// Render `bar` into a pooled packet and push it to the RT side.
+    fn ship(&mut self, bar: u64, current: bool) -> bool {
+        if self.bars_tx.is_full() {
             return false;
         }
         let Some(mut packet) = self.pool.pop() else { return false };
-        self.render(&mut packet);
+        self.render(&mut packet, bar, current);
         match self.bars_tx.push(packet) {
-            Ok(()) => {
-                self.dirty = false;
-                true
-            }
+            Ok(()) => true,
             Err(rtrb::PushError::Full(packet)) => {
                 self.pool.push(packet);
                 false
@@ -307,8 +366,12 @@ impl BarRenderer {
         if self.want_progression == Some(self.played.progression()) {
             self.want_progression = None;
         }
+        if self.want_mode_seed == Some(self.played.mode_seed()) {
+            self.want_mode_seed = None;
+        }
         self.shared.set_pending_key(self.want_key);
         self.shared.set_pending_progression(self.want_progression);
+        self.shared.set_mode_pending(self.want_mode_seed.is_some());
         // Form switches whose phrase has started are now the lane's form.
         for (li, switch) in self.switches.iter_mut().enumerate() {
             if let Some(sw) = *switch {
@@ -324,104 +387,126 @@ impl BarRenderer {
         self.dirty = true;
     }
 
-    fn render(&mut self, packet: &mut BarPacket) {
-        let bar = self.pending_bar;
+    /// Render `bar`: the pending bar, or with `current` the bar the RT thread
+    /// is playing (its harmony and half-time as played; a replacement).
+    fn render(&mut self, packet: &mut BarPacket, bar: u64, current: bool) {
         let mut harmony = self.played.clone();
-        if let Some(key) = self.want_key {
-            harmony.request_key(key);
+        let half_time = if current { self.shared.half_time() } else { self.half_time };
+        if !current {
+            if let Some(key) = self.want_key {
+                harmony.request_key(key);
+            }
+            if let Some(p) = self.want_progression {
+                harmony.request_progression(p);
+            }
+            if let Some(seed) = self.want_mode_seed {
+                harmony.request_mode_seed(seed);
+            }
+            harmony.begin_bar(bar);
         }
-        if let Some(p) = self.want_progression {
-            harmony.request_progression(p);
-        }
-        harmony.begin_bar(bar);
         let ctx = harmony.ctx(bar, &self.progressions);
 
-        self.epoch = if self.epoch >= u32::MAX - 1 { 1 } else { self.epoch + 1 };
+        if !current {
+            self.epoch = if self.epoch >= u32::MAX - 1 { 1 } else { self.epoch + 1 };
+        }
         packet.bar = bar;
-        packet.epoch = self.epoch;
+        packet.epoch = if current { 0 } else { self.epoch };
+        packet.replace = current;
         packet.key = ctx.key;
         packet.chord_degree = ctx.chord_degree;
         packet.progression = ctx.progression;
-        packet.half_time = self.half_time;
+        packet.mode = ctx.mode;
+        packet.half_time = half_time;
 
         let bar_in_phrase = (bar % BARS_PER_PHRASE) as u8;
         let phrase = (bar / BARS_PER_PHRASE) as u32;
         let no_mask = [0u8; STEPS_PER_BAR];
         let mut drum_mask = [0u8; STEPS_PER_BAR];
+        let mut bass_onsets = 0u16;
+        let mut bass_phrase = [0u16; 4];
+        let mut drum_fill = false;
+        let mut drum_break = false;
         let mut scratch = BarEvents::default();
         // Lane 0 (drums) first: its onsets feed the other lanes.
+        let mut part_buf = BarEvents::default();
         for (li, lane) in self.lanes.iter().enumerate() {
             let lane8 = li as u8;
             let form_index = match self.switches[li] {
                 Some(sw) if bar >= sw.at => sw.form,
                 _ => lane.form,
             };
-            let form = &self.forms[form_index.min(self.forms.len() - 1)];
-            let pos = form.pos(bar);
+            let synth = matches!(lane.role, Role::Lead | Role::Extra);
+            let form = self.forms[form_index.min(self.forms.len() - 1)].for_lane(synth);
+            // A bar may hold several segments (beat resolution): the first
+            // part renders the bar, later parts are spliced over their ticks.
+            let (parts, n_parts) = form.parts(bar, lane.seed, lane8);
+            let pos = parts[0].pos;
             let seed = letter_seed(lane.seed, lane8, pos.letter);
-            let class = pos.letter.class();
-            let generator = lane.active_generator();
 
             // Pitched lanes play the chord the form gives them, in the shared key.
             let mut lane_harmony = ctx;
             if lane.role != Role::Drums {
                 lane_harmony.chord_degree = form_chord(lane.seed, lane8, &pos, seed, ctx.key.minor);
             }
-            let mut params = lane.params;
-            if class == SeedClass::Filler {
-                boost_filler(generator.param_names(), &mut params);
-            }
-            let feel = Feel::of(seed, lane8, class);
-            // The drum lane fills the last bar of a filler segment.
-            let filler_fill = lane.role == Role::Drums && class == SeedClass::Filler && pos.last_of_segment;
-
+            let part_ctx = PartCtx {
+                lane: lane8,
+                bar,
+                bar_in_phrase,
+                phrase,
+                half_time,
+                harmony: lane_harmony,
+                drum_mask: if li == 0 { &no_mask } else { &drum_mask },
+                bass_onsets: if lane.role == Role::Bass { 0 } else { bass_onsets },
+                bass_phrase: if lane.role == Role::Bass { [0; 4] } else { bass_phrase },
+                drum_fill: lane.role != Role::Drums && drum_fill,
+                drum_break: lane.role != Role::Drums && drum_break,
+            };
+            let mut swap: Option<(u16, u16, u16)> = None;
+            let mut kit = lane.kit;
             for fill in [false, true] {
                 let out = if fill { &mut packet.lanes[li].fill } else { &mut packet.lanes[li].main };
                 out.clear();
-                let mut bar_ctx = BarCtx {
-                    seed,
-                    sound_seed: if class == SeedClass::Main { lane.seed } else { seed },
-                    class,
-                    lane: lane8,
-                    role: lane.role,
-                    bar_in_phrase,
-                    phrase,
-                    fill: fill || filler_fill,
-                    half_time: self.half_time,
-                    params: &params,
-                    harmony: lane_harmony,
-                    drum_mask: if li == 0 { &no_mask } else { &drum_mask },
-                };
-                generator.render_bar(&bar_ctx, out);
-                out.sort();
-                if pos.prime {
-                    // A': same seed, a different second half.
-                    bar_ctx.seed = prime_seed(seed, lane8);
-                    scratch.clear();
-                    generator.render_bar(&bar_ctx, &mut scratch);
-                    scratch.sort();
-                    splice_second_half(out, &scratch);
+                let (voices, first_kit) = render_part(lane, &part_ctx, &pos, fill, out, &mut scratch);
+                if !fill {
+                    packet.lanes[li].voices = voices;
+                    kit = first_kit.unwrap_or(lane.kit);
+                    swap = first_kit.map(|o| (o as u16, parts[0].from, parts[0].to));
                 }
-                feel.apply(out, seed, lane8);
-                if lane.role != Role::Drums {
-                    apply_rate(out, lane.rate, bar, &mut scratch);
-                    if param_named(generator.param_names(), &params, "gate").is_some_and(|g| g >= LEGATO_FROM) {
-                        legato(out);
+                for p in &parts[1..n_parts] {
+                    part_buf.clear();
+                    let (_, part_kit) = render_part(lane, &part_ctx, &p.pos, fill, &mut part_buf, &mut scratch);
+                    splice_range(out, &part_buf, p.from, p.to, &mut scratch);
+                    if !fill && swap.is_none() {
+                        swap = part_kit.map(|o| (o as u16, p.from, p.to));
                     }
                 }
             }
             packet.lanes[li].pos = FormView {
-                segment: pos.segment,
+                segment: pos.source,
                 letter: pos.letter.index(),
                 prime: pos.prime,
                 chord: lane_harmony.chord_degree,
             };
             packet.lanes[li].form = form_index as u16;
+            packet.lanes[li].swap = swap;
+            // Synth lanes open their sends where the drums break or the lane
+            // rests, so the last notes ring out; drops stay dry (user).
+            packet.lanes[li].break_sends = (synth && (drum_break || pos.play == Play::Rest)).then_some(BREAK_SENDS);
             if li == 0 {
-                drum_mask = lane.layout().onset_mask(packet.lanes[0].main.as_slice());
+                // A filler segment's last bar is a drum fill: motif leads rest.
+                drum_fill = pos.letter.class() == SeedClass::Filler && pos.last_of_segment;
+                drum_break = pos.letter.class() == SeedClass::Filler;
+                drum_mask = lane.layout_for(kit).onset_mask(packet.lanes[0].main.as_slice());
+            }
+            if lane.role == Role::Bass {
+                bass_phrase = lane.generator.motif_phrase(seed, lane8).unwrap_or([0; 4]);
+                bass_onsets = onset_bits(packet.lanes[li].main.as_slice());
             }
         }
 
+        if current {
+            return;
+        }
         if self.shipped.len() == SHIPPED_HISTORY {
             self.shipped.remove(0);
         }
@@ -453,9 +538,169 @@ impl BarRenderer {
     }
 }
 
-/// Value of the generator parameter `name`, if the generator has it.
-fn param_named(names: &[&str], params: &[f32; MAX_GEN_PARAMS], name: &str) -> Option<f32> {
-    names.iter().position(|n| *n == name).and_then(|i| params.get(i).copied())
+// MUSICAL: first draft (user: reverb and delay usually high in breaks).
+/// Least delay and reverb send of a synth lane in a break or a rest.
+pub const BREAK_SENDS: (f32, f32) = (0.35, 0.5);
+
+/// What every part of a lane's bar renders against.
+struct PartCtx<'a> {
+    lane: u8,
+    bar: u64,
+    bar_in_phrase: u8,
+    phrase: u32,
+    half_time: bool,
+    harmony: HarmonyCtx,
+    drum_mask: &'a [u8; STEPS_PER_BAR],
+    bass_onsets: u16,
+    bass_phrase: [u16; 4],
+    drum_fill: bool,
+    /// The drums play a break letter (C, D) this bar.
+    drum_break: bool,
+}
+
+/// Render a whole bar of `lane` as form position `pos` plays it: the
+/// letter's seed and settings, the prime's second half, the feel and the
+/// lane speed. Returns the drum voice mask and the option a sound swap (`*`)
+/// plays, if any.
+fn render_part(
+    lane: &RenderLane,
+    c: &PartCtx,
+    pos: &FormPos,
+    fill: bool,
+    out: &mut BarEvents,
+    scratch: &mut BarEvents,
+) -> (u8, Option<usize>) {
+    // Rests, and break-only segments outside the drums' breaks, play nothing.
+    let silent = match pos.play {
+        Play::All => false,
+        Play::Rest => true,
+        Play::Breaks => !c.drum_break,
+    };
+    if silent {
+        out.clear();
+        return (0, None);
+    }
+    let seed = letter_seed(lane.seed, c.lane, pos.letter);
+    let class = pos.letter.class();
+    // A form swap (`*`) plays another of the lane's sounds.
+    let swap = if pos.swap { lane.swap_option(c.lane) } else { None };
+    let generator = lane.generator_for(swap.unwrap_or(lane.kit));
+    let mut params = lane.params;
+    vary_letter(generator.param_names(), seed, c.lane, pos.letter, pos.second, &mut params);
+    if class == SeedClass::Filler {
+        boost_filler(generator.param_names(), &mut params);
+    }
+    // The drum lane fills the last bar of a filler segment.
+    let filler_fill = lane.role == Role::Drums && class == SeedClass::Filler && pos.last_of_segment;
+    let mut bar_ctx = BarCtx {
+        seed,
+        sound_seed: if class == SeedClass::Main { lane.seed } else { seed },
+        class,
+        lane: c.lane,
+        role: lane.role,
+        bar_in_phrase: c.bar_in_phrase,
+        phrase: c.phrase,
+        fill: fill || filler_fill,
+        half_time: c.half_time,
+        params: &params,
+        harmony: c.harmony,
+        drum_mask: c.drum_mask,
+        jitter: note_jitter(generator.param_names()),
+        bass_onsets: c.bass_onsets,
+        bass_phrase: c.bass_phrase,
+        drum_fill: c.drum_fill,
+    };
+    generator.render_bar(&bar_ctx, out);
+    out.sort();
+    let voices = generator.voice_mask(&bar_ctx);
+    if pos.prime {
+        // A': same seed, a different second half.
+        bar_ctx.seed = prime_seed(seed, c.lane);
+        scratch.clear();
+        generator.render_bar(&bar_ctx, scratch);
+        scratch.sort();
+        splice_second_half(out, scratch);
+    }
+    Feel::of(seed, c.lane, class).apply(out, seed, c.lane);
+    if lane.role != Role::Drums {
+        // The bass block's own speed, then the centre and the pads on top.
+        let block = if lane.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
+        apply_speed(out, lane.base_rate + lane.rate.exponent() + block, c.bar, scratch);
+    }
+    (voices, swap)
+}
+
+// MUSICAL: tune by ear (user: the seed and the form set the bass speed per
+// block; the rate pads move it further). Speed steps (exponent on the
+// centre speed) and their weights: main letters stay home more, fillers
+// speed up more.
+const BLOCK_RATE_MAIN: [(i8, f32); 3] = [(0, 0.65), (1, 0.25), (-1, 0.1)];
+const BLOCK_RATE_FILLER: [(i8, f32); 3] = [(0, 0.35), (1, 0.45), (-1, 0.2)];
+const S_BLOCK_RATE: u32 = 0xF51;
+
+/// Speed step of a bass block, seeded by its letter seed.
+fn block_rate(seed: u32, lane: u8, class: SeedClass) -> i8 {
+    let table = if class == SeedClass::Main { &BLOCK_RATE_MAIN } else { &BLOCK_RATE_FILLER };
+    let weights = table.map(|t| t.1);
+    table[rng::weighted_pick(rng::hash(seed, lane, 0, 0, S_BLOCK_RATE), &weights).unwrap_or(0)].0
+}
+
+/// Replace the events of `out` in ticks `from..to` with those of `part`.
+fn splice_range(out: &mut BarEvents, part: &BarEvents, from: u16, to: u16, scratch: &mut BarEvents) {
+    scratch.clear();
+    for e in out.as_slice().iter().filter(|e| e.tick < from || e.tick >= to) {
+        scratch.push(*e);
+    }
+    for e in part.as_slice().iter().filter(|e| e.tick >= from && e.tick < to) {
+        scratch.push(*e);
+    }
+    scratch.sort();
+    out.clear();
+    for e in scratch.as_slice() {
+        out.push(*e);
+    }
+}
+
+/// Lowest value a letter moves a non-zero control to.
+const LETTER_FLOOR: f32 = 0.05;
+
+/// Move a letter's parameters around the control values ([`LETTER_OFFSETS`]).
+fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool, params: &mut [f32; MAX_GEN_PARAMS]) {
+    for (k, (name, _)) in LETTER_OFFSETS.iter().enumerate() {
+        if let Some(i) = names.iter().position(|n| n == name) {
+            if let Some(p) = params.get_mut(i) {
+                // A control above 0 stays above it, so a block never falls silent.
+                let floor = if *p > 0.0 { LETTER_FLOOR.min(*p) } else { 0.0 };
+                *p = (*p + letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
+            }
+        }
+    }
+}
+
+/// Per-note jitter amplitude per parameter ([`NOTE_JITTER_SHARE`] of the
+/// letter offsets).
+fn note_jitter(names: &[&str]) -> [f32; MAX_GEN_PARAMS] {
+    let mut out = [0.0; MAX_GEN_PARAMS];
+    for (name, max) in LETTER_OFFSETS {
+        if let Some(i) = names.iter().position(|n| *n == name) {
+            if let Some(j) = out.get_mut(i) {
+                *j = NOTE_JITTER_SHARE * max;
+            }
+        }
+    }
+    out
+}
+
+/// Steps of a bar with a note-on, one bit per step.
+fn onset_bits(events: &[LiveEvent]) -> u16 {
+    let mut bits = 0u16;
+    for e in events.iter().filter(|e| e.kind == EventKind::NoteOn) {
+        let step = ((e.tick + TICKS_PER_STEP / 2) / TICKS_PER_STEP) as usize;
+        if step < STEPS_PER_BAR {
+            bits |= 1 << step;
+        }
+    }
+    bits
 }
 
 /// Push a filler bar's parameters up ([`FILLER_BOOSTS`]).
@@ -469,23 +714,39 @@ fn boost_filler(names: &[&str], params: &mut [f32; MAX_GEN_PARAMS]) {
     }
 }
 
-/// Half rate: the bar's first half (even bars) or second half (odd bars) at
-/// half speed. Double rate: the bar compressed into each half.
-fn apply_rate(out: &mut BarEvents, rate: Rate, bar: u64, scratch: &mut BarEvents) {
+/// Play the bar at `2^exponent` speed. Below 1: each bar plays the next
+/// part of the rendered bar (half: first or second half, quarter: one of
+/// the four quarters) stretched over the whole bar. A note held over the start of
+/// the part comes back on its first tick (held across the barline). 2: the
+/// bar compressed into each half. Exponents are clamped to −2..=1.
+fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEvents) {
     let half = TICKS_PER_BAR / 2;
-    match rate {
-        Rate::Normal => return,
-        Rate::Half => {
-            let from = if bar % 2 == 0 { 0 } else { half };
+    match exponent.clamp(-2, 1) {
+        0 => return,
+        e if e < 0 => {
+            let k = 1u16 << (-e) as u16;
+            let part = TICKS_PER_BAR / k;
+            let from = (bar % k as u64) as u16 * part;
             scratch.clear();
-            for e in out.as_slice().iter().filter(|e| e.tick >= from && e.tick < from + half) {
+            // Held across the part start: continue it from the downbeat.
+            for e in out.as_slice().iter().filter(|e| {
+                e.kind == EventKind::NoteOn && e.gate > 0 && e.tick < from && e.tick + e.gate > from
+            }) {
                 let mut e = *e;
-                e.tick = (e.tick - from) * 2;
-                e.gate = e.gate.saturating_mul(2).min(TICKS_PER_BAR - e.tick);
+                e.gate = (e.tick + e.gate - from).min(part) * k;
+                e.tick = 0;
+                e.flags &= !(flags::TIE | flags::ACCENT);
+                e.note_id = e.note_id.wrapping_add(0x2000);
+                scratch.push(e);
+            }
+            for e in out.as_slice().iter().filter(|e| e.tick >= from && e.tick < from + part) {
+                let mut e = *e;
+                e.tick = (e.tick - from) * k;
+                e.gate = e.gate.saturating_mul(k).min(TICKS_PER_BAR - e.tick);
                 scratch.push(e);
             }
         }
-        Rate::Double => {
+        _ => {
             scratch.clear();
             for offset in [0, half] {
                 for e in out.as_slice() {
@@ -503,53 +764,6 @@ fn apply_rate(out: &mut BarEvents, rate: Rate, bar: u64, scratch: &mut BarEvents
         }
     }
     std::mem::swap(out, scratch);
-}
-
-/// Tie every note into the next one, which glides (note length at the top
-/// of its range).
-fn legato(out: &mut BarEvents) {
-    let ev = out.as_mut_slice();
-    let n = ev.len();
-    // Note-on groups by tick: (first index, end index).
-    let group_end = |start: usize, ev: &[crate::live::event::LiveEvent]| {
-        let mut j = start;
-        while j < n && ev[j].tick == ev[start].tick {
-            j += 1;
-        }
-        j
-    };
-    let mut prev: Option<(usize, usize)> = None;
-    let mut i = 0;
-    while i < n {
-        if ev[i].kind != EventKind::NoteOn {
-            i += 1;
-            continue;
-        }
-        let end = group_end(i, ev);
-        let ons = |a: usize, b: usize, ev: &[crate::live::event::LiveEvent]| {
-            (a..b).filter(|&k| ev[k].kind == EventKind::NoteOn).count()
-        };
-        if let Some((ps, pe)) = prev {
-            let (from, to) = (ev[ps].tick, ev[i].tick);
-            for k in ps..pe {
-                if ev[k].kind == EventKind::NoteOn {
-                    ev[k].gate = (to - from + LEGATO_OVERLAP).min(TICKS_PER_BAR - from);
-                }
-            }
-            // Single notes slide into each other; chords just hold.
-            if ons(ps, pe, ev) == 1 && ons(i, end, ev) == 1 {
-                let (pk, k) = ((ps..pe).find(|&k| ev[k].kind == EventKind::NoteOn), (i..end).find(|&k| ev[k].kind == EventKind::NoteOn));
-                if let (Some(pk), Some(k)) = (pk, k) {
-                    if ev[pk].key != ev[k].key {
-                        ev[k].flags |= flags::TIE;
-                        ev[k].glide = LEGATO_GLIDE;
-                    }
-                }
-            }
-        }
-        prev = Some((i, end));
-        i = end;
-    }
 }
 
 /// Stops and joins the renderer thread on drop.
@@ -570,7 +784,7 @@ impl Drop for RendererHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::event::LiveEvent;
+    use crate::live::event::{EventKind, LiveEvent};
     use crate::live::form::Letter;
     use crate::live::generator::fixed::FixedPattern;
     use crate::live::player::StepPlayer;
@@ -626,6 +840,7 @@ mod tests {
             seed: 0,
             form: 0,
             rate: Rate::Normal,
+            base_rate: 0,
             params: [0.5; MAX_GEN_PARAMS],
             kits: vec![
                 DrumKit { layout: DrumLayout::standard(), generator: None },
@@ -635,6 +850,8 @@ mod tests {
                 },
             ],
             kit: 0,
+            available: vec![true, true],
+            families: Vec::new(),
         }];
         for role in [Role::Bass, Role::Lead, Role::Extra] {
             lanes.push(RenderLane {
@@ -643,14 +860,23 @@ mod tests {
                 seed: 10 * role as u32,
                 form: 0,
                 rate: Rate::Normal,
+                base_rate: 0,
                 params: [0.5; MAX_GEN_PARAMS],
                 kits: Vec::new(),
                 kit: 0,
+                available: vec![true],
+                families: Vec::new(),
             });
         }
         let progressions = vec![Progression::new(&[0, 5, 3, 4], 1).unwrap(), Progression::new(&[0, 6], 2).unwrap()];
         let (_trash_tx, trash) = rtrb::RingBuffer::new(4);
-        let forms = vec![Form::single(), Form::parse("A3 C1").unwrap(), Form::parse("A1 A'1").unwrap()];
+        let forms = vec![
+            Form::single(),
+            Form::parse("A3 C1").unwrap(),
+            Form::parse("A1 A'1").unwrap(),
+            Form::parse("A1 A*1").unwrap(),
+            Form::parse("A.5 A*.5").unwrap(),
+        ];
         let (renderer, tx, rings) =
             BarRenderer::new(Arc::clone(&shared), lanes, forms, progressions, key, 0, Vec::new(), trash);
         Rig { renderer, tx, player: StepPlayer::new(rings.rx, rings.ret), shared }
@@ -828,16 +1054,107 @@ mod tests {
     }
 
     #[test]
+    fn bass_blocks_take_seeded_speeds() {
+        let speeds = |class| (0..300u32).map(|s| block_rate(s, 1, class)).collect::<Vec<i8>>();
+        let (main, filler) = (speeds(SeedClass::Main), speeds(SeedClass::Filler));
+        let share = |v: &[i8], x: i8| v.iter().filter(|&&s| s == x).count() as f32 / v.len() as f32;
+        assert!(share(&main, 0) > 0.5, "main blocks mostly keep the centre speed");
+        assert!(share(&filler, 1) > share(&main, 1), "fillers speed up more");
+        assert!(main.contains(&-1) && filler.contains(&-1));
+    }
+
+    #[test]
     fn form_letters_pick_seeds_and_filler_boosts() {
         let mut r = rig();
         r.tx.send(RenderMsg::Form { lane: 1, form: 1 }).unwrap();
         let got = played(&mut r, 8);
         let c = 1 + (letter_seed(10, 1, Letter::C) % 100) as u8;
         let vels: Vec<u8> = got.iter().map(|g| g.0).collect();
-        assert_eq!(vels, [11, 11, 11, c, 11, 11, 11, c], "A3 C1");
+        assert_eq!(vels[..4], [11, 11, 11, c], "A3 C1");
+        // The second pass plays the seeded variation, on the same letter seeds.
+        let form = Form::parse("A3 C1").unwrap();
+        for bar in 4..8 {
+            let letter = form.pos_varied(bar, 10, 1).letter;
+            assert_eq!(vels[bar as usize], 1 + (letter_seed(10, 1, letter) % 100) as u8, "bar {bar}");
+        }
         let gates: Vec<u16> = got.iter().map(|g| g.1).collect();
         assert_eq!(gates[0], 50, "main bars keep the control value");
-        assert!(gates[3] >= 65, "filler bars push density up: {}", gates[3]);
+        // The bass block's own speed scales the gate; undo it.
+        let speed = block_rate(letter_seed(10, 1, Letter::C), 1, SeedClass::Filler);
+        let gate = gates[3] as f32 * 2f32.powi(speed as i32);
+        assert!(gate >= 65.0, "filler bars push density up: {gate}");
+    }
+
+    #[test]
+    fn form_swaps_play_another_kit() {
+        let mut r = rig();
+        r.tx.send(RenderMsg::Form { lane: 0, form: 3 }).unwrap();
+        r.renderer.service();
+        // The form lands on the next phrase (bar 4): A, then A* on bar 5.
+        for bar in 0..4 {
+            r.rt_enter(bar);
+            r.renderer.service();
+        }
+        let a = r.rt_enter(4).unwrap();
+        assert_eq!(a.lanes[0].swap, None);
+        assert_eq!(a.lanes[0].main.len(), 2, "kit 0 pattern");
+        r.renderer.service();
+        let swapped = r.rt_enter(5).unwrap();
+        assert_eq!(swapped.lanes[0].swap, Some((1, 0, crate::live::TICKS_PER_BAR)), "the only other kit, the whole bar");
+        assert_eq!(swapped.lanes[0].main.as_slice()[0].target, 1, "kit 1's generator plays");
+    }
+
+    #[test]
+    fn swap_partner_is_one_fixed_option_of_the_same_family() {
+        use crate::live::lane::OptionFamily::{Sampler, Stream, Synth};
+        let lane = |seed: u32, kit: usize, families: Vec<OptionFamily>, available: Vec<bool>| RenderLane {
+            role: Role::Bass,
+            generator: Box::new(Probe),
+            seed,
+            form: 0,
+            rate: Rate::Normal,
+            base_rate: 0,
+            params: [0.5; MAX_GEN_PARAMS],
+            kits: Vec::new(),
+            kit,
+            available,
+            families,
+        };
+        let families = vec![Sampler, Synth, Sampler, Stream, Sampler, Synth, Stream];
+        let mut partners = std::collections::BTreeSet::new();
+        for seed in 0..60 {
+            let l = lane(seed, 0, families.clone(), vec![true; 7]);
+            let partner = l.swap_option(1).expect("two other samplers");
+            assert!([2, 4].contains(&partner), "seed {seed}: option {partner} is no sampler");
+            assert_eq!(l.swap_option(1), Some(partner), "one fixed partner per lane");
+            partners.insert(partner);
+            // A synth swaps to the other synth, a stream to the other stream.
+            assert_eq!(lane(seed, 1, families.clone(), vec![true; 7]).swap_option(1), Some(5));
+            assert_eq!(lane(seed, 3, families.clone(), vec![true; 7]).swap_option(1), Some(6));
+        }
+        assert_eq!(partners.len(), 2, "the seed picks among them");
+        // Unloaded options never partner; nothing of the same kind = no swap.
+        let l = lane(3, 0, families.clone(), vec![true, true, false, true, false, true, true]);
+        assert_eq!(l.swap_option(1), None);
+        // Drum kits (all samplers): any other kit.
+        let kits = lane(3, 1, Vec::new(), vec![true; 3]);
+        assert!([0, 2].contains(&kits.swap_option(0).unwrap()));
+    }
+
+    #[test]
+    fn half_bar_swaps_splice_another_kit() {
+        let mut r = rig();
+        r.tx.send(RenderMsg::Form { lane: 0, form: 4 }).unwrap();
+        r.renderer.service();
+        for bar in 0..4 {
+            r.rt_enter(bar);
+            r.renderer.service();
+        }
+        let p = r.rt_enter(4).unwrap();
+        assert_eq!(p.lanes[0].swap, Some((1, 192, crate::live::TICKS_PER_BAR)), "the second half swaps");
+        // Kit 0 plays its hits at 0 and 96; kit 1 its hit at 96, outside the half.
+        let ticks: Vec<u16> = p.lanes[0].main.as_slice().iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, [0, 96], "the first half keeps kit 0's hits");
     }
 
     #[test]
@@ -860,12 +1177,14 @@ mod tests {
         assert_eq!(p4.lanes[1].form, 1);
         r.renderer.service();
         assert_eq!(r.shared.lane(1).view().form_pending, None, "cleared once the phrase started");
-        // Bar 7 is the C of the new form.
+        // Bar 7 is the filler of the new form (C, or D in the second pass).
         for bar in 5..7 {
             r.rt_enter(bar);
             r.renderer.service();
         }
-        assert_eq!(r.rt_enter(7).unwrap().lanes[1].pos.letter, Letter::C.index());
+        let want = Form::parse("A3 C1").unwrap().pos_varied(7, 10, 1).letter;
+        assert_eq!(want.class(), SeedClass::Filler);
+        assert_eq!(r.rt_enter(7).unwrap().lanes[1].pos.letter, want.index());
     }
 
     #[test]
@@ -899,34 +1218,33 @@ mod tests {
         }
         let mut scratch = BarEvents::default();
         let mut half = bar.clone();
-        apply_rate(&mut half, Rate::Half, 1, &mut scratch);
+        apply_speed(&mut half, Rate::Half.exponent(), 1, &mut scratch);
         let ticks: Vec<u16> = half.as_slice().iter().map(|e| e.tick).collect();
         assert_eq!(ticks, [0, 192], "odd bars stretch the second half");
         assert_eq!(half.as_slice()[0].gate, 96);
+        // A note held over the middle continues from the odd bar's downbeat.
+        let mut held = BarEvents::default();
+        held.push(LiveEvent { tick: 144, kind: EventKind::NoteOn, gate: 96, note_id: 1, ..Default::default() });
+        held.push(LiveEvent { tick: 240, kind: EventKind::NoteOn, gate: 24, note_id: 2, ..Default::default() });
+        apply_speed(&mut held, Rate::Half.exponent(), 1, &mut scratch);
+        let got: Vec<(u16, u16)> = held.as_slice().iter().map(|e| (e.tick, e.gate)).collect();
+        assert_eq!(got, [(0, 96), (96, 48)]);
         let mut double = bar.clone();
-        apply_rate(&mut double, Rate::Double, 0, &mut scratch);
+        apply_speed(&mut double, Rate::Double.exponent(), 0, &mut scratch);
+        // Base half plus the half pad: quarter speed, a quarter of the bar each bar.
+        let mut quarter = bar.clone();
+        apply_speed(&mut quarter, -2, 2, &mut scratch);
+        let ticks: Vec<u16> = quarter.as_slice().iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, [0], "bar 2 plays the third quarter (tick 192) at quarter speed");
+        // Base half plus the double pad: unchanged.
+        let mut same = bar.clone();
+        apply_speed(&mut same, Rate::Half.exponent() + Rate::Double.exponent(), 0, &mut scratch);
+        assert_eq!(same.as_slice(), bar.as_slice());
         let ticks: Vec<u16> = double.as_slice().iter().map(|e| e.tick).collect();
         assert_eq!(ticks, [0, 48, 96, 144, 192, 240, 288, 336]);
         assert_eq!(double.as_slice()[1].gate, 24);
         let ids: std::collections::HashSet<u16> = double.as_slice().iter().map(|e| e.note_id).collect();
         assert_eq!(ids.len(), 8, "repeats get their own note ids");
-    }
-
-    #[test]
-    fn legato_ties_single_notes_and_holds_chords() {
-        let mut bar = BarEvents::default();
-        let note = |tick: u16, key: u8| LiveEvent { tick, kind: EventKind::NoteOn, key, gate: 10, ..Default::default() };
-        for e in [note(0, 60), note(96, 62), note(192, 64), note(192, 67), note(288, 69)] {
-            bar.push(e);
-        }
-        legato(&mut bar);
-        let ev = bar.as_slice();
-        assert_eq!(ev[0].gate, 96 + LEGATO_OVERLAP);
-        assert!(ev[1].has(flags::TIE) && ev[1].glide == LEGATO_GLIDE);
-        assert!(!ev[2].has(flags::TIE) && !ev[3].has(flags::TIE), "a chord does not slide");
-        assert_eq!((ev[2].gate, ev[3].gate), (96 + LEGATO_OVERLAP, 96 + LEGATO_OVERLAP));
-        assert!(!ev[4].has(flags::TIE), "out of a chord: no slide");
-        assert_eq!(ev[4].gate, 10, "the last note keeps its gate");
     }
 
     #[test]

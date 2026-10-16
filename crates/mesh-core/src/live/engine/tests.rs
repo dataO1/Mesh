@@ -59,6 +59,11 @@ fn rig(gens: Gens, block: usize) -> Rig {
 
 fn rig_with(gens: Gens, block: usize, edit: impl FnOnce(&mut StyleSpec)) -> Rig {
     let mut style = Style::load(&fixture_dir()).unwrap_or_else(|e| panic!("{e}"));
+    // The built-in forms without their synth forms: these tests expect every
+    // lane to play from bar 0 (synth forms rest; tested in `form`).
+    if style.spec.forms.is_empty() {
+        style.spec.forms = crate::live::form::DEFAULT_FORMS.iter().map(|f| f.to_string()).collect();
+    }
     edit(&mut style.spec);
     let mut opts = LoadOptions::new(SR);
     opts.max_block = 1024;
@@ -191,7 +196,7 @@ fn drum_onsets_are_sample_accurate_across_tempos_and_block_sizes() {
 }
 
 #[test]
-fn seed_and_generator_param_changes_land_exactly_on_the_bar() {
+fn seeds_land_on_the_bar_and_generator_params_act_at_once() {
     let seeded = || {
         let mut gens = silent();
         gens[0] = Some(Box::new(FixedPattern::reference(Role::Drums).seeded()) as Box<dyn LaneGenerator>);
@@ -217,7 +222,8 @@ fn seed_and_generator_param_changes_land_exactly_on_the_bar() {
     thinned.send(LiveCommand::SetControl { lane: 0, control: 1, value: 0.0 });
     thinned.run_to(4.0);
     let diff = first_difference(&plain.lanes[0], &thinned.lanes[0]).expect("density changes the bar");
-    assert!(diff >= bar2, "generator parameter changed the playing bar (frame {diff})");
+    let moved_at = (1.5 * bar_frames(BPM)) as usize;
+    assert!(diff >= moved_at && diff < bar2, "a parameter move acts within the playing bar (frame {diff})");
     assert_eq!(thinned.sys.shared.lane(0).view().controls[1], 0.0);
 }
 
@@ -281,7 +287,9 @@ fn lane_toggle_is_immediate_by_default_and_quantized_with_quant() {
     r.run_to(3.0);
     assert!(r.peak(2, pressed + ms(50.0), bar2) > 0.01, "lane kept playing until the bar");
     assert!(r.peak(2, bar2 - ms(5.0), bar2) > QUIET);
-    let cut = bar2 + ms(QUANTIZED_FADE_SECS * 1000.0) + 64;
+    // Margin for the lane filters ringing out (louder since samples are
+    // normalized to one LUFS).
+    let cut = bar2 + ms(QUANTIZED_FADE_SECS * 1000.0 + 30.0);
     assert!(r.peak(2, cut, usize::MAX) < QUIET, "lane silent after the bar");
     let view = r.sys.shared.lane(2).view();
     assert!(!view.on && !view.on_target);
@@ -302,8 +310,9 @@ fn lane_toggle_is_immediate_by_default_and_quantized_with_quant() {
     let pressed = r.master.len();
     r.send(LiveCommand::ToggleLane { lane: 2 });
     r.run_to(1.9);
-    // The glue's filters ring for a few ms after the lane gain reaches 0.
-    let faded = pressed + ms(IMMEDIATE_FADE_SECS * 1000.0 + 10.0);
+    // The glue's filters ring for a few ms after the lane gain reaches 0. Samples
+    // are normalized to one LUFS, so allow 30 ms.
+    let faded = pressed + ms(IMMEDIATE_FADE_SECS * 1000.0 + 30.0);
     assert!(r.peak(2, pressed, pressed + ms(5.0)) > QUIET, "fade, not a hard cut");
     assert!(r.peak(2, faded, usize::MAX) < QUIET, "silent well before the bar");
 }
@@ -588,7 +597,7 @@ fn capture_round_trip_restores_state() {
     assert_eq!((captured.global.progression, captured.global.tempo, captured.global.half_time), (1, 166.0, true));
     assert_eq!(captured.lanes[1].seed, DEFAULT_SEED + 6);
     assert_eq!((captured.lanes[0].seed, captured.lanes[0].form, captured.lanes[1].form), (777, 3, 0));
-    assert_eq!((captured.lanes[2].octave, captured.lanes[0].mutes), (-1, DrumVoice::Hats.bit()));
+    assert_eq!((captured.lanes[2].octave, captured.lanes[0].voice_overrides), (-1, (DrumVoice::Hats.bit() as u16) << 8));
     assert_eq!((captured.lanes[2].controls[3], captured.lanes[2].option), (0.8, 1));
     assert!(!captured.lanes[3].on && captured.lanes[0].on);
 
@@ -635,7 +644,9 @@ fn capture_round_trip_restores_state() {
     assert!(!shared.lane(3).view().on && shared.lane(0).view().on);
     assert_eq!(shared.lane(0).view().seed, 777);
     assert_eq!(shared.lane(0).view().form, 3, "the form switched on a phrase");
-    assert_eq!((shared.lane(0).view().mutes, shared.lane(0).view().mutes_playing), (DrumVoice::Hats.bit(), DrumVoice::Hats.bit()));
+    let v = shared.lane(0).view();
+    assert_eq!((v.voice_overrides, v.voice_overrides_playing), ((DrumVoice::Hats.bit() as u16) << 8, (DrumVoice::Hats.bit() as u16) << 8));
+    assert_eq!(v.voices_on & DrumVoice::Hats.bit(), 0, "fixed patterns turn every voice on; the override turns hats off");
     assert_eq!(shared.lane(2).view().octave, -1);
     assert_eq!(shared.lane(2).view().controls[3], 0.8);
     assert_eq!(shared.lane(3).view().shift_controls[3], 0.3);
@@ -714,7 +725,7 @@ fn octave_clamps_and_skips_the_drum_lane() {
 }
 
 #[test]
-fn drum_mutes_silence_their_voice_on_the_bar() {
+fn drum_voice_pads_turn_voices_off_on_the_bar_and_a_new_seed_resets_them() {
     let mut r = rig([Some(kicks(&[0, 96, 192, 288])), None, None, None], 256);
     r.send(LiveCommand::SetQuantize(true));
     for lane in 1..NUM_LANES as u8 {
@@ -722,16 +733,39 @@ fn drum_mutes_silence_their_voice_on_the_bar() {
     }
     r.run_to(1.5);
     r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
-    assert_eq!(r.sys.shared.lane(0).view().mutes, DrumVoice::Kick.bit());
-    assert_eq!(r.sys.shared.lane(0).view().mutes_playing, 0, "waits for the bar");
+    assert_eq!(r.sys.shared.lane(0).view().voice_overrides, (DrumVoice::Kick.bit() as u16) << 8);
+    assert_eq!(r.sys.shared.lane(0).view().voice_overrides_playing, 0, "waits for the bar");
     r.run_to(2.5);
-    assert_eq!(r.sys.shared.lane(0).view().mutes_playing, DrumVoice::Kick.bit(), "lands on bar 2");
+    assert_eq!(r.sys.shared.lane(0).view().voice_overrides_playing, (DrumVoice::Kick.bit() as u16) << 8, "lands on bar 2");
+    assert_eq!(r.sys.shared.lane(0).view().voices_on & DrumVoice::Kick.bit(), 0);
     let bar = bar_frames(BPM) as usize;
     assert!(r.peak(0, 1 * bar + 100, 1 * bar + 4000) > 0.01, "bar 1 still plays the kick");
     assert!(r.peak(0, 2 * bar + 4000, 5 * bar / 2) < 1e-3, "muted kick is silent");
     r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
     r.run_to(3.5);
     assert!(r.peak(0, 3 * bar + 100, 3 * bar + 4000) > 0.01, "back on the next bar");
+    // A new drum seed clears the pad changes.
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Hats });
+    // Kick forced back on (low byte), hats forced off (high byte).
+    assert_eq!(r.sys.shared.lane(0).view().voice_overrides, DrumVoice::Kick.bit() as u16 | (DrumVoice::Hats.bit() as u16) << 8);
+    r.send(LiveCommand::SeedDelta { lane: 0, delta: 1 });
+    assert_eq!(r.sys.shared.lane(0).view().voice_overrides, 0);
+}
+
+#[test]
+fn drum_voice_pads_act_at_once_by_default() {
+    let mut r = rig([Some(kicks(&[0, 96, 192, 288])), None, None, None], 256);
+    assert!(!r.sys.shared.quantize(), "Quant defaults off");
+    r.run_to(1.1);
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
+    r.run_to(1.12);
+    let v = r.sys.shared.lane(0).view();
+    assert_eq!(v.voice_overrides_playing, (DrumVoice::Kick.bit() as u16) << 8, "applied within the bar");
+    assert_eq!(v.voices_on & DrumVoice::Kick.bit(), 0);
+    // Forcing a voice on works the same way, and a second press turns it off.
+    r.send(LiveCommand::ToggleDrumVoice { voice: DrumVoice::Kick });
+    r.run_to(1.14);
+    assert_ne!(r.sys.shared.lane(0).view().voices_on & DrumVoice::Kick.bit(), 0);
 }
 
 #[test]
@@ -747,19 +781,83 @@ fn break_bus_and_master_inserts_process_in_place() {
     };
     // The style's own drum generator plays break slices.
     let style_gens = || -> Gens { std::array::from_fn(|_| None) };
+    // Full density and a whole phrase, so the break's layer and tail play.
+    // A drum seed whose arrangement uses the break.
+    let seed = (0..)
+        .find(|&s| {
+            crate::live::generator::recipe::Recipe::new(s, s, 0, crate::live::form::SeedClass::Main, 0xFF).voices
+                & DrumVoice::Break.bit()
+                != 0
+        })
+        .unwrap();
+    let dense = |r: &mut Rig| {
+        r.send(LiveCommand::SetSeed { lane: 0, seed });
+        r.send(LiveCommand::SetControl { lane: 0, control: 1, value: 1.0 });
+    };
     let mut plain = rig(style_gens(), 256);
-    plain.run_to(2.0);
+    dense(&mut plain);
+    plain.run_to(4.0);
 
     // Muting the break bus leaves the backbone: quieter, but not silent.
     let mut r = rig_with(style_gens(), 256, |s| s.lanes[0].break_fx = vec![mute()]);
-    r.run_to(2.0);
+    dense(&mut r);
+    r.run_to(4.0);
     let energy = |x: &[StereoSample]| x.iter().map(|s| s.left * s.left).sum::<f32>();
     let (p, q) = (energy(&plain.lanes[0]), energy(&r.lanes[0]));
-    assert!(q > 0.01 * p && q < 0.95 * p, "drum lane energy {p} -> {q}");
+    // The fixture break is short and now only fills the gaps, so the change is small.
+    assert!(q > 0.01 * p && q < p, "drum lane energy {p} -> {q}");
+
+    // Voice buses: muting the kick and the snare leaves the rest; muting
+    // every voice and the break leaves silence.
+    let mut r = rig_with(style_gens(), 256, |s| {
+        s.lanes[0].voice_fx.kick = vec![mute()];
+        s.lanes[0].voice_fx.snare = vec![mute()];
+    });
+    dense(&mut r);
+    r.run_to(4.0);
+    let q = energy(&r.lanes[0]);
+    assert!(q < p, "kick and snare muted: {p} -> {q}");
+    let mut r = rig_with(style_gens(), 256, |s| {
+        let v = &mut s.lanes[0].voice_fx;
+        for chain in [&mut v.kick, &mut v.snare, &mut v.hats, &mut v.ride, &mut v.shaker, &mut v.perc, &mut v.top] {
+            *chain = vec![mute()];
+        }
+        s.lanes[0].break_fx = vec![mute()];
+    });
+    dense(&mut r);
+    r.run_to(4.0);
+    assert!(energy(&r.lanes[0]) < 1e-6 * p.max(1e-9) + 1e-9, "every voice on its own muted bus");
 
     // A master insert changes the master only.
     let mut r = rig_with(style_gens(), 256, |s| s.glue.master_fx = vec![mute()]);
-    r.run_to(2.0);
+    dense(&mut r);
+    r.run_to(4.0);
     assert!(r.master.iter().all(|s| s.left.abs() < 1e-6), "muted master");
     assert!(r.lanes[1] == plain.lanes[1], "lanes untouched");
+}
+
+#[test]
+fn density_moves_change_the_playing_bar() {
+    // The style's own drum generator; density from 0 to 1 at bar 1.25.
+    let gens = || -> Gens { std::array::from_fn(|_| None) };
+    let start = |r: &mut Rig| {
+        for lane in 1..NUM_LANES as u8 {
+            r.send(LiveCommand::SetLaneOn { lane, on: false });
+        }
+        r.send(LiveCommand::SetControl { lane: 0, control: 1, value: 0.0 });
+    };
+    let mut plain = rig(gens(), 256);
+    start(&mut plain);
+    plain.run_to(2.0);
+    let mut moved = rig(gens(), 256);
+    start(&mut moved);
+    moved.run_to(1.25);
+    let at = moved.master.len();
+    moved.send(LiveCommand::SetControl { lane: 0, control: 1, value: 1.0 });
+    moved.run_to(2.0);
+    let bar2 = (2.0 * bar_frames(BPM)) as usize;
+    let diff = first_difference(&plain.lanes[0], &moved.lanes[0]).expect("density changes the drums");
+    assert!(diff >= at && diff < bar2 - 1000, "first change at {diff}, moved at {at}, next bar at {bar2}");
+    // The new voices are in the arrangement before the bar ends.
+    assert!(moved.sys.shared.lane(0).view().voices_on.count_ones() > 3);
 }

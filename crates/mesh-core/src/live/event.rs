@@ -15,6 +15,11 @@ pub enum EventKind {
     NoteOff = 2,
     /// Choke voices in the event's choke group.
     Choke = 3,
+    /// Lane pitch bend: `cents` from the written pitch (sound packs).
+    Bend = 4,
+    /// Controller change: CC number in `target`, value 0..127 in `vel`
+    /// (sound packs: filter, vibrato depth, the Tone CC, ...).
+    Cc = 5,
 }
 
 /// Event flag bits.
@@ -56,6 +61,9 @@ pub struct LiveEvent {
     pub note_id: u16,
     /// 0 = lane default, else amp-decay override (log scale).
     pub decay: u8,
+    /// 0 = lane default, else amp-attack override (log scale 1 ms .. 2 s,
+    /// see [`attack_byte`](super::sampler::attack_byte)).
+    pub attack: u8,
     /// Bipolar offset to the lane filter cutoff.
     pub cutoff: i8,
     /// Glide time (log scale), used with `flags::TIE`.
