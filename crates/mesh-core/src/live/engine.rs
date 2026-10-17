@@ -282,6 +282,10 @@ impl LiveEngine {
                 for (li, lane) in packet.lanes.iter().enumerate() {
                     self.shared.lane(li).set_bar_pos(lane.pos, lane.form);
                 }
+                self.shared.lane(0).set_drum_steps(packet.lanes[0].main.as_slice());
+                for (li, lane) in packet.lanes.iter().enumerate() {
+                    self.shared.lane(li).set_bar_notes(lane.main.as_slice());
+                }
                 let voices = packet.lanes[0].voices;
                 if let Some(drums) = self.lanes.first_mut() {
                     drums.set_voice_default(voices);
@@ -327,7 +331,7 @@ impl LiveEngine {
         }
 
         let pos = self.clock.position();
-        self.shared.set_clock(pos.bar, pos.step, self.clock.bpm(), self.clock.target_bpm(), self.clock.is_ramping());
+        self.shared.set_clock(pos.bar, pos.step, pos.tick, self.clock.bpm(), self.clock.target_bpm(), self.clock.is_ramping());
         for (li, lane) in self.lanes.iter_mut().enumerate() {
             let shared = self.shared.lane(li);
             shared.set_on(lane.is_on(), lane.on_target());
@@ -355,6 +359,10 @@ impl LiveEngine {
                     self.clock.set_half_time(packet.half_time);
                     for (li, lane) in packet.lanes.iter().enumerate() {
                         self.shared.lane(li).set_bar_pos(lane.pos, lane.form);
+                    }
+                    self.shared.lane(0).set_drum_steps(packet.lanes[0].main.as_slice());
+                    for (li, lane) in packet.lanes.iter().enumerate() {
+                        self.shared.lane(li).set_bar_notes(lane.main.as_slice());
                     }
                     if let Some(drums) = self.lanes.first_mut() {
                         drums.set_voice_default(packet.lanes[0].voices);
@@ -1018,6 +1026,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
         max_block,
         tempo,
         key,
+        mode_seed,
         progressions,
         default_progression,
         forms,
@@ -1084,7 +1093,7 @@ pub fn build(loaded: LoadedStyle) -> LiveSystem {
     let n_progressions = progressions.len();
     let form_names: Vec<String> = forms.iter().map(|f| f.to_string()).collect();
     let (mut renderer, render_tx, rings) =
-        BarRenderer::new(Arc::clone(&shared), render_lanes, forms, progressions, key, default_progression, claps, trash_rx);
+        BarRenderer::new(Arc::clone(&shared), render_lanes, forms, progressions, (key, mode_seed), default_progression, claps, trash_rx);
 
     let mut glue = GlueChain::new(max_block);
     glue.set_params(&glue_params);

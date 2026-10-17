@@ -236,6 +236,13 @@ impl Recipe {
             voices |= DrumVoice::Break.bit();
         }
         voices &= voice_allowed;
+        // Every seed plays the break or percussion (user, 2026-10-17).
+        let groove = DrumVoice::Break.bit() | DrumVoice::Perc.bit();
+        if voices & groove == 0 {
+            let pick = if rng::chance(hs(S_VOICES, 3), 0.5) { DrumVoice::Break } else { DrumVoice::Perc };
+            let other = if pick == DrumVoice::Break { DrumVoice::Perc } else { DrumVoice::Break };
+            voices |= [pick, other].into_iter().map(|v| v.bit()).find(|b| voice_allowed & b != 0).unwrap_or(0);
+        }
 
         // Layer order: kick and snare first (either way round), then the
         // rest shuffled. Layers of voices the seed leaves out render from
@@ -368,7 +375,9 @@ mod tests {
         for r in &recipes {
             assert_eq!(r.voices & 0b111, 0b111, "kick, snare and hats always");
             let extras = EXTRA_VOICES.iter().filter(|v| r.voices & v.bit() != 0).count();
-            assert!((2..=3).contains(&extras), "{extras}");
+            // 2-3, one more when the seed needs percussion (no break).
+            assert!((2..=4).contains(&extras), "{extras}");
+            assert!(r.voices & (DrumVoice::Break.bit() | DrumVoice::Perc.bit()) != 0, "break or percussion");
             assert!(r.entry[Layer::Kick as usize] < 0.3 && r.entry[Layer::Snare as usize] < 0.3, "backbone first");
             assert!(r.entry[Layer::Hats2 as usize] <= r.entry[Layer::Hats3 as usize]);
         }

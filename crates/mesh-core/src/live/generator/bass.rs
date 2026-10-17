@@ -21,6 +21,12 @@
 //! (size of the "odd block" jumps: most notes stay in one octave, and a
 //! seeded run of 1-3 notes per bar may jump up; 0 = no jumps, then a 5th, an
 //! octave, an octave and a 3rd, up to an octave and a 5th (+19 semitones)).
+//! `length` and `expression` (0.5 = unchanged) act as on the `phrase`
+//! generator, so a sound pack's shape control works on generated lines:
+//! length shortens notes towards stabs or holds and ties them, expression
+//! scales each note's filter offset. `stabs` (0.5 = as the density says)
+//! sets the share of stab notes (flagged `STAB`: no sustain, the stab
+//! accent) against held ones.
 //!
 //! **Motif mode**: with motif clips loaded ([`crate::live::motif`]) and the
 //! construction option `motifs` not 0, the seed picks a clip and the line
@@ -40,7 +46,7 @@ use super::blocks::{
     density_attack_in, lerp, note_param, step_motif, level_unit, note, option, param, reveals, step_tick, stream_start, velocity, LevelMap,
     PhraseRng, Tier, BASS_ATTACK_BY_DENSITY,
 };
-use super::blocks::VEL_ACCENT;
+use super::blocks::{VARIATION_BAR, VEL_ACCENT};
 use super::layout::MASK_KICK_MIN;
 use super::motif::{self, Plan, Play, Shape};
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
@@ -49,11 +55,11 @@ use crate::live::harmony::SCALE_LEN;
 use crate::live::motif::Motif;
 use crate::live::rng;
 use crate::live::sampler::CUTOFF_OFFSET_OCTAVES;
-use crate::live::{STEPS_PER_BAR, TICKS_PER_STEP};
+use crate::live::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 use crate::music::MusicalKey;
 
-pub const PARAM_NAMES: [&str; 8] =
-    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread"];
+pub const PARAM_NAMES: [&str; 11] =
+    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs"];
 const P_DENSITY: usize = 0;
 const P_COMPLEXITY: usize = 1;
 const P_VARIATION: usize = 2;
@@ -62,9 +68,12 @@ const P_REGISTER: usize = 4;
 const P_SLIDE: usize = 5;
 const P_ACCENT: usize = 6;
 const P_SPREAD: usize = 7;
+const P_LENGTH: usize = 8;
+const P_EXPRESSION: usize = 9;
+const P_STABS: usize = 10;
 
 // MUSICAL: first draft, tune by ear.
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.0, 0.0, 0.0, 0.0];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.5, 0.5, 0.5, 0.0];
 
 const S_CELL: u32 = 0x200;
 const S_RHYTHM: u32 = 0x201;
@@ -74,6 +83,13 @@ const S_SLIDE: u32 = 0x204;
 const S_VEL: u32 = 0x205;
 const S_TURN: u32 = 0x206;
 const S_LENGTH: u32 = 0x20B;
+const S_PERSONA: u32 = 0x210;
+const S_HALF: u32 = 0x211;
+const S_RATCHET: u32 = 0x212;
+const S_LEGATO: u32 = 0x213;
+const S_FIGURE: u32 = 0x214;
+const S_GROOVE: u32 = 0x215;
+const S_REGION: u32 = 0x216;
 const S_FILTER: u32 = 0x20D;
 const S_JUMP: u32 = 0x207;
 const S_JUMP_START: u32 = 0x208;
@@ -104,22 +120,28 @@ const POOL_FACTOR: (f32, f32) = (0.2, 1.3);
 /// than `BELOW_KEY_FLOOR` under the key's root in the register.
 const BELOW_ROOT_SEMITONES: i32 = 8;
 const BELOW_KEY_FLOOR: i32 = 4;
-/// Rhythm density at density 0 and 1 (eased in with density³): a sparse
-/// bass still plays a groove.
-const RHYTHM_DENSITY: (f32, f32) = (0.62, 1.0);
+/// Rhythm density at density 0 and 1, eased in with density to this power
+/// (user, 2026-10-17: at normal speed the middle plays about 4 notes a bar,
+/// 2.7 at the bottom, 13 at the top).
+const RHYTHM_DENSITY: (f32, f32) = (0.3, 1.0);
+const RHYTHM_CURVE: f32 = 3.0;
 /// Importance taken off the off-16th steps at density 0, so sparse lines sit
 /// on the 8ths and hold their notes longer. Fades out by `THIN_DENSITY_MAX`.
 const THIN_PENALTY: f32 = 0.35;
 const THIN_DENSITY_MAX: f32 = 0.6;
 /// Share of short, stabby notes at density 0 and 1; the rest are held.
 const SHORT_SHARE: (f32, f32) = (0.2, 0.8);
+/// `stabs` 0..1 moves the stab share by this much around the density's
+/// (± half of it), within the range.
+const STABS_SHIFT: f32 = 1.2;
+const STABS_RANGE: (f32, f32) = (0.04, 0.96);
 /// Short note: share of the gap at density 0 and 1, and longest length in steps.
 const SHORT_LENGTH: (f32, f32, u16) = (0.6, 0.35, 2);
 // MUSICAL: first draft, tune by ear. Odd-block jumps (spread = jump size).
 /// Jump sizes in scale degrees: 5th, octave, octave + 3rd, octave + 5th.
 const JUMPS: [i32; 4] = [4, 7, 9, 11];
-/// Spread below this: no jumps.
-const JUMP_SPREAD_MIN: f32 = 0.15;
+/// Spread below this: no odd blocks (the walk keeps the line close).
+const JUMP_SPREAD_MIN: f32 = 0.4;
 /// Chance that a bar has an odd block.
 const JUMP_BLOCK_PROB: (f32, f32) = (0.15, 0.7);
 /// Longest odd block in notes.
@@ -130,6 +152,20 @@ const JUMP_LARGEST_SHARE: f32 = 0.6;
 const TURNAROUND_DEGREES: [i32; 2] = [4, 6];
 /// Steps tried for the turnaround note, last first.
 const TURNAROUND_STEPS: [usize; 3] = [15, 14, 13];
+
+// MUSICAL: first draft, tune by ear (user, 2026-10-17: each seed its own
+// rhythmic character). Seed personality, drawn once per letter seed:
+/// Syncopation offset added to `complexity`.
+const PERSONA_SYNC: (f32, f32) = (-0.2, 0.35);
+/// Slide probability multiplier.
+const PERSONA_SLIDE: (f32, f32) = (0.3, 2.5);
+/// Most likely share of beats played at half speed (only the beat's first
+/// note, held), and of notes doubled into two 32nds (ratchets).
+const PERSONA_HALF_MAX: f32 = 0.35;
+const PERSONA_RATCHET_MAX: f32 = 0.3;
+/// How much tonal stability steers the pitch walk (so seeds differ: some
+/// circle the chord tones, some wander the scale).
+const PERSONA_TONAL: (f32, f32) = (0.3, 2.0);
 
 // MUSICAL: first draft, tune by ear. Motif mode.
 /// Lowest MIDI key a motif bar may reach (C1); lower bars move up an octave.
@@ -174,6 +210,19 @@ const GATE_BY_DENSITY: (f32, f32) = (1.0, 0.3);
 /// Longest note in steps at density 0 and 1.
 const GATE_MAX_BY_DENSITY: (f32, f32) = (16.0, 4.0);
 const GATE_MIN_TICKS: f32 = 6.0;
+// MUSICAL: the phrase generator's length and expression (generator/phrase.rs),
+// so a sound pack's shape control acts the same on generated lines.
+/// Shortest stab at length 0, in ticks (a 16th and a half).
+const STAB_TICKS: u16 = 36;
+/// From this length held notes start to tie into the next one and glide;
+/// at length 1 all of them do (user, 2026-10-17: the sustained end of shape
+/// forms one line).
+const LEGATO_FROM: f32 = 0.75;
+
+/// Share of held notes that tie into the next at `length`.
+fn legato_share(length: f32) -> f32 {
+    ((length - LEGATO_FROM) / (1.0 - LEGATO_FROM)).clamp(0.0, 1.0)
+}
 
 /// How the bass treats steps with a kick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,11 +258,20 @@ pub struct BassRules {
     pub root: f32,
     /// Play motif clips when the generator has them.
     pub motifs: bool,
+    /// Each seed's rhythmic character ([`Persona`]): syncopation, slides,
+    /// half-speed beats and ratchets.
+    pub persona: bool,
+    /// Pitch as a walk from the previous note, its steps sized by `spread`
+    /// ([`walk_step`]); off: each note drawn from the root-heavy pool.
+    pub walk: bool,
+    /// Rhythm from the built-in groove vocabulary ([`GROOVES`]) and repeats
+    /// only as fills; off: the step-importance rhythm everywhere.
+    pub scheme: bool,
 }
 
 impl Default for BassRules {
     fn default() -> Self {
-        Self { phrase: true, tiers: 1.0, gaps: 1.0, root: 1.0, motifs: true }
+        Self { phrase: true, tiers: 1.0, gaps: 1.0, root: 1.0, motifs: true, persona: true, walk: true, scheme: true }
     }
 }
 
@@ -226,6 +284,9 @@ impl BassRules {
             gaps: a6,
             root: a6,
             motifs: option(params, "motifs", 1.0) >= 0.5,
+            persona: option(params, "persona", 1.0) >= 0.5,
+            walk: option(params, "walk", 1.0) >= 0.5,
+            scheme: option(params, "scheme", 1.0) >= 0.5,
         }
     }
 }
@@ -337,6 +398,7 @@ impl BassGenerator {
             n += 1;
             prev = Some((p.tick, key));
         }
+        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -366,19 +428,53 @@ impl LaneGenerator for BassGenerator {
             return;
         }
         let complexity = param(ctx, P_COMPLEXITY);
+        let persona = if self.rules.persona { Persona::new(ctx) } else { Persona::PLAIN };
         let variation = param(ctx, P_VARIATION);
         let mode = KickMode::from_param(param(ctx, P_KICK_MODE));
         let rng = PhraseRng::new(ctx, variation, self.rules.phrase);
         let cell = (!self.cells.is_empty())
             .then(|| &self.cells[rng::below(rng.base.at(0, S_CELL), self.cells.len() as u32) as usize]);
+        // The built-in groove scheme (user, 2026-10-17): a seeded figure from
+        // the bass vocabulary, picked by syncopation (complexity).
+        let groove = (self.rules.scheme && cell.is_none())
+            .then(|| pick_groove(rng.base.at(0, S_GROOVE), (complexity + persona.sync).clamp(0.0, 1.0)));
         let is_kick = |s: usize| ctx.drum_mask[s] >= MASK_KICK_MIN;
         // Each step reads its own density (per-note variation).
-        let step_density = |d: f32| lerp(RHYTHM_DENSITY.0, RHYTHM_DENSITY.1, d * d * d);
+        let step_density = |d: f32| lerp(RHYTHM_DENSITY.0, RHYTHM_DENSITY.1, d.powf(RHYTHM_CURVE));
         let thin = THIN_PENALTY * (1.0 - density / THIN_DENSITY_MAX).max(0.0);
 
         // Rhythm.
         let mut onsets = 0u16;
+        if let Some(gv) = groove {
+            // Density reveals the figure's levels: the core first, then the
+            // answers, the anticipations last.
+            // Stabs leave holes, so a stabby, dense line also fills the
+            // figure's empty 8ths (user, 2026-10-17).
+            // The fill comes from the figure itself: its own hits again a beat or
+            // half a bar later (by the seed), on the 8th grid, then any empty 8th.
+            let stab_fill = (2.0 * param(ctx, P_STABS) - 1.0).max(0.0);
+            let shift = if rng::chance(rng.base.at(0, S_GROOVE + 1), 0.5) { 4 } else { 8 };
+            for s in 0..STEPS_PER_BAR {
+                let echo = if s % 2 == 0 { (gv.levels[(s + STEPS_PER_BAR - shift) % STEPS_PER_BAR] as f32 * GROOVE_ECHO) as u8 } else { 0 };
+                let own = gv.levels[s];
+                let level = if own == 0 && s % 2 == 0 { echo.max(GROOVE_FILL_LEVEL) } else { own };
+                if level == 0 {
+                    continue;
+                }
+                let d = note_param(ctx, P_DENSITY, s as u8);
+                let threshold =
+                    (lerp(GROOVE_REVEAL.0, GROOVE_REVEAL.1, d) - (GROOVE_FILL_REACH + GROOVE_STAB_REACH * stab_fill) * d) as i32;
+                // The core plays with the kick; the rest leaves it room.
+                let kick_clash = is_kick(s) && mode == KickMode::Avoid && level < 255;
+                if level as i32 >= threshold && !kick_clash {
+                    onsets |= 1 << s;
+                }
+            }
+        }
         for s in 0..STEPS_PER_BAR {
+            if groove.is_some() {
+                break;
+            }
             let kick = is_kick(s);
             if kick && mode == KickMode::Avoid {
                 continue;
@@ -393,7 +489,8 @@ impl LaneGenerator for BassGenerator {
                     } else {
                         -ONSET_PENALTY
                     };
-                    lerp(BASS_SIMPLE[s], BASS_SYNC[s], note_param(ctx, P_COMPLEXITY, s as u8)) + self.rules.gaps * gap
+                    let cx = (note_param(ctx, P_COMPLEXITY, s as u8) + persona.sync).clamp(0.0, 1.0);
+                    lerp(BASS_SIMPLE[s], BASS_SYNC[s], cx) + self.rules.gaps * gap
                         - if s % 2 == 1 { thin } else { 0.0 }
                 }
             };
@@ -404,6 +501,18 @@ impl LaneGenerator for BassGenerator {
                 && reveals(importance, step_density(note_param(ctx, P_DENSITY, s as u8)), complexity * BASS_CHAOS_MAX, rng.unit(s as u8, S_RHYTHM))
             {
                 onsets |= 1 << s;
+            }
+        }
+
+        // Half speed: some beats keep only their first note, held.
+        for beat in 0..STEPS_PER_BAR / 4 {
+            if groove.is_some() {
+                break;
+            }
+            let mask = 0xFu16 << (beat * 4);
+            let first = (onsets & mask).trailing_zeros();
+            if (onsets & mask).count_ones() > 1 && rng.chance((beat * 4) as u8, S_HALF, persona.half) {
+                onsets = (onsets & !mask) | 1 << first;
             }
         }
 
@@ -447,10 +556,14 @@ impl LaneGenerator for BassGenerator {
         let root_key = ctx.harmony.resolve(0, octave) as i32;
         let floor = (root_key - BELOW_ROOT_SEMITONES).max(ctx.harmony.resolve_in_key(0, octave) as i32 - BELOW_KEY_FLOOR);
 
-        let mut events = [LiveEvent::default(); STEPS_PER_BAR];
+        // Room for repeats (the array holds two per step on average).
+        let mut events = [LiveEvent::default(); 2 * STEPS_PER_BAR];
         let mut n = 0usize;
         // Step and degree of the previous note.
         let mut prev: Option<(usize, i32)> = None;
+        // The walk's degree (before odd blocks and turnarounds).
+        let mut walked = 0i32;
+        let mut last_move = 0i32;
         for s in 0..STEPS_PER_BAR {
             if onsets & (1 << s) == 0 {
                 continue;
@@ -458,10 +571,24 @@ impl LaneGenerator for BassGenerator {
             let su = s as u8;
             let first = prev.is_none() && self.rules.root >= 0.5;
             let note_spread = note_param(ctx, P_SPREAD, su);
-            let mut degree = if first { 0 } else { self.pick_degree(rng.at(su, S_PITCH), note_spread) };
+            let mut degree = if first {
+                0
+            } else if self.rules.walk {
+                walk_step(walked, last_move, rng.at(su, S_PITCH), note_spread, persona.tonal)
+            } else {
+                self.pick_degree(rng.at(su, S_PITCH), note_spread)
+            };
+            last_move = if first { 0 } else { degree - walked };
+            walked = degree;
             if turnaround == Some(s) {
                 // Differ from what the repeating bars play on this step.
-                let repeated = if first { 0 } else { self.pick_degree(rng.base.at(su, S_PITCH), spread) };
+                let repeated = if first {
+                    0
+                } else if self.rules.walk {
+                    degree
+                } else {
+                    self.pick_degree(rng.base.at(su, S_PITCH), spread)
+                };
                 let i = rng::below(rng.bar.at(su, S_TURN), TURNAROUND_DEGREES.len() as u32) as usize;
                 degree = if TURNAROUND_DEGREES[i] == repeated {
                     TURNAROUND_DEGREES[(i + 1) % TURNAROUND_DEGREES.len()]
@@ -470,6 +597,19 @@ impl LaneGenerator for BassGenerator {
                 };
             }
             let mut key = ctx.harmony.resolve(degree, octave) as i32;
+            if self.rules.walk && turnaround != Some(s) {
+                // The walk steps back inside the register instead of
+                // folding an octave (a fold would be a jump).
+                while key < floor && degree < WALK_RANGE.1 {
+                    degree += 1;
+                    key = ctx.harmony.resolve(degree, octave) as i32;
+                }
+                while key > ceiling && degree > WALK_RANGE.0 {
+                    degree -= 1;
+                    key = ctx.harmony.resolve(degree, octave) as i32;
+                }
+                walked = degree;
+            }
             while key > ceiling {
                 key -= 12;
             }
@@ -490,8 +630,11 @@ impl LaneGenerator for BassGenerator {
             note_index += 1;
 
             let next = (s + 1..STEPS_PER_BAR).find(|&t| onsets & (1 << t) != 0).unwrap_or(STEPS_PER_BAR);
-            // A seeded mix of short stabs and held notes; density sets the balance.
-            let short = rng.chance(su, S_LENGTH, lerp(SHORT_SHARE.0, SHORT_SHARE.1, note_param(ctx, P_DENSITY, su)));
+            // A seeded mix of short stabs and held notes: density sets the
+            // balance, `stabs` moves it (0.5 = as the density says).
+            let stab_share = lerp(SHORT_SHARE.0, SHORT_SHARE.1, note_param(ctx, P_DENSITY, su))
+                + STABS_SHIFT * (note_param(ctx, P_STABS, su) - 0.5);
+            let short = rng.chance(su, S_LENGTH, stab_share.clamp(STABS_RANGE.0, STABS_RANGE.1));
             let gate_ticks = if short {
                 let span = ((next - s).min(SHORT_LENGTH.2 as usize) as u16 * TICKS_PER_STEP) as f32;
                 (span * lerp(SHORT_LENGTH.0, SHORT_LENGTH.1, density)).max(GATE_MIN_TICKS).round() as u16
@@ -505,16 +648,19 @@ impl LaneGenerator for BassGenerator {
             let vel = velocity(tier, rng.unit(su, S_VEL), self.rules.tiers);
             let mut ev = note(step_tick(s), key.clamp(0, 127) as u8, vel, gate_ticks, s as u16 + 1);
             ev.attack = density_attack_in(density, BASS_ATTACK_BY_DENSITY);
-            ev.start = stream_start(ctx, su, 0);
+            ev.start = stream_region(ctx, su);
             ev.cutoff = self.cutoff(ctx, su, key - root_key, accented);
             if accented {
                 ev.flags |= flags::ACCENT;
+            }
+            if short {
+                ev.flags |= flags::STAB;
             }
             if let Some((prev_step, prev_degree)) = prev {
                 if s - prev_step <= SLIDE_MAX_GAP_STEPS
                     && degree != prev_degree
                     && key != events[n - 1].key as i32
-                    && rng.chance(su, S_SLIDE, note_param(ctx, P_SLIDE, su) * SLIDE_PROB_MAX)
+                    && rng.chance(su, S_SLIDE, note_param(ctx, P_SLIDE, su) * SLIDE_PROB_MAX * persona.slide)
                 {
                     ev.flags |= flags::TIE;
                     ev.glide = SLIDE_GLIDE;
@@ -526,6 +672,24 @@ impl LaneGenerator for BassGenerator {
             n += 1;
             prev = Some((s, degree));
         }
+        // Ratchets belong to the stabby side: none at the sustained end. With
+        // the groove scheme they are fills: the phrase's last beat and fill
+        // bars only.
+        let ratchet = persona.ratchet * (2.0 * param(ctx, P_STABS)).min(1.0);
+        let fill_bar = ctx.fill || ctx.drum_fill;
+        let ratchet_at = |step: u8| {
+            !self.rules.scheme || fill_bar || (ctx.bar_in_phrase == VARIATION_BAR && step >= RATCHET_FROM_STEP)
+        };
+        let figure_weights: [f32; 4] = std::array::from_fn(|k| {
+            FIGURE_WEIGHTS[k] * lerp(FIGURE_SEED_SCALE.0, FIGURE_SEED_SCALE.1, rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, k as u8, S_FIGURE)))
+        });
+        n = ratchets(
+            &mut events,
+            n,
+            |step, key| ratchet_at(step) && rng.chance(step, S_RATCHET, RATCHET_FILL_BOOST * ratchet * repeat_height(key as i32 - root_key)),
+            |step| rng::weighted_pick(rng.at(step, S_FIGURE), &figure_weights).unwrap_or(0),
+        );
+        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -548,6 +712,287 @@ impl LaneGenerator for BassGenerator {
     }
 }
 
+// MUSICAL: pitch walk (user, 2026-10-17: at the lowest spread the line moves
+// at most a scale step; the top allows big jumps, most still small).
+/// Largest step in scale degrees at spread 0 and 1.
+const WALK_MAX: (f32, f32) = (1.0, 9.0);
+/// Step size falloff (degrees per 1/e) at spread 0 and 1.
+const WALK_TAU: (f32, f32) = (0.6, 2.4);
+/// Weight of staying on the same note against a one-step move.
+const WALK_STAY: f32 = 0.8;
+/// The walk stays within these chord-relative degrees (a 6th under the
+/// root.. the octave; the register floor may push it up further), turning
+/// back at the edges.
+const WALK_RANGE: (i32, i32) = (-2, 7);
+/// Pull towards the root per degree above it, at spread 0 and 1 (user,
+/// 2026-10-17: too many high notes).
+const WALK_GRAVITY: (f32, f32) = (0.45, 0.22);
+
+/// Tonal stability of the chord-relative degrees 0..6: the Krumhansl-Kessler
+/// minor key profile at the natural-minor degrees, over the tonic's rating
+/// (root, 3rd and 5th most stable).
+const STABILITY: [f32; 7] = [1.0, 0.556, 0.85, 0.558, 0.75, 0.629, 0.528];
+/// Preference of a move by its size in degrees: steps, then the consonant
+/// leaps (4th, 5th, octave) well above 6ths, 7ths and 9ths.
+const LEAP_PREF: [f32; 10] = [1.0, 1.0, 0.9, 1.0, 1.1, 0.35, 0.2, 0.9, 0.2, 0.3];
+/// A leap is a move of at least this many degrees; after one, the next move
+/// turns back by step (gap fill): moves on in the same direction and further
+/// leaps are this much less likely.
+const LEAP_MIN: i32 = 3;
+const GAP_FILL_SAME_WAY: f32 = 0.25;
+const GAP_FILL_LEAP: f32 = 0.3;
+
+/// The next degree of the walk from `from` (`last` the previous move): up to
+/// `max` degrees, small moves far more likely, leaps to consonant intervals
+/// and stable tones (`tonal`: how much stability counts, per seed), a leap
+/// followed by a step back, within the range.
+fn walk_step(from: i32, last: i32, h: u64, spread: f32, tonal: f32) -> i32 {
+    let spread = spread.clamp(0.0, 1.0);
+    let max = lerp(WALK_MAX.0, WALK_MAX.1, spread * spread).round() as i32;
+    let tau = lerp(WALK_TAU.0, WALK_TAU.1, spread);
+    let after_leap = last.abs() >= LEAP_MIN;
+    let gravity = lerp(WALK_GRAVITY.0, WALK_GRAVITY.1, spread);
+    let mut weights = [0.0f32; 19];
+    for (k, w) in weights.iter_mut().enumerate() {
+        let d = k as i32 - 9;
+        let to = from + d;
+        if d.abs() > max || to < WALK_RANGE.0 || to > WALK_RANGE.1 {
+            continue;
+        }
+        let size = d.unsigned_abs() as usize;
+        let mut x = (-(size as f32) / tau).exp() * LEAP_PREF[size.min(9)] * if d == 0 { WALK_STAY } else { 1.0 };
+        x *= STABILITY[to.rem_euclid(SCALE_LEN) as usize].powf(tonal);
+        // Pull back towards the root: lines circle home, high notes are rare.
+        x *= (-(to.max(0) as f32) * gravity).exp();
+        if after_leap && d != 0 {
+            if d.signum() == last.signum() {
+                x *= GAP_FILL_SAME_WAY;
+            }
+            if d.abs() >= LEAP_MIN {
+                x *= GAP_FILL_LEAP;
+            }
+        }
+        *w = x;
+    }
+    match rng::weighted_pick(h, &weights) {
+        Some(k) => from + k as i32 - 9,
+        None => from,
+    }
+}
+
+/// A seed's rhythmic character (per letter seed, the same in every bar).
+struct Persona {
+    /// Added to `complexity`: more or less syncopation.
+    sync: f32,
+    /// Slide probability multiplier.
+    slide: f32,
+    /// Chance per beat of half speed, per note of a ratchet.
+    half: f32,
+    ratchet: f32,
+    /// How much tonal stability steers the walk (exponent on [`STABILITY`]).
+    tonal: f32,
+}
+
+impl Persona {
+    /// No character: the rhythm and slides as the parameters say.
+    const PLAIN: Self = Self { sync: 0.0, slide: 1.0, half: 0.0, ratchet: 0.0, tonal: 1.0 };
+
+    fn new(ctx: &BarCtx) -> Self {
+        let u = |k: u8| rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, k, S_PERSONA));
+        // Squared: most seeds stay plain, a few go far.
+        Self {
+            sync: lerp(PERSONA_SYNC.0, PERSONA_SYNC.1, u(0)),
+            slide: lerp(PERSONA_SLIDE.0, PERSONA_SLIDE.1, u(1)),
+            half: PERSONA_HALF_MAX * u(2) * u(2),
+            ratchet: PERSONA_RATCHET_MAX * u(3) * u(3),
+            tonal: lerp(PERSONA_TONAL.0, PERSONA_TONAL.1, u(4)),
+        }
+    }
+}
+
+// MUSICAL (user, 2026-10-17): repeats are mostly an 8th later, some a
+// 16th, some syncopated (a dotted 8th), some a triplet; each seed weighs
+// them its own way. High notes repeat much less.
+/// Repeat offsets in ticks after the note, per figure: 8th, 16th, dotted
+/// 8th, 8th triplet (two repeats).
+const FIGURES: [&[u16]; 4] = [&[2 * TICKS_PER_STEP], &[TICKS_PER_STEP], &[3 * TICKS_PER_STEP], &[32, 64]];
+/// Base weights of the figures, each scaled per seed by 0.4 .. 1.8.
+const FIGURE_WEIGHTS: [f32; 4] = [0.5, 0.2, 0.15, 0.15];
+const FIGURE_SEED_SCALE: (f32, f32) = (0.4, 1.8);
+/// Repeats keep their chance up to this many semitones over the root, then
+/// fade (halving about every this many more).
+const REPEAT_HIGH_FROM: i32 = 5;
+const REPEAT_HIGH_HALVING: f32 = 3.5;
+
+// MUSICAL (user, 2026-10-17: rhythm and fast notes must follow a musical
+// scheme, not chance). Bass figures on an 8th grid with a few 16th
+// anticipations; levels: 255 the core (with the kick), ~200 the answer,
+// ~150 the second answer, ~100 anticipations and pickups. `sync`: how
+// syncopated the figure is (complexity picks near it).
+/// One bass figure.
+#[derive(Clone, Copy)]
+struct Groove {
+    levels: [u8; 16],
+    sync: f32,
+}
+
+const fn groove(hits: &[(usize, u8)], sync: f32) -> Groove {
+    let mut levels = [0u8; 16];
+    let mut i = 0;
+    while i < hits.len() {
+        levels[hits[i].0] = hits[i].1;
+        i += 1;
+    }
+    Groove { levels, sync }
+}
+
+const GROOVES: [Groove; 10] = [
+    // Long root, answer on the "and" of 3.
+    groove(&[(0, 255), (10, 200), (14, 110)], 0.1),
+    // Half bar: 1 and 3, a pickup into the next bar.
+    groove(&[(0, 255), (8, 210), (14, 120), (12, 90)], 0.0),
+    // Dotted quarters.
+    groove(&[(0, 255), (6, 215), (12, 190), (3, 90)], 0.4),
+    // Two-step answer: the "a" of 2, then 3's "and".
+    groove(&[(0, 255), (7, 200), (10, 170), (13, 100)], 0.6),
+    // Rolling 8ths.
+    groove(&[(0, 255), (6, 200), (10, 220), (14, 160), (4, 130), (12, 110)], 0.35),
+    // Offbeat 8ths.
+    groove(&[(2, 255), (6, 190), (10, 230), (14, 170), (0, 120)], 0.7),
+    // Syncopated stab.
+    groove(&[(0, 255), (3, 210), (6, 150), (11, 200), (14, 105)], 0.8),
+    // Push into the backbeat.
+    groove(&[(0, 255), (11, 210), (3, 140), (14, 120)], 0.55),
+    // Call and answer across the bar.
+    groove(&[(0, 255), (5, 180), (8, 210), (13, 140), (15, 90)], 0.5),
+    // Off the one: anticipated downbeat.
+    groove(&[(0, 230), (6, 255), (10, 190), (15, 140), (3, 100)], 0.9),
+];
+/// Level a step needs at density 0 and 1 (0: the core only; 0.5: the core
+/// and its answer; 1: everything).
+const GROOVE_REVEAL: (f32, f32) = (230.0, 70.0);
+/// Level of the figure's empty 8ths, and how far a fully stabby line lowers
+/// the reveal at full density (stabs leave gaps, so dense stabs fill them).
+const GROOVE_FILL_LEVEL: u8 = 75;
+/// How far the density lowers the reveal at full density on its own, and on
+/// top for a fully stabby line (user, 2026-10-17: fuller).
+const GROOVE_FILL_REACH: f32 = 30.0;
+const GROOVE_STAB_REACH: f32 = 50.0;
+/// Level of the figure's own hits repeated a beat or half a bar later (the
+/// first fill a dense, stabby line takes).
+const GROOVE_ECHO: f32 = 0.7;
+/// Spread of the figure choice around the complexity.
+const GROOVE_PICK_WIDTH: f32 = 0.25;
+/// Fills: repeats from this step of the phrase's last bar, and their chance
+/// boost there.
+const RATCHET_FROM_STEP: u8 = 12;
+const RATCHET_FILL_BOOST: f32 = 2.5;
+
+/// A seeded figure, mostly ones whose syncopation is near `sync`.
+fn pick_groove(h: u64, sync: f32) -> Groove {
+    let mut weights = [0.0f32; GROOVES.len()];
+    for (w, g) in weights.iter_mut().zip(&GROOVES) {
+        *w = (-((g.sync - sync) / GROOVE_PICK_WIDTH).powi(2)).exp() + 0.02;
+    }
+    GROOVES[rng::weighted_pick(h, &weights).unwrap_or(0)]
+}
+
+// MUSICAL (user, 2026-10-17): on a mudpie every note of a letter seed
+// starts at the seed's one position, anywhere in the sample; the Morph knob
+// moves it within a region around that (the sampler). Per-note positions
+// sounded random.
+/// Start position of a note on a stream: the letter seed's position.
+fn stream_region(ctx: &BarCtx, _step: u8) -> u16 {
+    (rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, 0, S_REGION)) * u16::MAX as f32) as u16
+}
+
+/// Chance factor of repeating a note `above` semitones over the root.
+fn repeat_height(above: i32) -> f32 {
+    if above <= REPEAT_HIGH_FROM { 1.0 } else { 0.5f32.powf((above - REPEAT_HIGH_FROM) as f32 / REPEAT_HIGH_HALVING) }
+}
+
+/// Repeat some notes (ratchets): where `pick(step, key)` says so, a note
+/// plays again by the figure `figure(step)` ([`FIGURES`]) when the next note
+/// is later than the figure's last repeat. Notes in a slide stay whole.
+/// Returns the new count.
+fn ratchets(
+    events: &mut [LiveEvent; 2 * STEPS_PER_BAR],
+    n: usize,
+    pick: impl Fn(u8, u8) -> bool,
+    figure: impl Fn(u8) -> usize,
+) -> usize {
+    let mut out = [LiveEvent::default(); 2 * STEPS_PER_BAR];
+    let mut m = 0;
+    for i in 0..n {
+        let e = events[i];
+        let tied = e.flags & flags::TIE != 0 || events[..n].get(i + 1).is_some_and(|x| x.flags & flags::TIE != 0);
+        let step = (e.tick / TICKS_PER_STEP) as u8;
+        let next = events[..n].get(i + 1).map_or(TICKS_PER_BAR, |x| x.tick);
+        let offsets = FIGURES[figure(step).min(FIGURES.len() - 1)];
+        let last = *offsets.last().unwrap_or(&0);
+        let gap = offsets[0];
+        let room = next > e.tick + last + gap / 2 && e.tick + last < TICKS_PER_BAR;
+        if tied || !room || !pick(step, e.key) || m + 1 + offsets.len() > out.len() {
+            if m < out.len() {
+                out[m] = e;
+                m += 1;
+            }
+            continue;
+        }
+        let mut a = e;
+        a.gate = a.gate.min(gap.saturating_sub(2).max(1));
+        out[m] = a;
+        m += 1;
+        for (k, &off) in offsets.iter().enumerate() {
+            let mut b = e;
+            b.tick = e.tick + off;
+            b.gate = e.gate.min(gap);
+            b.note_id = e.note_id + (STEPS_PER_BAR * (k + 1)) as u16;
+            b.flags &= !flags::ACCENT;
+            out[m] = b;
+            m += 1;
+        }
+    }
+    *events = out;
+    m
+}
+
+/// `length` and `expression` (0.5 = unchanged). Length below 0.5 shortens
+/// notes towards stabs, above 0.5 holds them towards the next onset, from
+/// [`LEGATO_FROM`] a rising share of held notes ties into it and glides. Expression scales each note's
+/// filter offset (0 = none, 1 = double).
+fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, roll: impl Fn(u8) -> f32) {
+    if expression != 0.5 {
+        for ev in events.iter_mut() {
+            ev.cutoff = (ev.cutoff as f32 * expression * 2.0).round().clamp(-127.0, 127.0) as i8;
+        }
+    }
+    if length == 0.5 {
+        return;
+    }
+    for i in 0..events.len() {
+        let next = events.get(i + 1).map_or(TICKS_PER_BAR, |e| e.tick);
+        // A slid-from note already holds into the next one.
+        if events.get(i + 1).is_some_and(|e| e.flags & flags::TIE != 0) {
+            continue;
+        }
+        let has_next = i + 1 < events.len();
+        let ev = &mut events[i];
+        let gap = next.saturating_sub(ev.tick);
+        if length < 0.5 {
+            let stab = ev.gate.min(STAB_TICKS);
+            ev.gate = stab + ((ev.gate - stab) as f32 * length * 2.0) as u16;
+        } else if has_next && ev.flags & flags::STAB == 0 && roll((ev.tick / TICKS_PER_STEP) as u8) < legato_share(length) {
+            ev.gate = gap + TIE_OVERLAP_TICKS;
+            let next = &mut events[i + 1];
+            next.flags |= flags::TIE;
+            next.glide = SLIDE_GLIDE;
+        } else if gap > ev.gate {
+            ev.gate += ((gap - ev.gate) as f32 * (length - 0.5) * 2.0) as u16;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,8 +1005,9 @@ mod tests {
     const TWO_STEP: [u8; 16] = [120, 0, 0, 0, 80, 0, 0, 0, 0, 0, 118, 0, 80, 0, 0, 0];
     const EMPTY: [u8; 16] = [0; 16];
 
+    /// The plain generator (no seed character, pool pitches), for the rule tests.
     fn generator() -> BassGenerator {
-        BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new())
+        BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..BassRules::default() }, Vec::new())
     }
 
     fn params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
@@ -690,7 +1136,7 @@ mod tests {
             (0..100).flat_map(|seed| bar(&g, seed, 0, &p, &TWO_STEP)).filter(|e| e.key % 12 != 9).count()
         };
         assert!(off_root(0.0) * 2 < off_root(1.0), "{} vs {}", off_root(0.0), off_root(1.0));
-        let below = (0..100)
+        let below = (0..300)
             .flat_map(|seed| bar(&g, seed, 0, &params(|p| p[P_SPREAD] = 1.0), &TWO_STEP))
             .filter(|e| (e.key as i32) < 33)
             .count();
@@ -704,7 +1150,7 @@ mod tests {
 
     #[test]
     fn root_rule_off_spreads_pitches() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { root: 0.0, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { root: 0.0, walk: false, scheme: false, ..BassRules::default() }, Vec::new());
         let (mut root, mut total) = (0, 0);
         for seed in 0..200 {
             for e in bar(&g, seed, 0, &PARAM_DEFAULTS, &TWO_STEP) {
@@ -786,7 +1232,7 @@ mod tests {
                 .count()
         };
         let follow = generator();
-        let ignore = BassGenerator::new(PARAM_DEFAULTS, BassRules { gaps: 0.0, ..BassRules::default() }, Vec::new());
+        let ignore = BassGenerator::new(PARAM_DEFAULTS, BassRules { gaps: 0.0, scheme: false, ..BassRules::default() }, Vec::new());
         assert!(count_on_odd(&follow) < count_on_odd(&ignore));
     }
 
@@ -820,6 +1266,204 @@ mod tests {
                     p[P_VARIATION] = 0.0;
                 });
                 assert_eq!(bar(&g, seed, 0, &still, &TWO_STEP), bar(&g, seed, 3, &still, &TWO_STEP));
+            }
+        }
+    }
+
+    #[test]
+    fn spread_sizes_the_walk() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let intervals = |spread: f32| -> Vec<i32> {
+            let p = params(|p| {
+                p[P_SPREAD] = spread;
+                p[P_DENSITY] = 0.7;
+            });
+            // Bar 0: not the variation bar, so no turnaround.
+            (0..200)
+                .flat_map(|seed| {
+                    let ev = bar(&g, seed, 0, &p, &TWO_STEP);
+                    ev.windows(2).map(|w| (w[1].key as i32 - w[0].key as i32).abs()).collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let low = intervals(0.0);
+        assert!(low.iter().all(|&i| i <= 2), "at most a scale step: {:?}", low.iter().max());
+        let high = intervals(1.0);
+        assert!(high.iter().any(|&i| i >= 7), "big jumps exist");
+        let small = high.iter().filter(|&&i| i <= 3).count() as f32 / high.len() as f32;
+        assert!(small > 0.5, "most moves stay small: {small}");
+    }
+
+    #[test]
+    fn leaps_favour_consonant_intervals_and_turn_back() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let p = params(|p| {
+            p[P_SPREAD] = 1.0;
+            p[P_DENSITY] = 0.8;
+        });
+        let (mut consonant, mut dissonant, mut turned, mut leaps) = (0, 0, 0, 0);
+        for seed in 0..400 {
+            let keys: Vec<i32> = bar(&g, seed, 0, &p, &TWO_STEP).iter().map(|e| e.key as i32).collect();
+            for w in keys.windows(2) {
+                match (w[1] - w[0]).abs() {
+                    5 | 7 | 12 => consonant += 1,
+                    6 | 8..=11 | 13..=16 => dissonant += 1,
+                    _ => {}
+                }
+            }
+            for w in keys.windows(3) {
+                let (a, b) = (w[1] - w[0], w[2] - w[1]);
+                if a.abs() >= 5 && b != 0 {
+                    leaps += 1;
+                    turned += (a.signum() != b.signum()) as usize;
+                }
+            }
+        }
+        assert!(consonant > dissonant, "{consonant} vs {dissonant}");
+        assert!(turned * 10 > leaps * 6, "gap fill: {turned} of {leaps}");
+    }
+
+    #[test]
+    fn high_notes_repeat_less() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..BassRules::default() }, Vec::new());
+        let p = params(|p| {
+            p[P_SPREAD] = 1.0;
+            p[P_DENSITY] = 0.6;
+        });
+        // Repeat rate of notes low (within a 4th of the root A1 = 33) and high (an octave up).
+        let (mut low, mut low_rep, mut high, mut high_rep) = (0, 0, 0, 0);
+        for seed in 0..600 {
+            for e in bar(&g, seed, 0, &p, &TWO_STEP) {
+                let repeat = e.note_id > STEPS_PER_BAR as u16;
+                match e.key as i32 - 33 {
+                    0..=5 => {
+                        low += 1;
+                        low_rep += repeat as usize;
+                    }
+                    11..=20 => {
+                        high += 1;
+                        high_rep += repeat as usize;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (lr, hr) = (low_rep as f32 / low as f32, high_rep as f32 / high.max(1) as f32);
+        assert!(hr < lr * 0.5, "low {lr} high {hr}");
+    }
+
+    #[test]
+    fn grooves_follow_the_vocabulary_and_fill_only_at_phrase_ends() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let count = |density: f32| -> f32 {
+            let p = params(|p| p[P_DENSITY] = density);
+            (0..200).map(|seed| bar(&g, seed, 0, &p, &EMPTY).len()).sum::<usize>() as f32 / 200.0
+        };
+        let (low, mid, high) = (count(0.02), count(0.5), count(1.0));
+        assert!(low >= 0.9 && low <= 1.6 && (3.0..5.5).contains(&mid) && high > mid && high <= 10.0, "{low} {mid} {high}");
+        // Dense and stabby: the gaps fill sooner (at full density everything
+        // plays either way).
+        let stabby = |stabs: f32| -> f32 {
+            let p = params(|p| {
+                p[P_DENSITY] = 0.75;
+                p[P_STABS] = stabs;
+            });
+            (0..200).map(|seed| bar(&g, seed, 0, &p, &EMPTY).len()).sum::<usize>() as f32 / 200.0
+        };
+        assert!(stabby(1.0) > stabby(0.5) + 1.0, "{} vs {}", stabby(1.0), stabby(0.5));
+        // Every onset is a step of the figure vocabulary; most on the 8th grid.
+        let p = params(|p| p[P_DENSITY] = 0.7);
+        let ev: Vec<LiveEvent> = (0..200).flat_map(|seed| bar(&g, seed, 0, &p, &EMPTY)).collect();
+        let on_8ths = ev.iter().filter(|e| (e.tick / TICKS_PER_STEP) % 2 == 0).count();
+        assert!(on_8ths * 10 > ev.len() * 7, "{on_8ths} of {}", ev.len());
+        // Repeats only as fills: none in bar 0, some at the phrase's end.
+        let stab = params(|p| {
+            p[P_STABS] = 1.0;
+            p[P_DENSITY] = 0.8;
+        });
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new());
+        let reps = |bar_in: u8| (0..300).flat_map(|seed| bar(&g, seed, bar_in, &stab, &EMPTY)).filter(|e| e.note_id > STEPS_PER_BAR as u16).count();
+        assert_eq!(reps(0), 0);
+        assert!(reps(VARIATION_BAR) > 0);
+    }
+
+    #[test]
+    fn stabs_set_the_share_of_stab_notes() {
+        let g = generator();
+        let share = |stabs: f32| {
+            let p = params(|p| p[P_STABS] = stabs);
+            let ev: Vec<LiveEvent> = (0..100).flat_map(|seed| bar(&g, seed, 0, &p, &TWO_STEP)).collect();
+            ev.iter().filter(|e| e.flags & flags::STAB != 0).count() as f32 / ev.len() as f32
+        };
+        let (lo, mid, hi) = (share(0.0), share(0.5), share(1.0));
+        assert!(lo < 0.15 && hi > 0.85 && lo < mid && mid < hi, "{lo} {mid} {hi}");
+    }
+
+    #[test]
+    fn seeds_carry_their_own_rhythmic_character() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..BassRules::default() }, Vec::new());
+        let p = params(|p| p[P_DENSITY] = 0.7);
+        let (mut ratchets, mut half_beats, mut slides) = (0, 0, Vec::new());
+        let mut figures_seen = false;
+        for seed in 0..300 {
+            let ev = bar(&g, seed, 0, &p, &EMPTY);
+            ratchets += ev.iter().filter(|e| e.note_id > STEPS_PER_BAR as u16).count();
+            figures_seen |= ev.iter().filter(|e| e.tick % TICKS_PER_STEP != 0).count() > 0;
+            for beat in 0..4u16 {
+                let n = ev.iter().filter(|e| e.tick / (4 * TICKS_PER_STEP) == beat).count();
+                half_beats += (n == 1) as usize;
+            }
+            slides.push(ev.iter().filter(|e| e.flags & flags::TIE != 0).count());
+            // Ratchets keep the bar well formed.
+            for w in ev.windows(2) {
+                assert!(w[0].tick < w[1].tick && w[0].tick + w[0].gate <= w[1].tick + 2 || w[1].flags & flags::TIE != 0);
+            }
+        }
+        assert!(ratchets > 20, "{ratchets}");
+        assert!(figures_seen, "triplet repeats on some seeds");
+        assert!(half_beats > 50, "{half_beats}");
+        // Some seeds slide a lot, many barely.
+        assert!(slides.iter().max().unwrap() >= &3 && slides.iter().filter(|&&s| s == 0).count() > 50);
+    }
+
+    #[test]
+    fn length_and_expression_shape_the_notes() {
+        let g = generator();
+        let mean_gate = |length: f32| -> f32 {
+            let p = params(|p| p[P_LENGTH] = length);
+            let ev: Vec<LiveEvent> = (0..50).flat_map(|seed| bar(&g, seed, 0, &p, &TWO_STEP)).collect();
+            ev.iter().map(|e| e.gate as f32).sum::<f32>() / ev.len() as f32
+        };
+        assert!(mean_gate(0.0) < mean_gate(0.5) && mean_gate(0.5) < mean_gate(0.8), "{} {} {}", mean_gate(0.0), mean_gate(0.5), mean_gate(0.8));
+        // Legato: every held note holds into the next one, which glides
+        // (stabs stay stabs).
+        let legato = params(|p| p[P_LENGTH] = 1.0);
+        for seed in 0..50 {
+            let ev = bar(&g, seed, 0, &legato, &TWO_STEP);
+            for w in ev.windows(2).filter(|w| w[0].flags & flags::STAB == 0) {
+                assert!(w[0].tick + w[0].gate > w[1].tick && w[1].flags & flags::TIE != 0 && w[1].glide > 0);
+            }
+        }
+        // Part way up, part of the held notes tie.
+        let some = params(|p| p[P_LENGTH] = 0.875);
+        let (mut tied, mut held) = (0, 0);
+        for seed in 0..100 {
+            let ev = bar(&g, seed, 0, &some, &TWO_STEP);
+            for w in ev.windows(2).filter(|w| w[0].flags & flags::STAB == 0) {
+                held += 1;
+                tied += (w[1].flags & flags::TIE != 0) as usize;
+            }
+        }
+        let share = tied as f32 / held as f32;
+        assert!((0.35..0.75).contains(&share), "{share}");
+        // Expression scales the filter offsets; 0.5 changes nothing.
+        let flat = params(|p| p[P_EXPRESSION] = 0.0);
+        let double = params(|p| p[P_EXPRESSION] = 1.0);
+        for seed in 0..20 {
+            let base = bar(&g, seed, 0, &PARAM_DEFAULTS, &TWO_STEP);
+            assert!(bar(&g, seed, 0, &flat, &TWO_STEP).iter().all(|e| e.cutoff == 0));
+            for (a, b) in base.iter().zip(bar(&g, seed, 0, &double, &TWO_STEP)) {
+                assert_eq!((a.cutoff as i32 * 2).clamp(-127, 127), b.cutoff as i32);
             }
         }
     }
@@ -905,7 +1549,7 @@ mod tests {
         for (s, l) in [(0, 255), (3, 200), (6, 150), (11, 90)] {
             levels[s] = l;
         }
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), vec![LevelMap::bar(levels)]);
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..BassRules::default() }, vec![LevelMap::bar(levels)]);
         let free = |d: f32| {
             params(|p| {
                 p[P_DENSITY] = d;
@@ -914,10 +1558,13 @@ mod tests {
                 p[P_VARIATION] = 0.0;
             })
         };
-        // The rhythm density has a floor (RHYTHM_DENSITY), so even a sparse bass grooves.
-        assert_eq!(steps(&bar(&g, 1, 0, &free(0.5), &EMPTY)), [0, 3, 6, 11]);
+        // Density reveals the cell's steps by level; the floor
+        // (RHYTHM_DENSITY) keeps a sparse bass grooving.
         assert_eq!(steps(&bar(&g, 1, 0, &free(0.9), &EMPTY)), [0, 3, 6, 11]);
-        assert_eq!(steps(&bar(&g, 1, 0, &free(0.05), &EMPTY)), [0, 3, 6]);
+        let mid = steps(&bar(&g, 1, 0, &free(0.5), &EMPTY));
+        assert!(mid.len() >= 2 && mid[..2] == [0, 3], "{mid:?}");
+        let low = steps(&bar(&g, 1, 0, &free(0.05), &EMPTY));
+        assert!(!low.is_empty() && low.len() <= mid.len() && low[0] == 0, "{low:?}");
         // Never outside the cell, even at full density and complexity.
         let wild = params(|p| {
             p[P_DENSITY] = 1.0;
@@ -987,7 +1634,7 @@ mod tests {
     #[test]
     fn motifs_can_be_switched_off_by_the_rules() {
         let motifs = crate::live::generator::test_util::starter_motifs();
-        let off = BassGenerator::new(PARAM_DEFAULTS, BassRules { motifs: false, ..BassRules::default() }, Vec::new()).with_motifs(motifs);
+        let off = BassGenerator::new(PARAM_DEFAULTS, BassRules { motifs: false, persona: false, walk: false, scheme: false, ..BassRules::default() }, Vec::new()).with_motifs(motifs);
         assert!(off.motif_phrase(1, 1).is_none());
         assert_eq!(bar(&off, 1, 0, &PARAM_DEFAULTS, &TWO_STEP), bar(&generator(), 1, 0, &PARAM_DEFAULTS, &TWO_STEP));
     }
@@ -1001,9 +1648,10 @@ mod tests {
     }
 
     const GOLDEN: [&str; 3] = [
-        "2:33 3:33 4:33 6:33 7:36 8:33 11:33 12:33 14:40 15:33",
-        "2:33 3:33 4:33 6:33 7:33 8:43 11:40 12:33 13:33 14:40 15:36",
-        "2:33 3:43 4:36 6:33 7:31 8:33 11:33 14:33 15:33",
+        // 2026-10-17: the lower density floor (about 4 notes a bar in the middle).
+        "6:33 8:33 14:33",
+        "6:33 8:43 14:40",
+        "6:33 8:33 11:33 14:33",
     ];
 
     #[test]

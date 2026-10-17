@@ -11,6 +11,9 @@
 //!   ([`mesh_widgets::scope`]): a 2 KB uniform write and one fullscreen
 //!   triangle per lane per frame. Code readouts are rich text; highlight
 //!   backgrounds and outlines are quads drawn by iced.
+//! - The default screen is the terminal screen ([`super::screen`]): a
+//!   waveline per lane with its own VFX, two passes per lane. `F2` switches
+//!   to the code readout screen above.
 //!
 //! # Recording and captures
 //!
@@ -47,6 +50,9 @@ use super::input::{self, InputThread, LiveCtl, SharedCtl};
 use super::keys::{self, KeyAction};
 use super::pads::{self, PadFn, PadLook, PADS};
 use super::readout::{self, mark, CodeLine, InstrumentKind, LaneFrame, LaneInfo};
+use super::screen::{self, Motion, ScreenFrame};
+use mesh_core::live::state::{BarNote, MAX_BAR_NOTES};
+use mesh_widgets::live_vfx::{RollNote, ROLL_COLUMNS, WAVE_COLUMNS};
 use super::startup::StyleProblem;
 
 /// UI refresh period (design §8: visuals at 30 Hz).
@@ -126,6 +132,8 @@ struct Frame {
     scopes: [Arc<[f32]>; NUM_LANES],
     scope_gain: [f32; NUM_LANES],
     surface: SurfaceView,
+    /// The terminal screen's data.
+    screen: ScreenFrame,
 }
 
 struct Recording {
@@ -155,6 +163,12 @@ struct Running {
     recording: Option<Recording>,
     tracks: [LaneTrack; NUM_LANES],
     scope_buf: Box<[f32; SCOPE_POINTS]>,
+    /// Envelope followers, swaps and the kick shake (terminal screen VFX).
+    motion: Motion,
+    wave_cols: Box<[[f32; 2]; WAVE_COLUMNS]>,
+    roll_cols: Box<[[u32; 2]; ROLL_COLUMNS]>,
+    notes: Box<[BarNote; MAX_BAR_NOTES]>,
+    roll_notes: Vec<RollNote>,
     frame: Frame,
     kb_lane: u8,
     intent: f32,
@@ -167,6 +181,8 @@ pub struct LiveApp {
     width: f32,
     screen: Screen,
     toast: Option<(String, Instant)>,
+    /// Show the code readout screen instead of the terminal screen.
+    classic: bool,
 }
 
 /// Lane colour from the theme's stem colours, by role.
@@ -233,6 +249,7 @@ fn empty_frame() -> Frame {
         scopes: std::array::from_fn(|_| Arc::clone(&empty)),
         scope_gain: [1.0; NUM_LANES],
         surface: SurfaceView::default(),
+        screen: ScreenFrame::default(),
     }
 }
 
@@ -280,6 +297,11 @@ impl LiveApp {
                     recording: None,
                     tracks: Default::default(),
                     scope_buf: Box::new([0.0; SCOPE_POINTS]),
+                    motion: Motion::default(),
+                    wave_cols: Box::new([[0.0; 2]; WAVE_COLUMNS]),
+                    roll_cols: Box::new([[0; 2]; ROLL_COLUMNS]),
+                    notes: Box::new([BarNote::default(); MAX_BAR_NOTES]),
+                    roll_notes: Vec::with_capacity(MAX_BAR_NOTES),
                     frame: empty_frame(),
                     kb_lane: 0,
                     intent: 0.0,
@@ -288,7 +310,7 @@ impl LiveApp {
             }
         };
         let iced_theme = theme.iced_theme();
-        let mut app = Self { theme, iced_theme, collection, width: 1920.0, screen, toast: None };
+        let mut app = Self { theme, iced_theme, collection, width: 1920.0, screen, toast: None, classic: false };
         if auto_record {
             app.toggle_recording();
         }
@@ -446,6 +468,10 @@ impl LiveApp {
                 drop(ctl);
                 self.toggle_recording();
             }
+            KeyAction::ToggleScreen => {
+                drop(ctl);
+                self.classic = !self.classic;
+            }
         }
     }
 
@@ -496,6 +522,9 @@ impl LiveApp {
     pub fn view(&self) -> Element<'_, Message> {
         let content = match &self.screen {
             Screen::Failed(problem) => self.view_problem(problem),
+            Screen::Running(run) if !self.classic => {
+                return screen::view(&run.frame.screen, self.toast.as_ref().map(|(t, _)| t.as_str()));
+            }
             Screen::Running(run) => self.view_running(run),
         };
         container(content)
@@ -765,6 +794,11 @@ impl Running {
         let clock = shared.clock();
         let key = shared.key();
         let pending = shared.pending_key();
+        let selected = if self.input.as_ref().is_some_and(|i| i.hid_devices() > 0) { surface.selected_lane } else { self.kb_lane };
+        let recording = self.recording.as_ref().map(|r| header::recording_text(r.started.elapsed()));
+        let mut lanes = Vec::with_capacity(NUM_LANES);
+        let (span, span_ticks) = screen::view_points(clock.bpm, self.sample_rate);
+        self.motion.kick(&shared.lane(0).view());
         let f = &mut self.frame;
         f.key = header::key_text(key, pending, mesh_core::live::harmony::mode_name(key, shared.mode()), shared.mode_pending());
         f.intent = header::intent_text(key, pending, shared.intent_key());
@@ -820,10 +854,54 @@ impl Running {
             });
             f.fill_flash[li] = view.moves & move_bits::FILL != 0 || recent(tr.fill_at, FIRE_PULSE);
 
+            let written = lane.scope().written();
             lane.scope().snapshot(&mut self.scope_buf);
             let peak = self.scope_buf.iter().fold(0.0f32, |p, v| p.max(v.abs()));
             f.scope_gain[li] = 1.0 / peak.max(SCOPE_GAIN_FLOOR);
             f.scopes[li] = Arc::from(&self.scope_buf[..]);
+
+            let motion = &mut self.motion.lanes[li];
+            motion.follower.update(&self.scope_buf[..], written);
+            motion.update(&view);
+            let count = lane.bar_notes(&mut self.notes);
+            let input = screen::LaneInput {
+                index: li,
+                info: &self.lanes[li],
+                view: &view,
+                points: &self.scope_buf[..],
+                notes: &self.notes[..count],
+                motion: *motion,
+                shake: self.motion.shake,
+                selected: li as u8 == selected,
+                now_tick: clock.tick,
+                span,
+                span_ticks,
+            };
+            lanes.push(screen::lane_screen(input, &mut self.wave_cols, &mut self.roll_cols, &mut self.roll_notes));
         }
+
+        let s = &mut f.screen;
+        s.key = f.key.clone();
+        s.intent = f.intent.clone();
+        s.bpm = f.bpm.clone();
+        s.half_time = f.half_time.clone();
+        s.chords = f.chords.clone();
+        s.phrase = f.phrase;
+        s.bar = clock.bar;
+        s.shift = surface.shift;
+        s.recording = recording;
+        s.lanes = lanes;
+        let mut status = Vec::new();
+        if let Some(e) = &self.audio_error {
+            status.push(format!("NO AUDIO OUTPUT: {e}"));
+        }
+        let starved = shared.starved_bars();
+        if starved > 0 {
+            status.push(format!("{starved} late bar(s)"));
+        }
+        if !self.warnings.is_empty() {
+            status.push(format!("{} style warning(s), see log", self.warnings.len()));
+        }
+        s.status = status.join(" . ");
     }
 }

@@ -710,6 +710,7 @@ impl Lane {
         if init.role == Role::Bass {
             sampler_params.release = BASS_RELEASE_SECS;
             sampler_params.designed_env = (sampler_params.decay, sampler_params.sustain);
+            sampler_params.designed_release = sampler_params.release;
             // Seeded per-note lowpass (the generator sets each note's cutoff):
             // centred in the range, its slope morphing with the cutoff, and
             // gliding from note to note.

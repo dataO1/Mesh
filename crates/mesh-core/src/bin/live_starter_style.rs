@@ -154,8 +154,9 @@ const SURGE_ID: &str = "org.surge-synth-team.surge-xt";
 // MUSICAL: first drafts, tune by ear. Multiband up/down compression per lane
 // (native `multiband`, crates/mesh-core/src/live/fx.rs). Bands: sub | high
 // bass | mids | high mids | highs | air.
-/// Bass: a smiley shape for full-range (neuro / reese) basses. Sub lightly
-/// held, high bass firmly, mids hard and pushed down, the top lifted.
+/// Bass: a smiley shape for full-range (neuro / reese) basses. Sub held,
+/// high bass firmly, mids hard and pushed down, the top lifted; up and down
+/// compression aggressive (user, 2026-10-17).
 const MB_BASS: &str = "      - id: multiband
         source: native
         settings:
@@ -164,47 +165,47 @@ const MB_BASS: &str = "      - id: multiband
           split_3: 2000
           split_4: 5000
           split_5: 10000
-          band_1_down_threshold: -20
-          band_1_down_ratio: 3
+          band_1_down_threshold: -22
+          band_1_down_ratio: 4
           band_1_gain: -1.5
           band_1_attack: 20
           band_1_release: 150
-          band_2_down_threshold: -24
-          band_2_down_ratio: 4
-          band_2_up_threshold: -42
-          band_2_up_ratio: 1.5
+          band_2_down_threshold: -27
+          band_2_down_ratio: 6
+          band_2_up_threshold: -44
+          band_2_up_ratio: 2.5
           band_2_attack: 8
           band_2_release: 100
           band_2_gain: -1
-          band_3_down_threshold: -34
-          band_3_down_ratio: 8
-          band_3_up_threshold: -44
-          band_3_up_ratio: 3
+          band_3_down_threshold: -36
+          band_3_down_ratio: 10
+          band_3_up_threshold: -46
+          band_3_up_ratio: 5
           band_3_attack: 4
           band_3_release: 80
           band_3_gain: 1.5
-          band_4_down_threshold: -30
-          band_4_down_ratio: 4
+          band_4_down_threshold: -33
+          band_4_down_ratio: 6
           band_4_up_threshold: -42
-          band_4_up_ratio: 4
+          band_4_up_ratio: 6
           band_4_attack: 2
           band_4_release: 60
           band_4_gain: 5
-          band_5_down_threshold: -30
-          band_5_down_ratio: 4
+          band_5_down_threshold: -33
+          band_5_down_ratio: 6
           band_5_up_threshold: -44
-          band_5_up_ratio: 4
+          band_5_up_ratio: 6
           band_5_attack: 1
           band_5_release: 50
           band_5_gain: 5
-          band_6_down_threshold: -30
-          band_6_down_ratio: 4
+          band_6_down_threshold: -33
+          band_6_down_ratio: 6
           band_6_up_threshold: -44
-          band_6_up_ratio: 4
+          band_6_up_ratio: 6
           band_6_attack: 1
           band_6_release: 50
           band_6_gain: 4
-          up_max: 10
+          up_max: 14
           up_gate: -65
 ";
 /// Lead: lighter, same shape.
@@ -1314,6 +1315,7 @@ name: starter-breaks
 version: 1
 tempo: {{ default: 172, min: 160, max: 178 }}
 default_key: Fm   # user: F (minor) is the most common key in DnB
+default_mode: phrygian   # user, 2026-10-17
 
 progressions:
   - name: i-VI-iv-v
@@ -1392,9 +1394,10 @@ lanes:
       - {{ id: eq, source: native, settings: {{ low_cut: 40, bell_1_freq: 100, bell_1_gain: 1.5, bell_1_q: 1.0 }} }}
       # Drum room (fx slot 2), before the lane and bus compressors: a short,
       # dark, small room, 15 ms pre-delay, the tail kept between 400 Hz and
-      # 6 kHz, ducked 15 dB under every kick and snare (back over 180 ms).
-      # Density sets mix and decay (controls below). MUSICAL: tune by ear.
-      - {{ id: room, source: native, settings: {{ decay: 0.4, pre_delay: 15, low_cut: 400, high_cut: 6000, damping: 0.6, size: 0.7, mix: 0.08, duck: 15, duck_release: 180 }} }}
+      # 6 kHz, ducked 6 dB under every kick and snare (back over 180 ms).
+      # The room knob sets size, mix and decay (controls below). MUSICAL:
+      # tune by ear.
+      - {{ id: room, source: native, settings: {{ decay: 0.8, pre_delay: 15, low_cut: 400, high_cut: 6000, damping: 0.6, size: 0.8, mix: 0.15, duck: 6, duck_release: 180 }} }}
       # Last, before the drum bus compressors: a soft-knee clipper (4x
       # oversampled) shaves only the highest peaks (user).
       - {{ id: clipper, source: native, settings: {{ threshold: 3, knee: 3 }} }}
@@ -1439,18 +1442,19 @@ lanes:
         - {{ id: eq, source: native, settings: {{ low_cut: 200 }} }}
     controls:
       - {{ label: style, target: {{ type: generator, param: style }}, default: 0.4 }}
-      # Density also sets the room: sparse = more mix (12 %) and a longer tail
-      # (0.7 s), dense = 7 % and 0.4 s. Room values are the effect's normalized
-      # parameters (mix 0..1, decay 0.1..4 s).
-      - label: dens
-        target: {{ type: generator, param: density }}
-        default: 0.5
-        also:
-          - {{ target: {{ type: fx, slot: 2, param: 6 }}, min: 0.12, max: 0.07 }}
-          - {{ target: {{ type: fx, slot: 2, param: 0 }}, min: 0.154, max: 0.077 }}
+      - {{ label: dens, target: {{ type: generator, param: density }}, default: 0.5 }}
       - {{ label: mutate, target: {{ type: generator, param: mutate }}, default: 0.0 }}
-      # Knob B: room size (0.5 .. 1.0).
-      - {{ label: room, target: {{ type: fx, slot: 2, param: 5 }}, min: 0.167, max: 0.583, default: 0.4 }}
+      # Knob B: the room (user, 2026-10-17: audible from min to max). Size
+      # 0.5 .. 1.4, mix 4 % .. 50 %, decay 0.3 .. 2 s. Room values are the
+      # effect's normalized parameters (size 0.3..1.5, mix 0..1, decay 0.1..4 s).
+      - label: room
+        target: {{ type: fx, slot: 2, param: 5 }}
+        min: 0.167
+        max: 0.917
+        default: 0.4
+        also:
+          - {{ target: {{ type: fx, slot: 2, param: 6 }}, min: 0.04, max: 0.5 }}
+          - {{ target: {{ type: fx, slot: 2, param: 0 }}, min: 0.051, max: 0.487 }}
     generator:
       family: procedural
       name: drums
@@ -1580,20 +1584,30 @@ const PACK_LANE: &str = r#"    # Sound packs: every folder in {dir} with an SF2 
         target: { type: instrument, param: 9 }
         default: 0.5
         also:
-          - { target: { type: generator, param: length }, min: 0.3, max: 0.9 }
-          - { target: { type: generator, param: expression }, min: 1.0, max: 0.15 }
+          - { target: { type: generator, param: length }, min: {length_min}, max: {length_max} }
+          - { target: { type: generator, param: expression }, min: 1.0, max: 0.15 }{stabs}
       # Knob B: morph, the pack's morph CC (a layer crossfade, a mudpie scrub).
-      - { label: morph, target: { type: instrument, param: 10 }, default: 0.0 }
+      {morph}
       {fader_b}
     generator:
-      family: procedural
-      name: phrase
-"#;
+{generator}"#;
+
+/// The pack lanes' generator: the packs' phrases.
+const PHRASE_GENERATOR: &str = "      family: procedural\n      name: phrase\n";
+/// The bass lane's generator (user, 2026-10-17): the pack is the sound, the
+/// line is generated from the seed (no motif clips); the shape control's
+/// length and expression act on it as on phrases. Register up an octave: the
+/// pack was tuned on lines around F2, and an octave lower measured 4-8 dB
+/// darker above 2 kHz.
+const BASS_GENERATOR: &str =
+    "      family: procedural\n      name: bass\n      params: { complexity: 0.4, density: 0.5, register: 1.0, motifs: 0 }\n";
 
 /// Lanes whose `packs/<role>` folder holds a sound pack with phrases play the
 /// packs: their options, rate, controls and generator give way to
 /// [`PACK_LANE`]. FX and sends stay. Without phrases a lane keeps its
-/// generated material (a pack without MIDI would play nothing).
+/// generated material (a pack without MIDI would play nothing). The bass lane
+/// takes any pack as its sound and keeps the generated line
+/// ([`BASS_GENERATOR`]) at normal speed (its density sets how busy it is).
 fn use_packs(paths: &Paths, yaml: String, report: &mut String) -> String {
     use mesh_core::live::pack;
     const REPLACED: [&str; 6] = ["options", "default_option", "base_rate", "controls", "generator", "motifs"];
@@ -1605,7 +1619,9 @@ fn use_packs(paths: &Paths, yaml: String, report: &mut String) -> String {
         if let Some(r) = line.strip_prefix("    role: ") {
             let r = r.trim().to_string();
             let dir = paths.out.join("packs").join(&r);
-            let packs: Vec<_> = pack::scan(&dir).into_iter().filter(|p| !pack::phrase_files(p).is_empty()).collect();
+            let bass = r == "bass";
+            let packs: Vec<_> =
+                pack::scan(&dir).into_iter().filter(|p| bass || !pack::phrase_files(p).is_empty()).collect();
             out.push_str(line);
             if packs.is_empty() {
                 role = None;
@@ -1614,12 +1630,33 @@ fn use_packs(paths: &Paths, yaml: String, report: &mut String) -> String {
                 let _ = writeln!(report, "Sound packs on the {r} lane: {}", names.join(", "));
                 // Fader B: spread (the arrangement varies it by section); the
                 // bass starts with some.
-                let fader_b = if r == "bass" {
+                let fader_b = if bass {
                     "# Fader B: spread, odd-block jumps, octave lifts and turnarounds.\n      - { label: spread, target: { type: generator, param: spread }, default: 0.15 }"
                 } else {
                     "# Fader B: spread, the same on a lead's written notes.\n      - { label: spread, target: { type: generator, param: spread }, default: 0.0 }"
                 };
-                out.push_str(&PACK_LANE.replace("{dir}", &format!("packs/{r}")).replace("{fader_b}", fader_b));
+                let generator = if bass { BASS_GENERATOR } else { PHRASE_GENERATOR };
+                // MUSICAL (user, 2026-10-17): the generated bass keeps longer
+                // stabs, and morph also brings syncopation (complexity 0.4,
+                // the generator's default, up to 0.9).
+                // The generated bass: shape sets the share of stab and held
+                // notes (user: the overall feel, not every note); at the top
+                // length ties most held notes into one line.
+                let (length_min, length_max, stabs, morph) = if bass {
+                    ("0.4", "0.95", "\n          - { target: { type: generator, param: stabs }, min: 1.0, max: 0.0 }", "- label: morph\n        target: { type: instrument, param: 10 }\n        default: 0.0\n        also:\n          - { target: { type: generator, param: complexity }, min: 0.4, max: 0.9 }")
+                } else {
+                    ("0.3", "0.9", "", "- { label: morph, target: { type: instrument, param: 10 }, default: 0.0 }")
+                };
+                out.push_str(
+                    &PACK_LANE
+                        .replace("{dir}", &format!("packs/{r}"))
+                        .replace("{fader_b}", fader_b)
+                        .replace("{length_min}", length_min)
+                        .replace("{length_max}", length_max)
+                        .replace("{stabs}", stabs)
+                        .replace("{morph}", morph)
+                        .replace("{generator}", generator),
+                );
                 role = Some(r);
             }
             skipping = false;
@@ -1768,10 +1805,10 @@ mod tests {
     #[test]
     fn pack_lanes_replace_generated_material() {
         let dir = tempfile::tempdir().unwrap();
+        // A bass pack needs no phrases: it is the generated line's sound.
         let pack = dir.path().join("packs/bass/reese");
-        std::fs::create_dir_all(pack.join("phrases")).unwrap();
+        std::fs::create_dir_all(&pack).unwrap();
         std::fs::write(pack.join("sound.sfz"), "<region> sample=a.wav").unwrap();
-        std::fs::write(pack.join("phrases/a.mid"), b"").unwrap();
         // A lead pack without phrases changes nothing.
         std::fs::create_dir_all(dir.path().join("packs/lead/quiet")).unwrap();
         std::fs::write(dir.path().join("packs/lead/quiet/sound.sfz"), "<region> sample=a.wav").unwrap();
@@ -1820,10 +1857,10 @@ glue:
         let mut report = String::new();
         let out = use_packs(&paths, yaml.to_string(), &mut report);
         let (bass, lead) = out.split_once("  - name: lead").unwrap();
-        for gone in ["options:", "base_rate", "default_option", "complexity", "# Controls.", "name: bass\n      params"] {
+        for gone in ["options:", "base_rate", "default_option", "label: cx", "# Controls.", "name: phrase", "params: { complexity: 0.4 }"] {
             assert!(!bass.contains(gone), "{gone} left in:\n{bass}");
         }
-        for kept in ["pack_dir: packs/bass", "name: phrase", "# The bass chain.\n    fx:\n      - { id: drive", "param: length", "param: spread"] {
+        for kept in ["param: complexity }, min: 0.4", "param: length }, min: 0.4, max: 0.95", "param: stabs }, min: 1.0, max: 0.0", "pack_dir: packs/bass", "name: bass\n      params: { complexity: 0.4, density: 0.5, register: 1.0, motifs: 0 }", "# The bass chain.\n    fx:\n      - { id: drive", "param: length", "param: spread"] {
             assert!(bass.contains(kept), "{kept} missing in:\n{bass}");
         }
         assert!(lead.contains("name: juno") && lead.contains("name: lead") && lead.contains("glue:\n  x: 1"), "{lead}");

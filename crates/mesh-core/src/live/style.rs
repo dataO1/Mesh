@@ -79,6 +79,10 @@ pub struct StyleSpec {
     /// Starting key as a name ("Am") or Camelot label ("8A").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_key: Option<String>,
+    /// Starting mode in the key's family (`dorian`, `phrygian`, `harmonic`,
+    /// `mixolydian`, `lydian`); none: the plain minor / major.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<String>,
     /// Chord progressions, selectable on the Shift layer (D30).
     pub progressions: Vec<ProgressionSpec>,
     /// Index into `progressions` used at load.
@@ -995,6 +999,8 @@ pub enum Problem {
     IdiomDataMissing,
     #[error("invalid key '{0}'")]
     InvalidKey(String),
+    #[error("mode '{0}' is not in the key's family")]
+    InvalidMode(String),
     #[error("invalid form: {0}")]
     InvalidForm(String),
     #[error("at most {max} shift controls, found {found}")]
@@ -1242,6 +1248,12 @@ impl Validator {
         if let Some(k) = &s.default_key {
             if serde_key::parse(k).is_none() {
                 self.push("default_key", Problem::InvalidKey(k.clone()));
+            }
+        }
+        if let Some(m) = &s.default_mode {
+            let minor = s.default_key.as_deref().and_then(serde_key::parse).is_none_or(|k| k.minor);
+            if crate::live::harmony::seed_for_mode(m, minor).is_none() {
+                self.push("default_mode", Problem::InvalidMode(m.clone()));
             }
         }
 

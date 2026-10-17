@@ -45,6 +45,18 @@ pub const MAJOR_MODES: [([u8; 7], f32, &str); 3] =
     [(MAJOR_SCALE, 0.5, "ionian"), ([0, 2, 4, 5, 7, 9, 10], 0.3, "mixolydian"), ([0, 2, 4, 6, 7, 9, 11], 0.2, "lydian")];
 const S_MODE: u32 = 0xE10;
 
+/// The smallest harmony seed that picks the mode named `name` (`"dorian"`,
+/// `"phrygian"`, ...) in the key's family; 0 for the plain minor / major.
+/// `None` for a name the family lacks.
+pub fn seed_for_mode(name: &str, minor: bool) -> Option<u32> {
+    let names: Vec<&str> = if minor { MINOR_MODES.iter().map(|m| m.2).collect() } else { MAJOR_MODES.iter().map(|m| m.2).collect() };
+    let index = names.iter().position(|n| n.eq_ignore_ascii_case(name))? as u8;
+    if index == 0 {
+        return Some(0);
+    }
+    (1..100_000).find(|&s| mode_for(s, minor) == index)
+}
+
 /// Mode a harmony seed picks in the key's family (index into
 /// [`MINOR_MODES`] or [`MAJOR_MODES`]). Seed 0 is the plain minor / major.
 pub fn mode_for(seed: u32, minor: bool) -> u8 {
@@ -226,13 +238,18 @@ pub struct HarmonyState {
 
 impl HarmonyState {
     pub fn new(key: MusicalKey, progression: usize) -> Self {
+        Self::with_mode_seed(key, progression, 0)
+    }
+
+    /// Start with harmony seed `mode_seed` (the style's default mode).
+    pub fn with_mode_seed(key: MusicalKey, progression: usize, mode_seed: u32) -> Self {
         Self {
             key,
             progression,
             progression_start_bar: 0,
             pending_key: None,
             pending_progression: None,
-            mode_seed: 0,
+            mode_seed,
             pending_mode_seed: None,
         }
     }
@@ -495,6 +512,12 @@ mod tests {
     fn harmony_seed_picks_the_mode_on_the_phrase() {
         let am = MusicalKey::new(9, true);
         assert_eq!(mode_for(0, true), 0, "a fresh session plays natural minor");
+        let phrygian = seed_for_mode("Phrygian", true).unwrap();
+        assert_eq!(mode_for(phrygian, true), 2);
+        assert_eq!(seed_for_mode("aeolian", true), Some(0));
+        assert_eq!(seed_for_mode("phrygian", false), None, "not a major-family mode");
+        let prog = [Progression::new(&[0], 1).unwrap()];
+        assert_eq!(HarmonyState::with_mode_seed(MusicalKey::new(5, true), 0, phrygian).ctx(0, &prog).mode, 2);
         let modes: std::collections::BTreeSet<u8> = (1..200).map(|s| mode_for(s, true)).collect();
         assert_eq!(modes.len(), MINOR_MODES.len(), "seeds reach every minor mode");
         assert!((1..200).all(|s| (mode_for(s, false) as usize) < MAJOR_MODES.len()));

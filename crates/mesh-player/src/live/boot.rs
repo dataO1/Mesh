@@ -168,6 +168,9 @@ pub fn run(
     .font(mesh_widgets::AppFont::JetBrainsMono.font_data())
     .font(mesh_widgets::AppFont::PressStart2P.font_data())
     .font(mesh_widgets::AppFont::Exo.font_data())
+    // The terminal screen's faces (live mode only, SIL OFL).
+    .font(include_bytes!("../../../../assets/fonts/ShareTechMono-Regular.ttf").as_slice())
+    .font(include_bytes!("../../../../assets/fonts/MajorMonoDisplay-Regular.ttf").as_slice())
     .default_font(config.display.font.to_iced_font())
     .run();
 

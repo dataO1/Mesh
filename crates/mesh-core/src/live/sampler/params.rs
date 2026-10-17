@@ -58,11 +58,16 @@ pub struct LaneSamplerParams {
     /// Decay and sustain as the sound was designed (the lane's, or a pack's
     /// shape): the Character macro scales from these.
     pub designed_env: (f32, f32),
+    /// Release as designed: the Character macro lengthens it.
+    pub designed_release: f32,
     /// Resonance as designed (the shape macro adds to it).
     pub designed_res: f32,
     /// The Morph knob, 0..1: the value of `modulation.morph_cc`. Negative =
     /// off.
     pub morph: f32,
+    /// Stab accent 0..1 (the Character macro's stabby half): a gain kick at
+    /// each note start and a deeper mod-envelope pitch move.
+    pub punch: f32,
 }
 
 /// Per-note modulation envelope (SF2 "Mod env", SFZ `fileg_*` / `pitcheg_*`):
@@ -323,6 +328,7 @@ impl SoundShape {
         }
         p.modulation = self.modulation;
         p.designed_env = (p.decay, p.sustain);
+        p.designed_release = p.release;
         p.designed_res = p.resonance;
     }
 }
@@ -355,8 +361,10 @@ impl Default for LaneSamplerParams {
             tone: -1.0,
             expression: 1.0,
             designed_env: (0.3, 1.0),
+            designed_release: 0.04,
             designed_res: 0.0,
             morph: -1.0,
+            punch: 0.0,
         }
     }
 }

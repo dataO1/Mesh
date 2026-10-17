@@ -32,6 +32,9 @@ pub mod flags {
     pub const ACCENT: u8 = 1 << 2;
     /// Loop the slot while the gate is held.
     pub const LOOP: u8 = 1 << 3;
+    /// A stab: no sustain (the note is its decay) and the lane's stab
+    /// accent (saturated attack, deeper pitch move).
+    pub const STAB: u8 = 1 << 4;
 }
 
 /// One musical event inside a bar. `Copy`, fixed size, no heap.
@@ -128,6 +131,18 @@ impl BarEvents {
 
     pub fn as_slice(&self) -> &[LiveEvent] {
         &self.events[..self.len as usize]
+    }
+
+    /// Keep the events `keep(index, event)` accepts, in order.
+    pub fn retain(&mut self, mut keep: impl FnMut(usize, &LiveEvent) -> bool) {
+        let mut n = 0;
+        for i in 0..self.len as usize {
+            if keep(i, &self.events[i]) {
+                self.events[n] = self.events[i];
+                n += 1;
+            }
+        }
+        self.len = n as _;
     }
 
     /// Edit events in place. Callers keep them sorted by tick.

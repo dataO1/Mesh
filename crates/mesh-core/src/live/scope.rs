@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use crate::types::StereoSample;
 
 /// Points kept per lane.
-pub const SCOPE_POINTS: usize = 512;
-/// Frames folded into one scope point. 512 points × 16 frames is about
-/// 170 ms at 48 kHz: one beat at 170 BPM is 353 ms, so the scope shows a
-/// single hit's shape.
-// MUSICAL: scope time window, tune on the device screen.
-pub const SCOPE_DECIMATION: usize = 16;
+pub const SCOPE_POINTS: usize = 8192;
+/// Frames folded into one scope point. 8192 points × 32 frames is about
+/// 5.5 s at 48 kHz: the screen's waveline shows a span around now plus the
+/// same span a bar earlier, down to about 60 BPM.
+// MUSICAL: scope time resolution, tune on the device screen.
+pub const SCOPE_DECIMATION: usize = 32;
 
 /// Lock-free ring of decimated mono samples.
 pub struct ScopeRing {

@@ -15,6 +15,11 @@ use crate::live::event::{flags, EventKind, LiveEvent};
 use crate::live::MAX_EVENTS_PER_BAR;
 use crate::types::{StereoBuffer, StereoSample};
 
+/// Width of the region around the generator's position the Morph knob moves
+/// a stream's notes over, as a share of the sample (knob centre = the
+/// position, the ends half the region either side, wrapping).
+const MORPH_REGION: f64 = 0.4;
+
 /// UI-facing lane meters. Written by the RT thread once per block, read from
 /// any thread through the `Arc` returned by [`Sampler::meters`].
 #[derive(Debug, Default)]
@@ -483,7 +488,8 @@ impl Sampler {
 
         // Tie (or a mono group): the held voices of the newest note glide to
         // the new pitch, each layer from its own zone root.
-        if ev.kind == EventKind::NoteOn && (ev.has(flags::TIE) || mono) {
+        // A stab always strikes (its envelope and accent), unless tied.
+        if ev.kind == EventKind::NoteOn && (ev.has(flags::TIE) || (mono && !ev.has(flags::STAB))) {
             let newest = self
                 .voices
                 .iter()
@@ -521,7 +527,14 @@ impl Sampler {
         let vel = (ev.vel.min(127) as f32 / 127.0).powf(p.velocity_curve);
         let accent = if ev.has(flags::ACCENT) { p.accent_gain } else { 1.0 };
         let held = (ev.gate > 0 || ev.kind == EventKind::NoteOn) && !slot.one_shot;
-        let (decay, sustain) = if ev.decay != 0 { (decay_secs(ev.decay), 0.0) } else { (p.decay, p.sustain) };
+        let stab = ev.has(flags::STAB);
+        let (decay, sustain) = if ev.decay != 0 {
+            (decay_secs(ev.decay), 0.0)
+        } else if stab {
+            (p.decay, 0.0)
+        } else {
+            (p.decay, p.sustain)
+        };
         self.age += 1;
         let init = VoiceInit {
             age: self.age,
@@ -542,7 +555,10 @@ impl Sampler {
                     + ZoneMod::sum(&slot.zone_mods, &cc, ZoneTarget::Offset)) as f64;
                 ((slot.start_offset as f64 + cc_frames) / slot.len().max(1) as f64).clamp(0.0, 0.999)
             } else {
-                ev.start as f64 / u16::MAX as f64
+                // A stream: the generator's seeded position across the whole
+                // sample, moved within a region around it by the Morph knob.
+                let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
+                (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999)
             },
             rate,
             gain: slot.gain * vel * accent,
@@ -566,6 +582,7 @@ impl Sampler {
             },
             decay,
             sustain,
+            punch: if stab { p.punch } else { 0.0 },
             loop_range: slot.loop_range,
             loop_sustain: slot.loop_sustain,
             zone_mods: slot.zone_mods,

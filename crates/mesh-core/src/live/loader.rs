@@ -193,6 +193,8 @@ pub struct LoadedStyle {
     pub max_block: usize,
     pub tempo: TempoSpec,
     pub key: MusicalKey,
+    /// Harmony seed of the style's default mode (0: plain minor / major).
+    pub mode_seed: u32,
     pub progressions: Vec<Progression>,
     pub default_progression: usize,
     /// Lane forms (never empty).
@@ -508,6 +510,11 @@ impl Ctx<'_> {
             slot.gain = db_to_lin(region.volume);
             if mono {
                 slot.choke = 1;
+            }
+            // A mudpie (user, 2026-10-17): the seed picks the position, the
+            // Morph knob shifts it.
+            if pack.spec.stream.unwrap_or(len as f64 / rate as f64 > crate::live::pack::STREAM_AUTO_SECS) {
+                slot = slot.streamed();
             }
             slots.push(slot);
         }
@@ -947,9 +954,8 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
             }
             let is_phrase = generator::registry::GeneratorKind::from_name(&lane.generator.name)
                 == Some(generator::registry::GeneratorKind::Phrase);
-            if lane_options.iter().any(|o| o.pack.is_some()) && !is_phrase {
-                ctx.warn(format!("lane '{}': sound packs play with `generator: phrase`", lane.name));
-            }
+            // With another generator, packs are sounds only: the lane's
+            // generator plays them and their phrases stay unused.
             let mut pack_gens: Vec<Option<Box<dyn LaneGenerator>>> = Vec::new();
             let wants_clap = lane_options.iter().any(|o| o.clap.is_some());
             let clap_allowed = wants_clap && clap_lanes < MAX_CLAP_LANES;
@@ -1032,7 +1038,7 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
                 options.iter().position(usable).unwrap_or(0)
             };
             // Each pack plays its own phrases (per-option generators, like drum kits).
-            if !overridden && pack_gens.iter().any(Option::is_some) {
+            if !overridden && is_phrase && pack_gens.iter().any(Option::is_some) {
                 drum_kits = pack_gens
                     .into_iter()
                     .map(|generator| DrumKit { layout: DrumLayout::standard(), generator })
@@ -1171,6 +1177,10 @@ pub fn load_style(style: &Style, opts: LoadOptions) -> Result<LoadedStyle, LoadE
         tempo: spec.tempo,
         // MUSICAL: A minor (8A) when the style sets no key.
         key: style.default_key().unwrap_or(MusicalKey::new(9, true)),
+        mode_seed: {
+            let minor = style.default_key().is_none_or(|k| k.minor);
+            spec.default_mode.as_deref().and_then(|m| crate::live::harmony::seed_for_mode(m, minor)).unwrap_or(0)
+        },
         progressions: style.progressions(),
         default_progression: spec.default_progression,
         forms: style.forms(),
@@ -1389,6 +1399,16 @@ mod tests {
         let mut silent = crate::live::event::BarEvents::default();
         lead.generator.render_bar(&ctx, &mut silent);
         assert!(silent.as_slice().is_empty());
+
+        // With another generator the pack is a sound only: no per-option
+        // generators, the lane's generator plays every option.
+        let yaml = std::fs::read_to_string(dir.path().join("style.yaml")).unwrap();
+        std::fs::write(dir.path().join("style.yaml"), yaml.replace("      name: phrase\n", "      name: lead\n")).unwrap();
+        let style = Style::load(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+        let loaded = load_style(&style, LoadOptions::new(48_000)).unwrap_or_else(|e| panic!("{e}"));
+        let lead = &loaded.meta[2];
+        assert!(lead.option_available[2]);
+        assert!(lead.drum_kits.iter().all(|k| k.generator.is_none()));
     }
 
     #[test]

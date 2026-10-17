@@ -32,6 +32,7 @@ pub mod font;
 pub mod graph_view;
 pub mod keyboard;
 pub mod knob;
+pub mod live_vfx;
 pub mod multiband;
 pub mod playlist_browser;
 pub mod scope;

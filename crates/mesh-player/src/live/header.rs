@@ -92,7 +92,7 @@ mod tests {
     const BM: MusicalKey = MusicalKey::new(11, true);
 
     fn clock(bpm: f64, target: f64, ramping: bool) -> ClockView {
-        ClockView { bar: 0, step: 0, phrase: 0, bar_in_phrase: 0, bpm, target_bpm: target, ramping }
+        ClockView { bar: 0, step: 0, tick: 0.0, phrase: 0, bar_in_phrase: 0, bpm, target_bpm: target, ramping }
     }
 
     #[test]

@@ -24,6 +24,9 @@ pub const PACK_FILE: &str = "pack.yaml";
 pub const PHRASES_FOLDER: &str = "phrases";
 /// Most phrases read per pack.
 pub const MAX_PHRASES: usize = 64;
+/// A pack sample longer than this plays as a stream unless `stream` says
+/// otherwise.
+pub const STREAM_AUTO_SECS: f64 = 8.0;
 
 /// `pack.yaml`. Every field is optional.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,10 @@ pub struct PackSpec {
     pub morph_cc: Option<u8>,
     /// One voice at a time: overlapping notes slide (default: bass lanes).
     pub mono: Option<bool>,
+    /// A mudpie: notes start where the generator's seed puts them across the
+    /// whole sample, shifted by the Morph knob (default: samples longer than
+    /// [`STREAM_AUTO_SECS`]).
+    pub stream: Option<bool>,
     /// Level on top of the loudness normalization, dB.
     pub gain_db: f32,
 }

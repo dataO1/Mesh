@@ -48,7 +48,7 @@ use super::blocks::{
 use super::layout::{DrumLayout, DrumVoice, HATS_BASE, PERC_BASE, RIDE_BASE, SHAKER_BASE, TOP_BASE};
 use super::recipe::{self, break_role, Layer, Recipe};
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
-use crate::live::event::{flags, BarEvents};
+use crate::live::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::live::rng;
 use crate::live::style::SliceType;
 use crate::live::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
@@ -126,6 +126,9 @@ const S_TOP_MUT: u32 = 0x1B1;
 const S_TOP_KIND: u32 = 0x1B2;
 const S_TOP_PICK: u32 = 0x1B3;
 const S_TOP_VEL: u32 = 0x1B4;
+const S_FEEL_ADD: u32 = 0x1C2;
+const S_FEEL_TRIPLET: u32 = 0x1C3;
+const S_FEEL_PRESENCE: u32 = 0x1D0;
 
 // ─── Musical tables ────────────────────────────────────────────────────
 
@@ -327,11 +330,14 @@ pub struct DrumRules {
     pub order: f32,
     /// A5: velocity tier depth, 0 = flat.
     pub tiers: f32,
+    /// The density's speed feel ([`rate_feel`]). Off in `Default` (the
+    /// rule tests' plain generator), on in styles (`feel`, default 1).
+    pub feel: bool,
 }
 
 impl Default for DrumRules {
     fn default() -> Self {
-        Self { blend: true, break_layer: true, lock: 1.0, phrase: true, order: 1.0, tiers: 1.0 }
+        Self { blend: true, break_layer: true, lock: 1.0, phrase: true, order: 1.0, tiers: 1.0, feel: false }
     }
 }
 
@@ -344,6 +350,7 @@ impl DrumRules {
             phrase: option(params, "rule_a3", 1.0) >= 0.5,
             order: option(params, "rule_a4", 1.0),
             tiers: option(params, "rule_a5", 1.0),
+            feel: option(params, "feel", 1.0) >= 0.5,
         }
     }
 }
@@ -398,6 +405,169 @@ struct Backbone {
     snare: u16,
     /// Steps overlays must leave alone.
     locked: u16,
+}
+
+// MUSICAL (user, 2026-10-17): above the middle of the density some hits of
+// the voices around the backbone become bursts (their slot at double time,
+// or as a triplet, by the seed), up to 40 % at the top; the others sustain
+// (one hit holding its slot).
+/// Voices the feel applies to (kick and snare keep their backbone).
+const FEEL_VOICES: [DrumVoice; 6] =
+    [DrumVoice::Hats, DrumVoice::Ride, DrumVoice::Shaker, DrumVoice::Perc, DrumVoice::Top, DrumVoice::Break];
+/// Share of hits played as bursts at density 0, 0.5 and 1 (the 16th feel
+/// on top of the trimmed patterns).
+const FEEL_BURSTS: (f32, f32, f32) = (0.0, 0.0, 0.4);
+/// Most of a seed's bursts that are triplets (per voice, seeded).
+const FEEL_TRIPLET_MAX: f32 = 0.5;
+/// Share of the gap to its next hit a sustained gated hit (break slices, top
+/// chops) holds.
+const FEEL_SUSTAIN: f32 = 0.95;
+/// Velocity of a burst's repeats, from the hit.
+const FEEL_ADD_VEL: f32 = 0.7;
+
+// MUSICAL (user, 2026-10-17): the density trims the seed's patterns by
+// metric level, from a quarter feel to 8ths to 16ths, gradually.
+/// Density span over which the 8th and the 16th level come in.
+const TRIM_8TH: (f32, f32) = (0.05, 0.55);
+const TRIM_16TH: (f32, f32) = (0.45, 0.95);
+/// Velocity of a level while it comes in, at its start (full once in).
+const TRIM_VEL_START: f32 = 0.5;
+
+fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Trim the voices around the backbone by metric level (user, 2026-10-17).
+/// Per voice, the quarter grid on its own phase (where most of its hits sit)
+/// always plays; hits on the 8th level come in over [`TRIM_8TH`] and those
+/// on the 16th level over [`TRIM_16TH`], each hit at its seeded threshold, so
+/// the knob adds them one by one, softer while their level is coming in.
+/// Steps from `until` on (a fill) stay.
+fn metric_trim(density: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
+    let until_tick = until as u16 * TICKS_PER_STEP;
+    let level_weight = [1.0, smooth(TRIM_8TH.0, TRIM_8TH.1, density), smooth(TRIM_16TH.0, TRIM_16TH.1, density)];
+    for (vi, voice) in FEEL_VOICES.iter().enumerate() {
+        let of = |e: &LiveEvent| {
+            e.tick < until_tick
+                && matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)
+                && DrumVoice::of_target(e.target) == Some(*voice)
+        };
+        let mut count = [0u8; 4];
+        for e in out.as_slice().iter().filter(|e| of(e)) {
+            count[(e.tick / TICKS_PER_STEP) as usize % 4] += 1;
+        }
+        if count.iter().all(|&c| c == 0) {
+            continue;
+        }
+        let phase = (0..4).max_by_key(|&k| (count[k], 4 - k)).unwrap_or(0);
+        let level = |s: usize| match (s + 4 - phase) % 4 {
+            0 => 0,
+            2 => 1,
+            _ => 2,
+        };
+        out.retain(|_, e| {
+            if !of(e) {
+                return true;
+            }
+            let s = (e.tick / TICKS_PER_STEP) as usize;
+            rng.unit(s as u8, S_FEEL_PRESENCE + 8 + vi as u32) < level_weight[level(s)]
+        });
+        for e in out.as_mut_slice().iter_mut().filter(|e| of(e)) {
+            let w = level_weight[level((e.tick / TICKS_PER_STEP) as usize)];
+            e.vel = ((e.vel as f32) * (TRIM_VEL_START + (1.0 - TRIM_VEL_START) * w)).round().max(1.0) as u8;
+        }
+    }
+}
+
+/// Smallest spacing in steps between a voice's hits (1, 2, 4 ..), 16 when it
+/// has one hit.
+fn natural_spacing(hits: u16) -> usize {
+    let mut prev: Option<usize> = None;
+    let mut min = STEPS_PER_BAR;
+    for s in 0..STEPS_PER_BAR {
+        if hits & bit(s) != 0 {
+            if let Some(p) = prev {
+                min = min.min(s - p);
+            }
+            prev = Some(s);
+        }
+    }
+    min.next_power_of_two().min(STEPS_PER_BAR)
+}
+
+/// The speed feel (see [`FEEL_BURSTS`]). A burst fills the hit's slot (up to
+/// the voice's next hit, at most its usual spacing) with 2 or 3 evenly spaced
+/// softer repeats (`add_vel`), never on locked steps (the break never on the
+/// backbone); a sustained gated hit holds its slot. Steps from `until` on (a
+/// fill) stay.
+fn rate_feel(density: f32, rng: &PhraseRng, bb: &Backbone, until: usize, add_vel: f32, out: &mut BarEvents) {
+    let d = density.clamp(0.0, 1.0);
+    let bursts = if d < 0.5 {
+        lerp(FEEL_BURSTS.0, FEEL_BURSTS.1, d * 2.0)
+    } else {
+        lerp(FEEL_BURSTS.1, FEEL_BURSTS.2, d * 2.0 - 1.0)
+    };
+    let backbone = bb.kick | bb.snare;
+    let until_tick = until as u16 * TICKS_PER_STEP;
+    let mut adds = [LiveEvent::default(); STEPS_PER_BAR * 3];
+    let mut n_adds = 0;
+    for (vi, voice) in FEEL_VOICES.iter().enumerate() {
+        let of = |e: &LiveEvent| {
+            e.tick < until_tick
+                && matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)
+                && DrumVoice::of_target(e.target) == Some(*voice)
+        };
+        let mut hits = 0u16;
+        for e in out.as_slice().iter().filter(|e| of(e)) {
+            hits |= bit((e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR);
+        }
+        if hits == 0 {
+            continue;
+        }
+        let spacing = natural_spacing(hits);
+        let triplets = FEEL_TRIPLET_MAX * rng.unit(vi as u8, S_FEEL_TRIPLET);
+        let snapshot = out.clone();
+        for e in out.as_mut_slice().iter_mut().filter(|e| of(e)) {
+            let next = snapshot.as_slice().iter().filter(|x| of(x) && x.tick > e.tick).map(|x| x.tick).min().unwrap_or(until_tick);
+            let gap = next.saturating_sub(e.tick);
+            let step = (e.tick / TICKS_PER_STEP) as u8;
+            if !rng.chance(step, S_FEEL_ADD + vi as u32 * 16, bursts) {
+                // Sustained: a gated hit holds its slot.
+                if e.gate > 0 && gap > e.gate {
+                    e.gate += ((gap - e.gate) as f32 * FEEL_SUSTAIN) as u16;
+                }
+                continue;
+            }
+            // Burst: the slot (at most the usual spacing) at double time or as a triplet.
+            let slot = gap.min(spacing as u16 * TICKS_PER_STEP);
+            let n: u16 = if rng.chance(step, S_FEEL_TRIPLET + 1 + vi as u32 * 16, triplets) { 3 } else { 2 };
+            let unit = slot / n;
+            if unit < TICKS_PER_STEP / 2 {
+                continue;
+            }
+            if e.gate > 0 {
+                e.gate = e.gate.min(unit);
+            }
+            for k in 1..n {
+                let tick = e.tick + k * unit;
+                let t = (tick / TICKS_PER_STEP) as usize;
+                let blocked = t >= until || bb.locked & bit(t) != 0 || (*voice == DrumVoice::Break && backbone & bit(t) != 0);
+                if blocked || n_adds >= adds.len() {
+                    continue;
+                }
+                let mut c = *e;
+                c.tick = tick;
+                c.vel = ((e.vel as f32) * add_vel).round().max(1.0) as u8;
+                c.flags &= !flags::ACCENT;
+                adds[n_adds] = c;
+                n_adds += 1;
+            }
+        }
+    }
+    for e in &adds[..n_adds] {
+        out.push(*e);
+    }
 }
 
 #[inline]
@@ -820,7 +990,23 @@ impl DrumGenerator {
         let l = &self.layout;
         let Some(closed) = pick_bit(l.hats_closed, HATS_BASE, pick(ctx, S_PICK_CLOSED)) else { return };
         let open_hat = pick_bit(l.hats_open, HATS_BASE, pick(ctx, S_PICK_OPEN));
-        let ticks = if r.entered(Layer::Hats2, p.density) { recipe::HATS_PATTERNS[r.hats] } else { recipe::HATS_BASE };
+        // Styles (`feel`): the seed's pattern and its 16th fills always; the
+        // density trims them by metric level ([`metric_trim`]).
+        let p2 = if self.rules.feel { 1.0 } else { r.entered(Layer::Hats2, p.density) as u8 as f32 };
+        let p3 = if self.rules.feel { 1.0 } else { r.entered(Layer::Hats3, p.density) as u8 as f32 };
+        let mut merged = [0u16; 32];
+        let mut n_ticks = 0;
+        for s in 0..STEPS_PER_BAR {
+            let seed_pat = rng.unit(s as u8, S_FEEL_PRESENCE) < p2;
+            let src: &[u16] = if seed_pat { recipe::HATS_PATTERNS[r.hats] } else { recipe::HATS_BASE };
+            for &t in src.iter().filter(|&&t| (t / TICKS_PER_STEP) as usize == s) {
+                if n_ticks < merged.len() {
+                    merged[n_ticks] = t;
+                    n_ticks += 1;
+                }
+            }
+        }
+        let ticks = &merged[..n_ticks];
         let push = |out: &mut BarEvents, tick: u16, target: u8, vel: u8| {
             let mut ev = trigger(tick, target, scaled(vel, p.hats));
             ev.choke = l.hats_choke;
@@ -834,15 +1020,15 @@ impl DrumGenerator {
             push(out, t, closed, vel);
             used |= bit(s);
         }
-        if r.entered(Layer::Hats3, p.density) {
+        if p3 > 0.0 {
             for s in 0..STEPS_PER_BAR {
-                if used & bit(s) != 0 || bb.locked & bit(s) != 0 {
+                if used & bit(s) != 0 || bb.locked & bit(s) != 0 || rng.unit(s as u8, S_FEEL_PRESENCE + 1) >= p3 {
                     continue;
                 }
                 let vel = velocity(Tier::Ghost, rng.unit(s as u8, S_HAT), self.rules.tiers);
                 push(out, step_tick(s) + swing_offset(s, p.swing), closed, vel);
             }
-            if let Some(open) = open_hat {
+            if let Some(open) = open_hat.filter(|_| rng.unit(0, S_FEEL_PRESENCE + 2) < p3) {
                 let vel = velocity(Tier::Normal, rng.unit(0, S_HAT_OPEN), self.rules.tiers);
                 push(out, r.open_hat, open, vel);
             }
@@ -1076,6 +1262,11 @@ impl LaneGenerator for DrumGenerator {
         self.ride(ctx, &p, &recipe, &rng, out);
         self.shaker(ctx, &p, &recipe, &rng, out);
         self.top(ctx, &p, &recipe, &rng, out);
+        if self.rules.feel {
+            metric_trim(p.density, &rng, fill_from, out);
+            let add_vel = if self.rules.tiers > 0.0 { FEEL_ADD_VEL } else { 1.0 };
+            rate_feel(p.density, &rng, &bb, fill_from, add_vel, out);
+        }
         out.sort();
     }
 
@@ -1088,7 +1279,9 @@ impl LaneGenerator for DrumGenerator {
         let r = self.recipe(ctx, &p, &rng);
         let mut on = r.voices;
         for layer in [Layer::Ride, Layer::Shaker, Layer::Perc, Layer::Top, Layer::Break] {
-            if !r.entered(layer, p.density) {
+            // Styles: every voice of the seed sounds; the density trims its hits.
+            let gone = !self.rules.feel && !r.entered(layer, p.density);
+            if gone {
                 on &= !layer.voice().bit();
             }
         }
@@ -1143,6 +1336,53 @@ mod tests {
 
     fn bar(g: &DrumGenerator, seed: u32, bar: u8, p: &[f32; MAX_GEN_PARAMS]) -> Vec<LiveEvent> {
         render(g, &ctx(seed, bar, p, &EMPTY)).as_slice().to_vec()
+    }
+
+    /// Hits of the feel voices that sound (the voice mask applies), per bar.
+    fn feel_hits(g: &DrumGenerator, seed: u32, density: f32) -> Vec<LiveEvent> {
+        let p = params(|p| p[P_DENSITY] = density);
+        let mask = g.voice_mask(&ctx(seed, 0, &p, &EMPTY));
+        bar(g, seed, 0, &p)
+            .into_iter()
+            .filter(|e| DrumVoice::of_target(e.target).is_some_and(|v| mask & v.bit() != 0 && FEEL_VOICES.contains(&v)))
+            .collect()
+    }
+
+    #[test]
+    fn density_trims_the_patterns_from_quarters_to_16ths() {
+        let g = with_rules(DrumRules { feel: true, ..DrumRules::default() });
+        for seed in 0..60 {
+            // The bottom: each voice on one quarter grid, and it plays.
+            let low = feel_hits(&g, seed, 0.0);
+            assert!(!low.is_empty(), "seed {seed}");
+            for v in FEEL_VOICES {
+                let phases: std::collections::BTreeSet<u16> =
+                    low.iter().filter(|e| DrumVoice::of_target(e.target) == Some(v)).map(|e| (e.tick / TICKS_PER_STEP) % 4).collect();
+                assert!(phases.len() <= 1, "seed {seed} {v:?}: {phases:?}");
+            }
+        }
+        // More hits as the knob rises, without jumps.
+        let curve: Vec<usize> = (0..=20).map(|i| (0..60).map(|seed| feel_hits(&g, seed, i as f32 / 20.0).len()).sum()).collect();
+        let top = *curve.last().unwrap() as f32;
+        assert!(curve[0] as f32 > 0.15 * top && (curve[10] as f32) < 0.85 * top, "{curve:?}");
+        for w in curve.windows(2) {
+            assert!(w[1] + 2 >= w[0] && ((w[1] as f32 - w[0] as f32) < 0.15 * top), "{curve:?}");
+        }
+        // The top has triplet bursts on some seeds.
+        let off_grid: usize = (0..100).map(|seed| feel_hits(&g, seed, 1.0).iter().filter(|e| e.tick % TICKS_PER_STEP != 0).count()).sum();
+        assert!(off_grid > 0);
+    }
+
+    #[test]
+    fn every_seed_plays_break_or_percussion() {
+        let g = with_rules(DrumRules { feel: true, ..DrumRules::default() });
+        let groove = DrumVoice::Break.bit() | DrumVoice::Perc.bit();
+        for seed in 0..300 {
+            for d in [0.0, 0.5, 1.0] {
+                let mask = g.voice_mask(&ctx(seed, 0, &params(|p| p[P_DENSITY] = d), &EMPTY));
+                assert!(mask & groove != 0, "seed {seed} at {d}");
+            }
+        }
     }
 
     #[test]

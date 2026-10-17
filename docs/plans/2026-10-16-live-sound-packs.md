@@ -208,3 +208,9 @@ drums use them; sampler gates may run past the bar line.
   x0.3, tone CC open). The envelope never drops to silence; stabs come
   from the gate and the filter. Pack lanes: dens, shape, morph, spread.
   The bass pack's filter floor is 400 Hz (CC74 +5000 cents).
+- Bass line generated again (2026-10-17, user): the bass lane keeps the
+  pack as its sound but plays the `bass` generator (`motifs: 0`, register
+  up an octave to the F2 range the pack was tuned on). The bass generator
+  takes `length` and `expression` like `phrase`, so dens / shape / morph /
+  spread work as before. Packs on a lane whose generator is not `phrase` are
+  sounds only.

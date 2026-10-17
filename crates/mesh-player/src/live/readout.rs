@@ -359,7 +359,7 @@ const ELLIPSIS_CHARS: usize = 2;
 
 /// Segments `from..to` of a form of `len` segments shown while segment
 /// `playing` plays (an inserted break, out of range, shows the start).
-fn form_window(len: usize, playing: usize) -> (usize, usize) {
+pub(super) fn form_window(len: usize, playing: usize) -> (usize, usize) {
     if len <= FORM_WINDOW {
         return (0, len);
     }
@@ -465,6 +465,7 @@ mod tests {
             fired: FiredView { count: 0, tag: SpanTag::None, fill: false },
             voices: 0,
             moves: 0,
+            drum_steps: [0; 8],
         }
     }
 

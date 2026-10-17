@@ -275,19 +275,36 @@ impl SamplerParam {
                 // its body: stabs come from the gate (the generator's length
                 // on the same control) and the filter bite, not from silence.
                 let (decay, sustain) = p.designed_env;
-                p.decay = decay * if v < 0.5 { 0.5 + v } else { 2.0 * v };
-                p.sustain = if v < 0.5 { sustain * (0.45 + 1.1 * v) } else { sustain + (1.0 - sustain) * (2.0 * v - 1.0) };
-                // Accented and moving .. calm.
-                p.expression = 2.0 - 1.7 * v;
-                // Tone CC: low but open enough to bite (user) .. open.
-                p.tone = 0.35 + 0.65 * v;
+                let stab = (1.0 - 2.0 * v).max(0.0);
+                // User, 2026-10-17: the macro sets the share of stabs and
+                // held notes (the generator flags each note `STAB`), not one
+                // envelope for all. Stabs have no sustain, the note is its
+                // decay as designed; held notes decay slightly to a high
+                // sustain.
+                p.decay = decay;
+                p.sustain = sustain.max(HELD_SUSTAIN);
+                p.release = p.designed_release;
+                // Accented and moving .. calm; the filter moves less on stabs
+                // than before (the pitch move comes from the punch).
+                p.expression = if v < 0.5 { 1.15 + 0.5 * stab } else { 1.15 - 1.0 * (2.0 * v - 1.0) };
+                // Tone CC: low but open enough to bite, not lower (user) .. open.
+                p.tone = 0.5 + 0.5 * v;
                 // Resonance up on the stabby half (user: more pronounced).
                 p.resonance = (p.designed_res + 0.12 * (1.0 - 2.0 * v).max(0.0)).min(0.95);
+                // Stab accent on the stab notes (user: blown-out attack, pitch
+                // move), harder on the stabby half.
+                p.punch = STAB_PUNCH + (1.0 - STAB_PUNCH) * stab;
             }
             Self::Morph => p.morph = v,
         }
     }
 }
+
+// MUSICAL: the Character macro, tune by ear.
+/// Sustain level of held notes.
+const HELD_SUSTAIN: f32 = 0.85;
+/// Stab accent at the sustained end of the macro (full at the stabby end).
+const STAB_PUNCH: f32 = 0.4;
 
 /// Message from the controller to the RT engine. Everything is resolved to
 /// indices and numbers; handling one never allocates.
@@ -353,11 +370,13 @@ mod tests {
         assert_eq!(p.expression, 1.0, "the middle plays as written");
         p.designed_env = (2.0, 0.5);
         SamplerParam::Character.apply(&mut p, 0.5);
-        assert_eq!((p.decay, p.sustain, p.expression), (2.0, 0.5, 1.15), "the middle is the design envelope");
+        assert_eq!((p.decay, p.sustain, p.expression), (2.0, HELD_SUSTAIN, 1.15), "held notes: the design decay to a high sustain");
         SamplerParam::Character.apply(&mut p, 0.0);
-        assert!(p.decay == 1.0 && (p.sustain - 0.225).abs() < 1e-6 && p.expression == 2.0, "stab keeps a body: {p:?}");
+        assert!(p.decay == 2.0 && p.sustain == HELD_SUSTAIN && (p.expression - 1.65).abs() < 1e-6, "held notes keep the design: {p:?}");
+        assert_eq!(p.release, p.designed_release);
         assert!(p.resonance > p.designed_res, "the stab end resonates more");
+        assert_eq!(p.punch, 1.0, "the stab end punches hardest");
         SamplerParam::Character.apply(&mut p, 1.0);
-        assert!(p.decay == 4.0 && p.sustain == 1.0 && p.tone == 1.0, "sustained: {p:?}");
+        assert!(p.decay == 2.0 && p.tone == 1.0 && p.punch == STAB_PUNCH, "calm end: {p:?}");
     }
 }

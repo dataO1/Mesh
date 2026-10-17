@@ -20,6 +20,7 @@
 //! - [`keys`]: keyboard fallback for development without F1s.
 //! - [`statelog`]: the per-bar state log written next to a set recording.
 //! - [`pads`]: what the 8 pads of each lane do.
+//! - [`screen`]: the terminal screen (wavelines with per-lane VFX).
 //! - [`readout`], [`header`]: pure text formatting of the screen.
 //! - [`startup`]: style resolution and its error report.
 
@@ -31,6 +32,7 @@ pub mod input;
 pub mod keys;
 pub mod pads;
 pub mod readout;
+pub mod screen;
 pub mod startup;
 pub mod statelog;
 

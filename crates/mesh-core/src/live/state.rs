@@ -21,7 +21,9 @@ use super::clock::BARS_PER_PHRASE;
 use super::scope::ScopeRing;
 use super::form::Letter;
 use super::style::CONTROLS_PER_LANE;
-use super::NUM_LANES;
+use super::event::{EventKind, LiveEvent};
+use super::generator::layout::DrumVoice;
+use super::{NUM_LANES, STEPS_PER_BAR, TICKS_PER_STEP};
 
 const NO_KEY: u8 = 0xFF;
 const NO_INDEX: u16 = u16::MAX;
@@ -147,6 +149,9 @@ impl FormView {
 pub struct ClockView {
     pub bar: u64,
     pub step: u8,
+    /// Fractional tick within the bar at the end of the last block (the
+    /// newest scope point), `0.0..TICKS_PER_BAR`.
+    pub tick: f64,
     pub phrase: u64,
     pub bar_in_phrase: u8,
     pub bpm: f64,
@@ -209,6 +214,9 @@ pub struct LaneView {
     pub voices: u32,
     /// [`move_bits`] of the moves currently held.
     pub moves: u8,
+    /// Drum lane: the playing bar's onsets, one 16-step mask per
+    /// [`DrumVoice`](super::generator::layout::DrumVoice).
+    pub drum_steps: [u16; 8],
 }
 
 /// Per-lane shared state.
@@ -236,6 +244,10 @@ pub struct LaneShared {
     voices: AtomicU32,
     peak: AtomicU32,
     moves: AtomicU8,
+    drum_steps: [AtomicU16; 8],
+    /// The playing bar's notes ([`BarNote::pack`]), `note_count` of them.
+    notes: [AtomicU64; MAX_BAR_NOTES],
+    note_count: AtomicU8,
     scope: ScopeRing,
 }
 
@@ -264,6 +276,9 @@ impl LaneShared {
             voices: AtomicU32::new(0),
             peak: AtomicU32::new(0),
             moves: AtomicU8::new(0),
+            drum_steps: std::array::from_fn(|_| AtomicU16::new(0)),
+            notes: std::array::from_fn(|_| AtomicU64::new(0)),
+            note_count: AtomicU8::new(0),
             scope: ScopeRing::new(),
         }
     }
@@ -300,6 +315,7 @@ impl LaneShared {
             },
             voices: self.voices.load(ORD),
             moves: self.moves.load(ORD),
+            drum_steps: std::array::from_fn(|i| self.drum_steps[i].load(ORD)),
         }
     }
 
@@ -354,6 +370,36 @@ impl LaneShared {
         self.form.store(form, ORD);
     }
 
+    /// The notes and hits of the bar that started playing (the first
+    /// [`MAX_BAR_NOTES`]).
+    pub(crate) fn set_bar_notes(&self, events: &[LiveEvent]) {
+        let mut n = 0;
+        for e in events.iter().filter(|e| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)).take(MAX_BAR_NOTES) {
+            let note = BarNote { tick: e.tick, gate: e.gate, key: e.key, vel: e.vel, target: e.target };
+            self.notes[n].store(note.pack(), ORD);
+            n += 1;
+        }
+        self.note_count.store(n as u8, ORD);
+    }
+
+    /// Copy the playing bar's notes into `out`; returns how many. A read
+    /// racing a bar change may mix the two bars, which a display tolerates.
+    pub fn bar_notes(&self, out: &mut [BarNote; MAX_BAR_NOTES]) -> usize {
+        let n = (self.note_count.load(ORD) as usize).min(MAX_BAR_NOTES);
+        for (o, a) in out.iter_mut().zip(&self.notes).take(n) {
+            *o = BarNote::unpack(a.load(ORD));
+        }
+        n
+    }
+
+    /// Drum lane: onsets of the bar that started playing.
+    pub(crate) fn set_drum_steps(&self, events: &[LiveEvent]) {
+        let steps = drum_steps(events);
+        for (a, v) in self.drum_steps.iter().zip(steps) {
+            a.store(v, ORD);
+        }
+    }
+
     pub(crate) fn set_voices_playing(&self, overrides: u16, default: u8, on: u8) {
         self.voice_overrides_playing.store(overrides, ORD);
         self.voice_default.store(default, ORD);
@@ -400,6 +446,7 @@ impl LaneShared {
 pub struct LiveShared {
     bar: AtomicU64,
     step: AtomicU8,
+    tick: AtomicU64,
     bpm: AtomicU64,
     target_bpm: AtomicU64,
     ramping: AtomicBool,
@@ -428,6 +475,7 @@ impl LiveShared {
         Self {
             bar: AtomicU64::new(0),
             step: AtomicU8::new(0),
+            tick: AtomicU64::new(0),
             bpm: AtomicU64::new(bpm.to_bits()),
             target_bpm: AtomicU64::new(bpm.to_bits()),
             ramping: AtomicBool::new(false),
@@ -454,6 +502,7 @@ impl LiveShared {
         ClockView {
             bar,
             step: self.step.load(ORD),
+            tick: f64::from_bits(self.tick.load(ORD)),
             phrase: bar / BARS_PER_PHRASE,
             bar_in_phrase: (bar % BARS_PER_PHRASE) as u8,
             bpm: f64::from_bits(self.bpm.load(ORD)),
@@ -533,9 +582,10 @@ impl LiveShared {
 
     // ── RT writers ──
 
-    pub(crate) fn set_clock(&self, bar: u64, step: u8, bpm: f64, target_bpm: f64, ramping: bool) {
+    pub(crate) fn set_clock(&self, bar: u64, step: u8, tick: f64, bpm: f64, target_bpm: f64, ramping: bool) {
         self.bar.store(bar, ORD);
         self.step.store(step, ORD);
+        self.tick.store(tick.to_bits(), ORD);
         self.bpm.store(bpm.to_bits(), ORD);
         self.target_bpm.store(target_bpm.to_bits(), ORD);
         self.ramping.store(ramping, ORD);
@@ -588,6 +638,47 @@ impl LiveShared {
     }
 }
 
+
+/// Notes a lane publishes per bar for the screen.
+pub const MAX_BAR_NOTES: usize = 48;
+
+/// One note or hit of the playing bar, for the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BarNote {
+    pub tick: u16,
+    /// Length in ticks (0 for one-shot hits).
+    pub gate: u16,
+    pub key: u8,
+    pub vel: u8,
+    /// Sample target (drum voice, see `DrumVoice::of_target`).
+    pub target: u8,
+}
+
+impl BarNote {
+    fn pack(self) -> u64 {
+        self.tick as u64 | (self.gate as u64) << 16 | (self.key as u64) << 32 | (self.vel as u64) << 40 | (self.target as u64) << 48
+    }
+
+    fn unpack(v: u64) -> Self {
+        Self { tick: v as u16, gate: (v >> 16) as u16, key: (v >> 32) as u8, vel: (v >> 40) as u8, target: (v >> 48) as u8 }
+    }
+}
+
+/// One 16-step onset mask per drum voice from a bar's events.
+pub fn drum_steps(events: &[LiveEvent]) -> [u16; 8] {
+    let mut steps = [0u16; 8];
+    for e in events {
+        if !matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) {
+            continue;
+        }
+        if let Some(v) = DrumVoice::of_target(e.target) {
+            let step = (e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+            steps[v as usize] |= 1 << step;
+        }
+    }
+    steps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +690,40 @@ mod tests {
             assert_eq!(decode_key(encode_key(key)), Some(key));
         }
         assert_eq!(decode_key(NO_KEY), None);
+    }
+
+    #[test]
+    fn drum_steps_mask_onsets_per_voice() {
+        let ev = |kind, step: u16, target| LiveEvent { kind, tick: step * TICKS_PER_STEP + 3, target, ..LiveEvent::default() };
+        let events = [
+            ev(EventKind::Trigger, 0, 0),
+            ev(EventKind::Trigger, 10, 0),
+            ev(EventKind::NoteOn, 4, 1),
+            ev(EventKind::NoteOff, 6, 1),
+            ev(EventKind::Cc, 8, 0),
+        ];
+        let steps = drum_steps(&events);
+        assert_eq!(steps[DrumVoice::Kick as usize], 1 << 0 | 1 << 10);
+        assert_eq!(steps[DrumVoice::Snare as usize], 1 << 4);
+        assert!(steps[2..].iter().all(|&m| m == 0));
+        let shared = LiveShared::new(170.0, MusicalKey::new(9, true), 0);
+        shared.lane(0).set_drum_steps(&events);
+        assert_eq!(shared.lane(0).view().drum_steps, steps);
+    }
+
+    #[test]
+    fn bar_notes_round_trip_hits_and_notes_only() {
+        let shared = LiveShared::new(170.0, MusicalKey::new(9, true), 0);
+        let events = [
+            LiveEvent { kind: EventKind::NoteOn, tick: 96, gate: 48, key: 40, vel: 100, target: 0, ..LiveEvent::default() },
+            LiveEvent { kind: EventKind::Cc, tick: 100, ..LiveEvent::default() },
+            LiveEvent { kind: EventKind::Trigger, tick: 300, gate: 0, key: 0, vel: 90, target: 1, ..LiveEvent::default() },
+        ];
+        shared.lane(1).set_bar_notes(&events);
+        let mut out = [BarNote::default(); MAX_BAR_NOTES];
+        assert_eq!(shared.lane(1).bar_notes(&mut out), 2);
+        assert_eq!(out[0], BarNote { tick: 96, gate: 48, key: 40, vel: 100, target: 0 });
+        assert_eq!(out[1], BarNote { tick: 300, gate: 0, key: 0, vel: 90, target: 1 });
     }
 
     #[test]

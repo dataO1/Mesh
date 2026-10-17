@@ -18,6 +18,7 @@
 //! | `t` | quantized lane toggles on/off |
 //! | `g` / `Shift+g` | capture selected lane / whole state |
 //! | `Ctrl+r` | start / stop set recording |
+//! | `F2` | terminal screen / code readout screen |
 
 use iced::keyboard::{key::Named, Event, Key, Modifiers};
 
@@ -44,6 +45,8 @@ pub enum KeyAction {
     TempoDelta(f64),
     ToggleQuantize,
     ToggleRecording,
+    /// Switch between the terminal screen and the code readout.
+    ToggleScreen,
 }
 
 const MOVE_KEYS: [(char, MoveKind); 4] =
@@ -85,6 +88,7 @@ fn pressed(key: &Key, mods: Modifiers, repeat: bool, lane: u8) -> Option<KeyActi
             Named::ArrowRight => C(LiveCommand::BrowseOption { lane, delta: 1 }),
             Named::Enter => C(LiveCommand::CommitOption { lane }),
             Named::Space if !repeat => C(LiveCommand::ToggleLane { lane }),
+            Named::F2 if !repeat => KeyAction::ToggleScreen,
             _ => return None,
         });
     }

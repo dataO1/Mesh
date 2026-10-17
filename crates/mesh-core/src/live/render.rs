@@ -202,7 +202,7 @@ impl BarRenderer {
         lanes: Vec<RenderLane>,
         forms: Vec<Form>,
         progressions: Vec<Progression>,
-        key: MusicalKey,
+        (key, mode_seed): (MusicalKey, u32),
         progression: usize,
         claps: Vec<Arc<ClapCell>>,
         trash: rtrb::Consumer<rtrb::Producer<StereoSample>>,
@@ -222,7 +222,7 @@ impl BarRenderer {
             switches: [None; NUM_LANES],
             forms: if forms.is_empty() { vec![Form::single()] } else { forms },
             progressions,
-            played: HarmonyState::new(key, progression),
+            played: HarmonyState::with_mode_seed(key, progression, mode_seed),
             want_key: None,
             want_mode_seed: None,
             want_progression: None,
@@ -878,7 +878,7 @@ mod tests {
             Form::parse("A.5 A*.5").unwrap(),
         ];
         let (renderer, tx, rings) =
-            BarRenderer::new(Arc::clone(&shared), lanes, forms, progressions, key, 0, Vec::new(), trash);
+            BarRenderer::new(Arc::clone(&shared), lanes, forms, progressions, (key, 0), 0, Vec::new(), trash);
         Rig { renderer, tx, player: StepPlayer::new(rings.rx, rings.ret), shared }
     }
 

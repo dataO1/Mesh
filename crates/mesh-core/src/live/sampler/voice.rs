@@ -11,6 +11,20 @@ use super::params::{
 };
 use crate::types::StereoSample;
 
+// MUSICAL: stab accent, tune by ear.
+/// Gain kick at a note start at full punch (+1 = +6 dB), and its fade time.
+/// It drives the saturation, so it shows as a blown-out attack.
+const PUNCH_GAIN: f32 = 0.6;
+const PUNCH_SECS: f32 = 0.03;
+/// Extra mod-envelope pitch depth at full punch (on top of Expression).
+const PUNCH_PITCH: f32 = 1.8;
+/// Saturation drive at full punch, and the share of it taken back at the
+/// output (in dB terms).
+const PUNCH_SAT_DB: f32 = 15.0;
+const PUNCH_SAT_BACK: f32 = 0.8;
+/// The mod envelope runs this much slower at full punch.
+const PUNCH_ENV_STRETCH: f32 = 0.8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     Attack,
@@ -42,6 +56,8 @@ pub(crate) struct VoiceInit {
     pub attack: f32,
     pub decay: f32,
     pub sustain: f32,
+    /// Stab accent of this note (0 = none).
+    pub punch: f32,
     /// Pitch envelope: rise in semitones and fall time in seconds.
     pub pitch_env: Option<(f32, f32)>,
     /// Loop points (frames, absolute) for a looping voice; None = the slot.
@@ -104,6 +120,12 @@ pub(crate) struct VoiceState {
     mod_pf: f64,
     /// Gain of the lane modulation (CC volume), per block.
     mod_gain: f32,
+    /// Stab saturation drive (linear; 1 = off), from the punch.
+    sat: f32,
+    /// Stab accent of the note (from its `STAB` flag).
+    punch: f32,
+    /// Output gain taken back after the saturation.
+    sat_back: f32,
     /// Mod envelope value 0..1 and the cutoff shift (octaves) of the mod
     /// envelope and LFO, per block.
     menv: f32,
@@ -178,6 +200,9 @@ impl Default for VoiceState {
             t: 0.0,
             mod_pf: 1.0,
             mod_gain: 1.0,
+            sat: 1.0,
+            punch: 0.0,
+            sat_back: 1.0,
             menv: 0.0,
             note_cutoff_oct: 0.0,
             zone_mods: [ZoneMod::NONE; MAX_ZONE_MODS],
@@ -258,6 +283,7 @@ impl VoiceState {
             attack_inc: 1.0 / attack_n.max(1.0),
             decay_coef: exp_coef(v.decay, sr),
             sustain: v.sustain,
+            punch: v.punch,
             gain: v.gain,
             pan_offset: v.pan_offset,
             cutoff_offset: v.cutoff_start,
@@ -291,9 +317,17 @@ impl VoiceState {
         // The zone's own modulators (a crossfade layer, per-layer filter).
         let mut cut_cents = ZoneMod::sum(&self.zone_mods, &m.cc, ZoneTarget::Cutoff);
         let mut gain = m.gain * ZoneMod::gain(&self.zone_mods, &m.cc);
+        // Stab accent: a gain kick fading over the first tens of ms.
+        let punch = self.punch;
+        if punch > 0.0 {
+            gain *= 1.0 + PUNCH_GAIN * punch * (-self.t / PUNCH_SECS).exp();
+        }
         if env.is_on() {
-            self.menv = mod_env_value(env, self.menv, self.t, frames as f32 / sr, self.stage == Stage::Release);
-            cents += self.menv * env.to_pitch * expr;
+            // Stabs: the mod envelope runs slower, so the filter falls less
+            // quickly (rounder stabs).
+            let stretch = 1.0 + PUNCH_ENV_STRETCH * punch;
+            self.menv = mod_env_value(env, self.menv, self.t / stretch, frames as f32 / sr / stretch, self.stage == Stage::Release);
+            cents += self.menv * env.to_pitch * expr * (1.0 + PUNCH_PITCH * punch);
             cut_cents += self.menv * env.to_cutoff * expr;
         }
         if lfo.is_on() && self.t >= lfo.delay {
@@ -306,6 +340,8 @@ impl VoiceState {
         self.note_cutoff_oct = cut_cents / 1200.0;
         self.mod_pf = ((cents / 1200.0) as f64).exp2();
         self.mod_gain = gain;
+        self.sat = if punch > 0.0 { 10f32.powf(PUNCH_SAT_DB * punch / 20.0) } else { 1.0 };
+        self.sat_back = self.sat.powf(-PUNCH_SAT_BACK);
         self.t += frames as f32 / sr;
         if p.cutoff_glide > 0.0 && frames > 0 {
             let coef = (-(frames as f32) / (p.cutoff_glide * sr)).exp();
@@ -494,8 +530,15 @@ impl VoiceState {
                 let rem = if self.dir > 0.0 { self.end - self.pos } else { self.pos - self.start + 1.0 };
                 g *= (rem * inv_edge).min(1.0) as f32;
             }
-            o.left += lp_l * g * self.gl;
-            o.right += lp_r * g * self.gr;
+            let (mut l, mut r) = (lp_l * g, lp_r * g);
+            if self.sat > 1.0 {
+                // Stab saturation: soft clip, the gain taken back by most of
+                // the drive, so the attack blows out instead of spiking.
+                l = (l * self.sat).tanh() * self.sat_back;
+                r = (r * self.sat).tanh() * self.sat_back;
+            }
+            o.left += l * self.gl;
+            o.right += r * self.gr;
 
             if self.fade_step > 0.0 {
                 self.fade -= self.fade_step;
